@@ -17,7 +17,7 @@
 | `regression` | Linear, polynomial, and logistic regression |
 | `bayesian` | Bayesian inference and naive Bayes classification |
 | `combinatorics` | Factorials, permutations, combinations, Stirling approximation |
-| `monte_carlo` | Monte Carlo integration and simulation |
+| `monte_carlo` | Monte Carlo integration, Metropolis-Hastings MCMC, Gibbs sampling |
 | `markov` | Markov chains with steady-state analysis |
 | `timeseries` | Time series analysis (moving average, exponential smoothing, autocorrelation) |
 

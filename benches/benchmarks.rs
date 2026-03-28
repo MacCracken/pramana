@@ -280,6 +280,25 @@ fn bench_mvn_pdf_3d_1000(c: &mut Criterion) {
     });
 }
 
+fn bench_mh_1d_10000(c: &mut Criterion) {
+    c.bench_function("monte_carlo/mh_1d_10000", |b| {
+        b.iter(|| {
+            let mut rng = SimpleRng::new(42);
+            black_box(
+                monte_carlo::metropolis_hastings(
+                    |x| -0.5 * x[0] * x[0],
+                    &[0.0],
+                    1.0,
+                    10_000,
+                    1_000,
+                    &mut rng,
+                )
+                .unwrap(),
+            );
+        });
+    });
+}
+
 fn bench_kde_gaussian_1000(c: &mut Criterion) {
     let data: Vec<f64> = (0..200).map(|i| (i as f64 - 100.0) * 0.05).collect();
     let kde = KernelDensity::new(data, 0.5, Kernel::Gaussian).unwrap();
@@ -316,6 +335,7 @@ criterion_group!(
     bench_poly_regression_degree3,
     bench_mvn_sample_3d_1000,
     bench_mvn_pdf_3d_1000,
+    bench_mh_1d_10000,
     bench_kde_gaussian_1000,
 );
 criterion_main!(benches);

@@ -32,7 +32,7 @@
 - [x] One-way ANOVA (F-test with full SS decomposition)
 - [x] Kolmogorov-Smirnov test (one-sample and two-sample, Kolmogorov distribution p-value)
 - [x] Kernel density estimation (Gaussian, Epanechnikov, Uniform, Triangular kernels; Silverman bandwidth)
-- [ ] MCMC (Metropolis-Hastings, Gibbs sampling)
+- [x] MCMC: Metropolis-Hastings (Gaussian random walk) and Gibbs sampling
 - [ ] Hidden Markov Models
 - [ ] ARIMA time series
 - [ ] Correlation matrix
