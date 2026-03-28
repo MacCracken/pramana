@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Confidence intervals: one-sample mean, two-sample mean difference, proportion (Wald)
+- Quantile functions: t-distribution (bisection) and standard normal (Acklam approximation)
 - Logistic regression (IRLS, L2 regularization, probability/class prediction)
 - Polynomial regression (QR-based least squares, Horner evaluation, R²)
 - 7 new probability distributions: Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull

@@ -28,7 +28,7 @@
 - [x] Multivariate normal distribution (Cholesky-based sampling, log-PDF)
 - [x] Polynomial regression (QR-based least squares via hisab, Horner evaluation)
 - [x] Logistic regression (IRLS with L2 regularization, sigmoid, proba/class prediction)
-- [ ] Confidence intervals
+- [x] Confidence intervals (mean, two-means, proportion; t-quantile via bisection, z-quantile via Acklam)
 - [ ] ANOVA
 - [ ] Kolmogorov-Smirnov test
 - [ ] Kernel density estimation

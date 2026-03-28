@@ -1,4 +1,4 @@
-//! Hypothesis testing: t-tests and chi-squared test.
+//! Hypothesis testing and confidence intervals.
 
 use crate::descriptive;
 use crate::error::PramanaError;
@@ -210,6 +210,282 @@ fn normal_upper_tail(z: f64) -> f64 {
     0.5 * erfc(z / std::f64::consts::SQRT_2)
 }
 
+// ---------------------------------------------------------------------------
+// Confidence intervals
+// ---------------------------------------------------------------------------
+
+/// A confidence interval with lower bound, upper bound, and confidence level.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfidenceInterval {
+    /// Lower bound of the interval.
+    pub lower: f64,
+    /// Upper bound of the interval.
+    pub upper: f64,
+    /// Point estimate (e.g. sample mean).
+    pub estimate: f64,
+    /// Confidence level (e.g. 0.95 for a 95% CI).
+    pub confidence_level: f64,
+}
+
+/// Computes a confidence interval for the population mean (one-sample t-interval).
+///
+/// Uses the Student-t distribution with `n - 1` degrees of freedom.
+///
+/// # Errors
+///
+/// Returns `InvalidSample` if `data` has fewer than 2 elements or zero variance.
+/// Returns `InvalidParameter` if `confidence_level` is not in `(0, 1)`.
+#[must_use = "returns the confidence interval"]
+pub fn ci_mean(data: &[f64], confidence_level: f64) -> Result<ConfidenceInterval, PramanaError> {
+    if confidence_level <= 0.0 || confidence_level >= 1.0 {
+        return Err(PramanaError::InvalidParameter(
+            "confidence_level must be in (0, 1)".into(),
+        ));
+    }
+    if data.len() < 2 {
+        return Err(PramanaError::InvalidSample(
+            "need at least 2 observations".into(),
+        ));
+    }
+    let n = data.len() as f64;
+    let m = descriptive::mean(data)?;
+    let sample_var = data.iter().map(|&x| (x - m) * (x - m)).sum::<f64>() / (n - 1.0);
+    if sample_var == 0.0 {
+        return Err(PramanaError::InvalidSample(
+            "zero variance in sample".into(),
+        ));
+    }
+    let se = (sample_var / n).sqrt();
+    let df = n - 1.0;
+    let alpha = 1.0 - confidence_level;
+    let t_crit = t_quantile(1.0 - alpha / 2.0, df);
+    let margin = t_crit * se;
+
+    Ok(ConfidenceInterval {
+        lower: m - margin,
+        upper: m + margin,
+        estimate: m,
+        confidence_level,
+    })
+}
+
+/// Computes a confidence interval for the difference of two population means
+/// (Welch's t-interval, unequal variances).
+///
+/// # Errors
+///
+/// Returns `InvalidSample` if either sample has fewer than 2 elements or zero variance.
+/// Returns `InvalidParameter` if `confidence_level` is not in `(0, 1)`.
+#[must_use = "returns the confidence interval"]
+pub fn ci_two_means(
+    a: &[f64],
+    b: &[f64],
+    confidence_level: f64,
+) -> Result<ConfidenceInterval, PramanaError> {
+    if confidence_level <= 0.0 || confidence_level >= 1.0 {
+        return Err(PramanaError::InvalidParameter(
+            "confidence_level must be in (0, 1)".into(),
+        ));
+    }
+    if a.len() < 2 || b.len() < 2 {
+        return Err(PramanaError::InvalidSample(
+            "need at least 2 observations in each sample".into(),
+        ));
+    }
+    let n1 = a.len() as f64;
+    let n2 = b.len() as f64;
+    let m1 = descriptive::mean(a)?;
+    let m2 = descriptive::mean(b)?;
+    let var1 = a.iter().map(|&x| (x - m1) * (x - m1)).sum::<f64>() / (n1 - 1.0);
+    let var2 = b.iter().map(|&x| (x - m2) * (x - m2)).sum::<f64>() / (n2 - 1.0);
+
+    if var1 == 0.0 && var2 == 0.0 {
+        return Err(PramanaError::InvalidSample(
+            "zero variance in both samples".into(),
+        ));
+    }
+
+    let se = (var1 / n1 + var2 / n2).sqrt();
+
+    // Welch-Satterthwaite degrees of freedom
+    let num = (var1 / n1 + var2 / n2).powi(2);
+    let denom = (var1 / n1).powi(2) / (n1 - 1.0) + (var2 / n2).powi(2) / (n2 - 1.0);
+    let df = if denom == 0.0 { 1.0 } else { num / denom };
+
+    let alpha = 1.0 - confidence_level;
+    let t_crit = t_quantile(1.0 - alpha / 2.0, df);
+    let diff = m1 - m2;
+    let margin = t_crit * se;
+
+    Ok(ConfidenceInterval {
+        lower: diff - margin,
+        upper: diff + margin,
+        estimate: diff,
+        confidence_level,
+    })
+}
+
+/// Computes a confidence interval for a population proportion using the
+/// Wald (normal approximation) method.
+///
+/// `successes` is the number of successes and `n` is the total number of trials.
+///
+/// # Errors
+///
+/// Returns `InvalidParameter` if `confidence_level` is not in `(0, 1)`.
+/// Returns `InvalidSample` if `n` is 0 or `successes > n`.
+#[must_use = "returns the confidence interval"]
+pub fn ci_proportion(
+    successes: u64,
+    n: u64,
+    confidence_level: f64,
+) -> Result<ConfidenceInterval, PramanaError> {
+    if confidence_level <= 0.0 || confidence_level >= 1.0 {
+        return Err(PramanaError::InvalidParameter(
+            "confidence_level must be in (0, 1)".into(),
+        ));
+    }
+    if n == 0 {
+        return Err(PramanaError::InvalidSample("n must be positive".into()));
+    }
+    if successes > n {
+        return Err(PramanaError::InvalidSample(
+            "successes must not exceed n".into(),
+        ));
+    }
+
+    let p_hat = successes as f64 / n as f64;
+    let alpha = 1.0 - confidence_level;
+    let z = z_quantile(1.0 - alpha / 2.0);
+    let se = (p_hat * (1.0 - p_hat) / n as f64).sqrt();
+    let margin = z * se;
+
+    Ok(ConfidenceInterval {
+        lower: (p_hat - margin).max(0.0),
+        upper: (p_hat + margin).min(1.0),
+        estimate: p_hat,
+        confidence_level,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Quantile functions (inverse CDF)
+// ---------------------------------------------------------------------------
+
+/// Inverse CDF of the Student-t distribution at probability `p` with `df` degrees of freedom.
+///
+/// Uses bisection on the CDF computed via the regularized incomplete beta function.
+fn t_quantile(p: f64, df: f64) -> f64 {
+    if p <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if p >= 1.0 {
+        return f64::INFINITY;
+    }
+    if (p - 0.5).abs() < 1e-15 {
+        return 0.0;
+    }
+
+    // CDF of Student-t at x
+    let t_cdf = |x: f64| -> f64 {
+        let ibeta = regularized_incomplete_beta(df / (df + x * x), df / 2.0, 0.5);
+        if x >= 0.0 {
+            1.0 - 0.5 * ibeta
+        } else {
+            0.5 * ibeta
+        }
+    };
+
+    // Bisection search
+    let mut lo = -100.0;
+    let mut hi = 100.0;
+
+    // Expand bounds if needed
+    while t_cdf(lo) > p {
+        lo *= 2.0;
+    }
+    while t_cdf(hi) < p {
+        hi *= 2.0;
+    }
+
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if (hi - lo) < 1e-12 {
+            return mid;
+        }
+        if t_cdf(mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Inverse CDF of the standard normal distribution at probability `p`.
+///
+/// Uses the rational approximation by Peter Acklam.
+fn z_quantile(p: f64) -> f64 {
+    if p <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if p >= 1.0 {
+        return f64::INFINITY;
+    }
+
+    // Rational approximation coefficients (Acklam)
+    const A: [f64; 6] = [
+        -3.969_683_028_665_376e1,
+        2.209_460_984_245_205e2,
+        -2.759_285_104_469_687e2,
+        1.383_577_518_672_69e2,
+        -3.066_479_806_614_716e1,
+        2.506_628_277_459_239e0,
+    ];
+    const B: [f64; 5] = [
+        -5.447_609_879_822_406e1,
+        1.615_858_368_580_409e2,
+        -1.556_989_798_598_866e2,
+        6.680_131_188_771_972e1,
+        -1.328_068_155_288_572e1,
+    ];
+    const C: [f64; 6] = [
+        -7.784_894_002_430_293e-3,
+        -3.223_964_580_411_365e-1,
+        -2.400_758_277_161_838e0,
+        -2.549_732_539_343_734e0,
+        4.374_664_141_464_968e0,
+        2.938_163_982_698_783e0,
+    ];
+    const D: [f64; 4] = [
+        7.784_695_709_041_462e-3,
+        3.224_671_290_700_398e-1,
+        2.445_134_137_142_996e0,
+        3.754_408_661_907_416e0,
+    ];
+
+    const P_LOW: f64 = 0.02425;
+    const P_HIGH: f64 = 1.0 - P_LOW;
+
+    if p < P_LOW {
+        // Lower tail
+        let q = (-2.0 * p.ln()).sqrt();
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    } else if p <= P_HIGH {
+        // Central region
+        let q = p - 0.5;
+        let r = q * q;
+        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+    } else {
+        // Upper tail
+        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +554,129 @@ mod tests {
         let r2: TestResult = serde_json::from_str(&json).unwrap();
         assert_eq!(r.test_name, r2.test_name);
         assert_eq!(r.statistic, r2.statistic);
+    }
+
+    // --- Confidence intervals ---
+
+    #[test]
+    fn ci_mean_contains_true_mean() {
+        // Data from N(5, 1) — true mean = 5
+        let data = [4.5, 5.2, 4.8, 5.1, 5.3, 4.9, 5.0, 5.2, 4.7, 5.1];
+        let ci = ci_mean(&data, 0.95).unwrap();
+        assert!(
+            ci.lower < 5.0 && ci.upper > 5.0,
+            "95% CI should contain 5.0: [{}, {}]",
+            ci.lower,
+            ci.upper
+        );
+        assert!((ci.confidence_level - 0.95).abs() < 1e-10);
+        assert!(ci.lower < ci.estimate);
+        assert!(ci.estimate < ci.upper);
+    }
+
+    #[test]
+    fn ci_mean_wider_at_higher_confidence() {
+        let data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let ci90 = ci_mean(&data, 0.90).unwrap();
+        let ci99 = ci_mean(&data, 0.99).unwrap();
+        let width90 = ci90.upper - ci90.lower;
+        let width99 = ci99.upper - ci99.lower;
+        assert!(width99 > width90, "99% CI should be wider than 90% CI");
+    }
+
+    #[test]
+    fn ci_two_means_overlapping() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = [1.5, 2.5, 3.5, 4.5, 5.5];
+        let ci = ci_two_means(&a, &b, 0.95).unwrap();
+        // True difference is -0.5; CI should contain it
+        assert!(
+            ci.lower < -0.5 && ci.upper > -0.5,
+            "CI should contain -0.5: [{}, {}]",
+            ci.lower,
+            ci.upper
+        );
+    }
+
+    #[test]
+    fn ci_two_means_disjoint() {
+        let a = [100.0, 101.0, 99.0, 100.5, 100.2];
+        let b = [1.0, 2.0, 1.5, 1.8, 2.2];
+        let ci = ci_two_means(&a, &b, 0.95).unwrap();
+        // Clearly different: CI should not contain 0
+        assert!(ci.lower > 0.0, "CI lower should be > 0: {}", ci.lower);
+    }
+
+    #[test]
+    fn ci_proportion_fair_coin() {
+        // 50 heads out of 100 flips — should contain 0.5
+        let ci = ci_proportion(50, 100, 0.95).unwrap();
+        assert!(
+            ci.lower < 0.5 && ci.upper > 0.5,
+            "CI should contain 0.5: [{}, {}]",
+            ci.lower,
+            ci.upper
+        );
+        assert!((ci.estimate - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn ci_proportion_bounds() {
+        // Edge: 0 successes
+        let ci = ci_proportion(0, 100, 0.95).unwrap();
+        assert!(ci.lower >= 0.0);
+        assert!((ci.estimate).abs() < 1e-10);
+        // Edge: all successes
+        let ci = ci_proportion(100, 100, 0.95).unwrap();
+        assert!(ci.upper <= 1.0);
+        assert!((ci.estimate - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn ci_invalid_params() {
+        let data = [1.0, 2.0, 3.0];
+        assert!(ci_mean(&data, 0.0).is_err());
+        assert!(ci_mean(&data, 1.0).is_err());
+        assert!(ci_mean(&[1.0], 0.95).is_err());
+        assert!(ci_proportion(5, 0, 0.95).is_err());
+        assert!(ci_proportion(10, 5, 0.95).is_err());
+    }
+
+    #[test]
+    fn ci_serde_roundtrip() {
+        let ci = ConfidenceInterval {
+            lower: 1.5,
+            upper: 3.5,
+            estimate: 2.5,
+            confidence_level: 0.95,
+        };
+        let json = serde_json::to_string(&ci).unwrap();
+        let ci2: ConfidenceInterval = serde_json::from_str(&json).unwrap();
+        assert_eq!(ci.lower, ci2.lower);
+        assert_eq!(ci.upper, ci2.upper);
+        assert_eq!(ci.confidence_level, ci2.confidence_level);
+    }
+
+    #[test]
+    fn z_quantile_known_values() {
+        // z_0.975 ≈ 1.96 for a two-tailed 95% CI
+        let z = z_quantile(0.975);
+        assert!((z - 1.96).abs() < 0.01, "z_0.975 = {z}");
+        // z_0.5 = 0
+        assert!(z_quantile(0.5).abs() < 1e-6);
+        // Symmetry
+        assert!((z_quantile(0.025) + z_quantile(0.975)).abs() < 0.01);
+    }
+
+    #[test]
+    fn t_quantile_known_values() {
+        // For large df, t approaches z
+        let t = t_quantile(0.975, 1000.0);
+        assert!((t - 1.96).abs() < 0.02, "t_0.975(1000) = {t}");
+        // t_0.5 = 0 for any df
+        assert!(t_quantile(0.5, 5.0).abs() < 1e-6);
+        // t_0.975(1) ≈ 12.706 (Cauchy)
+        let t1 = t_quantile(0.975, 1.0);
+        assert!((t1 - 12.706).abs() < 0.1, "t_0.975(1) = {t1}");
     }
 }
