@@ -1,35 +1,64 @@
 # Architecture Overview
 
+Version: 1.0.0
+
 ## Module Map
 
 ```
 pramana/
   src/
-    lib.rs            -- crate root, re-exports
+    lib.rs            -- crate root, public re-exports
     error.rs          -- PramanaError (thiserror)
     rng.rs            -- Rng trait + SimpleRng (xorshift64)
-    distribution.rs   -- Distribution trait + Normal, Uniform, Exponential, Poisson, Binomial, Bernoulli
-    descriptive.rs    -- Descriptive statistics (mean, median, mode, variance, percentiles, etc.)
-    hypothesis.rs     -- Hypothesis testing (t-tests, chi-squared)
-    regression.rs     -- Linear regression
-    bayesian.rs       -- Bayesian inference + naive Bayes
+    math.rs           -- pub(crate) special functions (erf, ln_gamma, incomplete beta/gamma)
+    distribution.rs   -- Distribution trait + Normal, Uniform, Exponential, Poisson, Binomial, Bernoulli, etc.
+    descriptive.rs    -- Descriptive statistics (mean, median, mode, variance, percentiles, skewness, kurtosis)
+    hypothesis.rs     -- Hypothesis testing (t-tests, chi-squared, p-values)
+    regression.rs     -- Linear (OLS) and logistic (IRLS) regression
+    bayesian.rs       -- Bayesian inference, conjugate priors, naive Bayes classifier
     combinatorics.rs  -- Factorial, permutations, combinations
     monte_carlo.rs    -- Monte Carlo integration + pi estimation
-    markov.rs         -- Markov chains
-    timeseries.rs     -- Moving average, exponential smoothing, autocorrelation
+    markov.rs         -- Markov chains, HMM (forward/backward, Baum-Welch, Viterbi)
+    timeseries.rs     -- Moving average, EMA, autocorrelation, ARIMA
+    ai.rs             -- Hoosh integration (feature-gated behind `ai`)
 ```
 
 ## Dependencies
 
-- **hisab** -- mathematical primitives (constants, numerical utilities)
-- **serde** -- serialization for all public types
-- **thiserror** -- error types
-- **tracing** -- structured logging
+| Crate     | Role                                | Required |
+|-----------|-------------------------------------|----------|
+| hisab     | Linear algebra (Cholesky, eigen, matrix ops) via `num` feature | Yes |
+| serde     | Serialization for all public types  | Yes      |
+| thiserror | `PramanaError` derive               | Yes      |
+| tracing   | Structured logging                  | Yes      |
+| hoosh     | AI/LLM client                       | No (`ai` feature) |
+| tokio     | Async runtime for hoosh             | No (`ai` feature) |
 
 ## Data Flow
 
-All functions operate on `f64` data. No I/O, no async, no allocations beyond return values.
+```
+caller data (&[f64], params)
+  |
+  v
+pramana public API (distribution, hypothesis, regression, ...)
+  |
+  +---> math.rs (special functions, pub(crate))
+  +---> hisab (matrix solve, decomposition)
+  |
+  v
+Result<T, PramanaError>
+```
+
+All core functions operate on `f64` data. No I/O, no async, and no heap
+allocations beyond return values in the default configuration. The `ai` module
+is the sole exception -- it performs async network calls via hoosh.
 
 ## Consumers
 
-Any AGNOS component needing statistical analysis: daimon (anomaly detection), aegis (security metrics), hoosh (model performance tracking), phylax (threat scoring), and consumer apps.
+AGNOS components needing statistical analysis:
+
+- **daimon** -- anomaly detection, scoring distributions
+- **aegis** -- security metrics, hypothesis testing
+- **hoosh** -- model performance tracking, evaluation statistics
+- **phylax** -- threat scoring, Bayesian classification
+- Consumer applications using AGNOS as a framework
