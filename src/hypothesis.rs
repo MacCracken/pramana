@@ -333,6 +333,158 @@ fn f_distribution_upper_tail(x: f64, d1: f64, d2: f64) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Kolmogorov-Smirnov test
+// ---------------------------------------------------------------------------
+
+/// Result of a Kolmogorov-Smirnov test.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KsResult {
+    /// The KS statistic D: maximum absolute difference between the CDFs.
+    pub statistic: f64,
+    /// Approximate p-value.
+    pub p_value: f64,
+    /// Significance level used.
+    pub reject_at_alpha: f64,
+    /// Whether the null hypothesis (distributions are equal) is rejected.
+    pub reject: bool,
+}
+
+/// Two-sample Kolmogorov-Smirnov test.
+///
+/// Tests whether two samples come from the same continuous distribution by
+/// comparing their empirical CDFs.
+///
+/// # Errors
+///
+/// Returns `InvalidSample` if either sample is empty.
+/// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
+#[must_use = "returns the KS test result"]
+pub fn ks_two_sample(a: &[f64], b: &[f64], alpha: f64) -> Result<KsResult, PramanaError> {
+    validate_alpha(alpha)?;
+    if a.is_empty() || b.is_empty() {
+        return Err(PramanaError::InvalidSample(
+            "both samples must be non-empty".into(),
+        ));
+    }
+
+    let mut sa = a.to_vec();
+    let mut sb = b.to_vec();
+    sa.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    sb.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+
+    let na = sa.len() as f64;
+    let nb = sb.len() as f64;
+    let mut d_max: f64 = 0.0;
+    let mut ia = 0;
+    let mut ib = 0;
+
+    while ia < sa.len() && ib < sb.len() {
+        let cdf_a = (ia + 1) as f64 / na;
+        let cdf_b = (ib + 1) as f64 / nb;
+        if sa[ia] <= sb[ib] {
+            d_max = d_max.max((cdf_a - ib as f64 / nb).abs());
+            ia += 1;
+        } else {
+            d_max = d_max.max((ia as f64 / na - cdf_b).abs());
+            ib += 1;
+        }
+    }
+    // Remaining elements
+    while ia < sa.len() {
+        let cdf_a = (ia + 1) as f64 / na;
+        d_max = d_max.max((cdf_a - 1.0).abs());
+        ia += 1;
+    }
+    while ib < sb.len() {
+        let cdf_b = (ib + 1) as f64 / nb;
+        d_max = d_max.max((1.0 - cdf_b).abs());
+        ib += 1;
+    }
+
+    let n_eff = (na * nb) / (na + nb);
+    let p_value = ks_pvalue(d_max, n_eff);
+
+    Ok(KsResult {
+        statistic: d_max,
+        p_value,
+        reject_at_alpha: alpha,
+        reject: p_value < alpha,
+    })
+}
+
+/// One-sample Kolmogorov-Smirnov test.
+///
+/// Tests whether a sample comes from the distribution described by the
+/// given CDF function.
+///
+/// # Errors
+///
+/// Returns `InvalidSample` if the sample is empty.
+/// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
+#[must_use = "returns the KS test result"]
+pub fn ks_one_sample(
+    data: &[f64],
+    cdf: impl Fn(f64) -> f64,
+    alpha: f64,
+) -> Result<KsResult, PramanaError> {
+    validate_alpha(alpha)?;
+    if data.is_empty() {
+        return Err(PramanaError::InvalidSample(
+            "sample must be non-empty".into(),
+        ));
+    }
+
+    let mut sorted = data.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let n = sorted.len() as f64;
+    let mut d_max: f64 = 0.0;
+
+    for (i, &x) in sorted.iter().enumerate() {
+        let ecdf_before = i as f64 / n;
+        let ecdf_after = (i + 1) as f64 / n;
+        let theoretical = cdf(x);
+        d_max = d_max.max((ecdf_after - theoretical).abs());
+        d_max = d_max.max((theoretical - ecdf_before).abs());
+    }
+
+    let p_value = ks_pvalue(d_max, n);
+
+    Ok(KsResult {
+        statistic: d_max,
+        p_value,
+        reject_at_alpha: alpha,
+        reject: p_value < alpha,
+    })
+}
+
+/// Approximate p-value for the KS statistic using the Kolmogorov distribution.
+///
+/// P(D > d) ≈ 2 * Σ_{k=1}^{∞} (-1)^{k+1} exp(-2k²λ²) where λ = (√n + 0.12 + 0.11/√n) * d.
+fn ks_pvalue(d: f64, n_eff: f64) -> f64 {
+    if d <= 0.0 {
+        return 1.0;
+    }
+    let sqrt_n = n_eff.sqrt();
+    let lambda = (sqrt_n + 0.12 + 0.11 / sqrt_n) * d;
+    let lambda_sq = lambda * lambda;
+
+    let mut sum = 0.0;
+    for k in 1..=100 {
+        let term = (-2.0 * (k as f64) * (k as f64) * lambda_sq).exp();
+        if k % 2 == 1 {
+            sum += term;
+        } else {
+            sum -= term;
+        }
+        if term < 1e-15 {
+            break;
+        }
+    }
+    (2.0 * sum).clamp(0.0, 1.0)
+}
+
+// ---------------------------------------------------------------------------
 // Confidence intervals
 // ---------------------------------------------------------------------------
 
@@ -753,6 +905,99 @@ mod tests {
         assert_eq!(result.f_statistic, r2.f_statistic);
         assert_eq!(result.df_between, r2.df_between);
         assert_eq!(result.df_within, r2.df_within);
+    }
+
+    // --- Kolmogorov-Smirnov ---
+
+    #[test]
+    fn ks_two_sample_same_distribution() {
+        // Same data should not reject
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let b = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5];
+        let result = ks_two_sample(&a, &b, 0.05).unwrap();
+        assert!(
+            !result.reject,
+            "similar distributions should not reject: D={}, p={}",
+            result.statistic, result.p_value
+        );
+    }
+
+    #[test]
+    fn ks_two_sample_different() {
+        // Clearly different distributions
+        let a = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9];
+        let b = [
+            100.0, 100.1, 100.2, 100.3, 100.4, 100.5, 100.6, 100.7, 100.8, 100.9,
+        ];
+        let result = ks_two_sample(&a, &b, 0.05).unwrap();
+        assert!(result.reject, "different distributions should reject");
+        assert!((result.statistic - 1.0).abs() < 1e-10, "D should be 1.0");
+    }
+
+    #[test]
+    fn ks_one_sample_uniform() {
+        // Data from U(0,1) tested against U(0,1) CDF — should not reject
+        let data: Vec<f64> = (1..=20).map(|i| i as f64 / 21.0).collect();
+        let result = ks_one_sample(&data, |x| x.clamp(0.0, 1.0), 0.05).unwrap();
+        assert!(
+            !result.reject,
+            "uniform data vs uniform CDF: D={}, p={}",
+            result.statistic, result.p_value
+        );
+    }
+
+    #[test]
+    fn ks_one_sample_wrong_distribution() {
+        // Data clustered near 0, tested against uniform — should reject
+        let data = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1];
+        let result = ks_one_sample(&data, |x| x.clamp(0.0, 1.0), 0.05).unwrap();
+        assert!(
+            result.reject,
+            "mismatched distribution should reject: D={}, p={}",
+            result.statistic, result.p_value
+        );
+    }
+
+    #[test]
+    fn ks_statistic_range() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [4.0, 5.0, 6.0];
+        let result = ks_two_sample(&a, &b, 0.05).unwrap();
+        assert!(
+            (0.0..=1.0).contains(&result.statistic),
+            "D should be in [0,1]: {}",
+            result.statistic
+        );
+        assert!(
+            (0.0..=1.0).contains(&result.p_value),
+            "p should be in [0,1]: {}",
+            result.p_value
+        );
+    }
+
+    #[test]
+    fn ks_invalid_params() {
+        let a = [1.0, 2.0];
+        let empty: &[f64] = &[];
+        assert!(ks_two_sample(&a, empty, 0.05).is_err());
+        assert!(ks_two_sample(empty, &a, 0.05).is_err());
+        assert!(ks_one_sample(empty, |x| x, 0.05).is_err());
+        assert!(ks_two_sample(&a, &a, 0.0).is_err());
+    }
+
+    #[test]
+    fn ks_serde_roundtrip() {
+        let result = KsResult {
+            statistic: 0.3,
+            p_value: 0.1,
+            reject_at_alpha: 0.05,
+            reject: false,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let r2: KsResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(result.statistic, r2.statistic);
+        assert_eq!(result.p_value, r2.p_value);
+        assert_eq!(result.reject, r2.reject);
     }
 
     // --- Confidence intervals ---

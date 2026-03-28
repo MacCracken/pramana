@@ -30,7 +30,7 @@
 - [x] Logistic regression (IRLS with L2 regularization, sigmoid, proba/class prediction)
 - [x] Confidence intervals (mean, two-means, proportion; t-quantile via bisection, z-quantile via Acklam)
 - [x] One-way ANOVA (F-test with full SS decomposition)
-- [ ] Kolmogorov-Smirnov test
+- [x] Kolmogorov-Smirnov test (one-sample and two-sample, Kolmogorov distribution p-value)
 - [ ] Kernel density estimation
 - [ ] MCMC (Metropolis-Hastings, Gibbs sampling)
 - [ ] Hidden Markov Models
