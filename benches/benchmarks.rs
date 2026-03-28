@@ -4,7 +4,10 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use pramana::bayesian;
 use pramana::combinatorics;
 use pramana::descriptive;
-use pramana::distribution::{Distribution, Normal, Poisson};
+use pramana::distribution::{
+    Beta, Cauchy, ChiSquared, Distribution, FDistribution, Gamma, Normal, Poisson, StudentT,
+    Weibull,
+};
 use pramana::hypothesis;
 use pramana::markov::MarkovChain;
 use pramana::monte_carlo::{self, SimpleRng};
@@ -126,6 +129,89 @@ fn bench_poisson_large_lambda_sample(c: &mut Criterion) {
     });
 }
 
+fn bench_gamma_sample_1000(c: &mut Criterion) {
+    let g = Gamma::new(5.0, 2.0).unwrap();
+    c.bench_function("distribution/gamma_sample_1000", |b| {
+        b.iter(|| {
+            let mut rng = SimpleRng::new(42);
+            for _ in 0..1000 {
+                black_box(g.sample(&mut rng));
+            }
+        });
+    });
+}
+
+fn bench_beta_sample_1000(c: &mut Criterion) {
+    let beta = Beta::new(2.0, 5.0).unwrap();
+    c.bench_function("distribution/beta_sample_1000", |b| {
+        b.iter(|| {
+            let mut rng = SimpleRng::new(42);
+            for _ in 0..1000 {
+                black_box(beta.sample(&mut rng));
+            }
+        });
+    });
+}
+
+fn bench_chi_squared_cdf_1000(c: &mut Criterion) {
+    let chi = ChiSquared::new(10.0).unwrap();
+    c.bench_function("distribution/chi_squared_cdf_1000", |b| {
+        b.iter(|| {
+            for i in 0..1000 {
+                black_box(chi.cdf(i as f64 * 0.05));
+            }
+        });
+    });
+}
+
+fn bench_student_t_pdf_1000(c: &mut Criterion) {
+    let t = StudentT::new(5.0).unwrap();
+    c.bench_function("distribution/student_t_pdf_1000", |b| {
+        b.iter(|| {
+            for i in 0..1000 {
+                let x = (i as f64 - 500.0) / 100.0;
+                black_box(t.pdf(x));
+            }
+        });
+    });
+}
+
+fn bench_f_distribution_sample_1000(c: &mut Criterion) {
+    let f = FDistribution::new(5.0, 10.0).unwrap();
+    c.bench_function("distribution/f_sample_1000", |b| {
+        b.iter(|| {
+            let mut rng = SimpleRng::new(42);
+            for _ in 0..1000 {
+                black_box(f.sample(&mut rng));
+            }
+        });
+    });
+}
+
+fn bench_cauchy_sample_1000(c: &mut Criterion) {
+    let cauchy = Cauchy::new(0.0, 1.0).unwrap();
+    c.bench_function("distribution/cauchy_sample_1000", |b| {
+        b.iter(|| {
+            let mut rng = SimpleRng::new(42);
+            for _ in 0..1000 {
+                black_box(cauchy.sample(&mut rng));
+            }
+        });
+    });
+}
+
+fn bench_weibull_sample_1000(c: &mut Criterion) {
+    let w = Weibull::new(2.0, 3.0).unwrap();
+    c.bench_function("distribution/weibull_sample_1000", |b| {
+        b.iter(|| {
+            let mut rng = SimpleRng::new(42);
+            for _ in 0..1000 {
+                black_box(w.sample(&mut rng));
+            }
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_normal_pdf_1000,
@@ -138,5 +224,12 @@ criterion_group!(
     bench_combinatorics,
     bench_timeseries_moving_average_10000,
     bench_poisson_large_lambda_sample,
+    bench_gamma_sample_1000,
+    bench_beta_sample_1000,
+    bench_chi_squared_cdf_1000,
+    bench_student_t_pdf_1000,
+    bench_f_distribution_sample_1000,
+    bench_cauchy_sample_1000,
+    bench_weibull_sample_1000,
 );
 criterion_main!(benches);

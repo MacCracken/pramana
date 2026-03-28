@@ -11,7 +11,7 @@
 
 | Module | Description |
 |--------|-------------|
-| `distribution` | Probability distributions (Normal, Uniform, Exponential, Poisson, Binomial, Bernoulli) |
+| `distribution` | Probability distributions (Normal, Uniform, Exponential, Poisson, Binomial, Bernoulli, Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull) |
 | `descriptive` | Descriptive statistics (mean, median, mode, variance, skewness, kurtosis, percentiles) |
 | `hypothesis` | Hypothesis testing (t-tests, chi-squared) |
 | `regression` | Linear regression with R-squared |

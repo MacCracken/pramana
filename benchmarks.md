@@ -1,61 +1,70 @@
 # Benchmarks
 
-Latest: **2026-03-28T20:00:26Z** -- commit `2945814`
+Latest: **2026-03-28T20:19:29Z** -- commit `12efc3f`
+
+Tracking: `2945814` (baseline) -> `12efc3f` (optimized) -> `12efc3f` (current)
 
 ## distribution
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `normal_pdf_1000` | 6729.0 ns |
-| `poisson_sample_lambda100` | 25653.0 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `normal_pdf_1000` | 6729.0 ns | 6657.4 ns | 6972.6 ns +4% |
+| `poisson_sample_lambda100` | 25653.0 ns | 18267.0 ns **-29%** | 18790.0 ns **-27%** |
+| `gamma_sample_1000` | --- | 23408.0 ns | 23044.0 ns |
+| `beta_sample_1000` | --- | 49932.0 ns | 47376.0 ns |
+| `chi_squared_cdf_1000` | --- | 52265.0 ns | 53558.0 ns |
+| `student_t_pdf_1000` | --- | 39361.0 ns | 39792.0 ns |
+| `f_sample_1000` | --- | 54347.0 ns | 52585.0 ns |
+| `cauchy_sample_1000` | --- | 11536.0 ns | 11962.0 ns |
+| `weibull_sample_1000` | --- | 21067.0 ns | 26752.0 ns |
 
 ## descriptive
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `stats_10000` | 39025.0 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `stats_10000` | 39025.0 ns | 38502.0 ns | 38851.0 ns |
 
 ## monte_carlo
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `pi_100000` | 386090.0 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `pi_100000` | 386090.0 ns | 353250.0 ns **-9%** | 448270.0 ns +16% |
 
 ## markov
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `step_1000` | 2328.7 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `step_1000` | 2328.7 ns | 2099.8 ns **-10%** | 2408.0 ns +3% |
 
 ## hypothesis
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `t_test_one_sample_1000` | 1850.7 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `t_test_one_sample_1000` | 1850.7 ns | 1708.1 ns **-8%** | 1744.4 ns **-6%** |
 
 ## regression
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `linear_1000` | 4636.3 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `linear_1000` | 4636.3 ns | 4546.0 ns | 4662.8 ns |
 
 ## bayesian
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `naive_bayes_4class_10feat` | 214.4 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `naive_bayes_4class_10feat` | 214.4 ns | 196.3 ns **-8%** | 203.9 ns **-5%** |
 
 ## combinatorics
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `combinations_30_15` | 57.39 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `combinations_30_15` | 57.39 ns | 50.48 ns **-12%** | 51.25 ns **-11%** |
 
 ## timeseries
 
-| Benchmark | Current (`2945814`) |
-|-----------|------|
-| `moving_average_10000_w50` | 35449.0 ns |
+| Benchmark | Baseline (`2945814`) | Mid (`12efc3f`) | Current (`12efc3f`) |
+|-----------|------|------|------|
+| `moving_average_10000_w50` | 35449.0 ns | 30813.0 ns **-13%** | 30928.0 ns **-13%** |
 
 ---
 

@@ -2,9 +2,8 @@
 
 use crate::descriptive;
 use crate::error::PramanaError;
-use crate::math::erfc;
+use crate::math::{erfc, regularized_incomplete_beta};
 use serde::{Deserialize, Serialize};
-use std::f64::consts::PI;
 
 /// Result of a statistical hypothesis test.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,123 +208,6 @@ fn chi_squared_pvalue(chi2: f64, df: f64) -> f64 {
 /// P(Z > z) for standard normal Z.
 fn normal_upper_tail(z: f64) -> f64 {
     0.5 * erfc(z / std::f64::consts::SQRT_2)
-}
-
-/// Regularized incomplete beta function approximation using a continued fraction.
-///
-/// I_x(a, b) = B_x(a, b) / B(a, b)
-///
-/// This uses the Lentz continued fraction method.
-fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-
-    // Use the symmetry relation if x > (a+1)/(a+b+2) for better convergence
-    if x > (a + 1.0) / (a + b + 2.0) {
-        return 1.0 - regularized_incomplete_beta(1.0 - x, b, a);
-    }
-
-    let ln_prefix = a * x.ln() + b * (1.0 - x).ln() - ln_beta(a, b) - a.ln();
-    let prefix = ln_prefix.exp();
-
-    // Lentz continued fraction for I_x(a, b)
-    let max_iter = 200;
-    let eps = 1e-14;
-    let tiny = 1e-30;
-
-    let mut c = 1.0;
-    let mut d = 1.0 - (a + b) * x / (a + 1.0);
-    if d.abs() < tiny {
-        d = tiny;
-    }
-    d = 1.0 / d;
-    let mut h = d;
-
-    for m in 1..=max_iter {
-        let m_f64 = m as f64;
-
-        // Even step
-        let numerator_even =
-            m_f64 * (b - m_f64) * x / ((a + 2.0 * m_f64 - 1.0) * (a + 2.0 * m_f64));
-
-        d = 1.0 + numerator_even * d;
-        if d.abs() < tiny {
-            d = tiny;
-        }
-        c = 1.0 + numerator_even / c;
-        if c.abs() < tiny {
-            c = tiny;
-        }
-        d = 1.0 / d;
-        h *= d * c;
-
-        // Odd step
-        let numerator_odd =
-            -((a + m_f64) * (a + b + m_f64) * x) / ((a + 2.0 * m_f64) * (a + 2.0 * m_f64 + 1.0));
-
-        d = 1.0 + numerator_odd * d;
-        if d.abs() < tiny {
-            d = tiny;
-        }
-        c = 1.0 + numerator_odd / c;
-        if c.abs() < tiny {
-            c = tiny;
-        }
-        d = 1.0 / d;
-        let delta = d * c;
-        h *= delta;
-
-        if (delta - 1.0).abs() < eps {
-            break;
-        }
-    }
-
-    (prefix * h).clamp(0.0, 1.0)
-}
-
-/// Natural log of the beta function B(a, b) = Gamma(a)*Gamma(b)/Gamma(a+b).
-fn ln_beta(a: f64, b: f64) -> f64 {
-    ln_gamma(a) + ln_gamma(b) - ln_gamma(a + b)
-}
-
-/// Stirling's approximation to ln(Gamma(x)) for x > 0.
-/// Uses the Lanczos approximation for better accuracy.
-fn ln_gamma(x: f64) -> f64 {
-    // Lanczos approximation with g=7, n=9
-    const COEFFICIENTS: [f64; 9] = [
-        0.999_999_999_999_809_9,
-        676.520_368_121_885_1,
-        -1_259.139_216_722_402_8,
-        771.323_428_777_653_1,
-        -176.615_029_162_140_6,
-        12.507_343_278_686_905,
-        -0.138_571_095_265_720_12,
-        9.984_369_578_019_572e-6,
-        1.505_632_735_149_311_6e-7,
-    ];
-    const G: f64 = 7.0;
-
-    if x < 0.5 {
-        // Reflection formula
-        let sin_val = (PI * x).sin();
-        if sin_val.abs() < 1e-300 {
-            return f64::INFINITY;
-        }
-        return PI.ln() - sin_val.abs().ln() - ln_gamma(1.0 - x);
-    }
-
-    let x = x - 1.0;
-    let mut sum = COEFFICIENTS[0];
-    for (i, &coeff) in COEFFICIENTS.iter().enumerate().skip(1) {
-        sum += coeff / (x + i as f64);
-    }
-
-    let t = x + G + 0.5;
-    0.5 * (2.0 * PI).ln() + (t.ln() * (x + 0.5)) - t + sum.ln()
 }
 
 #[cfg(test)]

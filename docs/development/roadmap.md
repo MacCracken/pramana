@@ -18,9 +18,15 @@
 - [x] Criterion benchmarks
 - [x] Integration tests
 
-## Backlog
+## In Progress
 
-- [ ] Additional distributions: Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull
+### v0.2.0
+- [x] Additional distributions: Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull
+- [x] Shared math foundation (ln_gamma, incomplete beta/gamma functions)
+- [x] Configurable alpha for hypothesis tests
+- [x] Scaffold hardening (struct invariants, dedup erf, Poisson/Gamma sampling fixes)
+
+## Backlog
 - [ ] Multivariate normal distribution
 - [ ] Polynomial regression
 - [ ] Logistic regression

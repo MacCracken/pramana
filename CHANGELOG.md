@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- 7 new probability distributions: Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull
+- Shared math module with `ln_gamma`, `ln_beta`, regularized incomplete beta/gamma functions
+- Doc-tests for crate-level examples
+- Benchmarks for all modules (17 total, up from 4)
+
+### Changed
+
+- Hypothesis test functions (`t_test_one_sample`, `t_test_two_sample`, `chi_squared_test`) now accept configurable `alpha` significance level parameter
+- `#[non_exhaustive]` added to all public structs with validated constructors (prevents bypassing validation via struct literals from external crates)
+- Poisson sampling uses normal approximation for lambda > 30 (fixes potential infinite loop)
+- Gamma sampling uses iterative Ahrens-Dieter boost (was recursive, risked stack overflow for small alpha)
+- Deduplicated erf/erfc implementations into shared `math` module
+
+### Fixed
+
+- Dead variable `f` in naive Bayes classifier loop
+- Missing serde roundtrip tests for Exponential, Poisson, Binomial, Bernoulli
+
 ## [0.1.0] - 2026-03-26
 
 ### Added
