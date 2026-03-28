@@ -18,6 +18,44 @@
 //! | [`monte_carlo`] | Monte Carlo integration and simulation |
 //! | [`markov`] | Markov chains with steady-state analysis |
 //! | [`timeseries`] | Moving average, exponential smoothing, autocorrelation |
+//!
+//! ## Quick Start
+//!
+//! ```
+//! use pramana::{descriptive, distribution::{Normal, Distribution}, SimpleRng};
+//!
+//! // Descriptive statistics
+//! let data = [1.0, 2.0, 3.0, 4.0, 5.0];
+//! let m = descriptive::mean(&data).unwrap();
+//! assert!((m - 3.0).abs() < 1e-10);
+//!
+//! // Fit and sample from a normal distribution
+//! let s = descriptive::std_dev(&data).unwrap();
+//! let normal = Normal::new(m, s).unwrap();
+//! let mut rng = SimpleRng::new(42);
+//! let sample = normal.sample(&mut rng);
+//! assert!(sample.is_finite());
+//! ```
+//!
+//! ## Hypothesis Testing
+//!
+//! ```
+//! use pramana::hypothesis;
+//!
+//! let data = [10.0, 10.1, 9.9, 10.2, 9.8, 10.0, 10.1, 9.9];
+//! let result = hypothesis::t_test_one_sample(&data, 0.0, 0.05).unwrap();
+//! assert!(result.reject); // mean clearly differs from 0
+//! ```
+//!
+//! ## Monte Carlo
+//!
+//! ```
+//! use pramana::{monte_carlo, SimpleRng};
+//!
+//! let mut rng = SimpleRng::new(42);
+//! let pi = monte_carlo::monte_carlo_pi(100_000, &mut rng).unwrap();
+//! assert!((pi - std::f64::consts::PI).abs() < 0.1);
+//! ```
 
 pub mod bayesian;
 pub mod combinatorics;
@@ -26,6 +64,7 @@ pub mod distribution;
 pub mod error;
 pub mod hypothesis;
 pub mod markov;
+pub(crate) mod math;
 pub mod monte_carlo;
 pub mod regression;
 pub mod rng;

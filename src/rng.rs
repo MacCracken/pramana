@@ -16,6 +16,7 @@ pub trait Rng {
 /// This is **not** cryptographically secure. It is intended for reproducible
 /// simulations and testing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SimpleRng {
     state: u64,
 }

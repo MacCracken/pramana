@@ -1,0 +1,11 @@
+timestamp,commit,branch,benchmark,estimate_ns
+2026-03-28T20:00:26Z,2945814,main,distribution/normal_pdf_1000,6729.0000
+2026-03-28T20:00:26Z,2945814,main,descriptive/stats_10000,39025.0000
+2026-03-28T20:00:26Z,2945814,main,monte_carlo/pi_100000,386090.0000
+2026-03-28T20:00:26Z,2945814,main,markov/step_1000,2328.7000
+2026-03-28T20:00:26Z,2945814,main,hypothesis/t_test_one_sample_1000,1850.7000
+2026-03-28T20:00:26Z,2945814,main,regression/linear_1000,4636.3000
+2026-03-28T20:00:26Z,2945814,main,bayesian/naive_bayes_4class_10feat,214.38
+2026-03-28T20:00:26Z,2945814,main,combinatorics/combinations_30_15,57.388
+2026-03-28T20:00:26Z,2945814,main,timeseries/moving_average_10000_w50,35449.0000
+2026-03-28T20:00:26Z,2945814,main,distribution/poisson_sample_lambda100,25653.0000

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// A single Bayesian update step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BayesianUpdate {
     /// Prior probability P(A).
     pub prior: f64,
@@ -123,12 +124,10 @@ pub fn naive_bayes_classify(
             continue;
         }
         let mut log_posterior = prior.ln();
-        for (f, &likelihood) in class_likelihoods[c].iter().enumerate() {
+        for &likelihood in &class_likelihoods[c] {
             if likelihood <= 0.0 {
-                // Use a small epsilon to avoid log(0)
                 log_posterior += 1e-300_f64.ln();
             } else {
-                let _ = f; // suppress unused; f is used for the iteration
                 log_posterior += likelihood.ln();
             }
         }

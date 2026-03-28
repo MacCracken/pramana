@@ -4,6 +4,7 @@
 //! variance, and sampling capabilities.
 
 use crate::error::PramanaError;
+use crate::math::erf;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::{PI, SQRT_2};
@@ -28,40 +29,12 @@ pub trait Distribution {
 }
 
 // ---------------------------------------------------------------------------
-// Error function approximation (Abramowitz & Stegun 7.1.26)
-// ---------------------------------------------------------------------------
-
-/// Approximation of the error function using the Abramowitz & Stegun formula 7.1.26.
-/// Maximum error: |epsilon| < 1.5e-7.
-#[must_use]
-#[inline]
-fn erf(x: f64) -> f64 {
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let x = x.abs();
-
-    const P: f64 = 0.3275911;
-    const A1: f64 = 0.254829592;
-    const A2: f64 = -0.284496736;
-    const A3: f64 = 1.421413741;
-    const A4: f64 = -1.453152027;
-    const A5: f64 = 1.061405429;
-
-    let t = 1.0 / (1.0 + P * x);
-    let t2 = t * t;
-    let t3 = t2 * t;
-    let t4 = t3 * t;
-    let t5 = t4 * t;
-
-    let y = 1.0 - (A1 * t + A2 * t2 + A3 * t3 + A4 * t4 + A5 * t5) * (-x * x).exp();
-    sign * y
-}
-
-// ---------------------------------------------------------------------------
 // Normal distribution
 // ---------------------------------------------------------------------------
 
 /// Normal (Gaussian) distribution with parameters `mean` and `std_dev`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Normal {
     /// Mean (mu).
     pub mean: f64,
@@ -124,6 +97,7 @@ impl Distribution for Normal {
 
 /// Continuous uniform distribution on `[min, max]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Uniform {
     /// Lower bound.
     pub min: f64,
@@ -191,6 +165,7 @@ impl Distribution for Uniform {
 
 /// Exponential distribution with rate parameter `lambda`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Exponential {
     /// Rate parameter (lambda). Must be positive.
     pub lambda: f64,
@@ -255,6 +230,7 @@ impl Distribution for Exponential {
 
 /// Poisson distribution with expected value `lambda`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Poisson {
     /// Expected number of events (lambda). Must be positive.
     pub lambda: f64,
@@ -279,7 +255,8 @@ impl Poisson {
 impl Distribution for Poisson {
     /// Probability mass function: P(X = k) = (lambda^k * e^-lambda) / k!
     ///
-    /// For non-integer `x`, returns 0.
+    /// Returns 0 for non-integer `x` (exact float comparison; e.g. `3.0` is
+    /// accepted but `3.0000000000000004` is not).
     #[inline]
     fn pdf(&self, x: f64) -> f64 {
         if x < 0.0 || x.fract() != 0.0 {
@@ -315,8 +292,18 @@ impl Distribution for Poisson {
         self.lambda
     }
 
-    /// Samples using Knuth's algorithm.
+    /// Samples using Knuth's algorithm for small lambda, or a normal
+    /// approximation for lambda > 30 (where Knuth's exp(-lambda) underflows).
     fn sample(&self, rng: &mut impl Rng) -> f64 {
+        if self.lambda > 30.0 {
+            // Normal approximation: Poisson(lambda) ~ N(lambda, lambda)
+            let u1 = rng.next_f64().max(f64::MIN_POSITIVE);
+            let u2 = rng.next_f64();
+            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
+            let sample = self.lambda + self.lambda.sqrt() * z;
+            return sample.round().max(0.0);
+        }
+        // Knuth's algorithm for small lambda
         let l = (-self.lambda).exp();
         let mut k: u64 = 0;
         let mut p = 1.0;
@@ -351,6 +338,7 @@ fn ln_factorial(n: u64) -> f64 {
 /// Binomial distribution: number of successes in `n` independent Bernoulli trials
 /// each with success probability `p`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Binomial {
     /// Number of trials.
     pub n: u64,
@@ -445,6 +433,7 @@ fn ln_binomial_coeff(n: u64, k: u64) -> f64 {
 
 /// Bernoulli distribution: single trial with success probability `p`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Bernoulli {
     /// Probability of success.
     pub p: f64,
@@ -595,12 +584,55 @@ mod tests {
     }
 
     #[test]
-    fn erf_known_values() {
-        // erf(0) = 0
-        assert!(erf(0.0).abs() < 1e-7);
-        // erf(inf) -> 1
-        assert!((erf(10.0) - 1.0).abs() < 1e-7);
-        // erf(-inf) -> -1
-        assert!((erf(-10.0) + 1.0).abs() < 1e-7);
+    fn serde_roundtrip_exponential() {
+        let e = Exponential::new(2.5).unwrap();
+        let json = serde_json::to_string(&e).unwrap();
+        let e2: Exponential = serde_json::from_str(&json).unwrap();
+        assert_eq!(e.lambda, e2.lambda);
+    }
+
+    #[test]
+    fn serde_roundtrip_poisson() {
+        let p = Poisson::new(3.5).unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        let p2: Poisson = serde_json::from_str(&json).unwrap();
+        assert_eq!(p.lambda, p2.lambda);
+    }
+
+    #[test]
+    fn serde_roundtrip_binomial() {
+        let b = Binomial::new(20, 0.4).unwrap();
+        let json = serde_json::to_string(&b).unwrap();
+        let b2: Binomial = serde_json::from_str(&json).unwrap();
+        assert_eq!(b.n, b2.n);
+        assert_eq!(b.p, b2.p);
+    }
+
+    #[test]
+    fn serde_roundtrip_bernoulli() {
+        let b = Bernoulli::new(0.7).unwrap();
+        let json = serde_json::to_string(&b).unwrap();
+        let b2: Bernoulli = serde_json::from_str(&json).unwrap();
+        assert_eq!(b.p, b2.p);
+    }
+
+    #[test]
+    fn poisson_large_lambda_sample() {
+        // Verify sampling doesn't hang for large lambda
+        let p = Poisson::new(100.0).unwrap();
+        let mut rng = SimpleRng::new(42);
+        let mut sum = 0.0;
+        let n = 10_000;
+        for _ in 0..n {
+            let s = p.sample(&mut rng);
+            assert!(s >= 0.0);
+            assert!(s.is_finite());
+            sum += s;
+        }
+        let sample_mean = sum / n as f64;
+        assert!(
+            (sample_mean - 100.0).abs() < 5.0,
+            "sample mean {sample_mean} too far from lambda=100"
+        );
     }
 }

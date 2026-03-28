@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// A discrete-time Markov chain with a finite state space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct MarkovChain {
     /// Row-stochastic transition matrix. `transition_matrix[i][j]` is P(j | i).
     pub transition_matrix: Vec<Vec<f64>>,
