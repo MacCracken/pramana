@@ -212,6 +212,25 @@ fn bench_weibull_sample_1000(c: &mut Criterion) {
     });
 }
 
+fn bench_logistic_regression(c: &mut Criterion) {
+    let features: Vec<Vec<f64>> = (-20..=20).map(|i| vec![i as f64 * 0.5]).collect();
+    let labels: Vec<f64> = (-20..=20).map(|i| if i >= 0 { 1.0 } else { 0.0 }).collect();
+    // Add a couple of overlapping points
+    let mut f = features;
+    let mut l = labels;
+    f.push(vec![0.1]);
+    l.push(0.0);
+    f.push(vec![-0.1]);
+    l.push(1.0);
+    c.bench_function("regression/logistic_1d_43pts", |b| {
+        b.iter(|| {
+            black_box(
+                regression::logistic_regression(black_box(&f), black_box(&l), 1.0, 50).unwrap(),
+            );
+        });
+    });
+}
+
 fn bench_poly_regression_degree3(c: &mut Criterion) {
     let x: Vec<f64> = (0..100).map(|i| i as f64 * 0.1).collect();
     let y: Vec<f64> = x
@@ -280,6 +299,7 @@ criterion_group!(
     bench_f_distribution_sample_1000,
     bench_cauchy_sample_1000,
     bench_weibull_sample_1000,
+    bench_logistic_regression,
     bench_poly_regression_degree3,
     bench_mvn_sample_3d_1000,
     bench_mvn_pdf_3d_1000,

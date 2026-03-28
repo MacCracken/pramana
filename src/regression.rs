@@ -215,6 +215,214 @@ fn eval_polynomial(coeffs: &[f64], x: f64) -> f64 {
     result
 }
 
+// ---------------------------------------------------------------------------
+// Logistic regression
+// ---------------------------------------------------------------------------
+
+/// A fitted binary logistic regression model.
+///
+/// The model predicts P(y = 1 | x) = sigmoid(β₀ + β₁x₁ + β₂x₂ + ...).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogisticModel {
+    /// Coefficients including intercept: `[β₀, β₁, β₂, ...]`.
+    /// β₀ is the intercept; β₁..βₚ correspond to each feature.
+    pub coefficients: Vec<f64>,
+    /// Number of IRLS iterations performed.
+    pub iterations: usize,
+    /// Whether the algorithm converged within the iteration limit.
+    pub converged: bool,
+}
+
+/// Fits a binary logistic regression model via iteratively reweighted least squares (IRLS).
+///
+/// Each row of `features` is one observation with `p` feature values. The `labels`
+/// vector must contain values in {0, 1}.
+///
+/// The model includes an intercept term automatically. L2 regularization
+/// (`l2_reg`) penalizes large coefficients (not applied to the intercept).
+/// Use `l2_reg = 0.0` for unregularized logistic regression.
+///
+/// # Errors
+///
+/// Returns `DimensionMismatch` if `features` rows don't all have the same length,
+/// or if `features.len() != labels.len()`.
+/// Returns `InvalidSample` if fewer than 2 data points, or labels are not 0/1.
+/// Returns `InvalidParameter` if `max_iter` is 0 or `l2_reg` is negative.
+#[must_use = "returns the fitted model"]
+pub fn logistic_regression(
+    features: &[Vec<f64>],
+    labels: &[f64],
+    l2_reg: f64,
+    max_iter: usize,
+) -> Result<LogisticModel, PramanaError> {
+    let n = features.len();
+    if n != labels.len() {
+        return Err(PramanaError::DimensionMismatch(
+            "features and labels must have the same length".into(),
+        ));
+    }
+    if n < 2 {
+        return Err(PramanaError::InvalidSample(
+            "need at least 2 data points".into(),
+        ));
+    }
+    if max_iter == 0 {
+        return Err(PramanaError::InvalidParameter(
+            "max_iter must be positive".into(),
+        ));
+    }
+    if l2_reg < 0.0 {
+        return Err(PramanaError::InvalidParameter(
+            "l2_reg must be non-negative".into(),
+        ));
+    }
+    let p = features[0].len();
+    for (i, row) in features.iter().enumerate() {
+        if row.len() != p {
+            return Err(PramanaError::DimensionMismatch(format!(
+                "feature row {i} has length {}, expected {p}",
+                row.len()
+            )));
+        }
+    }
+    for (i, &label) in labels.iter().enumerate() {
+        if label != 0.0 && label != 1.0 {
+            return Err(PramanaError::InvalidSample(format!(
+                "label[{i}] = {label}, expected 0 or 1"
+            )));
+        }
+    }
+
+    // Build design matrix X with intercept column: X[i] = [1, features[i][0], ...]
+    let dim = p + 1;
+    let x: Vec<Vec<f64>> = features
+        .iter()
+        .map(|row| {
+            let mut xrow = Vec::with_capacity(dim);
+            xrow.push(1.0);
+            xrow.extend_from_slice(row);
+            xrow
+        })
+        .collect();
+
+    // Initialize coefficients to zero
+    let mut beta = vec![0.0; dim];
+    let tol = 1e-8;
+    let mut converged = false;
+    let mut iter = 0;
+
+    for _ in 0..max_iter {
+        iter += 1;
+
+        // Compute probabilities p_i = sigmoid(x_i . beta)
+        let probs: Vec<f64> = x
+            .iter()
+            .map(|xi| {
+                let z: f64 = xi.iter().zip(&beta).map(|(xij, bj)| xij * bj).sum();
+                sigmoid(z)
+            })
+            .collect();
+
+        // Gradient: g_j = sum_i x_ij * (y_i - p_i) - l2_reg * beta_j
+        // (L2 penalty not applied to intercept at j=0)
+        let mut gradient = vec![0.0; dim];
+        for (i, xi) in x.iter().enumerate() {
+            let residual = labels[i] - probs[i];
+            for (j, &xij) in xi.iter().enumerate() {
+                gradient[j] += xij * residual;
+            }
+        }
+        for j in 1..dim {
+            gradient[j] -= l2_reg * beta[j];
+        }
+
+        // Negative Hessian: -H_jk = sum_i x_ij * w_i * x_ik + l2_reg * I_{j>0}
+        // (positive-definite, suitable for Cholesky)
+        let mut neg_hessian = vec![vec![0.0; dim]; dim];
+        for (i, xi) in x.iter().enumerate() {
+            let w = probs[i] * (1.0 - probs[i]);
+            for (j, &xij) in xi.iter().enumerate() {
+                for (k, &xik) in xi.iter().enumerate().skip(j) {
+                    let val = xij * w * xik;
+                    neg_hessian[j][k] += val;
+                    if k != j {
+                        neg_hessian[k][j] += val;
+                    }
+                }
+            }
+        }
+        // Add L2 regularization to diagonal (skip intercept) + small epsilon
+        let eps = 1e-10;
+        neg_hessian[0][0] += eps;
+        for (j, row) in neg_hessian.iter_mut().enumerate().skip(1) {
+            row[j] += l2_reg + eps;
+        }
+
+        // Solve (-H) * delta = gradient via Cholesky
+        let delta = match hisab::num::cholesky(&neg_hessian) {
+            Ok(l) => match hisab::num::cholesky_solve(&l, &gradient) {
+                Ok(d) => d,
+                Err(_) => break,
+            },
+            Err(_) => break,
+        };
+
+        // Update beta
+        let mut max_change = 0.0_f64;
+        for (bj, dj) in beta.iter_mut().zip(&delta) {
+            *bj += dj;
+            max_change = max_change.max(dj.abs());
+        }
+
+        if max_change < tol {
+            converged = true;
+            break;
+        }
+    }
+
+    Ok(LogisticModel {
+        coefficients: beta,
+        iterations: iter,
+        converged,
+    })
+}
+
+/// Predicts the probability P(y = 1) for a single observation.
+#[must_use]
+pub fn predict_logistic_proba(model: &LogisticModel, features: &[f64]) -> f64 {
+    // β₀ + β₁x₁ + β₂x₂ + ...
+    let z = model.coefficients[0]
+        + model.coefficients[1..]
+            .iter()
+            .zip(features)
+            .map(|(b, x)| b * x)
+            .sum::<f64>();
+    sigmoid(z)
+}
+
+/// Predicts the class label (0 or 1) at the given threshold.
+#[must_use]
+pub fn predict_logistic_class(model: &LogisticModel, features: &[f64], threshold: f64) -> u8 {
+    if predict_logistic_proba(model, features) >= threshold {
+        1
+    } else {
+        0
+    }
+}
+
+/// Logistic sigmoid: 1 / (1 + exp(-x)).
+#[must_use]
+#[inline]
+fn sigmoid(x: f64) -> f64 {
+    // Numerically stable version
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let ex = x.exp();
+        ex / (1.0 + ex)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +570,120 @@ mod tests {
         assert_eq!(model.coefficients, model2.coefficients);
         assert_eq!(model.degree, model2.degree);
         assert_eq!(model.r_squared, model2.r_squared);
+    }
+
+    // --- Logistic regression ---
+
+    #[test]
+    fn logistic_1d() {
+        // Overlapping classes near the boundary for well-behaved optimization
+        let features = vec![
+            vec![-3.0],
+            vec![-2.5],
+            vec![-2.0],
+            vec![-1.5],
+            vec![-1.0],
+            vec![-0.5],
+            vec![0.5],
+            vec![1.0],
+            vec![1.5],
+            vec![2.0],
+            vec![2.5],
+            vec![3.0],
+            // Overlapping points near boundary
+            vec![0.1],
+            vec![-0.1],
+        ];
+        let labels = vec![
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
+        ];
+        let model = logistic_regression(&features, &labels, 1.0, 100).unwrap();
+        assert!(model.converged);
+        // Positive coefficient means higher x → higher probability
+        assert!(
+            model.coefficients[1] > 0.0,
+            "β₁ should be positive: {}",
+            model.coefficients[1]
+        );
+        // Predict: large positive → class 1, large negative → class 0
+        assert_eq!(predict_logistic_class(&model, &[10.0], 0.5), 1);
+        assert_eq!(predict_logistic_class(&model, &[-10.0], 0.5), 0);
+    }
+
+    #[test]
+    fn logistic_proba_range() {
+        let features: Vec<Vec<f64>> = (-5..=5).map(|i| vec![i as f64]).collect();
+        let labels: Vec<f64> = (-5..=5).map(|i| if i >= 0 { 1.0 } else { 0.0 }).collect();
+        let model = logistic_regression(&features, &labels, 1.0, 100).unwrap();
+        // Probabilities must be in [0, 1]
+        for i in -20..=20 {
+            let p = predict_logistic_proba(&model, &[i as f64]);
+            assert!((0.0..=1.0).contains(&p), "proba({i}) = {p} out of range");
+        }
+    }
+
+    #[test]
+    fn logistic_2d_features() {
+        // Two features with some overlap near the boundary
+        let features = vec![
+            vec![1.0, 1.0],
+            vec![2.0, 1.0],
+            vec![1.0, 2.0],
+            vec![-1.0, -1.0],
+            vec![-2.0, -1.0],
+            vec![-1.0, -2.0],
+            vec![3.0, 0.0],
+            vec![0.0, 3.0],
+            vec![-3.0, 0.0],
+            vec![0.0, -3.0],
+            // Overlap near boundary
+            vec![0.2, -0.2],
+            vec![-0.2, 0.2],
+        ];
+        let labels = vec![1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0];
+        let model = logistic_regression(&features, &labels, 1.0, 100).unwrap();
+        assert!(model.converged);
+        // Both coefficients should be positive
+        assert!(model.coefficients[1] > 0.0);
+        assert!(model.coefficients[2] > 0.0);
+    }
+
+    #[test]
+    fn logistic_invalid_params() {
+        let f = vec![vec![1.0], vec![2.0]];
+        let y = vec![0.0, 1.0];
+        // max_iter = 0
+        assert!(logistic_regression(&f, &y, 1.0, 0).is_err());
+        // mismatched lengths
+        assert!(logistic_regression(&f, &[0.0], 1.0, 10).is_err());
+        // invalid label
+        assert!(logistic_regression(&f, &[0.0, 0.5], 1.0, 10).is_err());
+        // too few points
+        assert!(logistic_regression(&[vec![1.0]], &[0.0], 1.0, 10).is_err());
+    }
+
+    #[test]
+    fn logistic_serde_roundtrip() {
+        let model = LogisticModel {
+            coefficients: vec![0.5, -1.2, 3.0],
+            iterations: 10,
+            converged: true,
+        };
+        let json = serde_json::to_string(&model).unwrap();
+        let model2: LogisticModel = serde_json::from_str(&json).unwrap();
+        assert_eq!(model.coefficients, model2.coefficients);
+        assert_eq!(model.iterations, model2.iterations);
+        assert_eq!(model.converged, model2.converged);
+    }
+
+    #[test]
+    fn sigmoid_known_values() {
+        assert!((sigmoid(0.0) - 0.5).abs() < 1e-10);
+        assert!(sigmoid(100.0) > 0.999);
+        assert!(sigmoid(-100.0) < 0.001);
+        // Symmetry: sigmoid(x) + sigmoid(-x) = 1
+        for &x in &[-5.0, -1.0, 0.0, 1.0, 5.0] {
+            assert!((sigmoid(x) + sigmoid(-x) - 1.0).abs() < 1e-10);
+        }
     }
 }

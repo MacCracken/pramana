@@ -27,7 +27,7 @@
 - [x] Scaffold hardening (struct invariants, dedup erf, Poisson/Gamma sampling fixes)
 - [x] Multivariate normal distribution (Cholesky-based sampling, log-PDF)
 - [x] Polynomial regression (QR-based least squares via hisab, Horner evaluation)
-- [ ] Logistic regression
+- [x] Logistic regression (IRLS with L2 regularization, sigmoid, proba/class prediction)
 - [ ] Confidence intervals
 - [ ] ANOVA
 - [ ] Kolmogorov-Smirnov test
