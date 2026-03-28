@@ -4,39 +4,38 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.0.0] - 2026-03-28
 
 ### Added
 
-- ARIMA time series: differencing/integration, AR fitting via Yule-Walker, forecasting
-- Correlation matrix (Pearson) and Principal Component Analysis (via eigendecomposition)
-- Hidden Markov Models: Forward algorithm (log-likelihood), Viterbi (most likely path), Baum-Welch (EM parameter estimation)
-- MCMC: Metropolis-Hastings (Gaussian random walk proposal, burn-in) and Gibbs sampling
-- Kernel density estimation: 4 kernels (Gaussian, Epanechnikov, Uniform, Triangular), Silverman bandwidth selection
-- Kolmogorov-Smirnov test: one-sample (vs arbitrary CDF) and two-sample, with Kolmogorov distribution p-value
-- One-way ANOVA with full SS decomposition, F-statistic, and F-distribution p-value
-- Confidence intervals: one-sample mean, two-sample mean difference, proportion (Wald)
-- Quantile functions: t-distribution (bisection) and standard normal (Acklam approximation)
-- Logistic regression (IRLS, L2 regularization, probability/class prediction)
-- Polynomial regression (QR-based least squares, Horner evaluation, R²)
-- 7 new probability distributions: Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull
-- Multivariate normal distribution with Cholesky-based sampling, `pdf`, `log_pdf`
-- Shared math module with `ln_gamma`, `ln_beta`, regularized incomplete beta/gamma functions
+- **AI**: Natural language statistical queries via hoosh (`ai` feature flag) — describe, correlate, regress, t-test, and forecast tools with LLM-driven dispatch
+- **Distributions**: Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull, Multivariate Normal (Cholesky-based sampling, log-PDF)
+- **Regression**: Polynomial regression (QR-based least squares, Horner evaluation, R²), logistic regression (IRLS, L2 regularization, probability/class prediction)
+- **Hypothesis testing**: One-way ANOVA (F-test, full SS decomposition), Kolmogorov-Smirnov test (one-sample and two-sample), confidence intervals (mean, two-means, proportion)
+- **Quantile functions**: t-distribution (bisection) and standard normal (Acklam approximation)
+- **Time series**: ARIMA (differencing/integration, Yule-Walker AR fitting, forecasting)
+- **Descriptive**: Kernel density estimation (Gaussian, Epanechnikov, Uniform, Triangular; Silverman bandwidth), correlation matrix (Pearson), Principal Component Analysis (eigendecomposition)
+- **Monte Carlo**: Metropolis-Hastings MCMC (Gaussian random walk, burn-in) and Gibbs sampling
+- **Markov**: Hidden Markov Models (Forward algorithm, Viterbi decoding, Baum-Welch EM)
+- **Math**: Shared crate-internal module with `ln_gamma`, `ln_beta`, regularized incomplete beta/gamma functions, erf/erfc
 - Doc-tests for crate-level examples
-- Benchmarks for all modules (17 total, up from 4)
+- Benchmarks for all modules (23 benchmarks)
+- 212 tests (194 unit + 15 integration + 3 doc-tests)
 
 ### Changed
 
-- Hypothesis test functions (`t_test_one_sample`, `t_test_two_sample`, `chi_squared_test`) now accept configurable `alpha` significance level parameter
-- `#[non_exhaustive]` added to all public structs with validated constructors (prevents bypassing validation via struct literals from external crates)
-- Poisson sampling uses normal approximation for lambda > 30 (fixes potential infinite loop)
-- Gamma sampling uses iterative Ahrens-Dieter boost (was recursive, risked stack overflow for small alpha)
-- Deduplicated erf/erfc implementations into shared `math` module
+- Hypothesis test functions (`t_test_one_sample`, `t_test_two_sample`, `chi_squared_test`) now accept configurable `alpha` significance level
+- `#[non_exhaustive]` on all public structs with validated constructors
+- Poisson sampling uses normal approximation for lambda > 30
+- Gamma sampling uses iterative Ahrens-Dieter boost (no recursion)
+- Dependencies use public crates.io versions (hisab, hoosh)
 
 ### Fixed
 
-- Dead variable `f` in naive Bayes classifier loop
+- Dead variable in naive Bayes classifier loop
 - Missing serde roundtrip tests for Exponential, Poisson, Binomial, Bernoulli
+- Potential stack overflow in Gamma sampling for small alpha
+- Potential infinite loop in Poisson sampling for large lambda
 
 ## [0.1.0] - 2026-03-26
 

@@ -2,7 +2,7 @@
 
 ## Scope
 
-Pramana is a pure statistics and probability library providing distributions, hypothesis testing, Bayesian inference, Monte Carlo methods, and Markov chains for Rust. The core library performs no I/O and contains no `unsafe` code.
+Pramana is a statistics and probability library providing distributions, hypothesis testing, regression, Bayesian inference, Monte Carlo methods, MCMC, Markov chains, HMMs, time series analysis, KDE, PCA, and natural language queries for Rust. The core library performs no I/O and contains no `unsafe` code.
 
 ## Attack Surface
 
@@ -11,17 +11,22 @@ Pramana is a pure statistics and probability library providing distributions, hy
 | Numerical stability | Catastrophic cancellation, overflow | IEEE 754 f64; documented precision limits |
 | Distribution parameters | Invalid lambda, negative std_dev | Returns `Err(InvalidParameter)` |
 | Empty samples | Division by zero on empty data | Returns `Err(InvalidSample)` |
-| Iterative methods | Non-convergence | max_iter bounds; returns `Err(ConvergenceFailure)` |
+| Iterative methods | Non-convergence (IRLS, power iteration, Baum-Welch) | max_iter bounds; returns `Err(ConvergenceFailure)` |
 | Markov chains | Invalid transition matrix | Row-sum validation; returns `Err(InvalidParameter)` |
+| HMMs | Invalid stochastic matrices | Full validation on construction |
+| MCMC | Non-convergence on multimodal targets | Consumer responsibility; burn-in parameter |
 | Monte Carlo | Seed predictability | SimpleRng is for reproducibility, not cryptography |
+| Matrix operations | Singular/non-positive-definite matrices | Cholesky/eigendecomposition errors propagated |
 | Serde deserialization | Crafted JSON | Enum validation via serde derive |
+| AI client (opt-in) | Network I/O to hoosh | Feature-gated (`ai`); not compiled by default |
 | Dependencies | Supply chain compromise | cargo-deny, cargo-audit in CI; minimal deps |
 
 ## Supported Versions
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x | Yes |
+| 1.0.x | Yes |
+| 0.1.x | Security fixes only |
 
 ## Reporting
 
@@ -35,6 +40,6 @@ Pramana is a pure statistics and probability library providing distributions, hy
 - Zero `unsafe` code
 - No `unwrap()` or `panic!()` in library code -- all errors via `Result`
 - All public types are `Send + Sync` (compile-time verified)
-- No network I/O in core library
+- No network I/O in core library (AI client is opt-in via feature flag)
 - Minimal dependency surface (core depends only on hisab, serde, thiserror, tracing)
 - SimpleRng is NOT cryptographically secure -- documented clearly

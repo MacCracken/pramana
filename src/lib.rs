@@ -57,6 +57,8 @@
 //! assert!((pi - std::f64::consts::PI).abs() < 0.1);
 //! ```
 
+#[cfg(feature = "ai")]
+pub mod ai;
 pub mod bayesian;
 pub mod combinatorics;
 pub mod descriptive;
