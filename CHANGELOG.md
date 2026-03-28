@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- One-way ANOVA with full SS decomposition, F-statistic, and F-distribution p-value
 - Confidence intervals: one-sample mean, two-sample mean difference, proportion (Wald)
 - Quantile functions: t-distribution (bisection) and standard normal (Acklam approximation)
 - Logistic regression (IRLS, L2 regularization, probability/class prediction)

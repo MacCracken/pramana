@@ -211,6 +211,128 @@ fn normal_upper_tail(z: f64) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// ANOVA
+// ---------------------------------------------------------------------------
+
+/// Result of a one-way ANOVA test.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnovaResult {
+    /// Between-group sum of squares.
+    pub ss_between: f64,
+    /// Within-group sum of squares.
+    pub ss_within: f64,
+    /// Total sum of squares.
+    pub ss_total: f64,
+    /// Between-group degrees of freedom (k - 1).
+    pub df_between: usize,
+    /// Within-group degrees of freedom (N - k).
+    pub df_within: usize,
+    /// Between-group mean square (SS_between / df_between).
+    pub ms_between: f64,
+    /// Within-group mean square (SS_within / df_within).
+    pub ms_within: f64,
+    /// F-statistic (MS_between / MS_within).
+    pub f_statistic: f64,
+    /// p-value from the F-distribution.
+    pub p_value: f64,
+    /// Significance level used.
+    pub reject_at_alpha: f64,
+    /// Whether the null hypothesis (all group means equal) is rejected.
+    pub reject: bool,
+}
+
+/// One-way analysis of variance (ANOVA).
+///
+/// Tests whether the means of `k` groups are all equal. Each element of
+/// `groups` is a slice of observations for one group.
+///
+/// # Errors
+///
+/// Returns `InvalidSample` if fewer than 2 groups, any group is empty, or
+/// total observations fewer than the number of groups + 1.
+/// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
+#[must_use = "returns the ANOVA result"]
+pub fn one_way_anova(groups: &[&[f64]], alpha: f64) -> Result<AnovaResult, PramanaError> {
+    validate_alpha(alpha)?;
+    let k = groups.len();
+    if k < 2 {
+        return Err(PramanaError::InvalidSample("need at least 2 groups".into()));
+    }
+    for (i, group) in groups.iter().enumerate() {
+        if group.is_empty() {
+            return Err(PramanaError::InvalidSample(format!("group {i} is empty")));
+        }
+    }
+    let n_total: usize = groups.iter().map(|g| g.len()).sum();
+    if n_total <= k {
+        return Err(PramanaError::InvalidSample(
+            "need more observations than groups".into(),
+        ));
+    }
+
+    // Grand mean
+    let grand_sum: f64 = groups.iter().flat_map(|g| g.iter()).sum();
+    let grand_mean = grand_sum / n_total as f64;
+
+    // SS between and SS within
+    let mut ss_between = 0.0;
+    let mut ss_within = 0.0;
+    for group in groups {
+        let ni = group.len() as f64;
+        let group_mean: f64 = group.iter().sum::<f64>() / ni;
+        ss_between += ni * (group_mean - grand_mean).powi(2);
+        for &x in *group {
+            ss_within += (x - group_mean).powi(2);
+        }
+    }
+    let ss_total = ss_between + ss_within;
+
+    let df_between = k - 1;
+    let df_within = n_total - k;
+    let ms_between = ss_between / df_between as f64;
+    let ms_within = if df_within > 0 {
+        ss_within / df_within as f64
+    } else {
+        return Err(PramanaError::InvalidSample(
+            "zero within-group degrees of freedom".into(),
+        ));
+    };
+
+    let f_statistic = if ms_within > 0.0 {
+        ms_between / ms_within
+    } else {
+        f64::INFINITY
+    };
+
+    // p-value: P(F > f_statistic) = 1 - F_CDF(f_statistic)
+    let p_value = f_distribution_upper_tail(f_statistic, df_between as f64, df_within as f64);
+
+    Ok(AnovaResult {
+        ss_between,
+        ss_within,
+        ss_total,
+        df_between,
+        df_within,
+        ms_between,
+        ms_within,
+        f_statistic,
+        p_value,
+        reject_at_alpha: alpha,
+        reject: p_value < alpha,
+    })
+}
+
+/// Upper tail of the F-distribution: P(X > x) where X ~ F(d1, d2).
+fn f_distribution_upper_tail(x: f64, d1: f64, d2: f64) -> f64 {
+    if x <= 0.0 {
+        return 1.0;
+    }
+    let u = d1 * x / (d1 * x + d2);
+    let cdf = regularized_incomplete_beta(u, d1 / 2.0, d2 / 2.0);
+    (1.0 - cdf).clamp(0.0, 1.0)
+}
+
+// ---------------------------------------------------------------------------
 // Confidence intervals
 // ---------------------------------------------------------------------------
 
@@ -554,6 +676,83 @@ mod tests {
         let r2: TestResult = serde_json::from_str(&json).unwrap();
         assert_eq!(r.test_name, r2.test_name);
         assert_eq!(r.statistic, r2.statistic);
+    }
+
+    // --- ANOVA ---
+
+    #[test]
+    fn anova_identical_groups() {
+        // Same data in each group — should not reject
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let c = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = one_way_anova(&[&a, &b, &c], 0.05).unwrap();
+        assert!(!result.reject, "identical groups should not reject");
+        assert!(result.f_statistic.abs() < 1e-10);
+        assert!(result.ss_between.abs() < 1e-10);
+    }
+
+    #[test]
+    fn anova_different_groups() {
+        // Clearly different means
+        let a = [1.0, 1.1, 0.9, 1.0, 1.2];
+        let b = [10.0, 10.1, 9.9, 10.2, 9.8];
+        let c = [100.0, 100.1, 99.9, 100.0, 100.2];
+        let result = one_way_anova(&[&a, &b, &c], 0.05).unwrap();
+        assert!(result.reject, "different groups should reject");
+        assert!(result.f_statistic > 100.0);
+        assert!(result.p_value < 0.001);
+    }
+
+    #[test]
+    fn anova_two_groups_matches_f() {
+        // With 2 groups, ANOVA F should equal the square of the two-sample t-statistic
+        let a = [2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = [4.0, 5.0, 6.0, 7.0, 8.0];
+        let result = one_way_anova(&[&a, &b], 0.05).unwrap();
+        assert_eq!(result.df_between, 1);
+        assert_eq!(result.df_within, 8);
+        assert!(result.f_statistic > 0.0);
+    }
+
+    #[test]
+    fn anova_ss_decomposition() {
+        // SST = SSB + SSW
+        let a = [1.0, 3.0, 5.0];
+        let b = [2.0, 4.0, 6.0];
+        let c = [7.0, 8.0, 9.0];
+        let result = one_way_anova(&[&a, &b, &c], 0.05).unwrap();
+        assert!(
+            (result.ss_total - result.ss_between - result.ss_within).abs() < 1e-10,
+            "SST={} != SSB={} + SSW={}",
+            result.ss_total,
+            result.ss_between,
+            result.ss_within
+        );
+    }
+
+    #[test]
+    fn anova_invalid_params() {
+        let a = [1.0, 2.0];
+        // Only 1 group
+        assert!(one_way_anova(&[&a], 0.05).is_err());
+        // Empty group
+        let empty: &[f64] = &[];
+        assert!(one_way_anova(&[&a, empty], 0.05).is_err());
+        // Invalid alpha
+        assert!(one_way_anova(&[&a, &a], 0.0).is_err());
+    }
+
+    #[test]
+    fn anova_serde_roundtrip() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [4.0, 5.0, 6.0];
+        let result = one_way_anova(&[&a, &b], 0.05).unwrap();
+        let json = serde_json::to_string(&result).unwrap();
+        let r2: AnovaResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(result.f_statistic, r2.f_statistic);
+        assert_eq!(result.df_between, r2.df_between);
+        assert_eq!(result.df_within, r2.df_within);
     }
 
     // --- Confidence intervals ---

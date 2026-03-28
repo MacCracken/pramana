@@ -29,7 +29,7 @@
 - [x] Polynomial regression (QR-based least squares via hisab, Horner evaluation)
 - [x] Logistic regression (IRLS with L2 regularization, sigmoid, proba/class prediction)
 - [x] Confidence intervals (mean, two-means, proportion; t-quantile via bisection, z-quantile via Acklam)
-- [ ] ANOVA
+- [x] One-way ANOVA (F-test with full SS decomposition)
 - [ ] Kolmogorov-Smirnov test
 - [ ] Kernel density estimation
 - [ ] MCMC (Metropolis-Hastings, Gibbs sampling)
