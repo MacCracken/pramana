@@ -212,6 +212,19 @@ fn bench_weibull_sample_1000(c: &mut Criterion) {
     });
 }
 
+fn bench_poly_regression_degree3(c: &mut Criterion) {
+    let x: Vec<f64> = (0..100).map(|i| i as f64 * 0.1).collect();
+    let y: Vec<f64> = x
+        .iter()
+        .map(|&xi| 1.0 + 2.0 * xi - 0.5 * xi * xi + 0.1 * xi * xi * xi)
+        .collect();
+    c.bench_function("regression/polynomial_degree3_100pts", |b| {
+        b.iter(|| {
+            black_box(regression::polynomial_regression(black_box(&x), black_box(&y), 3).unwrap());
+        });
+    });
+}
+
 fn bench_mvn_sample_3d_1000(c: &mut Criterion) {
     let mean = vec![0.0, 0.0, 0.0];
     let cov = vec![
@@ -267,6 +280,7 @@ criterion_group!(
     bench_f_distribution_sample_1000,
     bench_cauchy_sample_1000,
     bench_weibull_sample_1000,
+    bench_poly_regression_degree3,
     bench_mvn_sample_3d_1000,
     bench_mvn_pdf_3d_1000,
 );

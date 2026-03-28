@@ -12,7 +12,7 @@
 //! | [`distribution`] | Probability distributions (Normal, Uniform, Exponential, Poisson, Binomial, Bernoulli, Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull, Multivariate Normal) |
 //! | [`descriptive`] | Descriptive statistics (mean, median, mode, variance, skewness, kurtosis, percentiles) |
 //! | [`hypothesis`] | Hypothesis testing (t-tests, chi-squared) |
-//! | [`regression`] | Linear regression with R-squared |
+//! | [`regression`] | Linear and polynomial regression with R-squared |
 //! | [`bayesian`] | Bayesian inference and naive Bayes classification |
 //! | [`combinatorics`] | Factorials, permutations, combinations, Stirling approximation |
 //! | [`monte_carlo`] | Monte Carlo integration and simulation |

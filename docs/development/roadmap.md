@@ -26,9 +26,7 @@
 - [x] Configurable alpha for hypothesis tests
 - [x] Scaffold hardening (struct invariants, dedup erf, Poisson/Gamma sampling fixes)
 - [x] Multivariate normal distribution (Cholesky-based sampling, log-PDF)
-
-## Backlog
-- [ ] Polynomial regression
+- [x] Polynomial regression (QR-based least squares via hisab, Horner evaluation)
 - [ ] Logistic regression
 - [ ] Confidence intervals
 - [ ] ANOVA
