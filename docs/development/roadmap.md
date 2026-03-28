@@ -37,24 +37,127 @@
 - [x] Principal Component Analysis (eigendecomposition via hisab)
 - [x] AI: natural language statistical queries via hoosh (feature-gated)
 - [x] Public crate dependencies (hisab, hoosh from crates.io)
+- [x] ADRs, threat model, dependency watch, testing guide
 
-## Backlog
+## v1.1 — Performance, Platform & Numerical Hardening
 
-- [ ] Additional distribution families: Log-Normal, Negative Binomial, Hypergeometric
-- [ ] Multivariate regression (multiple predictors)
-- [ ] Non-parametric tests: Mann-Whitney U, Wilcoxon signed-rank
-- [ ] Cross-validation and model selection (AIC, BIC)
-- [ ] Bootstrap confidence intervals
+### Performance
+- [ ] SIMD-accelerated descriptive statistics (leverage hisab parallel feature)
+- [ ] Parallel MCMC (multiple chains)
+- [ ] Streaming/online statistics (Welford's algorithm for mean/variance)
+- [ ] Memory-mapped large dataset support
+
+### Platform
+- [ ] WASM target support (no-std compatible core)
+- [ ] C FFI bindings
+- [ ] Python bindings (via PyO3)
+
+### AI enhancements
+- [ ] Multi-turn statistical analysis sessions
+- [ ] Automated exploratory data analysis (auto-EDA)
+- [ ] Natural language report generation
+- [ ] Anomaly detection tool for AI dispatch
+
+### New distributions
+- [ ] Log-Normal distribution
+- [ ] Negative Binomial distribution
+- [ ] Hypergeometric distribution
+- [ ] Geometric distribution
+- [ ] Dirichlet distribution (multivariate generalization of Beta)
+- [ ] Multinomial distribution
+
+### Numerical improvements
+- [ ] Scaled forward algorithm for HMMs (prevent underflow on long sequences)
+- [ ] MA(q) support in ARIMA via conditional sum-of-squares (currently AR-only)
+- [ ] Adaptive bandwidth selection for KDE (leave-one-out cross-validation)
+- [ ] Improved Poisson CDF for large lambda (use incomplete gamma instead of summation)
+- [ ] Standardize epsilon constants across modules (see threat-model.md)
+
+### Testing
+- [ ] Property-based tests via proptest or quickcheck
+- [ ] Numerical accuracy benchmarks against R/scipy reference values
+- [ ] 90%+ line coverage
+
+## v1.2 — Non-Parametric Methods & Robust Statistics
+
+### Non-parametric tests
+- [ ] Mann-Whitney U test (two-sample rank test)
+- [ ] Wilcoxon signed-rank test (paired samples)
+- [ ] Kruskal-Wallis test (non-parametric ANOVA)
+- [ ] Friedman test (repeated measures)
+- [ ] Runs test (randomness)
+- [ ] Fisher's exact test (2x2 contingency tables)
+
+### Robust statistics
+- [ ] Median absolute deviation (MAD)
+- [ ] Trimmed mean
+- [ ] Winsorized mean
+- [ ] Huber M-estimator
+- [ ] Spearman rank correlation
+- [ ] Kendall's tau
+
+### Confidence intervals
+- [ ] Bootstrap confidence intervals (percentile, BCa)
+- [ ] Wilson score interval for proportions (replaces Wald for small n)
+
+## v1.3 — Advanced Regression & Model Selection
+
+### Regression
+- [ ] Multiple linear regression (matrix form, arbitrary predictors)
+- [ ] Ridge regression (L2-penalized OLS)
+- [ ] LASSO regression (L1 penalty, coordinate descent)
+- [ ] Elastic net
+- [ ] Generalized linear models (GLM) framework (Gaussian, Poisson, Binomial families)
+- [ ] Regression diagnostics: leverage, Cook's distance, VIF
+
+### Model selection
+- [ ] AIC (Akaike Information Criterion)
+- [ ] BIC (Bayesian Information Criterion)
+- [ ] Adjusted R-squared
+- [ ] Cross-validation (k-fold, leave-one-out)
+- [ ] Stepwise regression (forward/backward)
+
+## v1.4 — Time Series & Signal Processing
+
+### Time series
 - [ ] Seasonal ARIMA (SARIMA)
-- [ ] Factor analysis
-- [ ] Bayesian networks
-- [ ] GPU-accelerated operations (via hisab parallel feature)
-- [ ] WASM target support
+- [ ] Holt-Winters (triple exponential smoothing)
+- [ ] Seasonal decomposition (STL)
+- [ ] Granger causality test
+- [ ] Augmented Dickey-Fuller test (stationarity)
+- [ ] Ljung-Box test (autocorrelation significance)
+- [ ] Change point detection
 
-## v1.0 Criteria
+### Signal processing
+- [ ] Spectral density estimation (periodogram, Welch's method) — leverage hisab FFT
+- [ ] Cross-correlation function
+- [ ] Coherence
 
-- ~~All backlog items complete~~ Core backlog complete
-- 90%+ test coverage
-- Comprehensive documentation with examples
-- Battle-tested in at least 3 AGNOS consumers
-- No known numerical stability issues
+## v1.5 — Bayesian & Probabilistic Graphical Models
+
+### Bayesian
+- [ ] Conjugate prior families (Beta-Binomial, Normal-Normal, Gamma-Poisson)
+- [ ] Bayesian linear regression (posterior predictive)
+- [ ] Hamiltonian Monte Carlo (HMC / NUTS)
+- [ ] Variational inference (mean-field approximation)
+
+### Graphical models
+- [ ] Bayesian networks (DAG structure, exact inference)
+- [ ] Factor analysis (via EM)
+- [ ] Gaussian mixture models (EM fitting)
+- [ ] Latent Dirichlet Allocation (topic modeling)
+
+## v1.6 — Multivariate & Dimensionality Reduction
+
+### Multivariate
+- [ ] Multivariate hypothesis tests (Hotelling's T-squared, MANOVA)
+- [ ] Canonical correlation analysis
+- [ ] Discriminant analysis (LDA, QDA)
+- [ ] Mahalanobis distance (standalone utility)
+
+### Dimensionality reduction
+- [ ] Incremental PCA (streaming/online)
+- [ ] Sparse PCA
+- [ ] Independent Component Analysis (ICA)
+- [ ] t-SNE (via Barnes-Hut approximation)
+- [ ] UMAP
