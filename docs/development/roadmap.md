@@ -25,9 +25,9 @@
 - [x] Shared math foundation (ln_gamma, incomplete beta/gamma functions)
 - [x] Configurable alpha for hypothesis tests
 - [x] Scaffold hardening (struct invariants, dedup erf, Poisson/Gamma sampling fixes)
+- [x] Multivariate normal distribution (Cholesky-based sampling, log-PDF)
 
 ## Backlog
-- [ ] Multivariate normal distribution
 - [ ] Polynomial regression
 - [ ] Logistic regression
 - [ ] Confidence intervals

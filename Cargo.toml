@@ -14,7 +14,7 @@ categories = ["mathematics", "science"]
 exclude = [".claude/", ".github/", "docs/", "scripts/"]
 
 [dependencies]
-hisab = { version = "1", path = "../hisab", default-features = false }
+hisab = { version = "1", path = "../hisab", default-features = false, features = ["num"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tracing = "0.1"

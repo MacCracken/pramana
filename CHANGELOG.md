@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - 7 new probability distributions: Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull
+- Multivariate normal distribution with Cholesky-based sampling, `pdf`, `log_pdf`
 - Shared math module with `ln_gamma`, `ln_beta`, regularized incomplete beta/gamma functions
 - Doc-tests for crate-level examples
 - Benchmarks for all modules (17 total, up from 4)

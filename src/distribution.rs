@@ -1056,6 +1056,185 @@ impl Distribution for Weibull {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Multivariate normal distribution
+// ---------------------------------------------------------------------------
+
+/// Multivariate normal (Gaussian) distribution in d dimensions.
+///
+/// Parameterized by a mean vector (length d) and a d×d symmetric
+/// positive-definite covariance matrix. The Cholesky factor and
+/// log-determinant are pre-computed at construction time for efficient
+/// sampling and density evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MultivariateNormal {
+    /// Mean vector (length d).
+    pub mean: Vec<f64>,
+    /// Covariance matrix (d × d).
+    pub covariance: Vec<Vec<f64>>,
+    /// Pre-computed lower-triangular Cholesky factor L where Σ = LLᵀ.
+    cholesky_l: Vec<Vec<f64>>,
+    /// Pre-computed log of the determinant of the covariance matrix.
+    log_det: f64,
+    /// Dimensionality.
+    dim: usize,
+}
+
+impl MultivariateNormal {
+    /// Creates a new multivariate normal distribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidParameter` if:
+    /// - `mean` is empty
+    /// - `covariance` is not square or doesn't match `mean` length
+    /// - `covariance` is not symmetric positive-definite
+    pub fn new(mean: Vec<f64>, covariance: Vec<Vec<f64>>) -> Result<Self, PramanaError> {
+        let dim = mean.len();
+        if dim == 0 {
+            return Err(PramanaError::InvalidParameter(
+                "mean vector must be non-empty".into(),
+            ));
+        }
+        if covariance.len() != dim {
+            return Err(PramanaError::DimensionMismatch(format!(
+                "covariance has {} rows, expected {dim}",
+                covariance.len()
+            )));
+        }
+        for (i, row) in covariance.iter().enumerate() {
+            if row.len() != dim {
+                return Err(PramanaError::DimensionMismatch(format!(
+                    "covariance row {i} has length {}, expected {dim}",
+                    row.len()
+                )));
+            }
+        }
+        // Symmetry check (tolerance 1e-10)
+        for (i, row_i) in covariance.iter().enumerate() {
+            for (j, &cov_ij) in row_i.iter().enumerate().skip(i + 1) {
+                if (cov_ij - covariance[j][i]).abs() > 1e-10 {
+                    return Err(PramanaError::InvalidParameter(format!(
+                        "covariance not symmetric: [{i}][{j}]={cov_ij} != [{j}][{i}]={}",
+                        covariance[j][i]
+                    )));
+                }
+            }
+        }
+
+        // Cholesky decomposition (validates positive-definiteness)
+        let cholesky_l = hisab::num::cholesky(&covariance).map_err(|e| {
+            PramanaError::InvalidParameter(format!("covariance is not positive-definite: {e}"))
+        })?;
+
+        // Log-determinant from Cholesky: det(Σ) = prod(L_ii)^2, so
+        // log(det) = 2 * sum(log(L_ii))
+        let log_det: f64 = cholesky_l
+            .iter()
+            .enumerate()
+            .map(|(i, row)| row[i].ln())
+            .sum::<f64>()
+            * 2.0;
+
+        Ok(Self {
+            mean,
+            covariance,
+            cholesky_l,
+            log_det,
+            dim,
+        })
+    }
+
+    /// Returns the dimensionality.
+    #[must_use]
+    #[inline]
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Probability density function at point `x`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DimensionMismatch` if `x.len() != dim`.
+    #[must_use = "returns the density value"]
+    pub fn pdf(&self, x: &[f64]) -> Result<f64, PramanaError> {
+        Ok(self.log_pdf(x)?.exp())
+    }
+
+    /// Log probability density function at point `x`.
+    ///
+    /// More numerically stable than `pdf(x).ln()` for extreme values.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DimensionMismatch` if `x.len() != dim`.
+    #[must_use = "returns the log-density value"]
+    pub fn log_pdf(&self, x: &[f64]) -> Result<f64, PramanaError> {
+        if x.len() != self.dim {
+            return Err(PramanaError::DimensionMismatch(format!(
+                "x has length {}, expected {}",
+                x.len(),
+                self.dim
+            )));
+        }
+        // diff = x - mean
+        let diff: Vec<f64> = x.iter().zip(&self.mean).map(|(xi, mi)| xi - mi).collect();
+
+        // Solve L * y = diff for y, then mahalanobis² = y · y
+        let y = hisab::num::cholesky_solve(&self.cholesky_l, &diff)
+            .map_err(|e| PramanaError::ComputationError(format!("cholesky_solve failed: {e}")))?;
+
+        // Wait — cholesky_solve solves LLᵀx = b, giving x = Σ⁻¹ * diff.
+        // Mahalanobis² = diffᵀ Σ⁻¹ diff = diff · x
+        let mahalanobis_sq: f64 = diff.iter().zip(&y).map(|(d, yi)| d * yi).sum();
+
+        let d = self.dim as f64;
+        Ok(-0.5 * (d * (2.0 * PI).ln() + self.log_det + mahalanobis_sq))
+    }
+
+    /// Draws a sample: μ + L·z where z ~ N(0, I).
+    pub fn sample(&self, rng: &mut impl Rng) -> Vec<f64> {
+        // Generate d independent standard normals via Box-Muller
+        let mut z = Vec::with_capacity(self.dim);
+        let mut i = 0;
+        while i < self.dim {
+            let u1 = rng.next_f64().max(f64::MIN_POSITIVE);
+            let u2 = rng.next_f64();
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = 2.0 * PI * u2;
+            z.push(r * theta.cos());
+            if i + 1 < self.dim {
+                z.push(r * theta.sin());
+            }
+            i += 2;
+        }
+
+        // result = mean + L * z
+        let mut result = self.mean.clone();
+        for (i, (res_i, row)) in result.iter_mut().zip(&self.cholesky_l).enumerate() {
+            let sum: f64 = row.iter().zip(&z[..=i]).map(|(l, zi)| l * zi).sum();
+            *res_i += sum;
+        }
+        result
+    }
+
+    /// Returns the mean vector.
+    #[must_use]
+    #[inline]
+    pub fn mean_vec(&self) -> &[f64] {
+        &self.mean
+    }
+
+    /// Returns the covariance matrix.
+    #[must_use]
+    #[inline]
+    pub fn covariance_matrix(&self) -> &[Vec<f64>] {
+        &self.covariance
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1544,5 +1723,110 @@ mod tests {
         let w2: Weibull = serde_json::from_str(&json).unwrap();
         assert_eq!(w.k, w2.k);
         assert_eq!(w.lambda, w2.lambda);
+    }
+
+    // --- Multivariate Normal ---
+
+    #[test]
+    fn mvn_1d_matches_univariate() {
+        // 1D multivariate normal should match scalar Normal
+        let mvn = MultivariateNormal::new(vec![2.0], vec![vec![4.0]]).unwrap();
+        let n = Normal::new(2.0, 2.0).unwrap(); // std_dev = sqrt(4)
+        let x = 3.0;
+        let mvn_pdf = mvn.pdf(&[x]).unwrap();
+        let n_pdf = n.pdf(x);
+        assert!(
+            (mvn_pdf - n_pdf).abs() < 1e-10,
+            "mvn_pdf={mvn_pdf}, n_pdf={n_pdf}"
+        );
+    }
+
+    #[test]
+    fn mvn_2d_pdf_at_mean() {
+        // At the mean, the PDF should be 1 / (2π * sqrt(det(Σ)))
+        let cov = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let mvn = MultivariateNormal::new(vec![0.0, 0.0], cov).unwrap();
+        let pdf_at_mean = mvn.pdf(&[0.0, 0.0]).unwrap();
+        let expected = 1.0 / (2.0 * PI); // det(I) = 1
+        assert!(
+            (pdf_at_mean - expected).abs() < 1e-10,
+            "pdf={pdf_at_mean}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn mvn_sample_mean_convergence() {
+        let mean = vec![1.0, -2.0];
+        let cov = vec![vec![1.0, 0.3], vec![0.3, 2.0]];
+        let mvn = MultivariateNormal::new(mean.clone(), cov).unwrap();
+        let mut rng = SimpleRng::new(42);
+        let n = 50_000;
+        let mut sum = [0.0; 2];
+        for _ in 0..n {
+            let s = mvn.sample(&mut rng);
+            assert_eq!(s.len(), 2);
+            sum[0] += s[0];
+            sum[1] += s[1];
+        }
+        let sample_mean = [sum[0] / n as f64, sum[1] / n as f64];
+        assert!(
+            (sample_mean[0] - 1.0).abs() < 0.1,
+            "mean[0]={}",
+            sample_mean[0]
+        );
+        assert!(
+            (sample_mean[1] + 2.0).abs() < 0.1,
+            "mean[1]={}",
+            sample_mean[1]
+        );
+    }
+
+    #[test]
+    fn mvn_invalid_params() {
+        // Empty mean
+        assert!(MultivariateNormal::new(vec![], vec![]).is_err());
+        // Mismatched dimensions
+        assert!(MultivariateNormal::new(vec![0.0], vec![vec![1.0, 0.0]]).is_err());
+        // Not symmetric
+        assert!(
+            MultivariateNormal::new(vec![0.0, 0.0], vec![vec![1.0, 0.5], vec![0.0, 1.0]]).is_err()
+        );
+        // Not positive-definite
+        assert!(
+            MultivariateNormal::new(vec![0.0, 0.0], vec![vec![1.0, 2.0], vec![2.0, 1.0]]).is_err()
+        );
+    }
+
+    #[test]
+    fn mvn_dimension_mismatch_pdf() {
+        let mvn =
+            MultivariateNormal::new(vec![0.0, 0.0], vec![vec![1.0, 0.0], vec![0.0, 1.0]]).unwrap();
+        assert!(mvn.pdf(&[1.0]).is_err());
+        assert!(mvn.pdf(&[1.0, 2.0, 3.0]).is_err());
+    }
+
+    #[test]
+    fn mvn_log_pdf_consistency() {
+        let cov = vec![vec![2.0, 0.5], vec![0.5, 3.0]];
+        let mvn = MultivariateNormal::new(vec![1.0, -1.0], cov).unwrap();
+        let x = [2.0, 0.0];
+        let log_pdf = mvn.log_pdf(&x).unwrap();
+        let pdf = mvn.pdf(&x).unwrap();
+        assert!(
+            (log_pdf - pdf.ln()).abs() < 1e-10,
+            "log_pdf={log_pdf}, ln(pdf)={}",
+            pdf.ln()
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_mvn() {
+        let mvn =
+            MultivariateNormal::new(vec![1.0, 2.0], vec![vec![4.0, 1.0], vec![1.0, 9.0]]).unwrap();
+        let json = serde_json::to_string(&mvn).unwrap();
+        let mvn2: MultivariateNormal = serde_json::from_str(&json).unwrap();
+        assert_eq!(mvn.mean, mvn2.mean);
+        assert_eq!(mvn.covariance, mvn2.covariance);
+        assert_eq!(mvn.dim, mvn2.dim);
     }
 }

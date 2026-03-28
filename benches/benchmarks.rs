@@ -5,8 +5,8 @@ use pramana::bayesian;
 use pramana::combinatorics;
 use pramana::descriptive;
 use pramana::distribution::{
-    Beta, Cauchy, ChiSquared, Distribution, FDistribution, Gamma, Normal, Poisson, StudentT,
-    Weibull,
+    Beta, Cauchy, ChiSquared, Distribution, FDistribution, Gamma, MultivariateNormal, Normal,
+    Poisson, StudentT, Weibull,
 };
 use pramana::hypothesis;
 use pramana::markov::MarkovChain;
@@ -212,6 +212,42 @@ fn bench_weibull_sample_1000(c: &mut Criterion) {
     });
 }
 
+fn bench_mvn_sample_3d_1000(c: &mut Criterion) {
+    let mean = vec![0.0, 0.0, 0.0];
+    let cov = vec![
+        vec![1.0, 0.3, 0.1],
+        vec![0.3, 2.0, 0.5],
+        vec![0.1, 0.5, 3.0],
+    ];
+    let mvn = MultivariateNormal::new(mean, cov).unwrap();
+    c.bench_function("distribution/mvn_sample_3d_1000", |b| {
+        b.iter(|| {
+            let mut rng = SimpleRng::new(42);
+            for _ in 0..1000 {
+                black_box(mvn.sample(&mut rng));
+            }
+        });
+    });
+}
+
+fn bench_mvn_pdf_3d_1000(c: &mut Criterion) {
+    let mean = vec![0.0, 0.0, 0.0];
+    let cov = vec![
+        vec![1.0, 0.3, 0.1],
+        vec![0.3, 2.0, 0.5],
+        vec![0.1, 0.5, 3.0],
+    ];
+    let mvn = MultivariateNormal::new(mean, cov).unwrap();
+    c.bench_function("distribution/mvn_pdf_3d_1000", |b| {
+        b.iter(|| {
+            for i in 0..1000 {
+                let x = [i as f64 * 0.01, (i as f64 * 0.01).sin(), 0.5];
+                black_box(mvn.pdf(&x).unwrap());
+            }
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_normal_pdf_1000,
@@ -231,5 +267,7 @@ criterion_group!(
     bench_f_distribution_sample_1000,
     bench_cauchy_sample_1000,
     bench_weibull_sample_1000,
+    bench_mvn_sample_3d_1000,
+    bench_mvn_pdf_3d_1000,
 );
 criterion_main!(benches);
