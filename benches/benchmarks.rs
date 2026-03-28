@@ -3,7 +3,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use pramana::bayesian;
 use pramana::combinatorics;
-use pramana::descriptive;
+use pramana::descriptive::{self, Kernel, KernelDensity};
 use pramana::distribution::{
     Beta, Cauchy, ChiSquared, Distribution, FDistribution, Gamma, MultivariateNormal, Normal,
     Poisson, StudentT, Weibull,
@@ -280,6 +280,19 @@ fn bench_mvn_pdf_3d_1000(c: &mut Criterion) {
     });
 }
 
+fn bench_kde_gaussian_1000(c: &mut Criterion) {
+    let data: Vec<f64> = (0..200).map(|i| (i as f64 - 100.0) * 0.05).collect();
+    let kde = KernelDensity::new(data, 0.5, Kernel::Gaussian).unwrap();
+    c.bench_function("descriptive/kde_gaussian_200pts_1000eval", |b| {
+        b.iter(|| {
+            for i in 0..1000 {
+                let x = (i as f64 - 500.0) * 0.01;
+                black_box(kde.evaluate(x));
+            }
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_normal_pdf_1000,
@@ -303,5 +316,6 @@ criterion_group!(
     bench_poly_regression_degree3,
     bench_mvn_sample_3d_1000,
     bench_mvn_pdf_3d_1000,
+    bench_kde_gaussian_1000,
 );
 criterion_main!(benches);

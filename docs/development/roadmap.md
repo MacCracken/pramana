@@ -31,7 +31,7 @@
 - [x] Confidence intervals (mean, two-means, proportion; t-quantile via bisection, z-quantile via Acklam)
 - [x] One-way ANOVA (F-test with full SS decomposition)
 - [x] Kolmogorov-Smirnov test (one-sample and two-sample, Kolmogorov distribution p-value)
-- [ ] Kernel density estimation
+- [x] Kernel density estimation (Gaussian, Epanechnikov, Uniform, Triangular kernels; Silverman bandwidth)
 - [ ] MCMC (Metropolis-Hastings, Gibbs sampling)
 - [ ] Hidden Markov Models
 - [ ] ARIMA time series

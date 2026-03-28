@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Kernel density estimation: 4 kernels (Gaussian, Epanechnikov, Uniform, Triangular), Silverman bandwidth selection
 - Kolmogorov-Smirnov test: one-sample (vs arbitrary CDF) and two-sample, with Kolmogorov distribution p-value
 - One-way ANOVA with full SS decomposition, F-statistic, and F-distribution p-value
 - Confidence intervals: one-sample mean, two-sample mean difference, proportion (Wald)
