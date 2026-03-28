@@ -370,6 +370,185 @@ impl KernelDensity {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Correlation matrix
+// ---------------------------------------------------------------------------
+
+/// Computes the Pearson correlation matrix for a set of variables.
+///
+/// Each inner slice is one variable's observations (all must have the same length).
+/// Returns a symmetric matrix where entry \[i\]\[j\] is the correlation between
+/// variable i and variable j.
+///
+/// # Errors
+///
+/// Returns `InvalidSample` if fewer than 2 variables or fewer than 2 observations.
+/// Returns `DimensionMismatch` if variables have different lengths.
+#[must_use = "returns the correlation matrix"]
+pub fn correlation_matrix(variables: &[&[f64]]) -> Result<Vec<Vec<f64>>, PramanaError> {
+    let p = variables.len();
+    if p < 2 {
+        return Err(PramanaError::InvalidSample(
+            "need at least 2 variables".into(),
+        ));
+    }
+    let n = variables[0].len();
+    if n < 2 {
+        return Err(PramanaError::InvalidSample(
+            "need at least 2 observations".into(),
+        ));
+    }
+    for (i, var) in variables.iter().enumerate() {
+        if var.len() != n {
+            return Err(PramanaError::DimensionMismatch(format!(
+                "variable {i} has length {}, expected {n}",
+                var.len()
+            )));
+        }
+    }
+
+    // Compute means and std devs
+    let means: Vec<f64> = variables
+        .iter()
+        .map(|v| v.iter().sum::<f64>() / n as f64)
+        .collect();
+    let std_devs: Vec<f64> = variables
+        .iter()
+        .zip(&means)
+        .map(|(v, &m)| {
+            let var = v.iter().map(|&x| (x - m) * (x - m)).sum::<f64>() / n as f64;
+            var.sqrt()
+        })
+        .collect();
+
+    let mut matrix = vec![vec![0.0; p]; p];
+    for i in 0..p {
+        matrix[i][i] = 1.0;
+        for j in (i + 1)..p {
+            if std_devs[i] == 0.0 || std_devs[j] == 0.0 {
+                matrix[i][j] = 0.0;
+                matrix[j][i] = 0.0;
+            } else {
+                let cov: f64 = variables[i]
+                    .iter()
+                    .zip(variables[j].iter())
+                    .map(|(&xi, &xj)| (xi - means[i]) * (xj - means[j]))
+                    .sum::<f64>()
+                    / n as f64;
+                let r = cov / (std_devs[i] * std_devs[j]);
+                matrix[i][j] = r;
+                matrix[j][i] = r;
+            }
+        }
+    }
+    Ok(matrix)
+}
+
+// ---------------------------------------------------------------------------
+// Principal Component Analysis
+// ---------------------------------------------------------------------------
+
+/// Result of a Principal Component Analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcaResult {
+    /// Principal component directions (eigenvectors), one per row. Sorted by
+    /// descending eigenvalue. Shape: p × p.
+    pub components: Vec<Vec<f64>>,
+    /// Eigenvalues (variances explained) in descending order.
+    pub eigenvalues: Vec<f64>,
+    /// Proportion of variance explained by each component.
+    pub explained_variance_ratio: Vec<f64>,
+}
+
+/// Performs Principal Component Analysis on column-oriented data.
+///
+/// Each inner slice is one variable (column) of observations. All must have
+/// the same length. The data is centered (mean-subtracted) before computing
+/// the covariance matrix. Eigendecomposition is via `hisab::num::eigen_symmetric`.
+///
+/// # Errors
+///
+/// Returns `InvalidSample` if fewer than 2 variables or fewer than 2 observations.
+/// Returns `DimensionMismatch` if variables have different lengths.
+#[must_use = "returns the PCA result"]
+pub fn pca(variables: &[&[f64]]) -> Result<PcaResult, PramanaError> {
+    let p = variables.len();
+    if p < 2 {
+        return Err(PramanaError::InvalidSample(
+            "need at least 2 variables".into(),
+        ));
+    }
+    let n = variables[0].len();
+    if n < 2 {
+        return Err(PramanaError::InvalidSample(
+            "need at least 2 observations".into(),
+        ));
+    }
+    for (i, var) in variables.iter().enumerate() {
+        if var.len() != n {
+            return Err(PramanaError::DimensionMismatch(format!(
+                "variable {i} has length {}, expected {n}",
+                var.len()
+            )));
+        }
+    }
+
+    // Compute covariance matrix (population covariance)
+    let means: Vec<f64> = variables
+        .iter()
+        .map(|v| v.iter().sum::<f64>() / n as f64)
+        .collect();
+    let mut cov = vec![vec![0.0; p]; p];
+    for i in 0..p {
+        for j in i..p {
+            let c: f64 = variables[i]
+                .iter()
+                .zip(variables[j].iter())
+                .map(|(&xi, &xj)| (xi - means[i]) * (xj - means[j]))
+                .sum::<f64>()
+                / n as f64;
+            cov[i][j] = c;
+            cov[j][i] = c;
+        }
+    }
+
+    // Eigendecomposition (Jacobi for symmetric matrices)
+    let eigen = hisab::num::eigen_symmetric(&cov, 1e-12, 1000)
+        .map_err(|e| PramanaError::ComputationError(format!("eigendecomposition failed: {e}")))?;
+
+    let evecs = eigen
+        .eigenvectors
+        .ok_or_else(|| PramanaError::ComputationError("eigenvectors not available".into()))?;
+
+    // eigen_symmetric already sorts by descending magnitude; we want descending value
+    // (for PCA, eigenvalues of a covariance matrix are non-negative)
+    let evals = &eigen.eigenvalues_real;
+    let mut indices: Vec<usize> = (0..evals.len()).collect();
+    indices.sort_by(|&a, &b| {
+        evals[b]
+            .partial_cmp(&evals[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let eigenvalues: Vec<f64> = indices.iter().map(|&i| evals[i].max(0.0)).collect();
+    let total_var: f64 = eigenvalues.iter().sum();
+    let explained_variance_ratio: Vec<f64> = if total_var > 0.0 {
+        eigenvalues.iter().map(|&v| v / total_var).collect()
+    } else {
+        vec![0.0; p]
+    };
+
+    // Eigenvectors: evecs[i] is the i-th eigenvector (already sorted by eigen_symmetric)
+    // Re-order to match our sorted indices
+    let components: Vec<Vec<f64>> = indices.iter().map(|&idx| evecs[idx].clone()).collect();
+
+    Ok(PcaResult {
+        components,
+        eigenvalues,
+        explained_variance_ratio,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +705,114 @@ mod tests {
         let kde2: KernelDensity = serde_json::from_str(&json).unwrap();
         assert_eq!(kde.data, kde2.data);
         assert_eq!(kde.bandwidth, kde2.bandwidth);
+    }
+
+    // --- Correlation matrix ---
+
+    #[test]
+    fn corr_perfect_positive() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = [2.0, 4.0, 6.0, 8.0, 10.0]; // y = 2x
+        let m = correlation_matrix(&[&x, &y]).unwrap();
+        assert!((m[0][0] - 1.0).abs() < 1e-10);
+        assert!((m[1][1] - 1.0).abs() < 1e-10);
+        assert!((m[0][1] - 1.0).abs() < 1e-8, "r = {}", m[0][1]);
+        assert!((m[1][0] - 1.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn corr_perfect_negative() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = [5.0, 4.0, 3.0, 2.0, 1.0];
+        let m = correlation_matrix(&[&x, &y]).unwrap();
+        assert!((m[0][1] + 1.0).abs() < 1e-8, "r = {}", m[0][1]);
+    }
+
+    #[test]
+    fn corr_symmetric() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let b = [4.0, 3.0, 2.0, 5.0];
+        let c = [1.0, 5.0, 2.0, 4.0];
+        let m = correlation_matrix(&[&a, &b, &c]).unwrap();
+        assert_eq!(m.len(), 3);
+        for (i, row) in m.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - m[j][i]).abs() < 1e-10, "not symmetric at [{i}][{j}]");
+            }
+        }
+    }
+
+    #[test]
+    fn corr_invalid_params() {
+        let x = [1.0, 2.0];
+        assert!(correlation_matrix(&[&x]).is_err()); // < 2 vars
+        assert!(correlation_matrix(&[&[1.0], &[2.0, 3.0]]).is_err()); // dim mismatch
+    }
+
+    // --- PCA ---
+
+    #[test]
+    fn pca_variance_sums_to_one() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = [2.1, 3.9, 6.1, 7.9, 10.1]; // ~2x + noise
+        let result = pca(&[&x, &y]).unwrap();
+        let total: f64 = result.explained_variance_ratio.iter().sum();
+        assert!((total - 1.0).abs() < 1e-6, "variance ratios sum to {total}");
+    }
+
+    #[test]
+    fn pca_dominant_component() {
+        // Two variables where y ≈ 2x: first PC should explain almost all variance
+        let x: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let y: Vec<f64> = x.iter().map(|&xi| 2.0 * xi + 0.01 * xi.sin()).collect();
+        let result = pca(&[&x, &y]).unwrap();
+        assert!(
+            result.explained_variance_ratio[0] > 0.99,
+            "first PC explains {:.4}",
+            result.explained_variance_ratio[0]
+        );
+    }
+
+    #[test]
+    fn pca_eigenvalues_descending() {
+        let a = [1.0, 3.0, 2.0, 5.0, 4.0];
+        let b = [5.0, 1.0, 4.0, 2.0, 3.0];
+        let result = pca(&[&a, &b]).unwrap();
+        for w in result.eigenvalues.windows(2) {
+            assert!(w[0] >= w[1], "eigenvalues not descending");
+        }
+    }
+
+    #[test]
+    fn pca_components_orthogonal() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = [5.0, 3.0, 1.0, 4.0, 2.0];
+        let result = pca(&[&a, &b]).unwrap();
+        // Dot product of component 0 and component 1 should be ~0
+        let dot: f64 = result.components[0]
+            .iter()
+            .zip(&result.components[1])
+            .map(|(a, b)| a * b)
+            .sum();
+        assert!(dot.abs() < 1e-6, "components not orthogonal: dot = {dot}");
+    }
+
+    #[test]
+    fn pca_serde_roundtrip() {
+        let result = PcaResult {
+            components: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            eigenvalues: vec![2.0, 1.0],
+            explained_variance_ratio: vec![0.667, 0.333],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let r2: PcaResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(result.eigenvalues, r2.eigenvalues);
+        assert_eq!(result.components, r2.components);
+    }
+
+    #[test]
+    fn pca_invalid_params() {
+        let x = [1.0, 2.0];
+        assert!(pca(&[&x]).is_err()); // < 2 vars
     }
 }

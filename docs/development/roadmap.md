@@ -34,9 +34,9 @@
 - [x] Kernel density estimation (Gaussian, Epanechnikov, Uniform, Triangular kernels; Silverman bandwidth)
 - [x] MCMC: Metropolis-Hastings (Gaussian random walk) and Gibbs sampling
 - [x] Hidden Markov Models (Forward, Viterbi, Baum-Welch)
-- [ ] ARIMA time series
-- [ ] Correlation matrix
-- [ ] Principal Component Analysis
+- [x] ARIMA time series (differencing, Yule-Walker AR fitting, forecasting)
+- [x] Correlation matrix (Pearson)
+- [x] Principal Component Analysis (eigendecomposition via hisab)
 - [ ] AI feature: natural language statistical queries via hoosh
 
 ## v1.0 Criteria

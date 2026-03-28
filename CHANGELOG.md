@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- ARIMA time series: differencing/integration, AR fitting via Yule-Walker, forecasting
+- Correlation matrix (Pearson) and Principal Component Analysis (via eigendecomposition)
 - Hidden Markov Models: Forward algorithm (log-likelihood), Viterbi (most likely path), Baum-Welch (EM parameter estimation)
 - MCMC: Metropolis-Hastings (Gaussian random walk proposal, burn-in) and Gibbs sampling
 - Kernel density estimation: 4 kernels (Gaussian, Epanechnikov, Uniform, Triangular), Silverman bandwidth selection
