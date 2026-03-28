@@ -18,7 +18,7 @@
 | `bayesian` | Bayesian inference and naive Bayes classification |
 | `combinatorics` | Factorials, permutations, combinations, Stirling approximation |
 | `monte_carlo` | Monte Carlo integration, Metropolis-Hastings MCMC, Gibbs sampling |
-| `markov` | Markov chains with steady-state analysis |
+| `markov` | Markov chains, Hidden Markov Models (Forward, Viterbi, Baum-Welch) |
 | `timeseries` | Time series analysis (moving average, exponential smoothing, autocorrelation) |
 
 ## Quick Start

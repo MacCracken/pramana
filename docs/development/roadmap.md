@@ -33,7 +33,7 @@
 - [x] Kolmogorov-Smirnov test (one-sample and two-sample, Kolmogorov distribution p-value)
 - [x] Kernel density estimation (Gaussian, Epanechnikov, Uniform, Triangular kernels; Silverman bandwidth)
 - [x] MCMC: Metropolis-Hastings (Gaussian random walk) and Gibbs sampling
-- [ ] Hidden Markov Models
+- [x] Hidden Markov Models (Forward, Viterbi, Baum-Welch)
 - [ ] ARIMA time series
 - [ ] Correlation matrix
 - [ ] Principal Component Analysis

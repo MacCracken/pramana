@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Hidden Markov Models: Forward algorithm (log-likelihood), Viterbi (most likely path), Baum-Welch (EM parameter estimation)
 - MCMC: Metropolis-Hastings (Gaussian random walk proposal, burn-in) and Gibbs sampling
 - Kernel density estimation: 4 kernels (Gaussian, Epanechnikov, Uniform, Triangular), Silverman bandwidth selection
 - Kolmogorov-Smirnov test: one-sample (vs arbitrary CDF) and two-sample, with Kolmogorov distribution p-value
