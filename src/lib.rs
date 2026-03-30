@@ -60,11 +60,15 @@
 #[cfg(feature = "ai")]
 pub mod ai;
 pub mod bayesian;
+/// Cross-crate bridges — primitive-value conversions from other AGNOS science crates.
+pub mod bridge;
 pub mod combinatorics;
 pub mod descriptive;
 pub mod distribution;
 pub mod error;
 pub mod hypothesis;
+/// Integration APIs for downstream consumers (soorat rendering).
+pub mod integration;
 pub mod markov;
 pub(crate) mod math;
 pub mod monte_carlo;

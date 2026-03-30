@@ -161,3 +161,19 @@
 - [ ] Independent Component Analysis (ICA)
 - [ ] t-SNE (via Barnes-Hut approximation)
 - [ ] UMAP
+
+## Cross-Crate Bridges
+
+- [ ] `bridge.rs` module — primitive-value conversions for cross-crate statistics
+- [ ] **badal bridge**: ensemble forecast spread → confidence intervals; observation error → likelihood weight
+- [ ] **kimiya bridge**: reaction yield measurements → mean/variance; replicate data → hypothesis test p-value
+- [ ] **ushma bridge**: measurement uncertainty (±K) → Gaussian error model; sensor noise → Kalman filter parameters
+
+## Soorat Integration
+
+- [ ] `integration/soorat.rs` module — feature-gated `soorat-compat`
+- [ ] **Distribution curve**: PDF/CDF sample points for line plot rendering
+- [ ] **MCMC trace**: sample chain positions for scatter/line rendering
+- [ ] **Regression fit**: predicted vs actual points with confidence band for line+ribbon rendering
+- [ ] **Histogram data**: bin edges and counts for bar chart rendering
+- [ ] **Correlation matrix**: NxN values for heatmap rendering

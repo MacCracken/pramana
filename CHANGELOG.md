@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.0]
+
+### Added
+- **bridge** — cross-crate primitive-value bridges for badal (ensemble spread to confidence, observation error to likelihood), kimiya (yields to mean/variance, replicates to t-statistic), ushma (uncertainty to Gaussian, sensor noise to std dev)
+- **integration/soorat** — feature-gated `soorat-compat` module with visualization data structures: `DistributionCurve` (PDF/CDF plots), `McmcTrace` (sample chains), `RegressionFit` (predicted+confidence bands), `HistogramData` (binned from raw data), `CorrelationMatrix` (NxN heatmap)
+
+### Updated
+- hoosh 1.0.0 -> 1.1.0, majra 0.21.3 -> 1.0.2, iri-string 0.7.11 -> 0.7.12, zerocopy 0.8.47 -> 0.8.48
+
 ## [1.0.0] - 2026-03-28
 
 ### Added
