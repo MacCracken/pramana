@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.0]
+
+### Added
+- **bridge/bodh** — psychology cross-crate bridges: `item_variances_to_alpha` (psychometric reliability), `z_rates_to_d_prime` (signal detection), `trait_scores_to_correlation` (construct relationships), `learning_trials_to_power_law` (learning curve fitting), `response_times_to_hick_params` (Hick's law coefficient extraction)
+
 ## [1.1.0]
 
 ### Added

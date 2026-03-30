@@ -1269,9 +1269,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "majra"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bf34354c6aae982239d948e1b19c81d68bdb00985c3e88af4b1f40d79d11dff"
+checksum = "6281a40a8f2a89e93d9993913205d809190ac4411b6fc3ed7a8711c52f25dd13"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "pramana"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "criterion",
  "hisab",
