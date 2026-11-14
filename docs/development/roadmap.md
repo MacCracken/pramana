@@ -46,7 +46,7 @@
 ### v1.2.0
 - [x] bodh (psychology) bridges
 
-### Unreleased — toolchain update + P(-1) hardening sweep (2026-11-14)
+### v1.3.0 (2026-11-14) — toolchain update + P(-1) hardening sweep
 - [x] MSRV 1.89 -> 1.100 (edition 2024 is still the latest); deps to latest (hisab 1.4, hoosh 1.3, criterion 0.8); unused `tracing` deps removed
 - [x] Special functions: fdlibm `erf`/`erfc`, both-tail incomplete gamma/beta with √shape iteration budgets, stable `ln_beta`
 - [x] Zero reachable panics (NaN sorts, serde-injected invalid state, size overflows), validated deserialization for all invariant-carrying types

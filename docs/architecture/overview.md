@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Version: 1.2.0 (MSRV 1.100)
+Version: 1.3.0 (MSRV 1.100)
 
 ## Module Map
 
