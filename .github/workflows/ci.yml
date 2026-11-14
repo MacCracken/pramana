@@ -57,14 +57,19 @@ jobs:
   msrv:
     name: MSRV (1.100)
     runs-on: ubuntu-latest
+    env:
+      MSRV: "1.100"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.100"
+          toolchain: ${{ env.MSRV }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-features
-      - run: cargo test --all-features
+      # rust-toolchain.toml pins `stable`, which takes precedence over the
+      # `rustup default` set above, so plain `cargo` would run the runner's
+      # preinstalled stable instead of the MSRV. `+toolchain` overrides the file.
+      - run: cargo +${{ env.MSRV }} check --all-features
+      - run: cargo +${{ env.MSRV }} test --all-features
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
