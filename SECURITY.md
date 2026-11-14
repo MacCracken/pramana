@@ -41,5 +41,6 @@ Pramana is a statistics and probability library providing distributions, hypothe
 - No `unwrap()` or `panic!()` in library code -- all errors via `Result`
 - All public types are `Send + Sync` (compile-time verified)
 - No network I/O in core library (AI client is opt-in via feature flag)
-- Minimal dependency surface (core depends only on hisab, serde, thiserror, tracing)
+- Minimal dependency surface (core depends only on hisab, serde, thiserror)
+- `#![forbid(unsafe_code)]`; deserialization of validated types re-runs their constructors
 - SimpleRng is NOT cryptographically secure -- documented clearly

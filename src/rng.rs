@@ -15,10 +15,25 @@ pub trait Rng {
 ///
 /// This is **not** cryptographically secure. It is intended for reproducible
 /// simulations and testing.
+///
+/// A deserialized state of 0 (the one fixed point of xorshift, which would
+/// make every draw 0.0) is replaced with 1, exactly as in [`SimpleRng::new`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "SimpleRngRepr")]
 #[non_exhaustive]
 pub struct SimpleRng {
     state: u64,
+}
+
+#[derive(Deserialize)]
+struct SimpleRngRepr {
+    state: u64,
+}
+
+impl From<SimpleRngRepr> for SimpleRng {
+    fn from(repr: SimpleRngRepr) -> Self {
+        SimpleRng::new(repr.state)
+    }
 }
 
 impl SimpleRng {
@@ -83,5 +98,12 @@ mod tests {
         let json = serde_json::to_string(&rng).unwrap();
         let rng2: SimpleRng = serde_json::from_str(&json).unwrap();
         assert_eq!(rng.state, rng2.state);
+    }
+
+    #[test]
+    fn deserialize_zero_state_is_not_degenerate() {
+        let mut rng: SimpleRng = serde_json::from_str(r#"{"state":0}"#).unwrap();
+        assert_eq!(rng.state, 1);
+        assert!((0..10).map(|_| rng.next_f64()).any(|v| v > 0.0));
     }
 }

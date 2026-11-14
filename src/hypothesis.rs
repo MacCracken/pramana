@@ -1,8 +1,13 @@
 //! Hypothesis testing and confidence intervals.
+//!
+//! All tests reject non-finite input data and NaN significance/confidence
+//! levels with an error instead of returning a NaN p-value (which would make
+//! `reject` silently `false`).
 
 use crate::descriptive;
+use crate::distribution::{f_cdf_sf, student_t_cdf, student_t_two_tailed};
 use crate::error::PramanaError;
-use crate::math::{erfc, regularized_incomplete_beta};
+use crate::math::{normal_cdf, regularized_upper_incomplete_gamma};
 use serde::{Deserialize, Serialize};
 
 /// Result of a statistical hypothesis test.
@@ -28,21 +33,22 @@ pub struct TestResult {
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if `data` has fewer than 2 elements or zero variance.
-/// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
+/// Returns `InvalidSample` if `data` has fewer than 2 elements, contains
+/// non-finite values, or has zero variance.
+/// Returns `InvalidParameter` if `alpha` is not in `(0, 1)` or `mu_0` is not finite.
 #[must_use = "returns the test result"]
 pub fn t_test_one_sample(data: &[f64], mu_0: f64, alpha: f64) -> Result<TestResult, PramanaError> {
     validate_alpha(alpha)?;
+    if !mu_0.is_finite() {
+        return Err(PramanaError::InvalidParameter("mu_0 must be finite".into()));
+    }
     if data.len() < 2 {
         return Err(PramanaError::InvalidSample(
             "need at least 2 observations".into(),
         ));
     }
     let n = data.len() as f64;
-    let m = descriptive::mean(data)?;
-
-    // Sample variance (Bessel-corrected)
-    let sample_var = data.iter().map(|&x| (x - m) * (x - m)).sum::<f64>() / (n - 1.0);
+    let (m, sample_var) = mean_and_sample_variance(data, "data")?;
     if sample_var == 0.0 {
         return Err(PramanaError::InvalidSample(
             "zero variance in sample".into(),
@@ -51,7 +57,7 @@ pub fn t_test_one_sample(data: &[f64], mu_0: f64, alpha: f64) -> Result<TestResu
     let se = (sample_var / n).sqrt();
     let t = (m - mu_0) / se;
     let df = n - 1.0;
-    let p = two_tailed_t_pvalue(t, df);
+    let p = student_t_two_tailed(t, df);
 
     Ok(TestResult {
         test_name: "one-sample t-test".into(),
@@ -69,11 +75,36 @@ pub fn t_test_one_sample(data: &[f64], mu_0: f64, alpha: f64) -> Result<TestResu
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if either sample has fewer than 2 elements or zero variance.
+/// Returns `InvalidSample` if either sample has fewer than 2 elements or
+/// contains non-finite values, or if both samples have zero variance.
 /// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
 #[must_use = "returns the test result"]
 pub fn t_test_two_sample(a: &[f64], b: &[f64], alpha: f64) -> Result<TestResult, PramanaError> {
     validate_alpha(alpha)?;
+    let welch = welch_stats(a, b)?;
+    let p = student_t_two_tailed(welch.diff / welch.se, welch.df);
+
+    Ok(TestResult {
+        test_name: "two-sample Welch t-test".into(),
+        statistic: welch.diff / welch.se,
+        p_value: p,
+        degrees_of_freedom: welch.df,
+        reject_at_alpha: alpha,
+        reject: p < alpha,
+    })
+}
+
+/// Shared Welch two-sample statistics.
+struct Welch {
+    /// Difference of means (a - b).
+    diff: f64,
+    /// Standard error of the difference.
+    se: f64,
+    /// Welch-Satterthwaite degrees of freedom.
+    df: f64,
+}
+
+fn welch_stats(a: &[f64], b: &[f64]) -> Result<Welch, PramanaError> {
     if a.len() < 2 || b.len() < 2 {
         return Err(PramanaError::InvalidSample(
             "need at least 2 observations in each sample".into(),
@@ -81,10 +112,8 @@ pub fn t_test_two_sample(a: &[f64], b: &[f64], alpha: f64) -> Result<TestResult,
     }
     let n1 = a.len() as f64;
     let n2 = b.len() as f64;
-    let m1 = descriptive::mean(a)?;
-    let m2 = descriptive::mean(b)?;
-    let var1 = a.iter().map(|&x| (x - m1) * (x - m1)).sum::<f64>() / (n1 - 1.0);
-    let var2 = b.iter().map(|&x| (x - m2) * (x - m2)).sum::<f64>() / (n2 - 1.0);
+    let (m1, var1) = mean_and_sample_variance(a, "a")?;
+    let (m2, var2) = mean_and_sample_variance(b, "b")?;
 
     if var1 == 0.0 && var2 == 0.0 {
         return Err(PramanaError::InvalidSample(
@@ -92,35 +121,34 @@ pub fn t_test_two_sample(a: &[f64], b: &[f64], alpha: f64) -> Result<TestResult,
         ));
     }
 
-    let se = (var1 / n1 + var2 / n2).sqrt();
-    let t = (m1 - m2) / se;
+    let v1 = var1 / n1;
+    let v2 = var2 / n2;
+    let se = (v1 + v2).sqrt();
 
     // Welch-Satterthwaite degrees of freedom
-    let num = (var1 / n1 + var2 / n2).powi(2);
-    let denom = (var1 / n1).powi(2) / (n1 - 1.0) + (var2 / n2).powi(2) / (n2 - 1.0);
+    let num = (v1 + v2).powi(2);
+    let denom = v1.powi(2) / (n1 - 1.0) + v2.powi(2) / (n2 - 1.0);
     let df = if denom == 0.0 { 1.0 } else { num / denom };
 
-    let p = two_tailed_t_pvalue(t, df);
-
-    Ok(TestResult {
-        test_name: "two-sample Welch t-test".into(),
-        statistic: t,
-        p_value: p,
-        degrees_of_freedom: df,
-        reject_at_alpha: alpha,
-        reject: p < alpha,
+    Ok(Welch {
+        diff: m1 - m2,
+        se,
+        df,
     })
 }
 
 /// Chi-squared goodness-of-fit test.
 ///
 /// Tests whether `observed` frequencies match `expected` frequencies at the
-/// given significance level `alpha`.
+/// given significance level `alpha`. The p-value is the exact upper tail of
+/// the chi-squared distribution with `k - 1` degrees of freedom.
 ///
 /// # Errors
 ///
 /// Returns `DimensionMismatch` if slices differ in length.
-/// Returns `InvalidSample` if `expected` contains zeros or slices are empty.
+/// Returns `InvalidSample` if slices are empty, `expected` contains values
+/// that are not positive and finite, or `observed` contains negative or
+/// non-finite values.
 /// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
 #[must_use = "returns the test result"]
 pub fn chi_squared_test(
@@ -137,12 +165,15 @@ pub fn chi_squared_test(
     if observed.is_empty() {
         return Err(PramanaError::InvalidSample("empty data".into()));
     }
-    for &e in expected {
-        if e <= 0.0 {
-            return Err(PramanaError::InvalidSample(
-                "expected frequencies must be positive".into(),
-            ));
-        }
+    if expected.iter().any(|&e| !(e.is_finite() && e > 0.0)) {
+        return Err(PramanaError::InvalidSample(
+            "expected frequencies must be positive and finite".into(),
+        ));
+    }
+    if observed.iter().any(|&o| !(o.is_finite() && o >= 0.0)) {
+        return Err(PramanaError::InvalidSample(
+            "observed frequencies must be non-negative and finite".into(),
+        ));
     }
 
     let chi2: f64 = observed
@@ -164,9 +195,9 @@ pub fn chi_squared_test(
     })
 }
 
-/// Validates that alpha is a valid significance level in `(0, 1)`.
+/// Validates that alpha is a valid significance level in `(0, 1)` (NaN rejected).
 fn validate_alpha(alpha: f64) -> Result<(), PramanaError> {
-    if alpha <= 0.0 || alpha >= 1.0 {
+    if !(alpha > 0.0 && alpha < 1.0) {
         return Err(PramanaError::InvalidParameter(
             "alpha must be in (0, 1)".into(),
         ));
@@ -174,40 +205,67 @@ fn validate_alpha(alpha: f64) -> Result<(), PramanaError> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Approximate p-value computation
-// ---------------------------------------------------------------------------
-
-/// Approximation of the two-tailed p-value for a t-distribution.
-///
-/// Uses the approximation: for large df, t ~ normal. For small df, use
-/// the regularized incomplete beta function approximation.
-fn two_tailed_t_pvalue(t: f64, df: f64) -> f64 {
-    // Use the relationship: p = I(df/(df+t^2); df/2, 1/2)
-    // where I is the regularized incomplete beta function.
-    let x = df / (df + t * t);
-    let p = regularized_incomplete_beta(x, df / 2.0, 0.5);
-    // Two-tailed: this gives us directly the two-tailed p-value
-    p.clamp(0.0, 1.0)
+/// Validates that a confidence level is in `(0, 1)` (NaN rejected).
+fn validate_confidence(confidence_level: f64) -> Result<(), PramanaError> {
+    if !(confidence_level > 0.0 && confidence_level < 1.0) {
+        return Err(PramanaError::InvalidParameter(
+            "confidence_level must be in (0, 1)".into(),
+        ));
+    }
+    Ok(())
 }
 
-/// Approximation of the upper-tail p-value for a chi-squared distribution.
+/// Returns `InvalidSample` unless every summary statistic is finite.
 ///
-/// P(X > chi2) where X ~ chi-squared(df).
-/// Uses the Wilson-Hilferty normal approximation.
+/// Any NaN or infinite input makes the mean (and hence the variance)
+/// non-finite, so checking the aggregates is equivalent to scanning the data
+/// -- without the extra pass. It also catches finite data whose sums overflow.
+fn require_finite_summary(stats: &[f64], name: &str) -> Result<(), PramanaError> {
+    if stats.iter().all(|v| v.is_finite()) {
+        Ok(())
+    } else {
+        Err(PramanaError::InvalidSample(format!(
+            "{name} contains non-finite values (or its sums overflow)"
+        )))
+    }
+}
+
+/// Copies `data` and sorts it ascending.
+///
+/// Returns `InvalidSample` if `data` contains NaN or infinite values. Because
+/// the copy is NaN-free, `partial_cmp` is a total order here (the sort cannot
+/// panic) and it sorts faster than `total_cmp`.
+fn sorted_finite(data: &[f64], name: &str) -> Result<Vec<f64>, PramanaError> {
+    if let Some(i) = data.iter().position(|v| !v.is_finite()) {
+        return Err(PramanaError::InvalidSample(format!(
+            "{name}[{i}] is not finite"
+        )));
+    }
+    let mut sorted = data.to_vec();
+    sorted.sort_unstable_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(sorted)
+}
+
+/// Mean and Bessel-corrected sample variance; `data.len() >= 2`.
+fn mean_and_sample_variance(data: &[f64], name: &str) -> Result<(f64, f64), PramanaError> {
+    let n = data.len() as f64;
+    let m = descriptive::mean(data)?;
+    let var = data.iter().map(|&x| (x - m) * (x - m)).sum::<f64>() / (n - 1.0);
+    require_finite_summary(&[m, var], name)?;
+    Ok((m, var))
+}
+
+// ---------------------------------------------------------------------------
+// p-value computation
+// ---------------------------------------------------------------------------
+
+/// Upper-tail p-value P(X > chi2) for X ~ chi-squared(df), computed exactly
+/// via the regularized upper incomplete gamma function Q(df/2, chi2/2).
 fn chi_squared_pvalue(chi2: f64, df: f64) -> f64 {
     if df <= 0.0 {
         return 1.0;
     }
-    // Wilson-Hilferty approximation
-    let z = ((chi2 / df).powf(1.0 / 3.0) - (1.0 - 2.0 / (9.0 * df))) / (2.0 / (9.0 * df)).sqrt();
-    // Upper tail of standard normal
-    normal_upper_tail(z)
-}
-
-/// P(Z > z) for standard normal Z.
-fn normal_upper_tail(z: f64) -> f64 {
-    0.5 * erfc(z / std::f64::consts::SQRT_2)
+    regularized_upper_incomplete_gamma(df / 2.0, chi2 / 2.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -246,10 +304,14 @@ pub struct AnovaResult {
 /// Tests whether the means of `k` groups are all equal. Each element of
 /// `groups` is a slice of observations for one group.
 ///
+/// If every group has zero spread but the group means differ, the F-statistic
+/// is infinite and the p-value is 0.
+///
 /// # Errors
 ///
-/// Returns `InvalidSample` if fewer than 2 groups, any group is empty, or
-/// total observations fewer than the number of groups + 1.
+/// Returns `InvalidSample` if fewer than 2 groups, any group is empty,
+/// total observations are fewer than the number of groups + 1, any value is
+/// non-finite, or all observations are identical (zero total variance).
 /// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
 #[must_use = "returns the ANOVA result"]
 pub fn one_way_anova(groups: &[&[f64]], alpha: f64) -> Result<AnovaResult, PramanaError> {
@@ -286,17 +348,17 @@ pub fn one_way_anova(groups: &[&[f64]], alpha: f64) -> Result<AnovaResult, Prama
         }
     }
     let ss_total = ss_between + ss_within;
+    require_finite_summary(&[grand_mean, ss_between, ss_within], "groups")?;
+    if ss_total == 0.0 {
+        return Err(PramanaError::InvalidSample(
+            "zero total variance: all observations are identical".into(),
+        ));
+    }
 
     let df_between = k - 1;
     let df_within = n_total - k;
     let ms_between = ss_between / df_between as f64;
-    let ms_within = if df_within > 0 {
-        ss_within / df_within as f64
-    } else {
-        return Err(PramanaError::InvalidSample(
-            "zero within-group degrees of freedom".into(),
-        ));
-    };
+    let ms_within = ss_within / df_within as f64;
 
     let f_statistic = if ms_within > 0.0 {
         ms_between / ms_within
@@ -304,8 +366,10 @@ pub fn one_way_anova(groups: &[&[f64]], alpha: f64) -> Result<AnovaResult, Prama
         f64::INFINITY
     };
 
-    // p-value: P(F > f_statistic) = 1 - F_CDF(f_statistic)
-    let p_value = f_distribution_upper_tail(f_statistic, df_between as f64, df_within as f64);
+    // p-value: P(F > f_statistic), computed directly (no 1 - cdf cancellation)
+    let p_value = f_cdf_sf(f_statistic, df_between as f64, df_within as f64)
+        .1
+        .clamp(0.0, 1.0);
 
     Ok(AnovaResult {
         ss_between,
@@ -320,16 +384,6 @@ pub fn one_way_anova(groups: &[&[f64]], alpha: f64) -> Result<AnovaResult, Prama
         reject_at_alpha: alpha,
         reject: p_value < alpha,
     })
-}
-
-/// Upper tail of the F-distribution: P(X > x) where X ~ F(d1, d2).
-fn f_distribution_upper_tail(x: f64, d1: f64, d2: f64) -> f64 {
-    if x <= 0.0 {
-        return 1.0;
-    }
-    let u = d1 * x / (d1 * x + d2);
-    let cdf = regularized_incomplete_beta(u, d1 / 2.0, d2 / 2.0);
-    (1.0 - cdf).clamp(0.0, 1.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -352,11 +406,12 @@ pub struct KsResult {
 /// Two-sample Kolmogorov-Smirnov test.
 ///
 /// Tests whether two samples come from the same continuous distribution by
-/// comparing their empirical CDFs.
+/// comparing their empirical CDFs. Tied values (within or across samples) are
+/// handled by evaluating the ECDFs only after all observations at a value.
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if either sample is empty.
+/// Returns `InvalidSample` if either sample is empty or contains non-finite values.
 /// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
 #[must_use = "returns the KS test result"]
 pub fn ks_two_sample(a: &[f64], b: &[f64], alpha: f64) -> Result<KsResult, PramanaError> {
@@ -366,11 +421,8 @@ pub fn ks_two_sample(a: &[f64], b: &[f64], alpha: f64) -> Result<KsResult, Prama
             "both samples must be non-empty".into(),
         ));
     }
-
-    let mut sa = a.to_vec();
-    let mut sb = b.to_vec();
-    sa.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-    sb.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    let sa = sorted_finite(a, "a")?;
+    let sb = sorted_finite(b, "b")?;
 
     let na = sa.len() as f64;
     let nb = sb.len() as f64;
@@ -379,26 +431,16 @@ pub fn ks_two_sample(a: &[f64], b: &[f64], alpha: f64) -> Result<KsResult, Prama
     let mut ib = 0;
 
     while ia < sa.len() && ib < sb.len() {
-        let cdf_a = (ia + 1) as f64 / na;
-        let cdf_b = (ib + 1) as f64 / nb;
-        if sa[ia] <= sb[ib] {
-            d_max = d_max.max((cdf_a - ib as f64 / nb).abs());
+        // Advance past every observation equal to the next smallest value in
+        // *both* samples before comparing the ECDFs.
+        let v = sa[ia].min(sb[ib]);
+        while ia < sa.len() && sa[ia] == v {
             ia += 1;
-        } else {
-            d_max = d_max.max((ia as f64 / na - cdf_b).abs());
+        }
+        while ib < sb.len() && sb[ib] == v {
             ib += 1;
         }
-    }
-    // Remaining elements
-    while ia < sa.len() {
-        let cdf_a = (ia + 1) as f64 / na;
-        d_max = d_max.max((cdf_a - 1.0).abs());
-        ia += 1;
-    }
-    while ib < sb.len() {
-        let cdf_b = (ib + 1) as f64 / nb;
-        d_max = d_max.max((1.0 - cdf_b).abs());
-        ib += 1;
+        d_max = d_max.max((ia as f64 / na - ib as f64 / nb).abs());
     }
 
     let n_eff = (na * nb) / (na + nb);
@@ -419,8 +461,9 @@ pub fn ks_two_sample(a: &[f64], b: &[f64], alpha: f64) -> Result<KsResult, Prama
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if the sample is empty.
-/// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`.
+/// Returns `InvalidSample` if the sample is empty or contains non-finite values.
+/// Returns `InvalidParameter` if `alpha` is not in `(0, 1)`, or if `cdf`
+/// returns NaN for any sample point.
 #[must_use = "returns the KS test result"]
 pub fn ks_one_sample(
     data: &[f64],
@@ -433,17 +476,21 @@ pub fn ks_one_sample(
             "sample must be non-empty".into(),
         ));
     }
-
-    let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let sorted = sorted_finite(data, "data")?;
 
     let n = sorted.len() as f64;
     let mut d_max: f64 = 0.0;
 
     for (i, &x) in sorted.iter().enumerate() {
+        let theoretical = cdf(x);
+        if theoretical.is_nan() {
+            return Err(PramanaError::InvalidParameter(format!(
+                "cdf returned NaN at x = {x}"
+            )));
+        }
+        let theoretical = theoretical.clamp(0.0, 1.0);
         let ecdf_before = i as f64 / n;
         let ecdf_after = (i + 1) as f64 / n;
-        let theoretical = cdf(x);
         d_max = d_max.max((ecdf_after - theoretical).abs());
         d_max = d_max.max((theoretical - ecdf_before).abs());
     }
@@ -458,30 +505,41 @@ pub fn ks_one_sample(
     })
 }
 
-/// Approximate p-value for the KS statistic using the Kolmogorov distribution.
+/// Approximate p-value for the KS statistic using the Kolmogorov distribution
+/// with Stephens' small-sample correction λ = (√n + 0.12 + 0.11/√n)·d.
 ///
-/// P(D > d) ≈ 2 * Σ_{k=1}^{∞} (-1)^{k+1} exp(-2k²λ²) where λ = (√n + 0.12 + 0.11/√n) * d.
+/// Uses the two classical series for the Kolmogorov survival function, each
+/// in the range where it converges to double precision within four terms:
+/// - λ ≥ 1.18: Q(λ) = 2 Σ (-1)^{k-1} exp(-2k²λ²)
+/// - λ < 1.18: Q(λ) = 1 - (√(2π)/λ) Σ exp(-(2k-1)²π²/(8λ²))
 fn ks_pvalue(d: f64, n_eff: f64) -> f64 {
     if d <= 0.0 {
         return 1.0;
     }
     let sqrt_n = n_eff.sqrt();
     let lambda = (sqrt_n + 0.12 + 0.11 / sqrt_n) * d;
-    let lambda_sq = lambda * lambda;
+    kolmogorov_sf(lambda)
+}
 
-    let mut sum = 0.0;
-    for k in 1..=100 {
-        let term = (-2.0 * (k as f64) * (k as f64) * lambda_sq).exp();
-        if k % 2 == 1 {
-            sum += term;
-        } else {
-            sum -= term;
-        }
-        if term < 1e-15 {
-            break;
-        }
+/// Survival function of the Kolmogorov distribution, Q_KS(λ) = P(K > λ).
+fn kolmogorov_sf(lambda: f64) -> f64 {
+    if lambda.is_nan() {
+        return f64::NAN;
     }
-    (2.0 * sum).clamp(0.0, 1.0)
+    if lambda <= 0.0 {
+        return 1.0;
+    }
+    if lambda < 1.18 {
+        // π²/8 and √(2π)
+        const PI2_OVER_8: f64 = 1.233_700_550_136_169_8;
+        const SQRT_2PI: f64 = 2.506_628_274_631_000_2;
+        let y = (-PI2_OVER_8 / (lambda * lambda)).exp();
+        let cdf = SQRT_2PI / lambda * (y + y.powi(9) + y.powi(25) + y.powi(49));
+        (1.0 - cdf).clamp(0.0, 1.0)
+    } else {
+        let x = (-2.0 * lambda * lambda).exp();
+        (2.0 * (x - x.powi(4) + x.powi(9))).clamp(0.0, 1.0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -507,23 +565,19 @@ pub struct ConfidenceInterval {
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if `data` has fewer than 2 elements or zero variance.
+/// Returns `InvalidSample` if `data` has fewer than 2 elements, contains
+/// non-finite values, or has zero variance.
 /// Returns `InvalidParameter` if `confidence_level` is not in `(0, 1)`.
 #[must_use = "returns the confidence interval"]
 pub fn ci_mean(data: &[f64], confidence_level: f64) -> Result<ConfidenceInterval, PramanaError> {
-    if confidence_level <= 0.0 || confidence_level >= 1.0 {
-        return Err(PramanaError::InvalidParameter(
-            "confidence_level must be in (0, 1)".into(),
-        ));
-    }
+    validate_confidence(confidence_level)?;
     if data.len() < 2 {
         return Err(PramanaError::InvalidSample(
             "need at least 2 observations".into(),
         ));
     }
     let n = data.len() as f64;
-    let m = descriptive::mean(data)?;
-    let sample_var = data.iter().map(|&x| (x - m) * (x - m)).sum::<f64>() / (n - 1.0);
+    let (m, sample_var) = mean_and_sample_variance(data, "data")?;
     if sample_var == 0.0 {
         return Err(PramanaError::InvalidSample(
             "zero variance in sample".into(),
@@ -548,7 +602,8 @@ pub fn ci_mean(data: &[f64], confidence_level: f64) -> Result<ConfidenceInterval
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if either sample has fewer than 2 elements or zero variance.
+/// Returns `InvalidSample` if either sample has fewer than 2 elements or
+/// contains non-finite values, or if both samples have zero variance.
 /// Returns `InvalidParameter` if `confidence_level` is not in `(0, 1)`.
 #[must_use = "returns the confidence interval"]
 pub fn ci_two_means(
@@ -556,45 +611,16 @@ pub fn ci_two_means(
     b: &[f64],
     confidence_level: f64,
 ) -> Result<ConfidenceInterval, PramanaError> {
-    if confidence_level <= 0.0 || confidence_level >= 1.0 {
-        return Err(PramanaError::InvalidParameter(
-            "confidence_level must be in (0, 1)".into(),
-        ));
-    }
-    if a.len() < 2 || b.len() < 2 {
-        return Err(PramanaError::InvalidSample(
-            "need at least 2 observations in each sample".into(),
-        ));
-    }
-    let n1 = a.len() as f64;
-    let n2 = b.len() as f64;
-    let m1 = descriptive::mean(a)?;
-    let m2 = descriptive::mean(b)?;
-    let var1 = a.iter().map(|&x| (x - m1) * (x - m1)).sum::<f64>() / (n1 - 1.0);
-    let var2 = b.iter().map(|&x| (x - m2) * (x - m2)).sum::<f64>() / (n2 - 1.0);
-
-    if var1 == 0.0 && var2 == 0.0 {
-        return Err(PramanaError::InvalidSample(
-            "zero variance in both samples".into(),
-        ));
-    }
-
-    let se = (var1 / n1 + var2 / n2).sqrt();
-
-    // Welch-Satterthwaite degrees of freedom
-    let num = (var1 / n1 + var2 / n2).powi(2);
-    let denom = (var1 / n1).powi(2) / (n1 - 1.0) + (var2 / n2).powi(2) / (n2 - 1.0);
-    let df = if denom == 0.0 { 1.0 } else { num / denom };
-
+    validate_confidence(confidence_level)?;
+    let welch = welch_stats(a, b)?;
     let alpha = 1.0 - confidence_level;
-    let t_crit = t_quantile(1.0 - alpha / 2.0, df);
-    let diff = m1 - m2;
-    let margin = t_crit * se;
+    let t_crit = t_quantile(1.0 - alpha / 2.0, welch.df);
+    let margin = t_crit * welch.se;
 
     Ok(ConfidenceInterval {
-        lower: diff - margin,
-        upper: diff + margin,
-        estimate: diff,
+        lower: welch.diff - margin,
+        upper: welch.diff + margin,
+        estimate: welch.diff,
         confidence_level,
     })
 }
@@ -614,11 +640,7 @@ pub fn ci_proportion(
     n: u64,
     confidence_level: f64,
 ) -> Result<ConfidenceInterval, PramanaError> {
-    if confidence_level <= 0.0 || confidence_level >= 1.0 {
-        return Err(PramanaError::InvalidParameter(
-            "confidence_level must be in (0, 1)".into(),
-        ));
-    }
+    validate_confidence(confidence_level)?;
     if n == 0 {
         return Err(PramanaError::InvalidSample("n must be positive".into()));
     }
@@ -650,6 +672,9 @@ pub fn ci_proportion(
 ///
 /// Uses bisection on the CDF computed via the regularized incomplete beta function.
 fn t_quantile(p: f64, df: f64) -> f64 {
+    if p.is_nan() || df.is_nan() {
+        return f64::NAN;
+    }
     if p <= 0.0 {
         return f64::NEG_INFINITY;
     }
@@ -660,31 +685,23 @@ fn t_quantile(p: f64, df: f64) -> f64 {
         return 0.0;
     }
 
-    // CDF of Student-t at x
-    let t_cdf = |x: f64| -> f64 {
-        let ibeta = regularized_incomplete_beta(df / (df + x * x), df / 2.0, 0.5);
-        if x >= 0.0 {
-            1.0 - 0.5 * ibeta
-        } else {
-            0.5 * ibeta
-        }
-    };
+    let t_cdf = |x: f64| student_t_cdf(x, df);
 
     // Bisection search
-    let mut lo = -100.0;
-    let mut hi = 100.0;
+    let mut lo = -100.0_f64;
+    let mut hi = 100.0_f64;
 
-    // Expand bounds if needed
-    while t_cdf(lo) > p {
+    // Expand bounds if needed (bounded: the CDF reaches 0/1 at ±inf).
+    while t_cdf(lo) > p && lo.is_finite() {
         lo *= 2.0;
     }
-    while t_cdf(hi) < p {
+    while t_cdf(hi) < p && hi.is_finite() {
         hi *= 2.0;
     }
 
     for _ in 0..200 {
         let mid = 0.5 * (lo + hi);
-        if (hi - lo) < 1e-12 {
+        if (hi - lo) < 1e-12 * mid.abs().max(1.0) {
             return mid;
         }
         if t_cdf(mid) < p {
@@ -698,8 +715,12 @@ fn t_quantile(p: f64, df: f64) -> f64 {
 
 /// Inverse CDF of the standard normal distribution at probability `p`.
 ///
-/// Uses the rational approximation by Peter Acklam.
+/// Peter Acklam's rational approximation (relative error 1.15e-9) followed by
+/// one Halley refinement step against the full-precision normal CDF.
 fn z_quantile(p: f64) -> f64 {
+    if p.is_nan() {
+        return f64::NAN;
+    }
     if p <= 0.0 {
         return f64::NEG_INFINITY;
     }
@@ -741,7 +762,7 @@ fn z_quantile(p: f64) -> f64 {
     const P_LOW: f64 = 0.02425;
     const P_HIGH: f64 = 1.0 - P_LOW;
 
-    if p < P_LOW {
+    let x = if p < P_LOW {
         // Lower tail
         let q = (-2.0 * p.ln()).sqrt();
         (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
@@ -757,6 +778,15 @@ fn z_quantile(p: f64) -> f64 {
         let q = (-2.0 * (1.0 - p).ln()).sqrt();
         -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    };
+
+    // One Halley step: e = Φ(x) - p, u = e / φ(x).
+    let density = (-0.5 * x * x).exp() / (2.0 * std::f64::consts::PI).sqrt();
+    if density > 0.0 && density.is_finite() {
+        let u = (normal_cdf(x) - p) / density;
+        x - u / (1.0 + 0.5 * x * u)
+    } else {
+        x
     }
 }
 
@@ -1122,5 +1152,144 @@ mod tests {
         // t_0.975(1) ≈ 12.706 (Cauchy)
         let t1 = t_quantile(0.975, 1.0);
         assert!((t1 - 12.706).abs() < 0.1, "t_0.975(1) = {t1}");
+    }
+
+    // --- Hardening regression tests -------------------------------------
+
+    #[test]
+    fn nan_alpha_and_confidence_are_rejected() {
+        let data = [1.0, 2.0, 3.0, 4.0];
+        assert!(t_test_one_sample(&data, 0.0, f64::NAN).is_err());
+        assert!(t_test_two_sample(&data, &data, f64::NAN).is_err());
+        assert!(chi_squared_test(&data, &data, f64::NAN).is_err());
+        assert!(one_way_anova(&[&data, &data], f64::NAN).is_err());
+        assert!(ks_two_sample(&data, &data, f64::NAN).is_err());
+        assert!(ci_mean(&data, f64::NAN).is_err());
+        assert!(ci_two_means(&data, &data, f64::NAN).is_err());
+        assert!(ci_proportion(3, 10, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn non_finite_data_is_rejected() {
+        let bad = [1.0, f64::NAN, 3.0];
+        let good = [1.0, 2.0, 4.0];
+        assert!(t_test_one_sample(&bad, 0.0, 0.05).is_err());
+        assert!(t_test_one_sample(&good, f64::INFINITY, 0.05).is_err());
+        assert!(t_test_two_sample(&good, &[1.0, f64::INFINITY], 0.05).is_err());
+        assert!(one_way_anova(&[&good, &bad], 0.05).is_err());
+        assert!(ks_two_sample(&good, &bad, 0.05).is_err());
+        assert!(ks_one_sample(&bad, |x| x, 0.05).is_err());
+        assert!(ci_mean(&bad, 0.95).is_err());
+        assert!(chi_squared_test(&[1.0, -2.0], &[1.0, 1.0], 0.05).is_err());
+        assert!(chi_squared_test(&[1.0, 2.0], &[1.0, f64::NAN], 0.05).is_err());
+        // A CDF that returns NaN is reported instead of silently ignored.
+        assert!(ks_one_sample(&good, |_| f64::NAN, 0.05).is_err());
+    }
+
+    #[test]
+    fn chi_squared_pvalue_is_exact() {
+        // df = 1: P(χ² > s) = erfc(sqrt(s/2)).
+        let d = (3.841_458_820_694_124_f64 * 50.0).sqrt();
+        let r = chi_squared_test(&[100.0 + d, 100.0 - d], &[100.0, 100.0], 0.05).unwrap();
+        let exact = crate::math::erfc((r.statistic / 2.0).sqrt());
+        assert!(((r.p_value - exact) / exact).abs() < 1e-13);
+        assert!((r.p_value - 0.05).abs() < 1e-12);
+        // df = 2: P(χ² > s) = exp(-s/2).
+        let r = chi_squared_test(&[30.0, 10.0, 20.0], &[20.0, 20.0, 20.0], 0.05).unwrap();
+        let exact = (-r.statistic / 2.0).exp();
+        assert!(((r.p_value - exact) / exact).abs() < 1e-13);
+    }
+
+    #[test]
+    fn ks_two_sample_identical_samples_have_zero_statistic() {
+        // Used to report D = 1/3 because ties were not consumed together.
+        let r = ks_two_sample(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0], 0.05).unwrap();
+        assert_eq!(r.statistic, 0.0);
+        assert_eq!(r.p_value, 1.0);
+        assert!(!r.reject);
+    }
+
+    #[test]
+    fn ks_two_sample_ties_across_samples() {
+        // ECDFs after each distinct value: x=1: 0.5 vs 0.25; x=2: 1 vs 1.
+        let r = ks_two_sample(&[1.0, 1.0, 2.0, 2.0], &[1.0, 2.0, 2.0, 2.0], 0.05).unwrap();
+        assert!((r.statistic - 0.25).abs() < 1e-15);
+        // Disjoint samples: D = 1.
+        let r = ks_two_sample(&[1.0, 2.0], &[3.0, 4.0, 5.0], 0.05).unwrap();
+        assert_eq!(r.statistic, 1.0);
+    }
+
+    #[test]
+    fn kolmogorov_sf_reference_values() {
+        // Reference: 2 Σ_{k<200} (-1)^{k-1} exp(-2k²λ²) in double precision.
+        let cases = [
+            (0.5, 0.963_945_243_664_875_1),
+            (0.8, 0.544_142_411_574_198_1),
+            (1.0, 0.269_999_671_677_354_56),
+            (1.18, 0.123_453_809_429_765_7),
+            (1.36, 0.049_485_876_755_377_876),
+            (2.0, 0.000_670_925_255_779_695_3),
+        ];
+        for (lambda, expected) in cases {
+            let got = kolmogorov_sf(lambda);
+            assert!(
+                ((got - expected) / expected).abs() < 1e-13,
+                "Q_KS({lambda}) = {got}, expected {expected}"
+            );
+        }
+        assert_eq!(kolmogorov_sf(0.0), 1.0);
+        assert!((kolmogorov_sf(0.05) - 1.0).abs() < 1e-15);
+        // Continuity across the series switch.
+        assert!((kolmogorov_sf(1.18 - 1e-12) - kolmogorov_sf(1.18 + 1e-12)).abs() < 1e-11);
+    }
+
+    #[test]
+    fn anova_zero_within_variance_rejects() {
+        // Each group is constant but the means differ: F = inf, p = 0.
+        // (Previously the p-value was NaN, so `reject` was silently false.)
+        let r = one_way_anova(&[&[1.0, 1.0], &[2.0, 2.0], &[3.0, 3.0]], 0.05).unwrap();
+        assert!(r.f_statistic.is_infinite());
+        assert_eq!(r.p_value, 0.0);
+        assert!(r.reject);
+        // All observations identical: undefined, reported as an error.
+        assert!(one_way_anova(&[&[4.0, 4.0], &[4.0, 4.0]], 0.05).is_err());
+    }
+
+    #[test]
+    fn anova_tiny_p_value_is_not_rounded_to_zero() {
+        let r = one_way_anova(&[&[0.0, 1.0, 2.0], &[100.0, 101.0, 102.0]], 0.05).unwrap();
+        assert!(r.p_value > 0.0 && r.p_value < 1e-6, "p = {}", r.p_value);
+        // F(1, 4) upper tail has the closed form via the t-distribution:
+        // P(F > f) = P(|T_4| > sqrt(f)).
+        let expected = student_t_two_tailed(r.f_statistic.sqrt(), 4.0);
+        assert!(((r.p_value - expected) / expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn z_quantile_full_precision() {
+        assert!((z_quantile(0.975) - 1.959_963_984_540_054).abs() < 1e-14);
+        assert!(
+            ((z_quantile(1e-10) + 6.361_340_902_404_056) / 6.361_340_902_404_056).abs() < 1e-13
+        );
+        assert_eq!(z_quantile(0.5), 0.0);
+        for &p in &[1e-300, 1e-20, 0.001, 0.3, 0.9, 0.999_999] {
+            let z = z_quantile(p);
+            let back = normal_cdf(z);
+            assert!(((back - p) / p).abs() < 1e-12, "p={p} z={z} back={back}");
+        }
+        assert!(z_quantile(f64::NAN).is_nan());
+    }
+
+    #[test]
+    fn t_quantile_precision() {
+        // df = 1 (Cauchy): q(p) = tan(π (p - ½))
+        let q = t_quantile(0.975, 1.0);
+        assert!(((q - 12.706_204_736_174_696) / 12.706_204_736_174_696).abs() < 1e-10);
+        // Round trip through the CDF.
+        for &(p, df) in &[(0.9, 3.0), (0.995, 10.0), (0.01, 50.0), (0.975, 1e6)] {
+            let q = t_quantile(p, df);
+            assert!((student_t_cdf(q, df) - p).abs() < 1e-12, "p={p} df={df}");
+        }
+        assert!(t_quantile(f64::NAN, 3.0).is_nan());
     }
 }

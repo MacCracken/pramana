@@ -1,76 +1,87 @@
 # Benchmarks
 
-Latest: **2026-03-28T22:21:11Z** -- commit `81a72e9`
+Latest: **2026-11-14T17:18:22Z** -- commit `f491d3e`
 
-Tracking: `2945814` (baseline) -> `dba8dcb` (optimized) -> `81a72e9` (current)
+Tracking: `2945814` (baseline) -> `7ca4ca2` (optimized) -> `f491d3e` (current)
 
 ## distribution
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `normal_pdf_1000` | 6729.0 ns | 6652.0 ns | 7097.5 ns +5% |
-| `poisson_sample_lambda100` | 25653.0 ns | 18353.0 ns **-28%** | 34140.0 ns +33% |
-| `gamma_sample_1000` | --- | 22423.0 ns | 39910.0 ns |
-| `beta_sample_1000` | --- | 47841.0 ns | 84909.0 ns |
-| `chi_squared_cdf_1000` | --- | 54558.0 ns | 82182.0 ns |
-| `student_t_pdf_1000` | --- | 40602.0 ns | 69013.0 ns |
-| `f_sample_1000` | --- | 52361.0 ns | 68582.0 ns |
-| `cauchy_sample_1000` | --- | 11469.0 ns | 11447.0 ns |
-| `weibull_sample_1000` | --- | 21559.0 ns | 21310.0 ns |
-| `mvn_sample_3d_1000` | --- | 71793.0 ns | 71864.0 ns |
-| `mvn_pdf_3d_1000` | --- | 77382.0 ns | 78260.0 ns |
+| `normal_pdf_1000` | 6729.0 ns | 7499.3 ns +11% | 6304.1 ns **-6%** |
+| `poisson_sample_lambda100` | 25653.0 ns | 20246.0 ns **-21%** | 27890.0 ns +9% |
+| `gamma_sample_1000` | --- | 24738.0 ns | 20652.0 ns |
+| `beta_sample_1000` | --- | 51313.0 ns | 43415.0 ns |
+| `chi_squared_cdf_1000` | --- | 56732.0 ns | 57317.0 ns |
+| `student_t_pdf_1000` | --- | 41098.0 ns | 38588.0 ns |
+| `f_sample_1000` | --- | 52280.0 ns | 48025.0 ns |
+| `cauchy_sample_1000` | --- | 11662.0 ns | 10162.0 ns |
+| `weibull_sample_1000` | --- | 21741.0 ns | 20111.0 ns |
+| `mvn_sample_3d_1000` | --- | 71932.0 ns | 67838.0 ns |
+| `mvn_pdf_3d_1000` | --- | 83378.0 ns | 71685.0 ns |
+| `normal_cdf_1000` | --- | --- | 23943.0 ns |
+| `poisson_cdf_lambda100_200pts` | --- | --- | 22944.0 ns |
+| `binomial_cdf_n200_20pts` | --- | --- | 3770.0 ns |
+| `binomial_sample_n10000_100` | --- | --- | 44787.0 ns |
 
 ## descriptive
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `stats_10000` | 39025.0 ns | 38429.0 ns | 39862.0 ns |
-| `kde_gaussian_200pts_1000eval` | --- | --- | 1215.2 us |
+| `stats_10000` | 39025.0 ns | 39800.0 ns | 36868.0 ns **-6%** |
+| `kde_gaussian_200pts_1000eval` | --- | --- | 1047.4 us |
+| `median_10001` | --- | --- | 18435.0 ns |
+| `mode_10000` | --- | --- | 172780.0 ns |
 
 ## monte_carlo
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `pi_100000` | 386090.0 ns | 346380.0 ns **-10%** | 367920.0 ns **-5%** |
-| `mh_1d_10000` | --- | --- | 835980.0 ns |
+| `pi_100000` | 386090.0 ns | 370580.0 ns **-4%** | 327660.0 ns **-15%** |
+| `mh_1d_10000` | --- | --- | 850130.0 ns |
 
 ## markov
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `step_1000` | 2328.7 ns | 2083.5 ns **-11%** | 2341.6 ns |
+| `step_1000` | 2328.7 ns | 2336.8 ns | 1999.4 ns **-14%** |
+| `hmm_forward_1000` | --- | --- | 44986.0 ns |
+| `hmm_baum_welch_200_x5` | --- | --- | 152110.0 ns |
+| `steady_state_10` | --- | --- | 619.2 ns |
 
 ## hypothesis
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `t_test_one_sample_1000` | 1850.7 ns | 1695.3 ns **-8%** | 1764.1 ns **-5%** |
+| `t_test_one_sample_1000` | 1850.7 ns | 1752.1 ns **-5%** | 1614.9 ns **-13%** |
+| `ks_two_sample_1000` | --- | --- | 22969.0 ns |
+| `chi_squared_test_20` | --- | --- | 157.1 ns |
 
 ## regression
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `linear_1000` | 4636.3 ns | 4509.1 ns | 4689.0 ns |
-| `logistic_1d_43pts` | --- | 8399.5 ns | 8797.3 ns |
-| `polynomial_degree3_100pts` | --- | 3416.4 ns | 3942.6 ns |
+| `linear_1000` | 4636.3 ns | 4568.6 ns | 3656.5 ns **-21%** |
+| `logistic_1d_43pts` | --- | 9433.7 ns | 9316.1 ns |
+| `polynomial_degree3_100pts` | --- | 3500.4 ns | 3272.4 ns |
 
 ## bayesian
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `naive_bayes_4class_10feat` | 214.4 ns | 197.7 ns **-8%** | 214.3 ns |
+| `naive_bayes_4class_10feat` | 214.4 ns | 248.2 ns +16% | 172.9 ns **-19%** |
 
 ## combinatorics
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `combinations_30_15` | 57.39 ns | 49.73 ns **-13%** | 52.29 ns **-9%** |
+| `combinations_30_15` | 57.39 ns | 52.92 ns **-8%** | 45.40 ns **-21%** |
 
 ## timeseries
 
-| Benchmark | Baseline (`2945814`) | Mid (`dba8dcb`) | Current (`81a72e9`) |
+| Benchmark | Baseline (`2945814`) | Mid (`7ca4ca2`) | Current (`f491d3e`) |
 |-----------|------|------|------|
-| `moving_average_10000_w50` | 35449.0 ns | 31261.0 ns **-12%** | 32090.0 ns **-9%** |
+| `moving_average_10000_w50` | 35449.0 ns | 32067.0 ns **-10%** | 29544.0 ns **-17%** |
 
 ---
 

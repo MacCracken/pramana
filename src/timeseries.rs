@@ -42,14 +42,14 @@ pub fn moving_average(data: &[f64], window: usize) -> Result<Vec<f64>, PramanaEr
 ///
 /// # Errors
 ///
-/// Returns `InvalidParameter` if `alpha` is not in `(0, 1]`.
+/// Returns `InvalidParameter` if `alpha` is not in `(0, 1]` (NaN rejected).
 /// Returns `InvalidSample` if `data` is empty.
 #[must_use = "returns the smoothed series"]
 pub fn exponential_smoothing(data: &[f64], alpha: f64) -> Result<Vec<f64>, PramanaError> {
     if data.is_empty() {
         return Err(PramanaError::InvalidSample("empty data".into()));
     }
-    if alpha <= 0.0 || alpha > 1.0 {
+    if !(alpha > 0.0 && alpha <= 1.0) {
         return Err(PramanaError::InvalidParameter(
             "alpha must be in (0, 1]".into(),
         ));
@@ -67,11 +67,12 @@ pub fn exponential_smoothing(data: &[f64], alpha: f64) -> Result<Vec<f64>, Prama
 /// Computes the autocorrelation of the data at the given lag.
 ///
 /// Uses the standard definition: r(k) = c(k) / c(0), where c(k) is the
-/// autocovariance at lag k.
+/// autocovariance at lag k. `r(0)` is 1; a constant series returns 0 for
+/// every positive lag.
 ///
 /// # Errors
 ///
-/// Returns `InvalidParameter` if `lag >= data.len()` or `lag == 0`.
+/// Returns `InvalidParameter` if `lag >= data.len()`.
 /// Returns `InvalidSample` if `data` has fewer than 2 elements.
 #[must_use = "returns the autocorrelation coefficient"]
 pub fn autocorrelation(data: &[f64], lag: usize) -> Result<f64, PramanaError> {
@@ -143,8 +144,10 @@ pub fn difference(data: &[f64], d: usize) -> Result<Vec<f64>, PramanaError> {
 
 /// Reverses d-th order differencing given the original series prefix.
 ///
-/// Reconstructs the integrated series from the differenced values and
-/// the first `d` values of the original series.
+/// Reconstructs the integrated series from the differenced values and the
+/// first `d` values of the original series, so that
+/// `integrate(&difference(y, d)?, &y[..d], d)` returns `y`. Only the first `d`
+/// prefix values are used.
 ///
 /// # Errors
 ///
@@ -166,15 +169,24 @@ pub fn integrate(
             "need at least {d} prefix values for order-{d} integration"
         )));
     }
+    // seeds[k] = first element of the k-th difference of the prefix
+    // (Δ⁰y₀ = y₀, Δ¹y₀ = y₁ - y₀, ...): the constant of integration at each level.
+    let mut level: Vec<f64> = original_prefix[..d].to_vec();
+    let mut seeds = Vec::with_capacity(d);
+    for _ in 0..d {
+        seeds.push(level.first().copied().unwrap_or(0.0));
+        level = level.windows(2).map(|w| w[1] - w[0]).collect();
+    }
+
+    // Undo one level of differencing at a time, from order d down to 0.
     let mut result = differenced.to_vec();
-    // For each integration step, prepend the appropriate original value and cumsum
-    for step in (0..d).rev() {
-        let seed = original_prefix[step];
+    for &seed in seeds.iter().rev() {
         let mut integrated = Vec::with_capacity(result.len() + 1);
-        integrated.push(seed);
+        let mut acc = seed;
+        integrated.push(acc);
         for &val in &result {
-            let prev = *integrated.last().unwrap_or(&0.0);
-            integrated.push(prev + val);
+            acc += val;
+            integrated.push(acc);
         }
         result = integrated;
     }
@@ -208,12 +220,18 @@ pub struct ArimaModel {
 /// # Errors
 ///
 /// Returns `InvalidParameter` if `p` is 0.
-/// Returns `InvalidSample` if data is too short for the given p and d.
+/// Returns `InvalidSample` if data is too short for the given p and d, or
+/// contains non-finite values.
 #[must_use = "returns the fitted ARIMA model"]
 pub fn arima_fit(data: &[f64], p: usize, d: usize) -> Result<ArimaModel, PramanaError> {
     if p == 0 {
         return Err(PramanaError::InvalidParameter(
             "AR order p must be positive".into(),
+        ));
+    }
+    if data.iter().any(|v| !v.is_finite()) {
+        return Err(PramanaError::InvalidSample(
+            "data contains non-finite values".into(),
         ));
     }
 
@@ -316,7 +334,7 @@ pub fn arima_fit(data: &[f64], p: usize, d: usize) -> Result<ArimaModel, Pramana
 /// # Errors
 ///
 /// Returns `InvalidSample` if `history` is too short.
-/// Returns `InvalidParameter` if `steps` is 0.
+/// Returns `InvalidParameter` if `steps` is 0 or too large to allocate.
 #[must_use = "returns the forecasted values"]
 pub fn arima_forecast(
     model: &ArimaModel,
@@ -329,6 +347,8 @@ pub fn arima_forecast(
         ));
     }
     let p = model.ar_coefficients.len();
+    let capacity_error =
+        |_| PramanaError::InvalidParameter(format!("cannot allocate {steps} forecast steps"));
 
     // Get the differenced series for AR initialization
     let mut z = if model.d > 0 {
@@ -346,7 +366,11 @@ pub fn arima_forecast(
     }
 
     // Forecast in differenced space
-    let mut forecasts_z = Vec::with_capacity(steps);
+    let mut forecasts_z = Vec::new();
+    forecasts_z
+        .try_reserve_exact(steps)
+        .map_err(capacity_error)?;
+    z.try_reserve(steps).map_err(capacity_error)?;
     for _ in 0..steps {
         let mut pred = model.intercept;
         let len = z.len();
@@ -553,5 +577,55 @@ mod tests {
         assert_eq!(model.ar_coefficients, m2.ar_coefficients);
         assert_eq!(model.d, m2.d);
         assert_eq!(model.intercept, m2.intercept);
+    }
+
+    // --- Hardening regression tests -------------------------------------
+
+    #[test]
+    fn integrate_roundtrip_higher_orders() {
+        // d >= 2 used the raw prefix values as seeds for every level, so
+        // integrating Δ²(t²) gave [1, 5, 11, 19, 29] instead of [1, 4, 9, 16, 25].
+        let data: Vec<f64> = (1..=8)
+            .map(|t| (t * t) as f64 + 0.5 * (t as f64).sin())
+            .collect();
+        for d in 1..=4 {
+            let diffed = difference(&data, d).unwrap();
+            let back = integrate(&diffed, &data[..d], d).unwrap();
+            assert_eq!(back.len(), data.len());
+            for (a, b) in back.iter().zip(&data) {
+                assert!((a - b).abs() < 1e-9, "d={d}: {back:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn arima_forecast_second_order_differencing() {
+        // Δ²(t²) = 2: a model that forecasts a constant second difference of 2
+        // must continue the parabola.
+        let model = ArimaModel {
+            ar_coefficients: vec![0.0],
+            d: 2,
+            intercept: 2.0,
+            residual_variance: 0.0,
+        };
+        let history = [0.0, 1.0, 4.0, 9.0, 16.0];
+        let fc = arima_forecast(&model, &history, 3).unwrap();
+        assert_eq!(fc, vec![25.0, 36.0, 49.0]);
+    }
+
+    #[test]
+    fn exponential_smoothing_rejects_nan_alpha() {
+        assert!(exponential_smoothing(&[1.0, 2.0], f64::NAN).is_err());
+    }
+
+    #[test]
+    fn arima_rejects_non_finite_and_huge_steps() {
+        let data: Vec<f64> = (0..30).map(|i| (i as f64 * 0.3).sin()).collect();
+        let mut bad = data.clone();
+        bad[4] = f64::NAN;
+        assert!(arima_fit(&bad, 1, 0).is_err());
+        let model = arima_fit(&data, 1, 0).unwrap();
+        // Allocation failure is an error, not a capacity-overflow panic.
+        assert!(arima_forecast(&model, &data, usize::MAX).is_err());
     }
 }

@@ -45,3 +45,21 @@ algorithms:
 - We own the numerical accuracy -- must maintain comprehensive tests against
   known reference values (SciPy, Mathematica, DLMF tables).
 - Future special functions (e.g., Bessel) will need the same treatment.
+
+## Amendment (2026-11-14)
+
+The P(-1) hardening sweep found the original implementations too imprecise or
+truncated for statistical use, and replaced them while keeping the decision
+(no new dependencies):
+
+| Function | Change | Why |
+|----------|--------|-----|
+| `erf` / `erfc` | Port of FreeBSD msun `s_erf.c` (fdlibm, via the MIT-licensed `libm` crate; Sun notice preserved in `math.rs`) | A&S 7.1.26 has 1.5e-7 absolute error and ~40% relative error in the tails (e.g. `Φ(-6)` off by 0.4%), which leaks straight into p-values |
+| Incomplete gamma | Returns `(P, Q)` with each tail computed directly; iteration budget `200 + 20·√a` (was a fixed 200); Stirling/`ln_1p` prefactor; Wilson–Hilferty above `a = 1e9` | `ChiSquared(1e6).cdf(1e6)` returned 0.11 instead of 0.50 (series truncated); `1 - P` lost tiny upper tails |
+| Incomplete beta | Returns `(I, 1 - I)`; callers pass `x` and `1 - x` separately; same iteration budget; Loader/TOMS 708-style `bd0` prefactor when both shapes ≥ 10 | Upper-tail F p-values rounded to 0; large-shape prefactor cancellation (~1e-10 relative error at n = 10⁶) |
+| `ln_beta` | Stirling-remainder form for large arguments (R's `lbeta` scheme) | `lnΓ(a) + lnΓ(b) - lnΓ(a+b)` cancels for large `a` (Student-t with large df) |
+| New helpers | `stirling_error`, `bd0`, `ln_gamma_kernel`, `normal_cdf`, `normal_sf` | O(1), cancellation-free Poisson/Binomial PMFs and normal tails |
+
+Reference values in the tests come from glibc `erf`/`erfc`, closed forms
+(Cauchy, `t₂`, `F(2, ν)`, `I_x(a, 1)`), and 50-digit decimal Poisson sums.
+

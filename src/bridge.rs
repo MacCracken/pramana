@@ -158,79 +158,65 @@ pub fn trait_scores_to_correlation(a: &[f64], b: &[f64]) -> (f64, f64, f64, f64,
 /// power-law fit parameters.
 ///
 /// Returns `(a, b)` where `T = a × N^(-b)`, estimated via log-log
-/// linear regression. Returns `(0, 0)` on insufficient data.
+/// linear regression. Points with `trial == 0` or a non-positive or non-finite
+/// time are skipped. Returns `(0, 0)` if fewer than 2 usable points remain or
+/// all usable trials are equal.
 #[must_use]
 pub fn learning_trials_to_power_law(trials: &[(u32, f64)]) -> (f64, f64) {
-    if trials.len() < 2 {
-        return (0.0, 0.0);
-    }
     // Log-log transform: ln(T) = ln(a) - b × ln(N)
-    let n = trials.len() as f64;
-    let mut sum_x = 0.0;
-    let mut sum_y = 0.0;
-    let mut sum_xy = 0.0;
-    let mut sum_xx = 0.0;
-
-    for &(trial, time) in trials {
-        if trial == 0 || time <= 0.0 {
-            continue;
-        }
-        let x = (trial as f64).ln();
-        let y = time.ln();
-        sum_x += x;
-        sum_y += y;
-        sum_xy += x * y;
-        sum_xx += x * x;
+    let points = trials
+        .iter()
+        .filter(|&&(trial, time)| trial > 0 && time > 0.0 && time.is_finite())
+        .map(|&(trial, time)| (f64::from(trial).ln(), time.ln()));
+    match fit_line(points) {
+        Some((slope, intercept)) => (intercept.exp(), -slope),
+        None => (0.0, 0.0),
     }
+}
 
-    let denom = n * sum_xx - sum_x * sum_x;
-    if denom.abs() < 1e-15 {
-        return (0.0, 0.0);
+/// Least-squares line through `points`, returning `(slope, intercept)`.
+///
+/// Uses centered sums over the points actually supplied; `None` if fewer than
+/// 2 points or zero spread in x.
+fn fit_line(points: impl Iterator<Item = (f64, f64)> + Clone) -> Option<(f64, f64)> {
+    let (count, sum_x, sum_y) = points
+        .clone()
+        .fold((0usize, 0.0, 0.0), |(c, sx, sy), (x, y)| {
+            (c + 1, sx + x, sy + y)
+        });
+    if count < 2 {
+        return None;
     }
-
-    let slope = (n * sum_xy - sum_x * sum_y) / denom;
-    let intercept = (sum_y - slope * sum_x) / n;
-
-    let a = intercept.exp();
-    let b = -slope; // T = a × N^(-b), so ln(T) = ln(a) - b×ln(N)
-    (a, b)
+    let n = count as f64;
+    let (mean_x, mean_y) = (sum_x / n, sum_y / n);
+    let (sxx, sxy) = points.fold((0.0, 0.0), |(sxx, sxy), (x, y)| {
+        let dx = x - mean_x;
+        (sxx + dx * dx, sxy + dx * (y - mean_y))
+    });
+    if !(sxx > 1e-15 && sxx.is_finite()) {
+        return None;
+    }
+    let slope = sxy / sxx;
+    Some((slope, mean_y - slope * mean_x))
 }
 
 /// Convert response time distribution parameters to Hick's law coefficients.
 ///
 /// Given mean response times for different numbers of choices,
 /// returns `(a, b)` where `RT = a + b × log2(n)`.
-/// Input: slice of `(num_choices, mean_rt)` pairs.
+/// Input: slice of `(num_choices, mean_rt)` pairs. Points with zero choices or
+/// a non-finite response time are skipped. Returns `(0, 0)` if fewer than 2
+/// usable points remain or all usable choice counts are equal.
 #[must_use]
 pub fn response_times_to_hick_params(data: &[(usize, f64)]) -> (f64, f64) {
-    if data.len() < 2 {
-        return (0.0, 0.0);
+    let points = data
+        .iter()
+        .filter(|&&(choices, rt)| choices > 0 && rt.is_finite())
+        .map(|&(choices, rt)| ((choices as f64).log2(), rt));
+    match fit_line(points) {
+        Some((b, a)) => (a, b),
+        None => (0.0, 0.0),
     }
-    let n = data.len() as f64;
-    let mut sum_x = 0.0;
-    let mut sum_y = 0.0;
-    let mut sum_xy = 0.0;
-    let mut sum_xx = 0.0;
-
-    for &(choices, rt) in data {
-        if choices == 0 {
-            continue;
-        }
-        let x = (choices as f64).log2();
-        sum_x += x;
-        sum_y += rt;
-        sum_xy += x * rt;
-        sum_xx += x * x;
-    }
-
-    let denom = n * sum_xx - sum_x * sum_x;
-    if denom.abs() < 1e-15 {
-        return (0.0, 0.0);
-    }
-
-    let b = (n * sum_xy - sum_x * sum_y) / denom;
-    let a = (sum_y - b * sum_x) / n;
-    (a, b)
 }
 
 #[cfg(test)]
@@ -361,5 +347,35 @@ mod tests {
         let (a, b) = response_times_to_hick_params(&data);
         assert!((a - 0.2).abs() < 0.01);
         assert!((b - 0.1).abs() < 0.01);
+    }
+
+    #[test]
+    fn power_law_skipped_points_do_not_bias_fit() {
+        // T = 10 · N^-1 on the valid points; (0, 5.0) and (3, -1.0) are skipped.
+        // The old code divided by the total slice length (including skipped
+        // points) and returned (3.51, 0.094).
+        let (a, b) =
+            learning_trials_to_power_law(&[(0, 5.0), (1, 10.0), (2, 5.0), (3, -1.0), (4, 2.5)]);
+        assert!((a - 10.0).abs() < 1e-9, "a = {a}");
+        assert!((b - 1.0).abs() < 1e-12, "b = {b}");
+        // Only one usable point.
+        assert_eq!(
+            learning_trials_to_power_law(&[(0, 1.0), (2, 3.0)]),
+            (0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn hick_skipped_points_do_not_bias_fit() {
+        // RT = 200 + 150·log2(n) on the valid points.
+        let (a, b) = response_times_to_hick_params(&[
+            (0, 999.0),
+            (1, 200.0),
+            (2, 350.0),
+            (4, 500.0),
+            (8, f64::NAN),
+        ]);
+        assert!((a - 200.0).abs() < 1e-9, "a = {a}");
+        assert!((b - 150.0).abs() < 1e-9, "b = {b}");
     }
 }

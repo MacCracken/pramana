@@ -2,10 +2,9 @@
 name = "pramana"
 version = "1.2.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.100"
 license = "GPL-3.0-only"
 description = "pramana — Statistics and probability: distributions, Bayesian inference, hypothesis testing, Monte Carlo, Markov chains"
-homepage = "https://github.com/MacCracken/pramana"
 repository = "https://github.com/MacCracken/pramana"
 readme = "README.md"
 documentation = "https://docs.rs/pramana"
@@ -14,23 +13,22 @@ categories = ["mathematics", "science"]
 exclude = [".claude/", ".github/", "docs/", "scripts/"]
 
 [dependencies]
-hisab = { version = "1", default-features = false, features = ["num"] }
-hoosh = { version = "1", default-features = false, optional = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", optional = true }
-thiserror = "2"
-tokio = { version = "1", features = ["rt"], optional = true }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+hisab = { version = "1.4", default-features = false, features = ["num"] }
+hoosh = { version = "1.3", default-features = false, optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", optional = true }
+thiserror = "2.0.21"
+tokio = { version = "1.54", features = ["rt"], optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-serde_json = "1"
+criterion = { version = "0.8", features = ["html_reports"] }
+serde_json = "1.0.154"
 
 [features]
 default = []
 soorat-compat = []
-logging = ["dep:tracing-subscriber"]
+# Reserved: pramana does no logging. Kept as a no-op so `features = ["logging"]` keeps building.
+logging = []
 ai = ["dep:hoosh", "dep:tokio", "dep:serde_json"]
 
 [[bench]]

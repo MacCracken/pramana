@@ -8,8 +8,16 @@ use crate::error::PramanaError;
 use crate::{descriptive, hypothesis, regression, timeseries};
 use hoosh::inference::{Message, Role};
 use hoosh::{HooshClient, InferenceRequest, ToolCall, ToolChoice, ToolDefinition};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+
+/// Largest forecast horizon the `forecast` tool accepts. Tool arguments come
+/// from the model's output and are untrusted, so they are bounded.
+pub const MAX_FORECAST_STEPS: usize = 1_000;
+
+/// Largest AR order the `forecast` tool accepts.
+pub const MAX_AR_ORDER: usize = 32;
 
 /// A natural-language statistical query engine backed by an LLM.
 pub struct StatQuery {
@@ -18,7 +26,7 @@ pub struct StatQuery {
 }
 
 /// Result of a natural-language statistical query.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {
     /// Human-readable answer.
     pub answer: String,
@@ -148,7 +156,7 @@ fn build_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "describe".into(),
-            description: "Compute descriptive statistics (mean, median, std_dev, variance, min, max, skewness, kurtosis) for a column.".into(),
+            description: "Compute descriptive statistics (mean, median, std_dev, variance, min, max) for a column.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -201,13 +209,35 @@ fn build_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "column": { "type": "string", "description": "Time series column" },
-                    "steps": { "type": "integer", "description": "Number of steps to forecast (default 5)" },
-                    "ar_order": { "type": "integer", "description": "AR order p (default 1)" }
+                    "steps": { "type": "integer", "minimum": 1, "maximum": MAX_FORECAST_STEPS, "description": "Number of steps to forecast (default 5)" },
+                    "ar_order": { "type": "integer", "minimum": 1, "maximum": MAX_AR_ORDER, "description": "AR order p (default 1)" }
                 },
                 "required": ["column"]
             }),
         },
     ]
+}
+
+/// Reads an optional integer tool argument in `1..=max` (default when absent).
+///
+/// Tool arguments are produced by the model and therefore untrusted: values
+/// that are not positive integers or exceed `max` are rejected rather than
+/// truncated or used to size allocations.
+fn bounded_usize_arg(
+    args: &Value,
+    key: &str,
+    default: usize,
+    max: usize,
+) -> Result<usize, PramanaError> {
+    let Some(raw) = args.get(key).filter(|v| !v.is_null()) else {
+        return Ok(default);
+    };
+    raw.as_u64()
+        .and_then(|v| usize::try_from(v).ok())
+        .filter(|&v| (1..=max).contains(&v))
+        .ok_or_else(|| {
+            PramanaError::InvalidParameter(format!("{key} must be an integer in 1..={max}"))
+        })
 }
 
 /// Executes a tool call against the dataset.
@@ -315,8 +345,8 @@ fn execute_tool(
         }
         "forecast" => {
             let col = get_col(data, args, "column")?;
-            let steps = args.get("steps").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-            let p = args.get("ar_order").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+            let steps = bounded_usize_arg(args, "steps", 5, MAX_FORECAST_STEPS)?;
+            let p = bounded_usize_arg(args, "ar_order", 1, MAX_AR_ORDER)?;
             let model = timeseries::arima_fit(col, p, 0)?;
             let fc = timeseries::arima_forecast(&model, col, steps)?;
             let mut values = HashMap::new();
@@ -334,5 +364,86 @@ fn execute_tool(
         other => Err(PramanaError::InvalidParameter(format!(
             "unknown tool: {other}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(name: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            id: "call-1".into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    fn dataset() -> HashMap<String, Vec<f64>> {
+        let mut data = HashMap::new();
+        data.insert(
+            "series".to_string(),
+            (0..40)
+                .map(|i| (i as f64 * 0.4).sin() + 0.05 * i as f64)
+                .collect(),
+        );
+        data
+    }
+
+    #[test]
+    fn forecast_rejects_unbounded_model_arguments() {
+        let data = dataset();
+        for args in [
+            json!({"column": "series", "steps": 1_000_000_000_000_u64}),
+            json!({"column": "series", "steps": 0}),
+            json!({"column": "series", "steps": -3}),
+            json!({"column": "series", "steps": "many"}),
+            json!({"column": "series", "ar_order": 10_000}),
+        ] {
+            assert!(
+                execute_tool(&call("forecast", args.clone()), &data).is_err(),
+                "{args}"
+            );
+        }
+    }
+
+    #[test]
+    fn forecast_within_bounds_succeeds() {
+        let data = dataset();
+        let (op, values, _) = execute_tool(
+            &call("forecast", json!({"column": "series", "steps": 3})),
+            &data,
+        )
+        .unwrap();
+        assert_eq!(op, "forecast");
+        assert_eq!(values.len(), 3);
+        // Defaults apply when arguments are absent or null.
+        let (_, values, _) = execute_tool(
+            &call("forecast", json!({"column": "series", "steps": null})),
+            &data,
+        )
+        .unwrap();
+        assert_eq!(values.len(), 5);
+    }
+
+    #[test]
+    fn unknown_tool_and_column_are_errors() {
+        let data = dataset();
+        assert!(execute_tool(&call("rm_rf", json!({})), &data).is_err());
+        assert!(execute_tool(&call("describe", json!({"column": "nope"})), &data).is_err());
+    }
+
+    #[test]
+    fn query_result_serde_roundtrip() {
+        let mut values = HashMap::new();
+        values.insert("mean".to_string(), 1.5);
+        let r = QueryResult {
+            answer: "ok".into(),
+            operation: "describe".into(),
+            values,
+        };
+        let back: QueryResult = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back.values["mean"], 1.5);
+        assert_eq!(back.operation, "describe");
     }
 }

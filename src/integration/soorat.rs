@@ -56,33 +56,50 @@ pub struct HistogramData {
 
 impl HistogramData {
     /// Create from raw data with uniform binning.
+    ///
+    /// Non-finite values (NaN, ±inf) are skipped and not counted in `total`
+    /// (previously NaN landed in the first bin). If no finite values remain,
+    /// or `n_bins` is 0, the histogram is empty. Each bin is at least two ulps
+    /// wide at the data's magnitude, so edges are always strictly increasing
+    /// (even for constant data).
     #[must_use]
     pub fn from_data(data: &[f64], n_bins: usize) -> Self {
-        if data.is_empty() || n_bins == 0 {
-            return Self {
-                bin_edges: Vec::new(),
-                counts: Vec::new(),
-                total: 0,
-            };
+        let empty = Self {
+            bin_edges: Vec::new(),
+            counts: Vec::new(),
+            total: 0,
+        };
+        let finite = || data.iter().copied().filter(|v| v.is_finite());
+        let Some(min) = finite().reduce(f64::min) else {
+            return empty;
+        };
+        if n_bins == 0 {
+            return empty;
         }
-        let min = data.iter().cloned().fold(f64::MAX, f64::min);
-        let max = data.iter().cloned().fold(f64::MIN, f64::max);
-        let range = (max - min).max(f64::EPSILON);
+        let max = finite().fold(min, f64::max);
+        // Floor on the range so every bin is at least 2 ulps wide at this
+        // magnitude: a constant (or nearly constant) sample still gets
+        // distinct, increasing bin edges.
+        let magnitude = min.abs().max(max.abs()).max(1.0);
+        let floor = magnitude * f64::EPSILON * 2.0 * n_bins as f64;
+        let range = (max - min).max(floor);
         let bin_width = range / n_bins as f64;
 
         let bin_edges: Vec<f64> = (0..=n_bins).map(|i| min + i as f64 * bin_width).collect();
         let mut counts = vec![0u64; n_bins];
 
-        for &v in data {
-            let idx = ((v - min) / bin_width) as usize;
-            let idx = idx.min(n_bins - 1);
+        let mut total = 0u64;
+        for v in finite() {
+            // (v - min) / width is in [0, n_bins]; truncation picks the bin.
+            let idx = (((v - min) / bin_width) as usize).min(n_bins - 1);
             counts[idx] += 1;
+            total += 1;
         }
 
         Self {
             bin_edges,
             counts,
-            total: data.len() as u64,
+            total,
         }
     }
 }
@@ -169,5 +186,24 @@ mod tests {
             r_squared: 0.998,
         };
         assert!(fit.r_squared > 0.99);
+    }
+
+    #[test]
+    fn histogram_skips_non_finite_values() {
+        let h = HistogramData::from_data(&[f64::NAN, 1.0, 2.0, f64::INFINITY, 3.0], 2);
+        assert_eq!(h.total, 3);
+        assert_eq!(h.counts.iter().sum::<u64>(), 3);
+        assert_eq!(h.bin_edges.first().copied(), Some(1.0));
+        assert_eq!(h.bin_edges.last().copied(), Some(3.0));
+        let h = HistogramData::from_data(&[f64::NAN, f64::NAN], 4);
+        assert!(h.counts.is_empty());
+        assert_eq!(h.total, 0);
+    }
+
+    #[test]
+    fn histogram_constant_large_values_have_distinct_edges() {
+        let h = HistogramData::from_data(&[1e12, 1e12, 1e12], 4);
+        assert_eq!(h.total, 3);
+        assert!(h.bin_edges.windows(2).all(|w| w[1] > w[0]));
     }
 }

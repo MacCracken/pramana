@@ -39,12 +39,26 @@
 - [x] Public crate dependencies (hisab, hoosh from crates.io)
 - [x] ADRs, threat model, dependency watch, testing guide
 
+### v1.1.0
+- [x] `bridge.rs` cross-crate bridges: badal, kimiya, ushma
+- [x] `integration/soorat.rs` (`soorat-compat`): distribution curve, MCMC trace, regression fit, histogram, correlation matrix
+
+### v1.2.0
+- [x] bodh (psychology) bridges
+
+### Unreleased — toolchain update + P(-1) hardening sweep (2026-11-14)
+- [x] MSRV 1.89 -> 1.100 (edition 2024 is still the latest); deps to latest (hisab 1.4, hoosh 1.3, criterion 0.8); unused `tracing` deps removed
+- [x] Special functions: fdlibm `erf`/`erfc`, both-tail incomplete gamma/beta with √shape iteration budgets, stable `ln_beta`
+- [x] Zero reachable panics (NaN sorts, serde-injected invalid state, size overflows), validated deserialization for all invariant-carrying types
+- [x] Correctness fixes: KS ties, ARIMA `d >= 2`, Binomial `p ∈ {0, 1}`, exact chi-squared p-values, ANOVA zero within-variance, bridge fits with skipped points
+- [x] O(1)/O(log n) Poisson & Binomial CDF/PMF/sampling, O(n) median/percentile, O(n log n) mode
+
 ## v1.1 — Performance, Platform & Numerical Hardening
 
 ### Performance
 - [ ] SIMD-accelerated descriptive statistics (leverage hisab parallel feature)
 - [ ] Parallel MCMC (multiple chains)
-- [ ] Streaming/online statistics (Welford's algorithm for mean/variance)
+- [ ] Streaming/online statistics (Welford's algorithm for mean/variance) — Welford already used internally by `monte_carlo_integrate`
 - [ ] Memory-mapped large dataset support
 
 ### Platform
@@ -67,10 +81,10 @@
 - [ ] Multinomial distribution
 
 ### Numerical improvements
-- [ ] Scaled forward algorithm for HMMs (prevent underflow on long sequences)
+- [x] Scaled forward algorithm for HMMs (prevent underflow on long sequences)
 - [ ] MA(q) support in ARIMA via conditional sum-of-squares (currently AR-only)
 - [ ] Adaptive bandwidth selection for KDE (leave-one-out cross-validation)
-- [ ] Improved Poisson CDF for large lambda (use incomplete gamma instead of summation)
+- [x] Improved Poisson CDF for large lambda (use incomplete gamma instead of summation)
 - [ ] Standardize epsilon constants across modules (see threat-model.md)
 
 ### Testing
@@ -164,16 +178,16 @@
 
 ## Cross-Crate Bridges
 
-- [ ] `bridge.rs` module — primitive-value conversions for cross-crate statistics
-- [ ] **badal bridge**: ensemble forecast spread → confidence intervals; observation error → likelihood weight
-- [ ] **kimiya bridge**: reaction yield measurements → mean/variance; replicate data → hypothesis test p-value
-- [ ] **ushma bridge**: measurement uncertainty (±K) → Gaussian error model; sensor noise → Kalman filter parameters
+- [x] `bridge.rs` module — primitive-value conversions for cross-crate statistics
+- [x] **badal bridge**: ensemble forecast spread → confidence intervals; observation error → likelihood weight
+- [x] **kimiya bridge**: reaction yield measurements → mean/variance; replicate data → hypothesis test p-value
+- [x] **ushma bridge**: measurement uncertainty (±K) → Gaussian error model; sensor noise → Kalman filter parameters
 
 ## Soorat Integration
 
-- [ ] `integration/soorat.rs` module — feature-gated `soorat-compat`
-- [ ] **Distribution curve**: PDF/CDF sample points for line plot rendering
-- [ ] **MCMC trace**: sample chain positions for scatter/line rendering
-- [ ] **Regression fit**: predicted vs actual points with confidence band for line+ribbon rendering
-- [ ] **Histogram data**: bin edges and counts for bar chart rendering
-- [ ] **Correlation matrix**: NxN values for heatmap rendering
+- [x] `integration/soorat.rs` module — feature-gated `soorat-compat`
+- [x] **Distribution curve**: PDF/CDF sample points for line plot rendering
+- [x] **MCMC trace**: sample chain positions for scatter/line rendering
+- [x] **Regression fit**: predicted vs actual points with confidence band for line+ribbon rendering
+- [x] **Histogram data**: bin edges and counts for bar chart rendering
+- [x] **Correlation matrix**: NxN values for heatmap rendering

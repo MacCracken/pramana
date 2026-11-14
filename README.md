@@ -20,6 +20,15 @@
 | `monte_carlo` | Monte Carlo integration, Metropolis-Hastings MCMC, Gibbs sampling |
 | `markov` | Markov chains, Hidden Markov Models (Forward, Viterbi, Baum-Welch) |
 | `timeseries` | Time series: moving average, exponential smoothing, autocorrelation, ARIMA |
+| `bridge` | Primitive-value bridges for other AGNOS science crates |
+
+### Feature flags
+
+| Feature | Enables |
+|---------|---------|
+| `ai` | Natural-language statistical queries via hoosh (`ai::StatQuery`) |
+| `soorat-compat` | Visualization data structures for soorat (`integration::soorat`) |
+| `logging` | Reserved no-op (kept for compatibility) |
 
 ## Quick Start
 
@@ -48,7 +57,7 @@ make bench    # criterion benchmarks with history
 
 ## MSRV
 
-Rust 1.89
+Rust 1.100 (edition 2024)
 
 ## License
 

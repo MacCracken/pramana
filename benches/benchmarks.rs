@@ -1,18 +1,19 @@
 //! Criterion benchmarks for pramana.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use pramana::bayesian;
 use pramana::combinatorics;
 use pramana::descriptive::{self, Kernel, KernelDensity};
 use pramana::distribution::{
-    Beta, Cauchy, ChiSquared, Distribution, FDistribution, Gamma, MultivariateNormal, Normal,
-    Poisson, StudentT, Weibull,
+    Beta, Binomial, Cauchy, ChiSquared, Distribution, FDistribution, Gamma, MultivariateNormal,
+    Normal, Poisson, StudentT, Weibull,
 };
 use pramana::hypothesis;
-use pramana::markov::MarkovChain;
+use pramana::markov::{HiddenMarkovModel, MarkovChain};
 use pramana::monte_carlo::{self, SimpleRng};
 use pramana::regression;
 use pramana::timeseries;
+use std::hint::black_box;
 
 fn bench_normal_pdf_1000(c: &mut Criterion) {
     let normal = Normal::new(0.0, 1.0).unwrap();
@@ -312,6 +313,152 @@ fn bench_kde_gaussian_1000(c: &mut Criterion) {
     });
 }
 
+/// Deterministic pseudo-random data in [0, 1) (no RNG dependency in setup).
+fn scrambled(n: usize) -> Vec<f64> {
+    (0..n)
+        .map(|i| ((i * 7919 + 13) % 10_007) as f64 / 10_007.0)
+        .collect()
+}
+
+fn bench_normal_cdf_1000(c: &mut Criterion) {
+    let normal = Normal::new(0.0, 1.0).unwrap();
+    c.bench_function("distribution/normal_cdf_1000", |b| {
+        b.iter(|| {
+            for i in 0..1000 {
+                let x = (i as f64 - 500.0) / 100.0;
+                black_box(normal.cdf(black_box(x)));
+            }
+        });
+    });
+}
+
+fn bench_poisson_cdf_lambda100_200pts(c: &mut Criterion) {
+    let poisson = Poisson::new(100.0).unwrap();
+    c.bench_function("distribution/poisson_cdf_lambda100_200pts", |b| {
+        b.iter(|| {
+            for k in 0..200 {
+                black_box(poisson.cdf(black_box(k as f64)));
+            }
+        });
+    });
+}
+
+fn bench_binomial_cdf_n200_20pts(c: &mut Criterion) {
+    let binom = Binomial::new(200, 0.3).unwrap();
+    c.bench_function("distribution/binomial_cdf_n200_20pts", |b| {
+        b.iter(|| {
+            for k in (0..200).step_by(10) {
+                black_box(binom.cdf(black_box(k as f64)));
+            }
+        });
+    });
+}
+
+fn bench_binomial_sample_n10000_100(c: &mut Criterion) {
+    let binom = Binomial::new(10_000, 0.3).unwrap();
+    c.bench_function("distribution/binomial_sample_n10000_100", |b| {
+        b.iter(|| {
+            let mut rng = SimpleRng::new(42);
+            for _ in 0..100 {
+                black_box(binom.sample(&mut rng));
+            }
+        });
+    });
+}
+
+fn bench_median_10001(c: &mut Criterion) {
+    let data = scrambled(10_001);
+    c.bench_function("descriptive/median_10001", |b| {
+        b.iter(|| black_box(descriptive::median(black_box(&data))));
+    });
+}
+
+fn bench_mode_10000(c: &mut Criterion) {
+    let data: Vec<f64> = scrambled(10_000)
+        .iter()
+        .map(|v| (v * 500.0).floor())
+        .collect();
+    c.bench_function("descriptive/mode_10000", |b| {
+        b.iter(|| black_box(descriptive::mode(black_box(&data))));
+    });
+}
+
+fn bench_ks_two_sample_1000(c: &mut Criterion) {
+    let a = scrambled(1000);
+    let bb: Vec<f64> = scrambled(1200).iter().map(|v| v * 1.1).collect();
+    c.bench_function("hypothesis/ks_two_sample_1000", |b| {
+        b.iter(|| {
+            black_box(hypothesis::ks_two_sample(
+                black_box(&a),
+                black_box(&bb),
+                0.05,
+            ))
+        });
+    });
+}
+
+fn bench_chi_squared_test_20(c: &mut Criterion) {
+    let observed: Vec<f64> = (0..20).map(|i| 50.0 + (i % 7) as f64 * 3.0).collect();
+    let expected = vec![59.0; 20];
+    c.bench_function("hypothesis/chi_squared_test_20", |b| {
+        b.iter(|| {
+            black_box(hypothesis::chi_squared_test(
+                black_box(&observed),
+                black_box(&expected),
+                0.05,
+            ))
+        });
+    });
+}
+
+fn example_hmm() -> HiddenMarkovModel {
+    HiddenMarkovModel::new(
+        vec![
+            vec![0.7, 0.2, 0.1],
+            vec![0.3, 0.5, 0.2],
+            vec![0.2, 0.3, 0.5],
+        ],
+        vec![
+            vec![0.5, 0.3, 0.1, 0.1],
+            vec![0.1, 0.4, 0.4, 0.1],
+            vec![0.2, 0.1, 0.2, 0.5],
+        ],
+        vec![0.5, 0.3, 0.2],
+    )
+    .unwrap()
+}
+
+fn bench_hmm_forward_1000(c: &mut Criterion) {
+    let hmm = example_hmm();
+    let obs: Vec<usize> = (0..1000).map(|i| (i * 7 + i / 3) % 4).collect();
+    c.bench_function("markov/hmm_forward_1000", |b| {
+        b.iter(|| black_box(hmm.forward_log_likelihood(black_box(&obs))));
+    });
+}
+
+fn bench_hmm_baum_welch_200_x5(c: &mut Criterion) {
+    let hmm = example_hmm();
+    let obs: Vec<usize> = (0..200).map(|i| (i * 7 + i / 3) % 4).collect();
+    c.bench_function("markov/hmm_baum_welch_200_x5", |b| {
+        b.iter(|| black_box(hmm.baum_welch(black_box(&obs), 5)));
+    });
+}
+
+fn bench_markov_steady_state_10(c: &mut Criterion) {
+    let n = 10;
+    let matrix: Vec<Vec<f64>> = (0..n)
+        .map(|i| {
+            let row: Vec<f64> = (0..n).map(|j| 1.0 + ((i * 3 + j * 5) % 7) as f64).collect();
+            let total: f64 = row.iter().sum();
+            row.into_iter().map(|v| v / total).collect()
+        })
+        .collect();
+    let chain = MarkovChain::new(matrix, 0).unwrap();
+    c.bench_function("markov/steady_state_10", |b| {
+        b.iter(|| black_box(chain.steady_state()));
+    });
+}
+
 criterion_group!(
     benches,
     bench_normal_pdf_1000,
@@ -337,5 +484,16 @@ criterion_group!(
     bench_mvn_pdf_3d_1000,
     bench_mh_1d_10000,
     bench_kde_gaussian_1000,
+    bench_normal_cdf_1000,
+    bench_poisson_cdf_lambda100_200pts,
+    bench_binomial_cdf_n200_20pts,
+    bench_binomial_sample_n10000_100,
+    bench_median_10001,
+    bench_mode_10000,
+    bench_ks_two_sample_1000,
+    bench_chi_squared_test_20,
+    bench_hmm_forward_1000,
+    bench_hmm_baum_welch_200_x5,
+    bench_markov_steady_state_10,
 );
 criterion_main!(benches);

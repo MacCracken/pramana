@@ -14,12 +14,43 @@ pub struct LinearModel {
     pub r_squared: f64,
 }
 
+/// Returns `InvalidSample` if any value in `data` is NaN or infinite.
+fn require_finite(data: &[f64], name: &str) -> Result<(), PramanaError> {
+    match data.iter().position(|v| !v.is_finite()) {
+        Some(i) => Err(PramanaError::InvalidSample(format!(
+            "{name}[{i}] is not finite"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// True if every element equals the first (exact comparison).
+fn all_equal(data: &[f64]) -> bool {
+    data.split_first()
+        .is_none_or(|(first, rest)| rest.iter().all(|v| v == first))
+}
+
+/// Coefficient of determination from residual and total sums of squares.
+///
+/// A constant response (`ss_tot` undefined) is reported as a perfect fit.
+fn r_squared(y: &[f64], ss_res: f64, ss_tot: f64) -> f64 {
+    if all_equal(y) || ss_tot == 0.0 {
+        1.0
+    } else {
+        1.0 - ss_res / ss_tot
+    }
+}
+
 /// Fits a simple linear regression y = slope * x + intercept using ordinary least squares.
+///
+/// Uses centered (two-pass) sums, so data with a large offset (e.g. timestamps)
+/// is fitted accurately.
 ///
 /// # Errors
 ///
 /// Returns `DimensionMismatch` if `x` and `y` have different lengths.
-/// Returns `InvalidSample` if fewer than 2 data points or zero variance in `x`.
+/// Returns `InvalidSample` if fewer than 2 data points, any value is non-finite,
+/// or all `x` values are equal.
 #[must_use = "returns the fitted model"]
 pub fn linear_regression(x: &[f64], y: &[f64]) -> Result<LinearModel, PramanaError> {
     if x.len() != y.len() {
@@ -32,26 +63,39 @@ pub fn linear_regression(x: &[f64], y: &[f64]) -> Result<LinearModel, PramanaErr
             "need at least 2 data points".into(),
         ));
     }
-    let n = x.len() as f64;
-    let sum_x: f64 = x.iter().sum();
-    let sum_y: f64 = y.iter().sum();
-    let sum_xy: f64 = x.iter().zip(y.iter()).map(|(&xi, &yi)| xi * yi).sum();
-    let sum_x2: f64 = x.iter().map(|&xi| xi * xi).sum();
-
-    let mean_x = sum_x / n;
-    let mean_y = sum_y / n;
-
-    let denom = sum_x2 - sum_x * sum_x / n;
-    if denom.abs() < 1e-30 {
+    if all_equal(x) {
         return Err(PramanaError::InvalidSample(
             "zero variance in x (all x values are equal)".into(),
         ));
     }
 
-    let slope = (sum_xy - sum_x * sum_y / n) / denom;
+    let n = x.len() as f64;
+    let mean_x = x.iter().sum::<f64>() / n;
+    let mean_y = y.iter().sum::<f64>() / n;
+    // Any NaN/inf input makes its mean non-finite: no separate scan needed.
+    if !(mean_x.is_finite() && mean_y.is_finite()) {
+        return Err(PramanaError::InvalidSample(
+            "x or y contains non-finite values (or its sum overflows)".into(),
+        ));
+    }
+
+    // Centered sums: no catastrophic cancellation for offset data.
+    let mut sxx = 0.0;
+    let mut sxy = 0.0;
+    for (&xi, &yi) in x.iter().zip(y) {
+        let dx = xi - mean_x;
+        sxx += dx * dx;
+        sxy += dx * (yi - mean_y);
+    }
+    if !(sxx > 0.0 && sxx.is_finite()) {
+        return Err(PramanaError::InvalidSample(
+            "x variance is zero or not representable".into(),
+        ));
+    }
+
+    let slope = sxy / sxx;
     let intercept = mean_y - slope * mean_x;
 
-    // R-squared
     let ss_tot: f64 = y.iter().map(|&yi| (yi - mean_y).powi(2)).sum();
     let ss_res: f64 = x
         .iter()
@@ -59,16 +103,10 @@ pub fn linear_regression(x: &[f64], y: &[f64]) -> Result<LinearModel, PramanaErr
         .map(|(&xi, &yi)| (yi - (slope * xi + intercept)).powi(2))
         .sum();
 
-    let r_squared = if ss_tot.abs() < 1e-30 {
-        1.0
-    } else {
-        1.0 - ss_res / ss_tot
-    };
-
     Ok(LinearModel {
         slope,
         intercept,
-        r_squared,
+        r_squared: r_squared(y, ss_res, ss_tot),
     })
 }
 
@@ -119,9 +157,9 @@ pub struct PolynomialModel {
 /// # Errors
 ///
 /// Returns `DimensionMismatch` if `x` and `y` have different lengths.
-/// Returns `InvalidParameter` if `degree` is 0 (use `linear_regression` instead) or
-/// greater than `x.len() - 1`.
-/// Returns `InvalidSample` if fewer than `degree + 1` data points.
+/// Returns `InvalidParameter` if `degree` is 0 (use `linear_regression` instead).
+/// Returns `InvalidSample` if fewer than `degree + 1` data points or any value
+/// is non-finite.
 #[must_use = "returns the fitted model"]
 pub fn polynomial_regression(
     x: &[f64],
@@ -138,13 +176,15 @@ pub fn polynomial_regression(
             "degree must be at least 1".into(),
         ));
     }
-    let n = degree + 1;
-    if x.len() < n {
+    // `degree >= len` (rather than `len < degree + 1`) cannot overflow.
+    if degree >= x.len() {
         return Err(PramanaError::InvalidSample(format!(
-            "need at least {} data points for degree {degree}",
-            n
+            "need at least degree + 1 data points for degree {degree} (got {})",
+            x.len()
         )));
     }
+    require_finite(x, "x")?;
+    require_finite(y, "y")?;
 
     let coefficients = hisab::num::least_squares_poly(x, y, degree)
         .map_err(|e| PramanaError::ComputationError(format!("polynomial fit failed: {e}")))?;
@@ -161,16 +201,10 @@ pub fn polynomial_regression(
         })
         .sum();
 
-    let r_squared = if ss_tot.abs() < 1e-30 {
-        1.0
-    } else {
-        1.0 - ss_res / ss_tot
-    };
-
     Ok(PolynomialModel {
         coefficients,
         degree,
-        r_squared,
+        r_squared: r_squared(y, ss_res, ss_tot),
     })
 }
 
@@ -246,8 +280,9 @@ pub struct LogisticModel {
 ///
 /// Returns `DimensionMismatch` if `features` rows don't all have the same length,
 /// or if `features.len() != labels.len()`.
-/// Returns `InvalidSample` if fewer than 2 data points, or labels are not 0/1.
-/// Returns `InvalidParameter` if `max_iter` is 0 or `l2_reg` is negative.
+/// Returns `InvalidSample` if fewer than 2 data points, labels are not 0/1,
+/// or any feature value is non-finite.
+/// Returns `InvalidParameter` if `max_iter` is 0 or `l2_reg` is negative or non-finite.
 #[must_use = "returns the fitted model"]
 pub fn logistic_regression(
     features: &[Vec<f64>],
@@ -271,9 +306,9 @@ pub fn logistic_regression(
             "max_iter must be positive".into(),
         ));
     }
-    if l2_reg < 0.0 {
+    if !(l2_reg.is_finite() && l2_reg >= 0.0) {
         return Err(PramanaError::InvalidParameter(
-            "l2_reg must be non-negative".into(),
+            "l2_reg must be non-negative and finite".into(),
         ));
     }
     let p = features[0].len();
@@ -282,6 +317,11 @@ pub fn logistic_regression(
             return Err(PramanaError::DimensionMismatch(format!(
                 "feature row {i} has length {}, expected {p}",
                 row.len()
+            )));
+        }
+        if let Some(j) = row.iter().position(|v| !v.is_finite()) {
+            return Err(PramanaError::InvalidSample(format!(
+                "features[{i}][{j}] is not finite"
             )));
         }
     }
@@ -366,6 +406,11 @@ pub fn logistic_regression(
             },
             Err(_) => break,
         };
+        // A non-finite step (e.g. separable data with no regularization) would
+        // poison the coefficients; stop with the last finite estimate.
+        if delta.iter().any(|d| !d.is_finite()) {
+            break;
+        }
 
         // Update beta
         let mut max_change = 0.0_f64;
@@ -388,11 +433,18 @@ pub fn logistic_regression(
 }
 
 /// Predicts the probability P(y = 1) for a single observation.
+///
+/// Features beyond the model's coefficient count are ignored (and missing
+/// trailing features contribute nothing). Returns NaN for a model with no
+/// coefficients (e.g. a hand-built or deserialized empty model).
 #[must_use]
 pub fn predict_logistic_proba(model: &LogisticModel, features: &[f64]) -> f64 {
+    let Some((&intercept, weights)) = model.coefficients.split_first() else {
+        return f64::NAN;
+    };
     // β₀ + β₁x₁ + β₂x₂ + ...
-    let z = model.coefficients[0]
-        + model.coefficients[1..]
+    let z = intercept
+        + weights
             .iter()
             .zip(features)
             .map(|(b, x)| b * x)
@@ -685,5 +737,66 @@ mod tests {
         for &x in &[-5.0, -1.0, 0.0, 1.0, 5.0] {
             assert!((sigmoid(x) + sigmoid(-x) - 1.0).abs() < 1e-10);
         }
+    }
+
+    // --- Hardening regression tests -------------------------------------
+
+    #[test]
+    fn linear_regression_large_offset_x() {
+        // One-pass sums cancelled catastrophically here and reported
+        // "zero variance in x".
+        let x = [1e9, 1e9 + 1.0, 1e9 + 2.0, 1e9 + 3.0];
+        let y = [1.0, 3.0, 5.0, 7.0];
+        let m = linear_regression(&x, &y).unwrap();
+        assert!((m.slope - 2.0).abs() < 1e-9, "slope = {}", m.slope);
+        assert!((predict(&m, 1e9 + 4.0) - 9.0).abs() < 1e-6);
+        assert!((m.r_squared - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn linear_regression_constant_inputs() {
+        // Constant x: rejected even when the mean does not round-trip exactly.
+        assert!(linear_regression(&[0.1, 0.1, 0.1], &[1.0, 2.0, 3.0]).is_err());
+        // Constant y: perfect (flat) fit, R² = 1 even though ss_tot rounds to ~1e-33.
+        let m = linear_regression(&[1.0, 2.0, 3.0], &[0.1, 0.1, 0.1]).unwrap();
+        assert!(m.slope.abs() < 1e-15);
+        assert_eq!(m.r_squared, 1.0);
+    }
+
+    #[test]
+    fn regressions_reject_non_finite() {
+        assert!(linear_regression(&[1.0, f64::NAN], &[1.0, 2.0]).is_err());
+        assert!(linear_regression(&[1.0, 2.0], &[1.0, f64::INFINITY]).is_err());
+        assert!(polynomial_regression(&[1.0, 2.0, f64::NAN], &[1.0, 2.0, 3.0], 1).is_err());
+        let features = vec![vec![1.0], vec![f64::NAN]];
+        assert!(logistic_regression(&features, &[0.0, 1.0], 0.0, 10).is_err());
+        let features = vec![vec![1.0], vec![2.0]];
+        assert!(logistic_regression(&features, &[0.0, 1.0], f64::NAN, 10).is_err());
+        assert!(logistic_regression(&features, &[0.0, 1.0], f64::INFINITY, 10).is_err());
+    }
+
+    #[test]
+    fn polynomial_huge_degree_does_not_overflow() {
+        // `degree + 1` overflowed (debug panic / release wraparound).
+        let r = polynomial_regression(&[1.0, 2.0], &[1.0, 2.0], usize::MAX);
+        assert!(matches!(r, Err(PramanaError::InvalidSample(_))));
+    }
+
+    #[test]
+    fn predict_logistic_empty_model_does_not_panic() {
+        let model: LogisticModel =
+            serde_json::from_str(r#"{"coefficients":[],"iterations":0,"converged":false}"#)
+                .unwrap();
+        assert!(predict_logistic_proba(&model, &[1.0]).is_nan());
+        assert_eq!(predict_logistic_class(&model, &[1.0], 0.5), 0);
+    }
+
+    #[test]
+    fn logistic_separable_data_keeps_finite_coefficients() {
+        let features: Vec<Vec<f64>> = (0..20).map(|i| vec![i as f64]).collect();
+        let labels: Vec<f64> = (0..20).map(|i| if i < 10 { 0.0 } else { 1.0 }).collect();
+        let model = logistic_regression(&features, &labels, 0.0, 200).unwrap();
+        assert!(model.coefficients.iter().all(|c| c.is_finite()));
+        assert!(predict_logistic_proba(&model, &[15.0]) > 0.5);
     }
 }

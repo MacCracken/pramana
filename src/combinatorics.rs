@@ -39,9 +39,11 @@ pub fn permutations(n: u64, r: u64) -> Result<u128, PramanaError> {
             "r ({r}) must be <= n ({n})"
         )));
     }
+    // n · (n-1) · ... · (n-r+1); iterating downward cannot overflow the
+    // range bounds (the old `(n - r + 1)..=n` overflowed for n = u64::MAX, r = 0).
     let mut result: u128 = 1;
-    for i in (n - r + 1)..=n {
-        result = result.checked_mul(i as u128).ok_or_else(|| {
+    for i in 0..r {
+        result = result.checked_mul(u128::from(n - i)).ok_or_else(|| {
             PramanaError::ComputationError(format!("permutations({n}, {r}) overflow"))
         })?;
     }
@@ -138,5 +140,13 @@ mod tests {
             relative_error < 0.01,
             "relative error {relative_error} too large"
         );
+    }
+
+    #[test]
+    fn permutations_extreme_n_does_not_overflow_range() {
+        assert_eq!(permutations(u64::MAX, 0).unwrap(), 1);
+        assert_eq!(permutations(u64::MAX, 1).unwrap(), u128::from(u64::MAX));
+        assert!(permutations(u64::MAX, 3).is_err());
+        assert_eq!(permutations(5, 5).unwrap(), 120);
     }
 }

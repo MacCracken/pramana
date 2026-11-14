@@ -4,6 +4,92 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+Toolchain/dependency update and P(-1) audit/hardening sweep.
+
+### Changed
+
+- **Toolchain**: MSRV 1.89 → **1.100** (edition 2024 remains the latest edition); CI MSRV job updated
+- **Dependencies**: hisab 1.3 → 1.4, hoosh 1.1 → 1.3, tokio 1.50 → 1.54, serde 1.0.229, serde_json 1.0.154, thiserror 2.0.21, criterion 0.5 → 0.8 (benches use `std::hint::black_box`); lockfile 318 → 274 crates
+- **Removed unused `tracing` / `tracing-subscriber`** — nothing in the crate logged. The `logging` feature is kept as a reserved no-op so `features = ["logging"]` keeps building
+- `deny.toml`: dropped license allowances not present in the tree (AGPL-3.0-only, OpenSSL, Unicode-DFS-2016, Zlib)
+- **Special functions** (`math.rs`, see ADR 002 amendment): `erf`/`erfc` are a port of fdlibm `s_erf.c` (< 1 ulp; was A&S 7.1.26 with 1.5e-7 absolute and ~40% tail relative error); incomplete gamma/beta return both tails computed directly, with `O(√shape)` iteration budgets (was a fixed 200), cancellation-free prefactors, and a stable `ln_beta`
+- `Normal::cdf`, all t/χ²/F p-values, `z_quantile` (now Halley-refined, full precision) and `t_quantile` inherit the accurate special functions; `Exponential`/`Weibull` CDFs use `exp_m1`
+- **Poisson**: CDF via `Q(⌊x⌋+1, λ)` and PMF via a Stirling-form kernel — O(√λ)/O(1) instead of O(x²); sampling for `λ > 30` uses Hörmann's exact PTRS sampler instead of a normal approximation (different random stream for `λ > 30`)
+- **Binomial**: CDF via the incomplete beta function and PMF via Loader's saddle-point form — O(1) instead of O(n·k); sampling for `n > 64` uses exact Beta order-statistic splitting (O(log n); different random stream for `n > 64`)
+- `median`/`percentile`/`quartiles`/`iqr` use O(n) selection with `total_cmp`; `mode` is O(n log n) (was O(n²)) with the same first-occurrence tie-break
+- `MarkovChain::steady_state` iterates the lazy chain `(I + P)/2` and tests the true residual `‖πP − π‖₁`, so periodic chains converge
+- HMM forward/backward and Baum-Welch use Rabiner per-step scaling (the docs already claimed this); Baum-Welch accumulates emission counts in O(T·N)
+- `linear_regression` uses centered two-pass sums; `chi_squared_test` uses the exact χ² upper tail (was the Wilson–Hilferty approximation)
+- `MultivariateNormal`'s symmetry check is relative (`1e-10 · max|Σᵢⱼ|`) instead of absolute
+- `HistogramData::from_data` skips non-finite values (and does not count them in `total`); bins are always strictly increasing, even for constant data
+- `MarkovChain::step` rounding fallback picks the last *reachable* state instead of the last state
+
+### Added
+
+- `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
+- Validated deserialization (`#[serde(try_from)]`, wire format unchanged) for every distribution, `KernelDensity`, `MarkovChain`, `HiddenMarkovModel` and `BayesianUpdate`; `MultivariateNormal` recomputes its Cholesky factor on deserialize; `SimpleRng` maps a deserialized zero state to 1
+- `ai::MAX_FORECAST_STEPS` (1000) and `ai::MAX_AR_ORDER` (32): model-supplied tool arguments are bounded; `QueryResult` is now `Serialize + Deserialize`
+- 11 benchmarks: `normal_cdf_1000`, `poisson_cdf_lambda100_200pts`, `binomial_cdf_n200_20pts`, `binomial_sample_n10000_100`, `median_10001`, `mode_10000`, `ks_two_sample_1000`, `chi_squared_test_20`, `hmm_forward_1000`, `hmm_baum_welch_200_x5`, `steady_state_10` (34 total)
+- 83 tests (236 → 319): one regression test per fixed defect, plus accuracy tests against closed forms, glibc `erf`/`erfc`, 50-digit decimal references and brute-force HMM likelihoods
+
+### Fixed
+
+- **Panics reachable from the public API** (all now errors or handled):
+  - `median`/`percentile`/`quartiles`/`iqr` panicked on NaN input ("comparison does not implement a total order", Rust ≥ 1.81 sort); also `pca` eigenvalue sort
+  - Deserializing a `MultivariateNormal` with a tampered `dim`/`cholesky_l`, or a `MarkovChain` with an out-of-range `state`, made `sample`/`step` panic; `MarkovChain::step` with an out-of-range public `state`; HMM methods with inconsistent public matrices; `predict_logistic_proba` on an empty model
+  - `permutations(u64::MAX, 0)` and `polynomial_regression(.., usize::MAX)` overflowed; `metropolis_hastings`/`gibbs_sampling` with `n_samples + burn_in` overflow or huge `n_samples`; `arima_forecast` with huge `steps` (capacity overflow)
+- **Hangs**: `Poisson::cdf`/`pdf` and `Binomial::cdf`/`pdf` were O(x²)/O(n·k) (effectively infinite for `x = 1e18` or `∞`); `Binomial::sample` was O(n) (`n = u64::MAX`); `mode` was O(n²)
+- **Wrong results**:
+  - `ChiSquared(1e6).cdf(1e6)` returned 0.11 (true 0.50): incomplete-gamma series truncated at 200 iterations; same for large-df chi-squared/Poisson/Gamma CDFs
+  - HMM `forward_log_likelihood` returned `-inf` for sequences longer than a few hundred steps; Baum-Welch then returned `initial = [0, 0, …]`
+  - `ks_two_sample` mishandled ties (identical samples gave D = 1/3); KS p-values for small λ came from a non-converged series
+  - `integrate` (and `arima_forecast` with `d ≥ 2`) seeded every level with raw prefix values: Δ²-integration of `[1, 4, 9, 16, 25]` gave `[1, 5, 11, 19, 29]`
+  - `Binomial::pdf` returned NaN for `p = 0` or `p = 1`
+  - `linear_regression` reported "zero variance in x" for offset data such as `x = 1e9 + [0, 1, 2, 3]` (one-pass cancellation)
+  - One-way ANOVA with zero within-group variance but different means gave a NaN p-value, so `reject` was silently `false`; tiny upper-tail F p-values rounded to 0
+  - `learning_trials_to_power_law` / `response_times_to_hick_params` divided by the full slice length including skipped points (`T = 10·N⁻¹` fitted as `a = 3.51, b = 0.094`)
+  - `monte_carlo_integrate` std error could be NaN (negative `E[f²] − E[f]²`); now Welford
+  - Metropolis–Hastings started at a zero-density point computed `−∞ − −∞ = NaN` and never moved
+  - `MarkovChain::steady_state` failed to converge for periodic chains
+- **Validation gaps**: NaN/∞ parameters were accepted by every distribution constructor (`x <= 0.0` is false for NaN), `KernelDensity`, MVN, Markov/HMM rows, `logistic_regression` (`l2_reg`), `exponential_smoothing` (`alpha`), MCMC `proposal_std`, and Monte Carlo bounds; NaN `alpha`/`confidence_level` was accepted by every hypothesis test and CI (NaN p-value ⇒ `reject = false`); hypothesis tests, regressions, PCA and ARIMA now reject non-finite data; `chi_squared_test` rejects negative observed counts; `BayesianUpdate::new` rejects incoherent inputs (`likelihood · prior > evidence`, posterior > 1); `ks_one_sample` reports a CDF returning NaN; `Uniform::new` rejects widths that overflow
+- `ai` `describe` tool advertised skewness/kurtosis it never computed
+- Docs: `autocorrelation` (lag 0 returns 1), stale `MultivariateNormal::log_pdf` comment, threat model (claimed scaled HMM, tracing warnings, and Baum-Welch early stopping that did not exist), roadmap (bridges/soorat shipped in 1.1/1.2)
+
+### Performance
+
+Measured with criterion 0.8 on the same machine, interleaving original code → this change → original code
+(`--warm-up-time 1 --measurement-time 3`); "before" is the faster of the two original-code runs. Benchmarks
+whose code did not change moved +5% ± 3% between runs, so differences of that size are noise.
+
+| Benchmark | Before | After | Change |
+|-----------|-------:|------:|-------:|
+| `distribution/poisson_cdf_lambda100_200pts` | 5.52 ms | 23.0 µs | **−99.6%** |
+| `distribution/binomial_cdf_n200_20pts` | 3.13 ms | 3.80 µs | **−99.9%** |
+| `distribution/binomial_sample_n10000_100` | 1.88 ms | 44.8 µs | **−97.6%** |
+| `descriptive/mode_10000` | 13.8 ms | 174 µs | **−98.7%** |
+| `descriptive/median_10001` | 108 µs | 18.4 µs | **−83%** |
+| `markov/hmm_baum_welch_200_x5` | 267 µs | 151 µs | **−44%** |
+| `markov/steady_state_10` | 979 ns | 597 ns | **−39%** |
+| `distribution/mvn_sample_3d_1000` | 80.7 µs | 68.9 µs | **−15%** |
+| `regression/linear_1000` | 4.32 µs | 3.83 µs | **−11%** |
+| `distribution/chi_squared_cdf_1000` | 51.6 µs | 57.7 µs | +12% |
+| `markov/hmm_forward_1000` | 35.9 µs | 44.5 µs | +24% |
+| `distribution/poisson_sample_lambda100` | 17.0 µs | 29.7 µs | +74% |
+| `hypothesis/chi_squared_test_20` | 88.6 ns | 156 ns | +77% |
+| `distribution/normal_cdf_1000` | 11.7 µs | 24.4 µs | +109% |
+
+The regressions buy correctness: `normal_cdf` now uses the fdlibm `erfc` (< 1 ulp instead of ~1e-7
+absolute / ~40% tail error, two `exp` calls instead of one); `chi_squared_test` computes the exact χ² tail
+instead of the Wilson–Hilferty approximation; λ > 30 Poisson draws are exact PTRS samples instead of
+rounded Gaussians; the HMM forward pass scales every step (the old pass returned `-inf` beyond a few hundred
+observations); the incomplete gamma function converges further (large-df CDFs were wrong). All other
+benchmarks (t-test, KS, Student-t pdf, logistic, samplers, KDE, MCMC, …) are within noise (−1% to +8%,
+logistic +10–22% across runs with ±8% spread). The O(x²)/O(n·k)/O(n²) → O(1)/O(log n)/O(n log n) changes
+grow with input size: e.g. `Poisson::cdf(1e18)` and `Binomial::new(u64::MAX, p).sample()` now return
+immediately instead of never.
+
 ## [1.2.0]
 
 ### Added

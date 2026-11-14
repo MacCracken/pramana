@@ -22,29 +22,32 @@ cargo test --doc
 
 ## Test Categories
 
-| Module         | Unit Tests | Notes                                  |
-|----------------|------------|----------------------------------------|
-| distribution   | ~40        | PDF, CDF, sampling, edge cases         |
-| descriptive    | ~20        | Mean, median, variance, percentiles    |
-| hypothesis     | ~20        | t-tests, chi-squared, p-values         |
-| regression     | ~15        | OLS, logistic, residuals               |
-| markov         | ~15        | Transition, steady state, Baum-Welch   |
-| bayesian       | ~12        | Prior update, naive Bayes              |
-| monte_carlo    | ~10        | Integration, pi estimation             |
-| timeseries     | ~10        | MA, EMA, autocorrelation, ARIMA        |
-| combinatorics  | ~10        | Factorial, permutations, combinations  |
-| rng            | ~8         | Uniformity, period, reproducibility    |
-| math           | ~5         | erf, ln_gamma, incomplete beta/gamma   |
-| error          | ~4         | Display, From impls                    |
-| ai             | ~5         | Requires `--all-features`              |
-| **Subtotal**   | **~174**   |                                        |
+| Category       | Count | Command                                  |
+|----------------|-------|------------------------------------------|
+| Unit           | 301   | `cargo test --all-features --lib`        |
+| Integration    | 15    | `cargo test --test '*'`                  |
+| Doc            | 3     | `cargo test --doc`                       |
+| **Total**      | **319** |                                        |
 
-| Category       | Count | Command                        |
-|----------------|-------|--------------------------------|
-| Unit           | 194   | `cargo test --lib`             |
-| Integration    | 15    | `cargo test --test '*'`        |
-| Doc            | 3     | `cargo test --doc`             |
-| **Total**      | **212** |                              |
+`ai` unit tests (tool-argument bounds, serde) need `--all-features`; the
+`soorat-compat` tests need that feature too.
+
+### Reference values
+
+Numerical tests compare against independent references, never against the
+implementation itself:
+
+- glibc `erf`/`erfc` and `0.5·erfc(-z/√2)` for the normal CDF
+- closed forms: Cauchy (`t₁`), `t₂`, `F(2, ν)`, `I_x(a, 1) = xᵃ`,
+  `P(χ²₁ > s) = erfc(√(s/2))`, `P(χ²₂ > s) = e^{-s/2}`, Kolmogorov series
+- 50-digit `decimal` Poisson sums for `Q(n, x)` (e.g. `Q(500000, 500000)`)
+- brute-force path enumeration for HMM likelihoods
+
+### Hardening regression tests
+
+Each module ends with a "Hardening regression tests" block: one test per
+fixed defect (panic, hang, wrong result, or validation gap), so a regression
+fails with the original symptom in its name.
 
 ## Coverage
 
@@ -56,7 +59,7 @@ make coverage    # runs cargo-llvm-cov, opens HTML report
 
 ## Benchmarks
 
-23 benchmarks via Criterion:
+34 benchmarks via Criterion:
 
 ```bash
 make bench                        # full suite

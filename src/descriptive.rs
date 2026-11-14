@@ -16,30 +16,54 @@ pub fn mean(data: &[f64]) -> Result<f64, PramanaError> {
     Ok(sum(data) / data.len() as f64)
 }
 
-/// Computes the median of the data.
-///
-/// # Errors
-///
-/// Returns `InvalidSample` if the slice is empty.
-#[must_use = "returns the computed median"]
-pub fn median(data: &[f64]) -> Result<f64, PramanaError> {
+/// Returns `InvalidSample` if `data` is empty or contains NaN.
+fn require_non_empty_no_nan(data: &[f64]) -> Result<(), PramanaError> {
     if data.is_empty() {
         return Err(PramanaError::InvalidSample("empty data".into()));
     }
-    let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = sorted.len();
+    if data.iter().any(|v| v.is_nan()) {
+        return Err(PramanaError::InvalidSample("data contains NaN".into()));
+    }
+    Ok(())
+}
+
+/// Returns the `k`-th smallest value of `buf` (0-based) and, if it exists, the
+/// `(k + 1)`-th smallest, in expected O(n) via selection. `buf` must be
+/// non-empty, NaN-free and `k < buf.len()`; it is reordered.
+fn select_pair(buf: &mut [f64], k: usize) -> (f64, Option<f64>) {
+    // NaN-free (checked by callers), so `partial_cmp` is a total order.
+    let cmp = |x: &f64, y: &f64| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal);
+    let (_, kth, above) = buf.select_nth_unstable_by(k, cmp);
+    let kth = *kth;
+    let next = above.iter().copied().min_by(cmp);
+    (kth, next)
+}
+
+/// Computes the median of the data.
+///
+/// Runs in expected O(n) time (selection, not a full sort).
+///
+/// # Errors
+///
+/// Returns `InvalidSample` if the slice is empty or contains NaN.
+#[must_use = "returns the computed median"]
+pub fn median(data: &[f64]) -> Result<f64, PramanaError> {
+    require_non_empty_no_nan(data)?;
+    let mut buf = data.to_vec();
+    let n = buf.len();
     if n.is_multiple_of(2) {
-        Ok((sorted[n / 2 - 1] + sorted[n / 2]) / 2.0)
+        let (lo, hi) = select_pair(&mut buf, n / 2 - 1);
+        Ok((lo + hi.unwrap_or(lo)) / 2.0)
     } else {
-        Ok(sorted[n / 2])
+        Ok(select_pair(&mut buf, n / 2).0)
     }
 }
 
 /// Returns the mode (most frequently occurring value) of the data.
 ///
-/// For floating-point data, values are compared with exact equality.
-/// If multiple values share the highest frequency, the first encountered is returned.
+/// For floating-point data, values are compared by exact bit pattern (so `0.0`
+/// and `-0.0` are distinct). If multiple values share the highest frequency,
+/// the one that occurs first in `data` is returned. Runs in O(n log n).
 ///
 /// # Errors
 ///
@@ -49,19 +73,28 @@ pub fn mode(data: &[f64]) -> Result<f64, PramanaError> {
     if data.is_empty() {
         return Err(PramanaError::InvalidSample("empty data".into()));
     }
-    // Simple O(n^2) approach that avoids pulling in a HashMap dependency.
-    let mut best_val = data[0];
-    let mut best_count: usize = 0;
+    // Sort (value, first index) pairs; equal bit patterns become adjacent runs.
+    let mut indexed: Vec<(f64, usize)> = data.iter().copied().zip(0..).collect();
+    indexed.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
 
-    for &val in data {
-        let count = data
+    let mut best_val = data[0];
+    let mut best_count = 0usize;
+    let mut best_first = usize::MAX;
+    let mut i = 0;
+    while i < indexed.len() {
+        let (val, first) = indexed[i];
+        let bits = val.to_bits();
+        let run_end = indexed[i..]
             .iter()
-            .filter(|&&v| v.to_bits() == val.to_bits())
-            .count();
-        if count > best_count {
+            .position(|(v, _)| v.to_bits() != bits)
+            .map_or(indexed.len(), |offset| i + offset);
+        let count = run_end - i;
+        if count > best_count || (count == best_count && first < best_first) {
             best_count = count;
+            best_first = first;
             best_val = val;
         }
+        i = run_end;
     }
     Ok(best_val)
 }
@@ -138,40 +171,42 @@ pub fn kurtosis(data: &[f64]) -> Result<f64, PramanaError> {
 
 /// Computes the p-th percentile using linear interpolation.
 ///
-/// `p` must be in `[0, 100]`.
+/// `p` must be in `[0, 100]`. Runs in expected O(n) time (selection).
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if the slice is empty.
+/// Returns `InvalidSample` if the slice is empty or contains NaN.
 /// Returns `InvalidParameter` if `p` is not in `[0, 100]`.
 #[must_use = "returns the computed percentile"]
 pub fn percentile(data: &[f64], p: f64) -> Result<f64, PramanaError> {
-    if data.is_empty() {
-        return Err(PramanaError::InvalidSample("empty data".into()));
-    }
+    require_non_empty_no_nan(data)?;
     if !(0.0..=100.0).contains(&p) {
         return Err(PramanaError::InvalidParameter(
             "percentile must be in [0, 100]".into(),
         ));
     }
-    let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = sorted.len();
+    let n = data.len();
     if n == 1 {
-        return Ok(sorted[0]);
+        return Ok(data[0]);
     }
     let rank = (p / 100.0) * (n - 1) as f64;
-    let lower = rank.floor() as usize;
-    let upper = rank.ceil() as usize;
+    // rank is in [0, n - 1]; truncation to an index is intended.
+    let lower = (rank.floor() as usize).min(n - 1);
     let frac = rank - lower as f64;
-    Ok(sorted[lower] * (1.0 - frac) + sorted[upper] * frac)
+    let mut buf = data.to_vec();
+    let (lo, hi) = select_pair(&mut buf, lower);
+    if frac == 0.0 {
+        return Ok(lo);
+    }
+    let hi = hi.unwrap_or(lo);
+    Ok(lo * (1.0 - frac) + hi * frac)
 }
 
 /// Returns (Q1, Q2/median, Q3).
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if the slice is empty.
+/// Returns `InvalidSample` if the slice is empty or contains NaN.
 #[must_use = "returns the computed quartiles"]
 pub fn quartiles(data: &[f64]) -> Result<(f64, f64, f64), PramanaError> {
     let q1 = percentile(data, 25.0)?;
@@ -184,7 +219,7 @@ pub fn quartiles(data: &[f64]) -> Result<(f64, f64, f64), PramanaError> {
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if the slice is empty.
+/// Returns `InvalidSample` if the slice is empty or contains NaN.
 #[must_use = "returns the computed IQR"]
 pub fn iqr(data: &[f64]) -> Result<f64, PramanaError> {
     let (q1, _, q3) = quartiles(data)?;
@@ -281,7 +316,10 @@ impl Kernel {
 }
 
 /// A kernel density estimator fitted to data.
+///
+/// Deserialization re-validates the data and bandwidth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "KernelDensityRepr")]
 #[non_exhaustive]
 pub struct KernelDensity {
     /// The data points.
@@ -292,20 +330,46 @@ pub struct KernelDensity {
     pub kernel: Kernel,
 }
 
+#[derive(Deserialize)]
+struct KernelDensityRepr {
+    data: Vec<f64>,
+    bandwidth: f64,
+    kernel: Kernel,
+}
+
+impl TryFrom<KernelDensityRepr> for KernelDensity {
+    type Error = PramanaError;
+
+    fn try_from(repr: KernelDensityRepr) -> Result<Self, PramanaError> {
+        KernelDensity::new(repr.data, repr.bandwidth, repr.kernel)
+    }
+}
+
+/// Returns `InvalidSample` if `data` is empty or contains non-finite values.
+fn require_finite_data(data: &[f64]) -> Result<(), PramanaError> {
+    if data.is_empty() {
+        return Err(PramanaError::InvalidSample("empty data".into()));
+    }
+    if data.iter().any(|v| !v.is_finite()) {
+        return Err(PramanaError::InvalidSample(
+            "data contains non-finite values".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl KernelDensity {
     /// Creates a KDE with a specified bandwidth.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidSample` if `data` is empty.
-    /// Returns `InvalidParameter` if `bandwidth <= 0`.
+    /// Returns `InvalidSample` if `data` is empty or contains non-finite values.
+    /// Returns `InvalidParameter` if `bandwidth` is not positive and finite.
     pub fn new(data: Vec<f64>, bandwidth: f64, kernel: Kernel) -> Result<Self, PramanaError> {
-        if data.is_empty() {
-            return Err(PramanaError::InvalidSample("empty data".into()));
-        }
-        if bandwidth <= 0.0 {
+        require_finite_data(&data)?;
+        if !(bandwidth.is_finite() && bandwidth > 0.0) {
             return Err(PramanaError::InvalidParameter(
-                "bandwidth must be positive".into(),
+                "bandwidth must be positive and finite".into(),
             ));
         }
         Ok(Self {
@@ -321,13 +385,15 @@ impl KernelDensity {
     ///
     /// # Errors
     ///
-    /// Returns `InvalidSample` if `data` has fewer than 2 elements or zero variance.
+    /// Returns `InvalidSample` if `data` has fewer than 2 elements, contains
+    /// non-finite values, or has zero variance.
     pub fn silverman(data: Vec<f64>, kernel: Kernel) -> Result<Self, PramanaError> {
         if data.len() < 2 {
             return Err(PramanaError::InvalidSample(
                 "need at least 2 data points for Silverman bandwidth".into(),
             ));
         }
+        require_finite_data(&data)?;
         let s = std_dev(&data)?;
         if s == 0.0 {
             return Err(PramanaError::InvalidSample(
@@ -342,6 +408,11 @@ impl KernelDensity {
         };
         let n = data.len() as f64;
         let bandwidth = 0.9 * spread * n.powf(-0.2);
+        if !(bandwidth.is_finite() && bandwidth > 0.0) {
+            return Err(PramanaError::ComputationError(format!(
+                "Silverman bandwidth is not positive and finite: {bandwidth}"
+            )));
+        }
 
         Ok(Self {
             data,
@@ -468,7 +539,8 @@ pub struct PcaResult {
 ///
 /// # Errors
 ///
-/// Returns `InvalidSample` if fewer than 2 variables or fewer than 2 observations.
+/// Returns `InvalidSample` if fewer than 2 variables, fewer than 2 observations,
+/// or any value is non-finite.
 /// Returns `DimensionMismatch` if variables have different lengths.
 #[must_use = "returns the PCA result"]
 pub fn pca(variables: &[&[f64]]) -> Result<PcaResult, PramanaError> {
@@ -491,6 +563,12 @@ pub fn pca(variables: &[&[f64]]) -> Result<PcaResult, PramanaError> {
                 var.len()
             )));
         }
+    }
+
+    if variables.iter().any(|v| v.iter().any(|x| !x.is_finite())) {
+        return Err(PramanaError::InvalidSample(
+            "data contains non-finite values".into(),
+        ));
     }
 
     // Compute covariance matrix (population covariance)
@@ -524,11 +602,7 @@ pub fn pca(variables: &[&[f64]]) -> Result<PcaResult, PramanaError> {
     // (for PCA, eigenvalues of a covariance matrix are non-negative)
     let evals = &eigen.eigenvalues_real;
     let mut indices: Vec<usize> = (0..evals.len()).collect();
-    indices.sort_by(|&a, &b| {
-        evals[b]
-            .partial_cmp(&evals[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    indices.sort_by(|&a, &b| evals[b].total_cmp(&evals[a]));
 
     let eigenvalues: Vec<f64> = indices.iter().map(|&i| evals[i].max(0.0)).collect();
     let total_var: f64 = eigenvalues.iter().sum();
@@ -814,5 +888,93 @@ mod tests {
     fn pca_invalid_params() {
         let x = [1.0, 2.0];
         assert!(pca(&[&x]).is_err()); // < 2 vars
+    }
+
+    // --- Hardening regression tests -------------------------------------
+
+    #[test]
+    fn median_and_percentile_reject_nan_without_panicking() {
+        // The old partial_cmp/unwrap_or(Equal) comparator could make sort panic
+        // ("comparison does not implement a total order") on NaN input.
+        let mut data: Vec<f64> = (0..64).map(|i| ((i * 37) % 64) as f64).collect();
+        for i in (0..64).step_by(5) {
+            data[i] = f64::NAN;
+        }
+        assert!(median(&data).is_err());
+        assert!(percentile(&data, 50.0).is_err());
+        assert!(quartiles(&data).is_err());
+        assert!(iqr(&data).is_err());
+    }
+
+    #[test]
+    fn median_percentile_match_sorted_reference() {
+        let data: Vec<f64> = (0..101)
+            .map(|i| ((i * 7919) % 101) as f64 * 0.5 - 3.0)
+            .collect();
+        let mut sorted = data.clone();
+        sorted.sort_by(f64::total_cmp);
+        let reference = |p: f64| {
+            let rank = p / 100.0 * (sorted.len() - 1) as f64;
+            let lo = rank.floor() as usize;
+            let hi = rank.ceil() as usize;
+            sorted[lo] + (sorted[hi] - sorted[lo]) * (rank - lo as f64)
+        };
+        for &p in &[0.0, 1.0, 12.5, 25.0, 50.0, 73.3, 99.0, 100.0] {
+            assert!(
+                (percentile(&data, p).unwrap() - reference(p)).abs() < 1e-12,
+                "p={p}"
+            );
+        }
+        assert_eq!(median(&data).unwrap(), sorted[50]);
+        let even = &data[..100];
+        let mut sorted_even = even.to_vec();
+        sorted_even.sort_by(f64::total_cmp);
+        assert_eq!(
+            median(even).unwrap(),
+            (sorted_even[49] + sorted_even[50]) / 2.0
+        );
+        // Infinities are ordered, not rejected.
+        assert_eq!(
+            median(&[f64::NEG_INFINITY, 1.0, f64::INFINITY]).unwrap(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn mode_tie_breaks_on_first_occurrence() {
+        assert_eq!(mode(&[3.0, 1.0, 1.0, 3.0, 2.0]).unwrap(), 3.0);
+        assert_eq!(mode(&[5.0, 4.0, 4.0, 5.0, 4.0]).unwrap(), 4.0);
+        assert_eq!(mode(&[7.0]).unwrap(), 7.0);
+        // Bit-exact comparison: 0.0 and -0.0 are distinct values.
+        assert_eq!(
+            mode(&[-0.0, 0.0, 0.0]).unwrap().to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn mode_large_input_is_fast() {
+        // Was O(n²): 200k elements would take minutes.
+        let data: Vec<f64> = (0..200_000).map(|i| (i % 1000) as f64).collect();
+        assert_eq!(mode(&data).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn kde_rejects_invalid_parameters() {
+        assert!(KernelDensity::new(vec![1.0], f64::NAN, Kernel::Gaussian).is_err());
+        assert!(KernelDensity::new(vec![1.0], f64::INFINITY, Kernel::Gaussian).is_err());
+        assert!(KernelDensity::new(vec![1.0, f64::NAN], 1.0, Kernel::Gaussian).is_err());
+        assert!(KernelDensity::silverman(vec![1.0, f64::INFINITY, 2.0], Kernel::Gaussian).is_err());
+        let bad = r#"{"data":[1.0,2.0],"bandwidth":0.0,"kernel":"Gaussian"}"#;
+        assert!(serde_json::from_str::<KernelDensity>(bad).is_err());
+        let empty = r#"{"data":[],"bandwidth":1.0,"kernel":"Gaussian"}"#;
+        assert!(serde_json::from_str::<KernelDensity>(empty).is_err());
+    }
+
+    #[test]
+    fn pca_rejects_non_finite() {
+        let a = [1.0, 2.0, f64::NAN];
+        let b = [3.0, 1.0, 2.0];
+        assert!(pca(&[&a, &b]).is_err());
     }
 }

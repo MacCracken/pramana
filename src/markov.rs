@@ -4,14 +4,39 @@ use crate::error::PramanaError;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
 
+/// Consecutive non-shrinking residuals after which `steady_state` switches to
+/// the lazy (aperiodic) chain.
+const STEADY_STATE_STALL_LIMIT: usize = 8;
+
+/// Upper bound on up-front trajectory allocation in [`MarkovChain::simulate`];
+/// longer trajectories grow the vector normally.
+const MAX_PREALLOCATED_STEPS: usize = 1 << 16;
+
 /// A discrete-time Markov chain with a finite state space.
+///
+/// Deserialization re-validates the transition matrix and state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "MarkovChainRepr")]
 #[non_exhaustive]
 pub struct MarkovChain {
     /// Row-stochastic transition matrix. `transition_matrix[i][j]` is P(j | i).
     pub transition_matrix: Vec<Vec<f64>>,
     /// Current state index.
     pub state: usize,
+}
+
+#[derive(Deserialize)]
+struct MarkovChainRepr {
+    transition_matrix: Vec<Vec<f64>>,
+    state: usize,
+}
+
+impl TryFrom<MarkovChainRepr> for MarkovChain {
+    type Error = PramanaError;
+
+    fn try_from(repr: MarkovChainRepr) -> Result<Self, PramanaError> {
+        MarkovChain::new(repr.transition_matrix, repr.state)
+    }
 }
 
 impl MarkovChain {
@@ -22,8 +47,9 @@ impl MarkovChain {
     /// Returns `InvalidParameter` if:
     /// - The matrix is empty
     /// - The matrix is not square
+    /// - Any entry is negative or non-finite
     /// - Any row does not sum to approximately 1.0 (tolerance 1e-6)
-    /// - Any entry is negative
+    /// - `initial_state` is out of range
     pub fn new(
         transition_matrix: Vec<Vec<f64>>,
         initial_state: usize,
@@ -41,19 +67,7 @@ impl MarkovChain {
                     row.len()
                 )));
             }
-            for (j, &val) in row.iter().enumerate() {
-                if val < 0.0 {
-                    return Err(PramanaError::InvalidParameter(format!(
-                        "negative probability at [{i}][{j}]: {val}"
-                    )));
-                }
-            }
-            let sum: f64 = row.iter().sum();
-            if (sum - 1.0).abs() > 1e-6 {
-                return Err(PramanaError::InvalidParameter(format!(
-                    "row {i} sums to {sum}, expected 1.0"
-                )));
-            }
+            validate_stochastic_row(row, &format!("row {i}"))?;
         }
         if initial_state >= n {
             return Err(PramanaError::InvalidParameter(format!(
@@ -75,8 +89,13 @@ impl MarkovChain {
 
     /// Advances the chain by one step using the provided RNG.
     /// Returns the new state.
+    ///
+    /// If `state` has been set out of range through the public field, the
+    /// chain stays where it is instead of panicking.
     pub fn step(&mut self, rng: &mut impl Rng) -> usize {
-        let row = &self.transition_matrix[self.state];
+        let Some(row) = self.transition_matrix.get(self.state) else {
+            return self.state;
+        };
         let r = rng.next_f64();
         let mut cumulative = 0.0;
         for (j, &p) in row.iter().enumerate() {
@@ -86,14 +105,18 @@ impl MarkovChain {
                 return j;
             }
         }
-        // Fallback to last state (handles floating-point rounding)
-        self.state = row.len() - 1;
+        // Floating-point rounding left the row sum just below r: fall back to
+        // the last state that is actually reachable.
+        if let Some(j) = row.iter().rposition(|&p| p > 0.0) {
+            self.state = j;
+        }
         self.state
     }
 
     /// Simulates the chain for `steps` transitions, returning the sequence of states visited.
     pub fn simulate(&mut self, steps: usize, rng: &mut impl Rng) -> Vec<usize> {
-        let mut trajectory = Vec::with_capacity(steps + 1);
+        let mut trajectory =
+            Vec::with_capacity(steps.saturating_add(1).min(MAX_PREALLOCATED_STEPS));
         trajectory.push(self.state);
         for _ in 0..steps {
             self.step(rng);
@@ -103,6 +126,12 @@ impl MarkovChain {
     }
 
     /// Computes the steady-state (stationary) distribution by power iteration.
+    ///
+    /// Plain power iteration oscillates forever on periodic chains (e.g.
+    /// bipartite random walks). If the stationarity residual `‖πP − π‖₁`
+    /// stops shrinking, the iteration switches to the "lazy" chain
+    /// `(I + P) / 2`, which has the same stationary distribution but is
+    /// aperiodic. Convergence is declared when the residual drops below 1e-10.
     ///
     /// # Errors
     ///
@@ -115,26 +144,47 @@ impl MarkovChain {
 
         // Start with uniform distribution
         let mut pi = vec![1.0 / n as f64; n];
+        let mut next = vec![0.0; n];
+        let mut lazy = false;
+        let mut prev_residual = f64::INFINITY;
+        let mut stalled = 0;
 
         for _ in 0..max_iter {
-            let mut next = vec![0.0; n];
-            // pi_next[j] = sum_i pi[i] * P[i][j]
-            for (i, row) in self.transition_matrix.iter().enumerate() {
-                for (j, &p) in row.iter().enumerate() {
-                    next[j] += pi[i] * p;
+            // next[j] = sum_i pi[i] * P[i][j]
+            next.iter_mut().for_each(|v| *v = 0.0);
+            for (&pi_i, row) in pi.iter().zip(&self.transition_matrix) {
+                for (next_j, &p) in next.iter_mut().zip(row) {
+                    *next_j += pi_i * p;
                 }
             }
 
-            // Check convergence
-            let diff: f64 = pi
-                .iter()
-                .zip(next.iter())
-                .map(|(&a, &b)| (a - b).abs())
-                .sum();
-            pi = next;
+            let residual: f64 = pi.iter().zip(&next).map(|(&a, &b)| (a - b).abs()).sum();
+            if residual < tol {
+                let total: f64 = next.iter().sum();
+                if total > 0.0 {
+                    next.iter_mut().for_each(|v| *v /= total);
+                }
+                return Ok(next);
+            }
 
-            if diff < tol {
-                return Ok(pi);
+            if !lazy {
+                // A residual that no longer shrinks means oscillation.
+                stalled = if residual >= 0.999 * prev_residual {
+                    stalled + 1
+                } else {
+                    0
+                };
+                lazy = stalled >= STEADY_STATE_STALL_LIMIT;
+                prev_residual = residual;
+            }
+
+            if lazy {
+                // Lazy step: π ← (π + πP) / 2
+                for (p, &q) in pi.iter_mut().zip(&next) {
+                    *p = 0.5 * (*p + q);
+                }
+            } else {
+                std::mem::swap(&mut pi, &mut next);
             }
         }
 
@@ -153,7 +203,12 @@ impl MarkovChain {
 /// - **A** (`transition`): N×N row-stochastic transition matrix. A\[i\]\[j\] = P(state j | state i).
 /// - **B** (`emission`): N×M row-stochastic emission matrix. B\[i\]\[k\] = P(obs k | state i).
 /// - **π** (`initial`): length-N initial state distribution.
+///
+/// The forward/backward recursions are scaled per time step (Rabiner 1989),
+/// so likelihoods and Baum-Welch updates stay accurate for long sequences.
+/// Deserialization re-validates all parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "HiddenMarkovModelRepr")]
 #[non_exhaustive]
 pub struct HiddenMarkovModel {
     /// Transition matrix A (N × N).
@@ -164,13 +219,36 @@ pub struct HiddenMarkovModel {
     pub initial: Vec<f64>,
 }
 
+#[derive(Deserialize)]
+struct HiddenMarkovModelRepr {
+    transition: Vec<Vec<f64>>,
+    emission: Vec<Vec<f64>>,
+    initial: Vec<f64>,
+}
+
+impl TryFrom<HiddenMarkovModelRepr> for HiddenMarkovModel {
+    type Error = PramanaError;
+
+    fn try_from(repr: HiddenMarkovModelRepr) -> Result<Self, PramanaError> {
+        HiddenMarkovModel::new(repr.transition, repr.emission, repr.initial)
+    }
+}
+
+/// Scaled forward variables: `alpha[t]` is normalized to sum to 1 and
+/// `scales[t]` is the normalizer, so `ln P(O) = Σ ln scales[t]`.
+struct ScaledForward {
+    alpha: Vec<Vec<f64>>,
+    scales: Vec<f64>,
+}
+
 impl HiddenMarkovModel {
     /// Creates a new HMM.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if matrices are inconsistent, empty, not
-    /// row-stochastic, or contain negative values.
+    /// Returns `InvalidParameter` if matrices are empty, not row-stochastic,
+    /// or contain negative or non-finite values.
+    /// Returns `DimensionMismatch` if the shapes are inconsistent.
     pub fn new(
         transition: Vec<Vec<f64>>,
         emission: Vec<Vec<f64>>,
@@ -239,76 +317,95 @@ impl HiddenMarkovModel {
         self.initial.len()
     }
 
-    /// Number of observation symbols.
+    /// Number of observation symbols (0 for a model with no emission rows).
     #[must_use]
     #[inline]
     pub fn num_symbols(&self) -> usize {
-        self.emission[0].len()
+        self.emission.first().map_or(0, Vec::len)
     }
 
-    /// Forward algorithm: computes P(observations | model).
+    /// Checks that the (publicly mutable) matrices have consistent shapes and
+    /// that `observations` is non-empty with in-range symbols, so the
+    /// algorithms below can index without panicking.
+    fn check_inputs(&self, observations: &[usize]) -> Result<(), PramanaError> {
+        let n = self.num_states();
+        let m = self.num_symbols();
+        if n == 0
+            || m == 0
+            || self.transition.len() != n
+            || self.transition.iter().any(|row| row.len() != n)
+            || self.emission.len() != n
+            || self.emission.iter().any(|row| row.len() != m)
+        {
+            return Err(PramanaError::DimensionMismatch(
+                "HMM matrices have inconsistent shapes".into(),
+            ));
+        }
+        if observations.is_empty() {
+            return Err(PramanaError::InvalidSample(
+                "observations must be non-empty".into(),
+            ));
+        }
+        if let Some((t, &o)) = observations.iter().enumerate().find(|&(_, &o)| o >= m) {
+            return Err(PramanaError::InvalidSample(format!(
+                "observation[{t}] = {o} >= num_symbols {m}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Forward algorithm: computes ln P(observations | model).
     ///
-    /// Returns the log-likelihood to avoid underflow.
+    /// Uses per-step scaling, so the result is accurate for arbitrarily long
+    /// sequences. Returns `-inf` if the sequence has zero probability.
     ///
     /// # Errors
     ///
     /// Returns `InvalidSample` if `observations` is empty or contains
     /// out-of-range symbol indices.
+    /// Returns `DimensionMismatch` if the model's matrices are inconsistent.
     #[must_use = "returns the log-likelihood"]
     pub fn forward_log_likelihood(&self, observations: &[usize]) -> Result<f64, PramanaError> {
-        let alpha = self.forward(observations)?;
-        let t = observations.len();
-        // Sum the last row of alpha (already in log-space via scaling)
-        // Actually alpha here is raw (not log). Sum last column.
-        let ll = alpha[t - 1].iter().sum::<f64>();
-        if ll <= 0.0 {
-            Ok(f64::NEG_INFINITY)
-        } else {
-            Ok(ll.ln())
-        }
+        self.check_inputs(observations)?;
+        let fwd = self.forward_scaled(observations);
+        Ok(log_likelihood(&fwd.scales))
     }
 
-    /// Forward algorithm returning the full alpha matrix (T × N).
-    ///
-    /// alpha\[t\]\[i\] = P(o_0..o_t, state_t = i | model), using scaling to
-    /// prevent underflow. Returns unscaled alpha for simplicity (sufficient
-    /// for short sequences).
-    fn forward(&self, observations: &[usize]) -> Result<Vec<Vec<f64>>, PramanaError> {
-        let t_len = observations.len();
-        if t_len == 0 {
-            return Err(PramanaError::InvalidSample(
-                "observations must be non-empty".into(),
-            ));
-        }
+    /// Scaled forward pass. Inputs must already be validated by `check_inputs`.
+    fn forward_scaled(&self, observations: &[usize]) -> ScaledForward {
         let n = self.num_states();
-        let m = self.num_symbols();
-        for (t, &o) in observations.iter().enumerate() {
-            if o >= m {
-                return Err(PramanaError::InvalidSample(format!(
-                    "observation[{t}] = {o} >= num_symbols {m}"
-                )));
-            }
-        }
-
+        let t_len = observations.len();
         let mut alpha = vec![vec![0.0; n]; t_len];
+        let mut scales = vec![0.0; t_len];
 
-        // Initialization
-        for (i, ai) in alpha[0].iter_mut().enumerate() {
-            *ai = self.initial[i] * self.emission[i][observations[0]];
-        }
-
-        // Induction
-        for t in 1..t_len {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for (i, row) in self.transition.iter().enumerate() {
-                    sum += alpha[t - 1][i] * row[j];
+        for (t, &o) in observations.iter().enumerate() {
+            let (done, rest) = alpha.split_at_mut(t);
+            let current = &mut rest[0];
+            if let Some(prev) = done.last() {
+                // Induction: alpha_t(j) = [Σ_i alpha_{t-1}(i) a_ij] b_j(o_t)
+                for (j, cur_j) in current.iter_mut().enumerate() {
+                    let sum: f64 = prev
+                        .iter()
+                        .zip(&self.transition)
+                        .map(|(&a_prev, row)| a_prev * row[j])
+                        .sum();
+                    *cur_j = sum * self.emission[j][o];
                 }
-                alpha[t][j] = sum * self.emission[j][observations[t]];
+            } else {
+                // Initialization: alpha_0(i) = π_i b_i(o_0)
+                for (i, cur_i) in current.iter_mut().enumerate() {
+                    *cur_i = self.initial[i] * self.emission[i][o];
+                }
+            }
+            let scale: f64 = current.iter().sum();
+            scales[t] = scale;
+            if scale > 0.0 {
+                let inv = 1.0 / scale;
+                current.iter_mut().for_each(|v| *v *= inv);
             }
         }
 
-        Ok(alpha)
+        ScaledForward { alpha, scales }
     }
 
     /// Viterbi algorithm: finds the most likely hidden state sequence.
@@ -317,23 +414,19 @@ impl HiddenMarkovModel {
     ///
     /// Returns `InvalidSample` if `observations` is empty or contains
     /// out-of-range symbol indices.
+    /// Returns `DimensionMismatch` if the model's matrices are inconsistent.
     #[must_use = "returns the most likely state sequence"]
     pub fn viterbi(&self, observations: &[usize]) -> Result<Vec<usize>, PramanaError> {
+        self.check_inputs(observations)?;
         let t_len = observations.len();
-        if t_len == 0 {
-            return Err(PramanaError::InvalidSample(
-                "observations must be non-empty".into(),
-            ));
-        }
         let n = self.num_states();
-        let m = self.num_symbols();
-        for (t, &o) in observations.iter().enumerate() {
-            if o >= m {
-                return Err(PramanaError::InvalidSample(format!(
-                    "observation[{t}] = {o} >= num_symbols {m}"
-                )));
-            }
-        }
+
+        let safe_ln = |p: f64| if p > 0.0 { p.ln() } else { f64::NEG_INFINITY };
+        let log_transition: Vec<Vec<f64>> = self
+            .transition
+            .iter()
+            .map(|row| row.iter().map(|&p| safe_ln(p)).collect())
+            .collect();
 
         // Work in log-space to avoid underflow
         let mut delta = vec![vec![f64::NEG_INFINITY; n]; t_len];
@@ -341,42 +434,25 @@ impl HiddenMarkovModel {
 
         // Initialization
         for (i, di) in delta[0].iter_mut().enumerate() {
-            let lp = if self.initial[i] > 0.0 {
-                self.initial[i].ln()
-            } else {
-                f64::NEG_INFINITY
-            };
-            let le = if self.emission[i][observations[0]] > 0.0 {
-                self.emission[i][observations[0]].ln()
-            } else {
-                f64::NEG_INFINITY
-            };
-            *di = lp + le;
+            *di = safe_ln(self.initial[i]) + safe_ln(self.emission[i][observations[0]]);
         }
 
         // Recursion
         for t in 1..t_len {
-            for j in 0..n {
-                let le = if self.emission[j][observations[t]] > 0.0 {
-                    self.emission[j][observations[t]].ln()
-                } else {
-                    f64::NEG_INFINITY
-                };
+            let (done, rest) = delta.split_at_mut(t);
+            let prev = &done[t - 1];
+            for (j, dj) in rest[0].iter_mut().enumerate() {
+                let le = safe_ln(self.emission[j][observations[t]]);
                 let mut best_val = f64::NEG_INFINITY;
                 let mut best_i = 0;
-                for (i, row) in self.transition.iter().enumerate() {
-                    let la = if row[j] > 0.0 {
-                        row[j].ln()
-                    } else {
-                        f64::NEG_INFINITY
-                    };
-                    let val = delta[t - 1][i] + la;
+                for (i, (&d_prev, la_row)) in prev.iter().zip(&log_transition).enumerate() {
+                    let val = d_prev + la_row[j];
                     if val > best_val {
                         best_val = val;
                         best_i = i;
                     }
                 }
-                delta[t][j] = best_val + le;
+                *dj = best_val + le;
                 psi[t][j] = best_i;
             }
         }
@@ -386,9 +462,8 @@ impl HiddenMarkovModel {
         path[t_len - 1] = delta[t_len - 1]
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map_or(0, |(i, _)| i);
 
         for t in (0..t_len - 1).rev() {
             path[t] = psi[t + 1][path[t + 1]];
@@ -399,14 +474,19 @@ impl HiddenMarkovModel {
 
     /// Baum-Welch algorithm: re-estimates HMM parameters from observations.
     ///
-    /// Runs `max_iter` iterations of the EM algorithm. Returns a new HMM
-    /// with updated parameters.
+    /// Runs `max_iter` iterations of the EM algorithm using scaled
+    /// forward/backward variables (no underflow on long sequences). Returns a
+    /// new HMM with updated parameters. States that are never visited keep
+    /// their previous transition/emission rows.
     ///
     /// # Errors
     ///
     /// Returns `InvalidSample` if `observations` is empty or contains
     /// out-of-range symbol indices.
     /// Returns `InvalidParameter` if `max_iter` is 0.
+    /// Returns `DimensionMismatch` if the model's matrices are inconsistent.
+    /// Returns `ComputationError` if the observation sequence has zero
+    /// probability under the model.
     #[must_use = "returns the re-estimated HMM"]
     pub fn baum_welch(
         &self,
@@ -418,129 +498,123 @@ impl HiddenMarkovModel {
                 "max_iter must be positive".into(),
             ));
         }
+        self.check_inputs(observations)?;
         let t_len = observations.len();
-        if t_len == 0 {
-            return Err(PramanaError::InvalidSample(
-                "observations must be non-empty".into(),
-            ));
-        }
         let n = self.num_states();
         let m = self.num_symbols();
-        for (t, &o) in observations.iter().enumerate() {
-            if o >= m {
-                return Err(PramanaError::InvalidSample(format!(
-                    "observation[{t}] = {o} >= num_symbols {m}"
-                )));
-            }
-        }
 
-        let mut transition = self.transition.clone();
-        let mut emission = self.emission.clone();
-        let mut initial = self.initial.clone();
+        let mut hmm = self.clone();
 
         for _ in 0..max_iter {
-            // Build a temporary HMM with current params for forward/backward
-            let hmm = HiddenMarkovModel {
-                transition: transition.clone(),
-                emission: emission.clone(),
-                initial: initial.clone(),
-            };
-
-            // Forward
-            let alpha = hmm.forward(observations)?;
-
-            // Backward
-            let mut beta = vec![vec![0.0; n]; t_len];
-            for bi in &mut beta[t_len - 1] {
-                *bi = 1.0;
+            // Scaled forward
+            let ScaledForward { alpha, scales } = hmm.forward_scaled(observations);
+            if scales.iter().any(|&s| s <= 0.0 || !s.is_finite()) {
+                return Err(PramanaError::ComputationError(
+                    "observation sequence has zero probability under the model".into(),
+                ));
             }
+
+            // Scaled backward: beta_hat_t(i) = Σ_j a_ij b_j(o_{t+1}) beta_hat_{t+1}(j) / c_{t+1}
+            let mut beta = vec![vec![1.0; n]; t_len];
             for t in (0..t_len - 1).rev() {
-                for i in 0..n {
-                    let mut sum = 0.0;
-                    for j in 0..n {
-                        sum += transition[i][j] * emission[j][observations[t + 1]] * beta[t + 1][j];
-                    }
-                    beta[t][i] = sum;
+                let (head, tail) = beta.split_at_mut(t + 1);
+                let next = &tail[0];
+                let o_next = observations[t + 1];
+                let scale_next = scales[t + 1];
+                for (i, bi) in head[t].iter_mut().enumerate() {
+                    let sum: f64 = hmm.transition[i]
+                        .iter()
+                        .zip(&hmm.emission)
+                        .zip(next)
+                        .map(|((&a_ij, e_j), &b_next)| a_ij * e_j[o_next] * b_next)
+                        .sum();
+                    *bi = sum / scale_next;
                 }
             }
 
-            // Gamma and xi
-            let mut gamma = vec![vec![0.0; n]; t_len];
-            let mut xi = vec![vec![vec![0.0; n]; n]; t_len.saturating_sub(1)];
+            // Accumulate expected counts.
+            let mut gamma_first = vec![0.0; n];
+            let mut gamma_sum_head = vec![0.0; n]; // Σ_{t<T-1} γ_t(i)
+            let mut gamma_sum_all = vec![0.0; n]; // Σ_t γ_t(i)
+            let mut xi_sum = vec![vec![0.0; n]; n];
+            let mut emission_num = vec![vec![0.0; m]; n];
 
             for t in 0..t_len {
-                let denom: f64 = (0..n).map(|i| alpha[t][i] * beta[t][i]).sum();
-                if denom > 0.0 {
+                let norm: f64 = alpha[t].iter().zip(&beta[t]).map(|(a, b)| a * b).sum();
+                if norm > 0.0 {
                     for i in 0..n {
-                        gamma[t][i] = alpha[t][i] * beta[t][i] / denom;
+                        let g = alpha[t][i] * beta[t][i] / norm;
+                        if t == 0 {
+                            gamma_first[i] = g;
+                        }
+                        if t + 1 < t_len {
+                            gamma_sum_head[i] += g;
+                        }
+                        gamma_sum_all[i] += g;
+                        emission_num[i][observations[t]] += g;
                     }
                 }
-            }
 
-            for t in 0..t_len.saturating_sub(1) {
-                let mut denom = 0.0;
-                for i in 0..n {
-                    for j in 0..n {
-                        denom += alpha[t][i]
-                            * transition[i][j]
-                            * emission[j][observations[t + 1]]
-                            * beta[t + 1][j];
-                    }
-                }
-                if denom > 0.0 {
-                    for i in 0..n {
-                        for j in 0..n {
-                            xi[t][i][j] = alpha[t][i]
-                                * transition[i][j]
-                                * emission[j][observations[t + 1]]
-                                * beta[t + 1][j]
-                                / denom;
+                if t + 1 < t_len {
+                    let o_next = observations[t + 1];
+                    // ξ_t(i, j) ∝ α̂_t(i) a_ij b_j(o_{t+1}) β̂_{t+1}(j); normalize per t.
+                    let xi = |i: usize, j: usize| {
+                        alpha[t][i]
+                            * hmm.transition[i][j]
+                            * hmm.emission[j][o_next]
+                            * beta[t + 1][j]
+                    };
+                    let denom: f64 = (0..n)
+                        .flat_map(|i| (0..n).map(move |j| (i, j)))
+                        .map(|(i, j)| xi(i, j))
+                        .sum();
+                    if denom > 0.0 {
+                        for (i, acc_row) in xi_sum.iter_mut().enumerate() {
+                            for (j, acc) in acc_row.iter_mut().enumerate() {
+                                *acc += xi(i, j) / denom;
+                            }
                         }
                     }
                 }
             }
 
             // Re-estimate
-            // Initial
-            initial[..n].copy_from_slice(&gamma[0][..n]);
-
-            // Transition
+            hmm.initial.copy_from_slice(&gamma_first);
             for i in 0..n {
-                let gamma_sum: f64 = (0..t_len - 1).map(|t| gamma[t][i]).sum();
-                if gamma_sum > 0.0 {
+                if gamma_sum_head[i] > 0.0 {
                     for j in 0..n {
-                        let xi_sum: f64 = (0..t_len - 1).map(|t| xi[t][i][j]).sum();
-                        transition[i][j] = xi_sum / gamma_sum;
+                        hmm.transition[i][j] = xi_sum[i][j] / gamma_sum_head[i];
                     }
                 }
-            }
-
-            // Emission
-            for i in 0..n {
-                let gamma_sum: f64 = (0..t_len).map(|t| gamma[t][i]).sum();
-                if gamma_sum > 0.0 {
-                    for (k, ek) in emission[i].iter_mut().enumerate() {
-                        let num: f64 = (0..t_len)
-                            .filter(|&t| observations[t] == k)
-                            .map(|t| gamma[t][i])
-                            .sum();
-                        *ek = num / gamma_sum;
+                if gamma_sum_all[i] > 0.0 {
+                    for k in 0..m {
+                        hmm.emission[i][k] = emission_num[i][k] / gamma_sum_all[i];
                     }
                 }
             }
         }
 
-        Ok(HiddenMarkovModel {
-            transition,
-            emission,
-            initial,
-        })
+        Ok(hmm)
     }
 }
 
-/// Validates that a vector is a valid probability distribution (non-negative, sums to ~1).
+/// `Σ ln scales[t]`, or `-inf` if any step had zero probability.
+fn log_likelihood(scales: &[f64]) -> f64 {
+    if scales.iter().any(|&s| s <= 0.0) {
+        return f64::NEG_INFINITY;
+    }
+    scales.iter().map(|s| s.ln()).sum()
+}
+
+/// Validates that a vector is a valid probability distribution
+/// (finite, non-negative, sums to ~1).
 fn validate_stochastic_row(row: &[f64], name: &str) -> Result<(), PramanaError> {
     for (j, &val) in row.iter().enumerate() {
+        if !val.is_finite() {
+            return Err(PramanaError::InvalidParameter(format!(
+                "non-finite value in {name}[{j}]: {val}"
+            )));
+        }
         if val < 0.0 {
             return Err(PramanaError::InvalidParameter(format!(
                 "negative value in {name}[{j}]: {val}"
@@ -742,5 +816,187 @@ mod tests {
         assert_eq!(hmm.transition, hmm2.transition);
         assert_eq!(hmm.emission, hmm2.emission);
         assert_eq!(hmm.initial, hmm2.initial);
+    }
+
+    // --- Hardening regression tests -------------------------------------
+
+    /// Brute-force P(O) by summing over all hidden paths.
+    fn brute_force_likelihood(hmm: &HiddenMarkovModel, obs: &[usize]) -> f64 {
+        let n = hmm.num_states();
+        let mut total = 0.0;
+        let paths = n.pow(obs.len() as u32);
+        for code in 0..paths {
+            let mut c = code;
+            let mut prev = 0;
+            let mut p = 1.0;
+            for (t, &o) in obs.iter().enumerate() {
+                let s = c % n;
+                c /= n;
+                p *= if t == 0 {
+                    hmm.initial[s]
+                } else {
+                    hmm.transition[prev][s]
+                };
+                p *= hmm.emission[s][o];
+                prev = s;
+            }
+            total += p;
+        }
+        total
+    }
+
+    #[test]
+    fn scaled_forward_matches_brute_force() {
+        let hmm = example_hmm();
+        let obs = [0, 1, 1, 0, 1];
+        let ll = hmm.forward_log_likelihood(&obs).unwrap();
+        let exact = brute_force_likelihood(&hmm, &obs).ln();
+        assert!((ll - exact).abs() < 1e-12, "{ll} vs {exact}");
+    }
+
+    #[test]
+    fn long_sequence_log_likelihood_is_finite() {
+        // The unscaled forward pass underflowed to -inf after a few hundred steps.
+        let hmm = example_hmm();
+        let m = hmm.num_symbols();
+        let obs: Vec<usize> = (0..5000).map(|i| (i * 7 + i / 3) % m).collect();
+        let ll = hmm.forward_log_likelihood(&obs).unwrap();
+        assert!(ll.is_finite() && ll < 0.0, "ll = {ll}");
+        // Additivity sanity: doubling the sequence roughly doubles |ll|.
+        let ll_half = hmm.forward_log_likelihood(&obs[..2500]).unwrap();
+        assert!((ll / ll_half - 2.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn baum_welch_long_sequence_stays_valid_and_improves() {
+        // Previously the unscaled recursions underflowed and returned initial = [0, 0].
+        let hmm = example_hmm();
+        let m = hmm.num_symbols();
+        let obs: Vec<usize> = (0..3000).map(|i| (i * 7 + i / 3) % m).collect();
+        let ll_before = hmm.forward_log_likelihood(&obs).unwrap();
+        let trained = hmm.baum_welch(&obs, 5).unwrap();
+        let sum: f64 = trained.initial.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-9, "initial sums to {sum}");
+        for row in trained.transition.iter().chain(&trained.emission) {
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+            assert!(row.iter().all(|v| v.is_finite() && *v >= 0.0));
+        }
+        let ll_after = trained.forward_log_likelihood(&obs).unwrap();
+        assert!(
+            ll_after >= ll_before - 1e-6,
+            "EM decreased likelihood: {ll_before} -> {ll_after}"
+        );
+    }
+
+    #[test]
+    fn baum_welch_impossible_sequence_errors() {
+        // State 0 only emits symbol 0, state 1 only symbol 1; start in state 0
+        // and never leave, so observing symbol 1 is impossible.
+        let hmm = HiddenMarkovModel::new(
+            vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            vec![1.0, 0.0],
+        )
+        .unwrap();
+        assert_eq!(
+            hmm.forward_log_likelihood(&[0, 1]).unwrap(),
+            f64::NEG_INFINITY
+        );
+        assert!(matches!(
+            hmm.baum_welch(&[0, 1], 3),
+            Err(PramanaError::ComputationError(_))
+        ));
+    }
+
+    #[test]
+    fn hmm_inconsistent_public_fields_do_not_panic() {
+        let mut hmm = example_hmm();
+        hmm.transition.pop();
+        assert!(hmm.forward_log_likelihood(&[0]).is_err());
+        assert!(hmm.viterbi(&[0]).is_err());
+        assert!(hmm.baum_welch(&[0], 1).is_err());
+        let mut hmm = example_hmm();
+        hmm.emission.clear();
+        assert_eq!(hmm.num_symbols(), 0);
+        assert!(hmm.viterbi(&[0]).is_err());
+    }
+
+    #[test]
+    fn hmm_rejects_non_finite_and_invalid_deserialization() {
+        assert!(
+            HiddenMarkovModel::new(
+                vec![vec![f64::NAN, 1.0], vec![0.5, 0.5]],
+                vec![vec![1.0], vec![1.0]],
+                vec![0.5, 0.5],
+            )
+            .is_err()
+        );
+        let json =
+            r#"{"transition":[[0.5,0.5],[0.5,0.5]],"emission":[[1.0],[1.0]],"initial":[0.9,0.9]}"#;
+        assert!(serde_json::from_str::<HiddenMarkovModel>(json).is_err());
+    }
+
+    #[test]
+    fn markov_chain_rejects_nan_and_invalid_deserialization() {
+        assert!(MarkovChain::new(vec![vec![f64::NAN, 1.0], vec![0.5, 0.5]], 0).is_err());
+        // state out of range
+        let json = r#"{"transition_matrix":[[1.0]],"state":5}"#;
+        assert!(serde_json::from_str::<MarkovChain>(json).is_err());
+        // empty matrix
+        let json = r#"{"transition_matrix":[],"state":0}"#;
+        assert!(serde_json::from_str::<MarkovChain>(json).is_err());
+    }
+
+    #[test]
+    fn markov_step_with_out_of_range_state_does_not_panic() {
+        let mut mc = MarkovChain::new(vec![vec![0.5, 0.5], vec![0.5, 0.5]], 0).unwrap();
+        mc.state = 99;
+        let mut rng = SimpleRng::new(1);
+        assert_eq!(mc.step(&mut rng), 99);
+        assert_eq!(mc.simulate(3, &mut rng), vec![99, 99, 99, 99]);
+    }
+
+    #[test]
+    fn markov_step_rounding_fallback_skips_unreachable_states() {
+        // Row sums to 1 - 1e-9 (within tolerance); r can exceed the cumulative
+        // sum, and the fallback must not land on the zero-probability state.
+        let mut mc = MarkovChain::new(
+            vec![
+                vec![0.0, 1.0 - 1e-9, 0.0],
+                vec![0.0, 1.0, 0.0],
+                vec![1.0, 0.0, 0.0],
+            ],
+            0,
+        )
+        .unwrap();
+        struct AlmostOne;
+        impl Rng for AlmostOne {
+            fn next_f64(&mut self) -> f64 {
+                1.0 - 1e-12
+            }
+        }
+        assert_eq!(mc.step(&mut AlmostOne), 1);
+    }
+
+    #[test]
+    fn steady_state_periodic_chain_converges() {
+        // Bipartite walk: plain power iteration oscillates forever from uniform.
+        let mc = MarkovChain::new(
+            vec![
+                vec![0.0, 1.0, 0.0],
+                vec![0.5, 0.0, 0.5],
+                vec![0.0, 1.0, 0.0],
+            ],
+            0,
+        )
+        .unwrap();
+        let pi = mc.steady_state().unwrap();
+        for (got, want) in pi.iter().zip([0.25, 0.5, 0.25]) {
+            assert!((got - want).abs() < 1e-9, "{pi:?}");
+        }
+        // Two-cycle
+        let mc = MarkovChain::new(vec![vec![0.0, 1.0], vec![1.0, 0.0]], 0).unwrap();
+        let pi = mc.steady_state().unwrap();
+        assert!((pi[0] - 0.5).abs() < 1e-9);
     }
 }

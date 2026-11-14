@@ -4,7 +4,10 @@ use crate::error::PramanaError;
 use serde::{Deserialize, Serialize};
 
 /// A single Bayesian update step.
+///
+/// Deserialization re-validates the probabilities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "BayesianUpdateRepr")]
 #[non_exhaustive]
 pub struct BayesianUpdate {
     /// Prior probability P(A).
@@ -15,12 +18,34 @@ pub struct BayesianUpdate {
     pub evidence: f64,
 }
 
+#[derive(Deserialize)]
+struct BayesianUpdateRepr {
+    prior: f64,
+    likelihood: f64,
+    evidence: f64,
+}
+
+impl TryFrom<BayesianUpdateRepr> for BayesianUpdate {
+    type Error = PramanaError;
+
+    fn try_from(repr: BayesianUpdateRepr) -> Result<Self, PramanaError> {
+        BayesianUpdate::new(repr.prior, repr.likelihood, repr.evidence)
+    }
+}
+
+/// Slack allowed when checking `P(B|A)·P(A) <= P(B)` (rounding in callers'
+/// own computation of the evidence).
+const COHERENCE_TOL: f64 = 1e-12;
+
 impl BayesianUpdate {
     /// Creates a new `BayesianUpdate`.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if evidence is zero or any probability is not in `[0, 1]`.
+    /// Returns `InvalidParameter` if evidence is zero, any probability is not
+    /// in `[0, 1]`, or the inputs are incoherent: `P(B) = P(B|A)P(A) + P(B|¬A)P(¬A)`
+    /// is at least `P(B|A)·P(A)`, so `likelihood * prior > evidence` would give a
+    /// posterior above 1.
     pub fn new(prior: f64, likelihood: f64, evidence: f64) -> Result<Self, PramanaError> {
         if evidence == 0.0 {
             return Err(PramanaError::InvalidParameter(
@@ -42,6 +67,12 @@ impl BayesianUpdate {
                 "evidence must be in [0, 1]".into(),
             ));
         }
+        if likelihood * prior > evidence * (1.0 + COHERENCE_TOL) {
+            return Err(PramanaError::InvalidParameter(format!(
+                "incoherent probabilities: likelihood * prior = {} exceeds evidence = {evidence}",
+                likelihood * prior
+            )));
+        }
         Ok(Self {
             prior,
             likelihood,
@@ -58,6 +89,9 @@ impl BayesianUpdate {
 }
 
 /// Computes Bayes' theorem: P(A|B) = P(B|A) * P(A) / P(B).
+///
+/// This is the raw formula; unlike [`BayesianUpdate::new`] it does not check
+/// that the inputs are probabilities or mutually coherent.
 ///
 /// # Errors
 ///
@@ -184,5 +218,24 @@ mod tests {
         assert_eq!(update.prior, update2.prior);
         assert_eq!(update.likelihood, update2.likelihood);
         assert_eq!(update.evidence, update2.evidence);
+    }
+
+    #[test]
+    fn bayesian_update_rejects_incoherent_inputs() {
+        // P(B|A)·P(A) = 0.45 > P(B) = 0.2 would give a posterior of 2.25.
+        assert!(BayesianUpdate::new(0.5, 0.9, 0.2).is_err());
+        // Boundary: posterior exactly 1 is allowed.
+        let u = BayesianUpdate::new(0.5, 0.4, 0.2).unwrap();
+        assert!((u.posterior() - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn bayesian_update_deserialize_validates() {
+        let bad = r#"{"prior":0.5,"likelihood":0.5,"evidence":0.0}"#;
+        assert!(serde_json::from_str::<BayesianUpdate>(bad).is_err());
+        let bad = r#"{"prior":1.5,"likelihood":0.5,"evidence":0.9}"#;
+        assert!(serde_json::from_str::<BayesianUpdate>(bad).is_err());
+        let ok = r#"{"prior":0.3,"likelihood":0.8,"evidence":0.5}"#;
+        assert!(serde_json::from_str::<BayesianUpdate>(ok).is_ok());
     }
 }

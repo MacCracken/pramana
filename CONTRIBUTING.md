@@ -12,7 +12,7 @@ Thank you for your interest in contributing to Pramana.
 
 ## Prerequisites
 
-- Rust stable (MSRV 1.89)
+- Rust stable (MSRV 1.100)
 - Components: `rustfmt`, `clippy`
 - Optional: `cargo-audit`, `cargo-deny`, `cargo-llvm-cov`
 
@@ -47,7 +47,7 @@ If the module requires an external dependency, gate it behind a feature flag.
 - Doc comments on all public items
 - `#[non_exhaustive]` on public enums
 - No `unsafe` code
-- No `println!` -- use `tracing` for logging
+- No `println!` or other logging in library code -- return errors instead (the crate has no logging dependency)
 
 ## Testing
 

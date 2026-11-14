@@ -2,13 +2,16 @@
 //!
 //! Provides continuous and discrete distributions with PDF/PMF, CDF, mean,
 //! variance, and sampling capabilities.
+//!
+//! Every constructor validates its parameters (finite, in range), and
+//! deserialization goes through the same constructor, so a `Distribution`
+//! value can never hold invalid parameters by way of serde.
 
 use crate::error::PramanaError;
 use crate::math;
-use crate::math::erf;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
-use std::f64::consts::{PI, SQRT_2};
+use std::f64::consts::PI;
 
 /// A probability distribution that can compute density, cumulative probability,
 /// moments, and draw samples.
@@ -30,11 +33,78 @@ pub trait Distribution {
 }
 
 // ---------------------------------------------------------------------------
+// Parameter validation helpers
+// ---------------------------------------------------------------------------
+
+/// `InvalidParameter` unless `value` is finite.
+fn require_finite(value: f64, name: &str) -> Result<(), PramanaError> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(PramanaError::InvalidParameter(format!(
+            "{name} must be finite, got {value}"
+        )))
+    }
+}
+
+/// `InvalidParameter` unless `value` is finite and strictly positive.
+fn require_positive(value: f64, name: &str) -> Result<(), PramanaError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(())
+    } else {
+        Err(PramanaError::InvalidParameter(format!(
+            "{name} must be positive and finite, got {value}"
+        )))
+    }
+}
+
+/// `InvalidParameter` unless `value` is a probability in `[0, 1]`.
+fn require_probability(value: f64, name: &str) -> Result<(), PramanaError> {
+    if (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(PramanaError::InvalidParameter(format!(
+            "{name} must be in [0, 1], got {value}"
+        )))
+    }
+}
+
+/// Generates a private serde "repr" struct plus a `TryFrom` impl that routes
+/// deserialization through the validating constructor. Used together with
+/// `#[serde(try_from = "...")]`; the wire format is unchanged.
+macro_rules! validated_deserialize {
+    ($ty:ident, $repr:ident { $($field:ident : $fty:ty),* $(,)? }, $ctor:expr) => {
+        #[derive(Deserialize)]
+        struct $repr {
+            $($field: $fty),*
+        }
+
+        impl TryFrom<$repr> for $ty {
+            type Error = PramanaError;
+
+            fn try_from(repr: $repr) -> Result<Self, PramanaError> {
+                let $repr { $($field),* } = repr;
+                $ctor
+            }
+        }
+    };
+}
+
+/// Draws a standard normal variate via Box-Muller (cosine branch).
+#[inline]
+fn standard_normal(rng: &mut impl Rng) -> f64 {
+    let u1 = rng.next_f64().max(f64::MIN_POSITIVE); // avoid log(0)
+    let u2 = rng.next_f64();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+}
+
+// ---------------------------------------------------------------------------
 // Normal distribution
 // ---------------------------------------------------------------------------
 
 /// Normal (Gaussian) distribution with parameters `mean` and `std_dev`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "NormalRepr")]
 #[non_exhaustive]
 pub struct Normal {
     /// Mean (mu).
@@ -43,18 +113,25 @@ pub struct Normal {
     pub std_dev: f64,
 }
 
+validated_deserialize!(
+    Normal,
+    NormalRepr {
+        mean: f64,
+        std_dev: f64
+    },
+    Normal::new(mean, std_dev)
+);
+
 impl Normal {
     /// Creates a new Normal distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `std_dev <= 0`.
+    /// Returns `InvalidParameter` if `mean` is not finite or `std_dev` is not
+    /// positive and finite.
     pub fn new(mean: f64, std_dev: f64) -> Result<Self, PramanaError> {
-        if std_dev <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "std_dev must be positive".into(),
-            ));
-        }
+        require_finite(mean, "mean")?;
+        require_positive(std_dev, "std_dev")?;
         Ok(Self { mean, std_dev })
     }
 }
@@ -66,10 +143,10 @@ impl Distribution for Normal {
         (1.0 / (self.std_dev * (2.0 * PI).sqrt())) * (-0.5 * z * z).exp()
     }
 
+    /// CDF via `erfc`, accurate to full relative precision in both tails.
     #[inline]
     fn cdf(&self, x: f64) -> f64 {
-        let z = (x - self.mean) / (self.std_dev * SQRT_2);
-        0.5 * (1.0 + erf(z))
+        math::normal_cdf((x - self.mean) / self.std_dev)
     }
 
     #[inline]
@@ -84,11 +161,7 @@ impl Distribution for Normal {
 
     /// Samples using the Box-Muller transform.
     fn sample(&self, rng: &mut impl Rng) -> f64 {
-        // Box-Muller transform
-        let u1 = rng.next_f64().max(f64::MIN_POSITIVE); // avoid log(0)
-        let u2 = rng.next_f64();
-        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
-        self.mean + self.std_dev * z
+        self.mean + self.std_dev * standard_normal(rng)
     }
 }
 
@@ -98,6 +171,7 @@ impl Distribution for Normal {
 
 /// Continuous uniform distribution on `[min, max]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "UniformRepr")]
 #[non_exhaustive]
 pub struct Uniform {
     /// Lower bound.
@@ -106,17 +180,29 @@ pub struct Uniform {
     pub max: f64,
 }
 
+validated_deserialize!(
+    Uniform,
+    UniformRepr { min: f64, max: f64 },
+    Uniform::new(min, max)
+);
+
 impl Uniform {
     /// Creates a new Uniform distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `min >= max`.
+    /// Returns `InvalidParameter` if either bound is not finite, `min >= max`,
+    /// or the width `max - min` overflows.
     pub fn new(min: f64, max: f64) -> Result<Self, PramanaError> {
+        require_finite(min, "min")?;
+        require_finite(max, "max")?;
         if min >= max {
             return Err(PramanaError::InvalidParameter(
                 "min must be less than max".into(),
             ));
+        }
+        if !(max - min).is_finite() {
+            return Err(PramanaError::InvalidParameter("max - min overflows".into()));
         }
         Ok(Self { min, max })
     }
@@ -166,24 +252,27 @@ impl Distribution for Uniform {
 
 /// Exponential distribution with rate parameter `lambda`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "ExponentialRepr")]
 #[non_exhaustive]
 pub struct Exponential {
     /// Rate parameter (lambda). Must be positive.
     pub lambda: f64,
 }
 
+validated_deserialize!(
+    Exponential,
+    ExponentialRepr { lambda: f64 },
+    Exponential::new(lambda)
+);
+
 impl Exponential {
     /// Creates a new Exponential distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `lambda <= 0`.
+    /// Returns `InvalidParameter` if `lambda` is not positive and finite.
     pub fn new(lambda: f64) -> Result<Self, PramanaError> {
-        if lambda <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "lambda must be positive".into(),
-            ));
-        }
+        require_positive(lambda, "lambda")?;
         Ok(Self { lambda })
     }
 }
@@ -198,12 +287,13 @@ impl Distribution for Exponential {
         }
     }
 
+    /// CDF `1 - exp(-λx)`, computed with `exp_m1` for precision near 0.
     #[inline]
     fn cdf(&self, x: f64) -> f64 {
         if x < 0.0 {
             0.0
         } else {
-            1.0 - (-self.lambda * x).exp()
+            -(-self.lambda * x).exp_m1()
         }
     }
 
@@ -231,24 +321,27 @@ impl Distribution for Exponential {
 
 /// Poisson distribution with expected value `lambda`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "PoissonRepr")]
 #[non_exhaustive]
 pub struct Poisson {
     /// Expected number of events (lambda). Must be positive.
     pub lambda: f64,
 }
 
+validated_deserialize!(Poisson, PoissonRepr { lambda: f64 }, Poisson::new(lambda));
+
+/// Above this rate, Poisson sampling uses the PTRS transformed-rejection
+/// sampler instead of Knuth's multiplication method.
+const POISSON_PTRS_THRESHOLD: f64 = 30.0;
+
 impl Poisson {
     /// Creates a new Poisson distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `lambda <= 0`.
+    /// Returns `InvalidParameter` if `lambda` is not positive and finite.
     pub fn new(lambda: f64) -> Result<Self, PramanaError> {
-        if lambda <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "lambda must be positive".into(),
-            ));
-        }
+        require_positive(lambda, "lambda")?;
         Ok(Self { lambda })
     }
 }
@@ -257,30 +350,33 @@ impl Distribution for Poisson {
     /// Probability mass function: P(X = k) = (lambda^k * e^-lambda) / k!
     ///
     /// Returns 0 for non-integer `x` (exact float comparison; e.g. `3.0` is
-    /// accepted but `3.0000000000000004` is not).
+    /// accepted but `3.0000000000000004` is not). Evaluated in log-space without
+    /// cancellation, in O(1) for any `k`.
     #[inline]
     fn pdf(&self, x: f64) -> f64 {
-        if x < 0.0 || x.fract() != 0.0 {
+        if x.is_nan() {
+            return f64::NAN;
+        }
+        if x < 0.0 || x.fract() != 0.0 || x.is_infinite() {
             return 0.0;
         }
-        let k = x as u64;
-        // Use log-space to avoid overflow: exp(k*ln(lambda) - lambda - ln(k!))
-        let log_pmf = (k as f64) * self.lambda.ln() - self.lambda - ln_factorial(k);
-        log_pmf.exp()
+        if x == 0.0 {
+            return (-self.lambda).exp();
+        }
+        // ln P(X = k) = k ln λ - λ - ln k! = [(k+1) ln λ - λ - lnΓ(k+1)] - ln λ
+        (math::ln_gamma_kernel(x + 1.0, self.lambda) - self.lambda.ln()).exp()
     }
 
-    /// CDF: P(X <= x) = sum_{k=0}^{floor(x)} PMF(k).
+    /// CDF: P(X <= x) = Q(floor(x) + 1, lambda), the regularized upper
+    /// incomplete gamma function. O(sqrt(lambda)) at worst, never O(x).
     fn cdf(&self, x: f64) -> f64 {
+        if x.is_nan() {
+            return f64::NAN;
+        }
         if x < 0.0 {
             return 0.0;
         }
-        let n = x.floor() as u64;
-        let mut sum = 0.0;
-        for k in 0..=n {
-            let log_pmf = (k as f64) * self.lambda.ln() - self.lambda - ln_factorial(k);
-            sum += log_pmf.exp();
-        }
-        sum.min(1.0)
+        math::regularized_upper_incomplete_gamma(x.floor() + 1.0, self.lambda)
     }
 
     #[inline]
@@ -293,16 +389,11 @@ impl Distribution for Poisson {
         self.lambda
     }
 
-    /// Samples using Knuth's algorithm for small lambda, or a normal
-    /// approximation for lambda > 30 (where Knuth's exp(-lambda) underflows).
+    /// Samples exactly: Knuth's multiplication method for `lambda <= 30`, and
+    /// Hörmann's PTRS transformed rejection for larger `lambda`.
     fn sample(&self, rng: &mut impl Rng) -> f64 {
-        if self.lambda > 30.0 {
-            // Normal approximation: Poisson(lambda) ~ N(lambda, lambda)
-            let u1 = rng.next_f64().max(f64::MIN_POSITIVE);
-            let u2 = rng.next_f64();
-            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
-            let sample = self.lambda + self.lambda.sqrt() * z;
-            return sample.round().max(0.0);
+        if self.lambda > POISSON_PTRS_THRESHOLD {
+            return sample_poisson_ptrs(self.lambda, rng);
         }
         // Knuth's algorithm for small lambda
         let l = (-self.lambda).exp();
@@ -319,17 +410,42 @@ impl Distribution for Poisson {
     }
 }
 
-/// Natural log of n! computed iteratively.
-#[inline]
-fn ln_factorial(n: u64) -> f64 {
-    if n <= 1 {
-        return 0.0;
+/// Poisson sampling by transformed rejection with squeeze (PTRS).
+///
+/// W. Hörmann, "The transformed rejection method for generating Poisson
+/// random variables", Insurance: Mathematics and Economics 12 (1993).
+/// Valid (and efficient) for `lambda >= 10`.
+fn sample_poisson_ptrs(lambda: f64, rng: &mut impl Rng) -> f64 {
+    let slam = lambda.sqrt();
+    let loglam = lambda.ln();
+    let b = 0.931 + 2.53 * slam;
+    let a = -0.059 + 0.02483 * b;
+    let inv_alpha = 1.1239 + 1.1328 / (b - 3.4);
+    let vr = 0.9277 - 3.6224 / (b - 2.0);
+
+    loop {
+        let u = rng.next_f64() - 0.5;
+        let v = rng.next_f64();
+        let us = 0.5 - u.abs();
+        let k = ((2.0 * a / us + b) * u + lambda + 0.43).floor();
+        if us >= 0.07 && v <= vr {
+            return k;
+        }
+        if k < 0.0 || !k.is_finite() || (us < 0.013 && v > us) {
+            continue;
+        }
+        let lhs = v.ln() + inv_alpha.ln() - (a / (us * us) + b).ln();
+        // ln P(X = k) = k ln λ - λ - ln k!, via the cancellation-free kernel
+        // (the direct form loses ~1e-3 absolute accuracy at λ ~ 1e12).
+        let rhs = if k == 0.0 {
+            -lambda
+        } else {
+            math::ln_gamma_kernel(k + 1.0, lambda) - loglam
+        };
+        if lhs <= rhs {
+            return k;
+        }
     }
-    let mut sum = 0.0;
-    for i in 2..=n {
-        sum += (i as f64).ln();
-    }
-    sum
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +455,7 @@ fn ln_factorial(n: u64) -> f64 {
 /// Binomial distribution: number of successes in `n` independent Bernoulli trials
 /// each with success probability `p`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "BinomialRepr")]
 #[non_exhaustive]
 pub struct Binomial {
     /// Number of trials.
@@ -346,6 +463,17 @@ pub struct Binomial {
     /// Probability of success on each trial.
     pub p: f64,
 }
+
+validated_deserialize!(
+    Binomial,
+    BinomialRepr { n: u64, p: f64 },
+    Binomial::new(n, p)
+);
+
+/// Up to this many trials, Binomial sampling simulates the Bernoulli trials
+/// directly; above it, the problem is split recursively with Beta order
+/// statistics (exact, O(log n)).
+const BINOMIAL_DIRECT_MAX_N: u64 = 64;
 
 impl Binomial {
     /// Creates a new Binomial distribution.
@@ -357,44 +485,71 @@ impl Binomial {
         if n == 0 {
             return Err(PramanaError::InvalidParameter("n must be positive".into()));
         }
-        if !(0.0..=1.0).contains(&p) {
-            return Err(PramanaError::InvalidParameter("p must be in [0, 1]".into()));
-        }
+        require_probability(p, "p")?;
         Ok(Self { n, p })
     }
 }
 
 impl Distribution for Binomial {
-    /// PMF: C(n, k) * p^k * (1-p)^(n-k), computed in log-space.
+    /// PMF: C(n, k) * p^k * (1-p)^(n-k).
+    ///
+    /// Uses Loader's saddle-point form (Stirling remainders + deviance terms),
+    /// which is O(1) and accurate even for very large `n`.
     #[inline]
     fn pdf(&self, x: f64) -> f64 {
-        if x < 0.0 || x.fract() != 0.0 || x > self.n as f64 {
+        if x.is_nan() {
+            return f64::NAN;
+        }
+        let n = self.n as f64;
+        if x < 0.0 || x.fract() != 0.0 || x > n {
             return 0.0;
         }
-        let k = x as u64;
-        let log_pmf = ln_binomial_coeff(self.n, k)
-            + (k as f64) * self.p.ln()
-            + ((self.n - k) as f64) * (1.0 - self.p).ln();
-        log_pmf.exp()
+        let p = self.p;
+        let q = 1.0 - p;
+        if p == 0.0 {
+            return if x == 0.0 { 1.0 } else { 0.0 };
+        }
+        if p == 1.0 {
+            return if x == n { 1.0 } else { 0.0 };
+        }
+        if x == 0.0 {
+            return (n * (-p).ln_1p()).exp();
+        }
+        if x == n {
+            return (n * p.ln()).exp();
+        }
+        let n_minus_x = n - x;
+        let lc = math::stirling_error(n)
+            - math::stirling_error(x)
+            - math::stirling_error(n_minus_x)
+            - math::bd0(x, n * p)
+            - math::bd0(n_minus_x, n * q);
+        // ln(2π x (n - x) / n)
+        let lf = 2.0 * math::LN_SQRT_2PI + x.ln() + (-x / n).ln_1p();
+        (lc - 0.5 * lf).exp()
     }
 
-    /// CDF: P(X <= x) = sum_{k=0}^{floor(x)} PMF(k).
+    /// CDF: P(X <= x) = I_{1-p}(n - k, k + 1) with k = floor(x), via the
+    /// regularized incomplete beta function (no O(n) summation).
     fn cdf(&self, x: f64) -> f64 {
+        if x.is_nan() {
+            return f64::NAN;
+        }
         if x < 0.0 {
             return 0.0;
         }
-        if x >= self.n as f64 {
+        let n = self.n as f64;
+        if x >= n {
             return 1.0;
         }
-        let upper = x.floor() as u64;
-        let mut sum = 0.0;
-        for k in 0..=upper {
-            let log_pmf = ln_binomial_coeff(self.n, k)
-                + (k as f64) * self.p.ln()
-                + ((self.n - k) as f64) * (1.0 - self.p).ln();
-            sum += log_pmf.exp();
+        if self.p == 0.0 {
+            return 1.0;
         }
-        sum.min(1.0)
+        if self.p == 1.0 {
+            return 0.0;
+        }
+        let k = x.floor();
+        math::beta_inc(n - k, k + 1.0, 1.0 - self.p, self.p).0
     }
 
     #[inline]
@@ -407,25 +562,46 @@ impl Distribution for Binomial {
         self.n as f64 * self.p * (1.0 - self.p)
     }
 
-    /// Samples by simulating `n` Bernoulli trials.
+    /// Samples exactly. For `n <= 64` simulates the Bernoulli trials; larger
+    /// `n` is reduced in O(log n) steps by Knuth's Beta order-statistic
+    /// splitting (TAOCP Vol. 2, §3.4.1).
     fn sample(&self, rng: &mut impl Rng) -> f64 {
+        let mut trials = self.n;
+        let mut p = self.p;
         let mut successes: u64 = 0;
-        for _ in 0..self.n {
-            if rng.next_f64() < self.p {
+
+        while trials > BINOMIAL_DIRECT_MAX_N {
+            if p <= 0.0 {
+                return successes as f64;
+            }
+            if p >= 1.0 {
+                return (successes + trials) as f64;
+            }
+            // The a-th smallest of `trials` uniforms is Beta(a, trials - a + 1).
+            let a = 1 + trials / 2;
+            let b = trials - a + 1;
+            let ga = sample_gamma_standard(a as f64, rng);
+            let gb = sample_gamma_standard(b as f64, rng);
+            let x = if ga + gb > 0.0 { ga / (ga + gb) } else { 0.5 };
+            if x >= p {
+                // Successes all lie among the a - 1 uniforms below x.
+                trials = a - 1;
+                p = (p / x).clamp(0.0, 1.0);
+            } else {
+                // The a uniforms up to x are all successes; recurse above x.
+                successes += a;
+                trials = b - 1;
+                p = ((p - x) / (1.0 - x)).clamp(0.0, 1.0);
+            }
+        }
+
+        for _ in 0..trials {
+            if rng.next_f64() < p {
                 successes += 1;
             }
         }
         successes as f64
     }
-}
-
-/// Natural log of C(n, k) = n! / (k! * (n-k)!), computed in log-space.
-#[inline]
-fn ln_binomial_coeff(n: u64, k: u64) -> f64 {
-    if k > n {
-        return f64::NEG_INFINITY;
-    }
-    ln_factorial(n) - ln_factorial(k) - ln_factorial(n - k)
 }
 
 // ---------------------------------------------------------------------------
@@ -434,11 +610,14 @@ fn ln_binomial_coeff(n: u64, k: u64) -> f64 {
 
 /// Bernoulli distribution: single trial with success probability `p`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "BernoulliRepr")]
 #[non_exhaustive]
 pub struct Bernoulli {
     /// Probability of success.
     pub p: f64,
 }
+
+validated_deserialize!(Bernoulli, BernoulliRepr { p: f64 }, Bernoulli::new(p));
 
 impl Bernoulli {
     /// Creates a new Bernoulli distribution.
@@ -447,9 +626,7 @@ impl Bernoulli {
     ///
     /// Returns `InvalidParameter` if `p` is not in `[0, 1]`.
     pub fn new(p: f64) -> Result<Self, PramanaError> {
-        if !(0.0..=1.0).contains(&p) {
-            return Err(PramanaError::InvalidParameter("p must be in [0, 1]".into()));
-        }
+        require_probability(p, "p")?;
         Ok(Self { p })
     }
 }
@@ -457,7 +634,7 @@ impl Bernoulli {
 impl Distribution for Bernoulli {
     #[inline]
     fn pdf(&self, x: f64) -> f64 {
-        if (x - 0.0).abs() < f64::EPSILON {
+        if x.abs() < f64::EPSILON {
             1.0 - self.p
         } else if (x - 1.0).abs() < f64::EPSILON {
             self.p
@@ -468,7 +645,9 @@ impl Distribution for Bernoulli {
 
     #[inline]
     fn cdf(&self, x: f64) -> f64 {
-        if x < 0.0 {
+        if x.is_nan() {
+            f64::NAN
+        } else if x < 0.0 {
             0.0
         } else if x < 1.0 {
             1.0 - self.p
@@ -502,6 +681,7 @@ impl Distribution for Bernoulli {
 /// The PDF is: f(x) = x^(alpha-1) * exp(-x/beta) / (beta^alpha * Gamma(alpha))
 /// for x > 0.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "GammaRepr")]
 #[non_exhaustive]
 pub struct Gamma {
     /// Shape parameter (alpha/k). Must be positive.
@@ -510,23 +690,24 @@ pub struct Gamma {
     pub beta: f64,
 }
 
+validated_deserialize!(
+    Gamma,
+    GammaRepr {
+        alpha: f64,
+        beta: f64
+    },
+    Gamma::new(alpha, beta)
+);
+
 impl Gamma {
     /// Creates a new Gamma distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `alpha <= 0` or `beta <= 0`.
+    /// Returns `InvalidParameter` if `alpha` or `beta` is not positive and finite.
     pub fn new(alpha: f64, beta: f64) -> Result<Self, PramanaError> {
-        if alpha <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "alpha must be positive".into(),
-            ));
-        }
-        if beta <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "beta must be positive".into(),
-            ));
-        }
+        require_positive(alpha, "alpha")?;
+        require_positive(beta, "beta")?;
         Ok(Self { alpha, beta })
     }
 }
@@ -585,9 +766,7 @@ fn sample_gamma_standard(alpha: f64, rng: &mut impl Rng) -> f64 {
     let sample = loop {
         // Box-Muller for a standard normal variate
         let (x, v) = loop {
-            let u1 = rng.next_f64().max(f64::MIN_POSITIVE);
-            let u2 = rng.next_f64();
-            let x = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
+            let x = standard_normal(rng);
             let v = 1.0 + c * x;
             if v > 0.0 {
                 break (x, v * v * v);
@@ -610,6 +789,7 @@ fn sample_gamma_standard(alpha: f64, rng: &mut impl Rng) -> f64 {
 
 /// Beta distribution on [0, 1] with shape parameters `alpha` and `beta`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "BetaRepr")]
 #[non_exhaustive]
 pub struct Beta {
     /// Shape parameter alpha. Must be positive.
@@ -618,23 +798,24 @@ pub struct Beta {
     pub beta: f64,
 }
 
+validated_deserialize!(
+    Beta,
+    BetaRepr {
+        alpha: f64,
+        beta: f64
+    },
+    Beta::new(alpha, beta)
+);
+
 impl Beta {
     /// Creates a new Beta distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `alpha <= 0` or `beta <= 0`.
+    /// Returns `InvalidParameter` if `alpha` or `beta` is not positive and finite.
     pub fn new(alpha: f64, beta: f64) -> Result<Self, PramanaError> {
-        if alpha <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "alpha must be positive".into(),
-            ));
-        }
-        if beta <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "beta must be positive".into(),
-            ));
-        }
+        require_positive(alpha, "alpha")?;
+        require_positive(beta, "beta")?;
         Ok(Self { alpha, beta })
     }
 }
@@ -645,7 +826,7 @@ impl Distribution for Beta {
         if x <= 0.0 || x >= 1.0 {
             return 0.0;
         }
-        let ln_pdf = (self.alpha - 1.0) * x.ln() + (self.beta - 1.0) * (1.0 - x).ln()
+        let ln_pdf = (self.alpha - 1.0) * x.ln() + (self.beta - 1.0) * (-x).ln_1p()
             - math::ln_beta(self.alpha, self.beta);
         ln_pdf.exp()
     }
@@ -688,22 +869,23 @@ impl Distribution for Beta {
 ///
 /// This is a special case of the Gamma distribution: Chi²(df) = Gamma(df/2, 2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "ChiSquaredRepr")]
 #[non_exhaustive]
 pub struct ChiSquared {
     /// Degrees of freedom. Must be positive.
     pub df: f64,
 }
 
+validated_deserialize!(ChiSquared, ChiSquaredRepr { df: f64 }, ChiSquared::new(df));
+
 impl ChiSquared {
     /// Creates a new Chi-squared distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `df <= 0`.
+    /// Returns `InvalidParameter` if `df` is not positive and finite.
     pub fn new(df: f64) -> Result<Self, PramanaError> {
-        if df <= 0.0 {
-            return Err(PramanaError::InvalidParameter("df must be positive".into()));
-        }
+        require_positive(df, "df")?;
         Ok(Self { df })
     }
 }
@@ -750,23 +932,48 @@ impl Distribution for ChiSquared {
 
 /// Student's t-distribution with `df` degrees of freedom.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "StudentTRepr")]
 #[non_exhaustive]
 pub struct StudentT {
     /// Degrees of freedom. Must be positive.
     pub df: f64,
 }
 
+validated_deserialize!(StudentT, StudentTRepr { df: f64 }, StudentT::new(df));
+
 impl StudentT {
     /// Creates a new Student's t-distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `df <= 0`.
+    /// Returns `InvalidParameter` if `df` is not positive and finite.
     pub fn new(df: f64) -> Result<Self, PramanaError> {
-        if df <= 0.0 {
-            return Err(PramanaError::InvalidParameter("df must be positive".into()));
-        }
+        require_positive(df, "df")?;
         Ok(Self { df })
+    }
+}
+
+/// Two-tailed p-value P(|T| >= |t|) for Student-t with `df` degrees of freedom.
+///
+/// Equals I_{df/(df+t²)}(df/2, 1/2); both incomplete-beta arguments are formed
+/// without cancellation (and without inf/inf for huge |t|).
+pub(crate) fn student_t_two_tailed(t: f64, df: f64) -> f64 {
+    if t.is_nan() || df.is_nan() {
+        return f64::NAN;
+    }
+    let t2 = t * t;
+    let x = 1.0 / (1.0 + t2 / df);
+    let y = 1.0 / (1.0 + df / t2);
+    math::beta_inc(df / 2.0, 0.5, x, y).0.clamp(0.0, 1.0)
+}
+
+/// Student-t CDF with `df` degrees of freedom, accurate in both tails.
+pub(crate) fn student_t_cdf(t: f64, df: f64) -> f64 {
+    let two_tail = student_t_two_tailed(t, df);
+    if t >= 0.0 {
+        1.0 - 0.5 * two_tail
+    } else {
+        0.5 * two_tail
     }
 }
 
@@ -774,23 +981,28 @@ impl Distribution for StudentT {
     #[inline]
     fn pdf(&self, x: f64) -> f64 {
         let half_dfp1 = (self.df + 1.0) / 2.0;
-        let ln_pdf = math::ln_gamma(half_dfp1)
-            - 0.5 * (self.df * PI).ln()
-            - math::ln_gamma(self.df / 2.0)
-            - half_dfp1 * (1.0 + x * x / self.df).ln();
+        // ln Γ((ν+1)/2) - ln Γ(ν/2) - ½ ln(νπ). For large ν the two lnΓ terms
+        // cancel badly, so use the equivalent -ln B(ν/2, ½) - ½ ln ν, whose
+        // Stirling form is exact there; for small ν the direct form is cheaper.
+        // The kernel term is multiplied by (ν+1)/2, so for large ν it needs
+        // `ln_1p`; for small ν the cheaper `ln` is just as accurate.
+        let ln_pdf = if self.df >= 20.0 {
+            -math::ln_beta(self.df / 2.0, 0.5)
+                - 0.5 * self.df.ln()
+                - half_dfp1 * (x * x / self.df).ln_1p()
+        } else {
+            math::ln_gamma(half_dfp1)
+                - math::ln_gamma(self.df / 2.0)
+                - 0.5 * (self.df * PI).ln()
+                - half_dfp1 * (1.0 + x * x / self.df).ln()
+        };
         ln_pdf.exp()
     }
 
     /// CDF via the regularized incomplete beta function.
     #[inline]
     fn cdf(&self, x: f64) -> f64 {
-        let ibeta =
-            math::regularized_incomplete_beta(self.df / (self.df + x * x), self.df / 2.0, 0.5);
-        if x >= 0.0 {
-            1.0 - 0.5 * ibeta
-        } else {
-            0.5 * ibeta
-        }
+        student_t_cdf(x, self.df)
     }
 
     /// Returns 0 for df > 1, NaN otherwise (undefined).
@@ -813,10 +1025,7 @@ impl Distribution for StudentT {
 
     /// Samples as Z / sqrt(V/df) where Z ~ N(0,1), V ~ Chi²(df).
     fn sample(&self, rng: &mut impl Rng) -> f64 {
-        // Standard normal via Box-Muller
-        let u1 = rng.next_f64().max(f64::MIN_POSITIVE);
-        let u2 = rng.next_f64();
-        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
+        let z = standard_normal(rng);
         // Chi-squared(df) via Gamma
         let v = sample_gamma_standard(self.df / 2.0, rng) * 2.0;
         z / (v / self.df).sqrt()
@@ -829,6 +1038,7 @@ impl Distribution for StudentT {
 
 /// F-distribution (Fisher-Snedecor) with `d1` and `d2` degrees of freedom.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "FDistributionRepr")]
 #[non_exhaustive]
 pub struct FDistribution {
     /// Numerator degrees of freedom. Must be positive.
@@ -837,21 +1047,38 @@ pub struct FDistribution {
     pub d2: f64,
 }
 
+validated_deserialize!(
+    FDistribution,
+    FDistributionRepr { d1: f64, d2: f64 },
+    FDistribution::new(d1, d2)
+);
+
 impl FDistribution {
     /// Creates a new F-distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `d1 <= 0` or `d2 <= 0`.
+    /// Returns `InvalidParameter` if `d1` or `d2` is not positive and finite.
     pub fn new(d1: f64, d2: f64) -> Result<Self, PramanaError> {
-        if d1 <= 0.0 {
-            return Err(PramanaError::InvalidParameter("d1 must be positive".into()));
-        }
-        if d2 <= 0.0 {
-            return Err(PramanaError::InvalidParameter("d2 must be positive".into()));
-        }
+        require_positive(d1, "d1")?;
+        require_positive(d2, "d2")?;
         Ok(Self { d1, d2 })
     }
+}
+
+/// `(CDF, survival)` of the F(d1, d2) distribution at `x`, each without cancellation.
+pub(crate) fn f_cdf_sf(x: f64, d1: f64, d2: f64) -> (f64, f64) {
+    if x.is_nan() {
+        return (f64::NAN, f64::NAN);
+    }
+    if x <= 0.0 {
+        return (0.0, 1.0);
+    }
+    // u = d1 x / (d1 x + d2), 1 - u = d2 / (d1 x + d2)
+    let r = d1 * x / d2;
+    let u = 1.0 / (1.0 + 1.0 / r);
+    let v = 1.0 / (1.0 + r);
+    math::beta_inc(d1 / 2.0, d2 / 2.0, u, v)
 }
 
 impl Distribution for FDistribution {
@@ -863,7 +1090,7 @@ impl Distribution for FDistribution {
         let half_d1 = self.d1 / 2.0;
         let half_d2 = self.d2 / 2.0;
         let ln_pdf = half_d1 * (self.d1 / self.d2).ln() + (half_d1 - 1.0) * x.ln()
-            - (half_d1 + half_d2) * (1.0 + self.d1 * x / self.d2).ln()
+            - (half_d1 + half_d2) * (self.d1 * x / self.d2).ln_1p()
             - math::ln_beta(half_d1, half_d2);
         ln_pdf.exp()
     }
@@ -871,11 +1098,7 @@ impl Distribution for FDistribution {
     /// CDF via the regularized incomplete beta function.
     #[inline]
     fn cdf(&self, x: f64) -> f64 {
-        if x <= 0.0 {
-            return 0.0;
-        }
-        let u = self.d1 * x / (self.d1 * x + self.d2);
-        math::regularized_incomplete_beta(u, self.d1 / 2.0, self.d2 / 2.0)
+        f_cdf_sf(x, self.d1, self.d2).0
     }
 
     /// Returns d2/(d2-2) for d2 > 2, NaN otherwise (undefined).
@@ -915,6 +1138,7 @@ impl Distribution for FDistribution {
 ///
 /// The Cauchy distribution has no defined mean or variance (returns NaN).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "CauchyRepr")]
 #[non_exhaustive]
 pub struct Cauchy {
     /// Location parameter (median).
@@ -923,18 +1147,25 @@ pub struct Cauchy {
     pub gamma: f64,
 }
 
+validated_deserialize!(
+    Cauchy,
+    CauchyRepr {
+        x0: f64,
+        gamma: f64
+    },
+    Cauchy::new(x0, gamma)
+);
+
 impl Cauchy {
     /// Creates a new Cauchy distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `gamma <= 0`.
+    /// Returns `InvalidParameter` if `x0` is not finite or `gamma` is not
+    /// positive and finite.
     pub fn new(x0: f64, gamma: f64) -> Result<Self, PramanaError> {
-        if gamma <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "gamma must be positive".into(),
-            ));
-        }
+        require_finite(x0, "x0")?;
+        require_positive(gamma, "gamma")?;
         Ok(Self { x0, gamma })
     }
 }
@@ -980,6 +1211,7 @@ impl Distribution for Cauchy {
 /// The PDF is: f(x) = (k/lambda) * (x/lambda)^(k-1) * exp(-(x/lambda)^k)
 /// for x >= 0.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "WeibullRepr")]
 #[non_exhaustive]
 pub struct Weibull {
     /// Shape parameter. Must be positive.
@@ -988,21 +1220,24 @@ pub struct Weibull {
     pub lambda: f64,
 }
 
+validated_deserialize!(
+    Weibull,
+    WeibullRepr {
+        k: f64,
+        lambda: f64
+    },
+    Weibull::new(k, lambda)
+);
+
 impl Weibull {
     /// Creates a new Weibull distribution.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidParameter` if `k <= 0` or `lambda <= 0`.
+    /// Returns `InvalidParameter` if `k` or `lambda` is not positive and finite.
     pub fn new(k: f64, lambda: f64) -> Result<Self, PramanaError> {
-        if k <= 0.0 {
-            return Err(PramanaError::InvalidParameter("k must be positive".into()));
-        }
-        if lambda <= 0.0 {
-            return Err(PramanaError::InvalidParameter(
-                "lambda must be positive".into(),
-            ));
-        }
+        require_positive(k, "k")?;
+        require_positive(lambda, "lambda")?;
         Ok(Self { k, lambda })
     }
 }
@@ -1026,12 +1261,13 @@ impl Distribution for Weibull {
         (self.k / self.lambda) * z.powf(self.k - 1.0) * (-z.powf(self.k)).exp()
     }
 
+    /// CDF `1 - exp(-(x/λ)^k)`, computed with `exp_m1` for precision near 0.
     #[inline]
     fn cdf(&self, x: f64) -> f64 {
         if x <= 0.0 {
             return 0.0;
         }
-        1.0 - (-(x / self.lambda).powf(self.k)).exp()
+        -(-(x / self.lambda).powf(self.k)).exp_m1()
     }
 
     /// Mean = lambda * Gamma(1 + 1/k).
@@ -1066,7 +1302,12 @@ impl Distribution for Weibull {
 /// positive-definite covariance matrix. The Cholesky factor and
 /// log-determinant are pre-computed at construction time for efficient
 /// sampling and density evaluation.
+///
+/// Serialization includes the cached factor for compatibility, but
+/// deserialization recomputes (and re-validates) it from `mean` and
+/// `covariance`; cached fields in the input are ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "MultivariateNormalRepr")]
 #[non_exhaustive]
 pub struct MultivariateNormal {
     /// Mean vector (length d).
@@ -1081,21 +1322,41 @@ pub struct MultivariateNormal {
     dim: usize,
 }
 
+validated_deserialize!(
+    MultivariateNormal,
+    MultivariateNormalRepr {
+        mean: Vec<f64>,
+        covariance: Vec<Vec<f64>>,
+    },
+    MultivariateNormal::new(mean, covariance)
+);
+
+/// Relative tolerance for the covariance symmetry check.
+const MVN_SYMMETRY_TOL: f64 = 1e-10;
+
 impl MultivariateNormal {
     /// Creates a new multivariate normal distribution.
     ///
     /// # Errors
     ///
     /// Returns `InvalidParameter` if:
-    /// - `mean` is empty
-    /// - `covariance` is not square or doesn't match `mean` length
-    /// - `covariance` is not symmetric positive-definite
+    /// - `mean` is empty or contains non-finite values
+    /// - `covariance` contains non-finite values
+    /// - `covariance` is not symmetric (relative tolerance 1e-10) positive-definite
+    ///
+    /// Returns `DimensionMismatch` if `covariance` is not square or doesn't
+    /// match the `mean` length.
     pub fn new(mean: Vec<f64>, covariance: Vec<Vec<f64>>) -> Result<Self, PramanaError> {
         let dim = mean.len();
         if dim == 0 {
             return Err(PramanaError::InvalidParameter(
                 "mean vector must be non-empty".into(),
             ));
+        }
+        if let Some(i) = mean.iter().position(|v| !v.is_finite()) {
+            return Err(PramanaError::InvalidParameter(format!(
+                "mean[{i}] is not finite"
+            )));
         }
         if covariance.len() != dim {
             return Err(PramanaError::DimensionMismatch(format!(
@@ -1110,14 +1371,20 @@ impl MultivariateNormal {
                     row.len()
                 )));
             }
+            if let Some(j) = row.iter().position(|v| !v.is_finite()) {
+                return Err(PramanaError::InvalidParameter(format!(
+                    "covariance[{i}][{j}] is not finite"
+                )));
+            }
         }
-        // Symmetry check (tolerance 1e-10)
+        // Symmetry check (relative tolerance, so it is scale-independent)
         for (i, row_i) in covariance.iter().enumerate() {
             for (j, &cov_ij) in row_i.iter().enumerate().skip(i + 1) {
-                if (cov_ij - covariance[j][i]).abs() > 1e-10 {
+                let cov_ji = covariance[j][i];
+                let scale = cov_ij.abs().max(cov_ji.abs()).max(f64::MIN_POSITIVE);
+                if (cov_ij - cov_ji).abs() > MVN_SYMMETRY_TOL * scale {
                     return Err(PramanaError::InvalidParameter(format!(
-                        "covariance not symmetric: [{i}][{j}]={cov_ij} != [{j}][{i}]={}",
-                        covariance[j][i]
+                        "covariance not symmetric: [{i}][{j}]={cov_ij} != [{j}][{i}]={cov_ji}"
                     )));
                 }
             }
@@ -1133,9 +1400,14 @@ impl MultivariateNormal {
         let log_det: f64 = cholesky_l
             .iter()
             .enumerate()
-            .map(|(i, row)| row[i].ln())
+            .map(|(i, row)| row.get(i).copied().unwrap_or(f64::NAN).ln())
             .sum::<f64>()
             * 2.0;
+        if !log_det.is_finite() {
+            return Err(PramanaError::InvalidParameter(
+                "covariance is not positive-definite (degenerate determinant)".into(),
+            ));
+        }
 
         Ok(Self {
             mean,
@@ -1182,13 +1454,11 @@ impl MultivariateNormal {
         // diff = x - mean
         let diff: Vec<f64> = x.iter().zip(&self.mean).map(|(xi, mi)| xi - mi).collect();
 
-        // Solve L * y = diff for y, then mahalanobis² = y · y
-        let y = hisab::num::cholesky_solve(&self.cholesky_l, &diff)
+        // cholesky_solve solves (L Lᵀ) w = diff, i.e. w = Σ⁻¹ diff, so the
+        // squared Mahalanobis distance is diffᵀ Σ⁻¹ diff = diff · w.
+        let w = hisab::num::cholesky_solve(&self.cholesky_l, &diff)
             .map_err(|e| PramanaError::ComputationError(format!("cholesky_solve failed: {e}")))?;
-
-        // Wait — cholesky_solve solves LLᵀx = b, giving x = Σ⁻¹ * diff.
-        // Mahalanobis² = diffᵀ Σ⁻¹ diff = diff · x
-        let mahalanobis_sq: f64 = diff.iter().zip(&y).map(|(d, yi)| d * yi).sum();
+        let mahalanobis_sq: f64 = diff.iter().zip(&w).map(|(d, wi)| d * wi).sum();
 
         let d = self.dim as f64;
         Ok(-0.5 * (d * (2.0 * PI).ln() + self.log_det + mahalanobis_sq))
@@ -1198,23 +1468,21 @@ impl MultivariateNormal {
     pub fn sample(&self, rng: &mut impl Rng) -> Vec<f64> {
         // Generate d independent standard normals via Box-Muller
         let mut z = Vec::with_capacity(self.dim);
-        let mut i = 0;
-        while i < self.dim {
+        while z.len() < self.dim {
             let u1 = rng.next_f64().max(f64::MIN_POSITIVE);
             let u2 = rng.next_f64();
             let r = (-2.0 * u1.ln()).sqrt();
             let theta = 2.0 * PI * u2;
             z.push(r * theta.cos());
-            if i + 1 < self.dim {
+            if z.len() < self.dim {
                 z.push(r * theta.sin());
             }
-            i += 2;
         }
 
-        // result = mean + L * z
+        // result = mean + L * z (L is lower-triangular: row i uses z[0..=i])
         let mut result = self.mean.clone();
         for (i, (res_i, row)) in result.iter_mut().zip(&self.cholesky_l).enumerate() {
-            let sum: f64 = row.iter().zip(&z[..=i]).map(|(l, zi)| l * zi).sum();
+            let sum: f64 = row.iter().take(i + 1).zip(&z).map(|(l, zi)| l * zi).sum();
             *res_i += sum;
         }
         result
@@ -1828,5 +2096,314 @@ mod tests {
         assert_eq!(mvn.mean, mvn2.mean);
         assert_eq!(mvn.covariance, mvn2.covariance);
         assert_eq!(mvn.dim, mvn2.dim);
+    }
+
+    // --- Hardening regression tests -------------------------------------
+
+    fn assert_rel(actual: f64, expected: f64, tol: f64, what: &str) {
+        let err = ((actual - expected) / expected).abs();
+        assert!(
+            err <= tol,
+            "{what}: got {actual:e}, expected {expected:e} (rel {err:e})"
+        );
+    }
+
+    #[test]
+    fn constructors_reject_non_finite_parameters() {
+        let nan = f64::NAN;
+        let inf = f64::INFINITY;
+        assert!(Normal::new(nan, 1.0).is_err());
+        assert!(Normal::new(0.0, nan).is_err());
+        assert!(Normal::new(0.0, inf).is_err());
+        assert!(Uniform::new(nan, 1.0).is_err());
+        assert!(Uniform::new(f64::NEG_INFINITY, 0.0).is_err());
+        assert!(Uniform::new(-1e308, 1e308).is_err(), "width overflows");
+        assert!(Exponential::new(nan).is_err());
+        assert!(Exponential::new(inf).is_err());
+        assert!(Poisson::new(nan).is_err());
+        assert!(Poisson::new(inf).is_err());
+        assert!(Binomial::new(10, nan).is_err());
+        assert!(Bernoulli::new(nan).is_err());
+        assert!(Gamma::new(nan, 1.0).is_err());
+        assert!(Gamma::new(1.0, inf).is_err());
+        assert!(Beta::new(1.0, nan).is_err());
+        assert!(ChiSquared::new(inf).is_err());
+        assert!(StudentT::new(nan).is_err());
+        assert!(FDistribution::new(1.0, nan).is_err());
+        assert!(Cauchy::new(nan, 1.0).is_err());
+        assert!(Cauchy::new(0.0, inf).is_err());
+        assert!(Weibull::new(nan, 1.0).is_err());
+        assert!(MultivariateNormal::new(vec![nan], vec![vec![1.0]]).is_err());
+        assert!(MultivariateNormal::new(vec![0.0], vec![vec![nan]]).is_err());
+        assert!(MultivariateNormal::new(vec![0.0], vec![vec![inf]]).is_err());
+    }
+
+    #[test]
+    fn deserialize_rejects_invalid_parameters() {
+        assert!(serde_json::from_str::<Normal>(r#"{"mean":0.0,"std_dev":-1.0}"#).is_err());
+        assert!(serde_json::from_str::<Uniform>(r#"{"min":2.0,"max":1.0}"#).is_err());
+        assert!(serde_json::from_str::<Exponential>(r#"{"lambda":0.0}"#).is_err());
+        assert!(serde_json::from_str::<Poisson>(r#"{"lambda":-3.0}"#).is_err());
+        assert!(serde_json::from_str::<Binomial>(r#"{"n":0,"p":0.5}"#).is_err());
+        assert!(serde_json::from_str::<Binomial>(r#"{"n":5,"p":1.5}"#).is_err());
+        assert!(serde_json::from_str::<Bernoulli>(r#"{"p":-0.1}"#).is_err());
+        assert!(serde_json::from_str::<Gamma>(r#"{"alpha":0.0,"beta":1.0}"#).is_err());
+        assert!(serde_json::from_str::<Beta>(r#"{"alpha":1.0,"beta":-2.0}"#).is_err());
+        assert!(serde_json::from_str::<ChiSquared>(r#"{"df":0.0}"#).is_err());
+        assert!(serde_json::from_str::<StudentT>(r#"{"df":-1.0}"#).is_err());
+        assert!(serde_json::from_str::<FDistribution>(r#"{"d1":1.0,"d2":0.0}"#).is_err());
+        assert!(serde_json::from_str::<Cauchy>(r#"{"x0":0.0,"gamma":0.0}"#).is_err());
+        assert!(serde_json::from_str::<Weibull>(r#"{"k":-1.0,"lambda":1.0}"#).is_err());
+        // Not positive-definite.
+        assert!(
+            serde_json::from_str::<MultivariateNormal>(
+                r#"{"mean":[0,0],"covariance":[[1,2],[2,1]]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn mvn_deserialize_recomputes_cached_factor() {
+        // A tampered `dim`/`cholesky_l` used to be trusted and made sample() panic.
+        let json = r#"{"mean":[0,0,0],"covariance":[[1,0,0],[0,1,0],[0,0,1]],
+                       "cholesky_l":[[1]],"log_det":5.0,"dim":1}"#;
+        let mvn: MultivariateNormal = serde_json::from_str(json).unwrap();
+        assert_eq!(mvn.dim(), 3);
+        assert!(mvn.log_det.abs() < 1e-12);
+        let mut rng = crate::rng::SimpleRng::new(9);
+        assert_eq!(mvn.sample(&mut rng).len(), 3);
+        // The old wire format (with cached fields) still deserializes.
+        let original =
+            MultivariateNormal::new(vec![1.0, 2.0], vec![vec![2.0, 0.5], vec![0.5, 1.0]]).unwrap();
+        let back: MultivariateNormal =
+            serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+        assert_eq!(back.cholesky_l, original.cholesky_l);
+    }
+
+    #[test]
+    fn mvn_symmetry_check_is_scale_relative() {
+        // Large-scale covariance with relative asymmetry far below 1e-10 is accepted ...
+        let big = 1e12;
+        let ok = MultivariateNormal::new(
+            vec![0.0, 0.0],
+            vec![vec![big, 0.5 * big], vec![0.5 * big + 1e-3, big]],
+        );
+        assert!(ok.is_ok());
+        // ... while a genuinely asymmetric small-scale matrix is rejected.
+        let bad = MultivariateNormal::new(vec![0.0, 0.0], vec![vec![1e-6, 1e-7], vec![2e-7, 1e-6]]);
+        assert!(bad.is_err());
+    }
+
+    #[test]
+    fn normal_cdf_tail_precision() {
+        let n = Normal::new(0.0, 1.0).unwrap();
+        assert_rel(n.cdf(-6.0), 9.865_876_450_377_014e-10, 1e-13, "Φ(-6)");
+        assert_rel(n.cdf(-1.0), 0.158_655_253_931_457_07, 1e-15, "Φ(-1)");
+        assert!(n.cdf(-40.0) > 0.0 || n.cdf(-40.0) == 0.0);
+        assert!((n.cdf(1.0) + n.cdf(-1.0) - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn exponential_and_weibull_cdf_small_x() {
+        let e = Exponential::new(1.0).unwrap();
+        assert_rel(e.cdf(1e-20), 1e-20, 1e-15, "Exp cdf near 0");
+        let w = Weibull::new(1.0, 1.0).unwrap();
+        assert_rel(w.cdf(1e-20), 1e-20, 1e-15, "Weibull cdf near 0");
+    }
+
+    #[test]
+    fn poisson_pmf_and_cdf_reference() {
+        let p = Poisson::new(2.5).unwrap();
+        // e^-2.5 · 2.5³ / 3!
+        assert_rel(p.pdf(3.0), 0.213_763_017_249_736_45, 1e-14, "pmf(3; 2.5)");
+        // cdf equals the pmf sum
+        let sum: f64 = (0..=6).map(|k| p.pdf(k as f64)).sum();
+        assert_rel(p.cdf(6.0), sum, 1e-14, "cdf(6; 2.5)");
+        // 50-digit decimal references: Q(k + 1, λ)
+        let p100 = Poisson::new(100.0).unwrap();
+        assert_rel(
+            p100.cdf(120.0),
+            0.977_330_670_921_647_3,
+            1e-13,
+            "cdf(120; 100)",
+        );
+        let p1e4 = Poisson::new(1e4).unwrap();
+        assert_rel(
+            p1e4.cdf(1e4),
+            0.502_659_581_219_007_6,
+            1e-12,
+            "cdf(1e4; 1e4)",
+        );
+    }
+
+    #[test]
+    fn poisson_huge_arguments_are_fast_and_bounded() {
+        // Used to be O(x²) / effectively infinite loops.
+        let p = Poisson::new(3.0).unwrap();
+        assert_eq!(p.cdf(1e18), 1.0);
+        assert_eq!(p.cdf(f64::INFINITY), 1.0);
+        assert_eq!(p.pdf(1e15), 0.0);
+        assert!(p.cdf(f64::NAN).is_nan());
+        let big = Poisson::new(1e12).unwrap();
+        assert!((big.cdf(1e12) - 0.5).abs() < 1e-3);
+        assert!(big.pdf(1e12) > 0.0);
+    }
+
+    #[test]
+    fn poisson_ptrs_sampling_moments() {
+        for &lambda in &[31.0, 100.0, 1e6] {
+            let p = Poisson::new(lambda).unwrap();
+            let mut rng = crate::rng::SimpleRng::new(2024);
+            let n = 20_000;
+            let samples: Vec<f64> = (0..n).map(|_| p.sample(&mut rng)).collect();
+            assert!(samples.iter().all(|&s| s >= 0.0 && s.fract() == 0.0));
+            let mean = samples.iter().sum::<f64>() / n as f64;
+            let var = samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+            // 5 standard errors
+            assert!(
+                (mean - lambda).abs() < 5.0 * (lambda / n as f64).sqrt(),
+                "λ={lambda} mean={mean}"
+            );
+            assert!((var / lambda - 1.0).abs() < 0.06, "λ={lambda} var={var}");
+        }
+    }
+
+    #[test]
+    fn binomial_degenerate_p() {
+        let b0 = Binomial::new(10, 0.0).unwrap();
+        assert_eq!(b0.pdf(0.0), 1.0);
+        assert_eq!(b0.pdf(3.0), 0.0);
+        assert_eq!(b0.cdf(0.0), 1.0);
+        let b1 = Binomial::new(10, 1.0).unwrap();
+        assert_eq!(b1.pdf(10.0), 1.0);
+        assert_eq!(b1.pdf(9.0), 0.0);
+        assert_eq!(b1.cdf(9.0), 0.0);
+        assert_eq!(b1.cdf(10.0), 1.0);
+        let mut rng = crate::rng::SimpleRng::new(1);
+        assert_eq!(Binomial::new(1000, 1.0).unwrap().sample(&mut rng), 1000.0);
+        assert_eq!(Binomial::new(1000, 0.0).unwrap().sample(&mut rng), 0.0);
+    }
+
+    #[test]
+    fn binomial_pmf_matches_exact_and_cdf_matches_sum() {
+        let b = Binomial::new(20, 0.3).unwrap();
+        let mut cumulative = 0.0;
+        for k in 0..=20u64 {
+            // exact C(20,k) 0.3^k 0.7^(20-k)
+            let c = crate::combinatorics::combinations(20, k).unwrap() as f64;
+            let exact = c * 0.3_f64.powi(k as i32) * 0.7_f64.powi(20 - k as i32);
+            assert_rel(b.pdf(k as f64), exact, 1e-13, &format!("pmf({k})"));
+            cumulative += exact;
+            if k < 20 {
+                assert_rel(b.cdf(k as f64), cumulative, 1e-12, &format!("cdf({k})"));
+            }
+        }
+    }
+
+    #[test]
+    fn binomial_large_n_is_fast_and_accurate() {
+        let n = 1_000_000u64;
+        let b = Binomial::new(n, 0.5).unwrap();
+        // Symmetry: P(X <= n/2) = 1/2 + P(X = n/2)/2.
+        let half = (n / 2) as f64;
+        assert_rel(b.cdf(half), 0.5 + 0.5 * b.pdf(half), 1e-12, "symmetric cdf");
+        // P(X = n/2) ≈ 1/sqrt(π n / 2) (1 - 1/(4n))
+        let approx = (1.0 / (PI * half).sqrt()) * (1.0 - 1.0 / (4.0 * n as f64));
+        assert_rel(b.pdf(half), approx, 1e-9, "central pmf");
+        // Sampling huge n terminates quickly and has the right mean.
+        let big = Binomial::new(u64::MAX, 0.25).unwrap();
+        let mut rng = crate::rng::SimpleRng::new(77);
+        let s = big.sample(&mut rng);
+        assert!((s / u64::MAX as f64 - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn binomial_large_n_sampling_moments() {
+        let b = Binomial::new(10_000, 0.3).unwrap();
+        let mut rng = crate::rng::SimpleRng::new(31337);
+        let n = 20_000;
+        let samples: Vec<f64> = (0..n).map(|_| b.sample(&mut rng)).collect();
+        assert!(
+            samples
+                .iter()
+                .all(|&s| (0.0..=10_000.0).contains(&s) && s.fract() == 0.0)
+        );
+        let mean = samples.iter().sum::<f64>() / n as f64;
+        let var = samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+        assert!(
+            (mean - 3000.0).abs() < 5.0 * (2100.0 / n as f64).sqrt(),
+            "mean={mean}"
+        );
+        assert!((var / 2100.0 - 1.0).abs() < 0.06, "var={var}");
+    }
+
+    #[test]
+    fn student_t_cdf_closed_forms() {
+        let t1 = StudentT::new(1.0).unwrap();
+        let t2 = StudentT::new(2.0).unwrap();
+        for &x in &[-30.0, -2.5, -0.3, 0.0, 0.7, 4.0] {
+            assert!(
+                (t1.cdf(x) - (0.5 + f64::atan(x) / PI)).abs() < 1e-15,
+                "df=1 x={x}"
+            );
+            let df2 = 0.5 + x / (2.0 * (2.0 + x * x).sqrt());
+            assert!((t2.cdf(x) - df2).abs() < 1e-15, "df=2 x={x}");
+        }
+        // Far tail keeps relative precision: 0.5 - atan(1e10)/π = atan(1e-10)/π.
+        assert_rel(t1.cdf(-1e10), (1e-10_f64).atan() / PI, 1e-12, "df=1 tail");
+        assert_eq!(t1.cdf(f64::INFINITY), 1.0);
+        assert_eq!(t1.cdf(f64::NEG_INFINITY), 0.0);
+        assert!(t1.cdf(f64::NAN).is_nan());
+    }
+
+    #[test]
+    fn student_t_large_df_approaches_normal() {
+        let t = StudentT::new(1e9).unwrap();
+        let z = Normal::new(0.0, 1.0).unwrap();
+        assert!((t.cdf(1.96) - z.cdf(1.96)).abs() < 1e-9);
+        assert!((t.pdf(0.3) - z.pdf(0.3)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn student_t_pdf_matches_gamma_form() {
+        for &df in &[0.5, 3.0, 30.0] {
+            let t = StudentT::new(df).unwrap();
+            let x: f64 = 1.3;
+            let expected = (math::ln_gamma((df + 1.0) / 2.0)
+                - math::ln_gamma(df / 2.0)
+                - 0.5 * (df * PI).ln()
+                - (df + 1.0) / 2.0 * (1.0 + x * x / df).ln())
+            .exp();
+            assert_rel(t.pdf(x), expected, 1e-13, &format!("t pdf df={df}"));
+        }
+    }
+
+    #[test]
+    fn chi_squared_large_df_cdf() {
+        // Previously 0.11 because the incomplete-gamma series was truncated.
+        let c = ChiSquared::new(1e6).unwrap();
+        assert_rel(
+            c.cdf(1e6),
+            1.0 - 0.499_811_936_803_394_5,
+            1e-11,
+            "χ²(1e6) at 1e6",
+        );
+    }
+
+    #[test]
+    fn f_distribution_closed_form_and_tail() {
+        // F(2, d2) CDF = 1 - (1 + 2x/d2)^(-d2/2)
+        for &d2 in &[5.0_f64, 100.0, 1e6] {
+            let f = FDistribution::new(2.0, d2).unwrap();
+            let x: f64 = 2.5;
+            let expected = -(-d2 / 2.0 * (2.0 * x / d2).ln_1p()).exp_m1();
+            assert_rel(f.cdf(x), expected, 1e-12, &format!("F(2,{d2})"));
+        }
+        // Upper tail is computed directly (no 1 - cdf rounding to zero).
+        let (_, sf) = f_cdf_sf(1e6, 2.0, 5.0);
+        let expected = (1.0 + 2.0 * 1e6 / 5.0_f64).powf(-2.5);
+        assert_rel(sf, expected, 1e-11, "F upper tail");
+        assert_eq!(f_cdf_sf(f64::INFINITY, 2.0, 5.0), (1.0, 0.0));
     }
 }

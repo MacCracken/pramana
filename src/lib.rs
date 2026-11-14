@@ -18,6 +18,15 @@
 //! | [`monte_carlo`] | Monte Carlo integration, Metropolis-Hastings MCMC, Gibbs sampling |
 //! | [`markov`] | Markov chains, Hidden Markov Models (Forward, Viterbi, Baum-Welch) |
 //! | [`timeseries`] | Time series: moving average, exponential smoothing, autocorrelation, ARIMA |
+//! | [`bridge`] | Primitive-value bridges for other AGNOS science crates |
+//! | `integration::soorat` | Visualization data for soorat (feature `soorat-compat`) |
+//! | `ai` | Natural-language statistical queries via hoosh (feature `ai`) |
+//!
+//! ## Input validation
+//!
+//! Constructors validate their parameters (finite, in range) and deserialization
+//! goes through the same checks. Functions return [`PramanaError`] for invalid
+//! input rather than panicking.
 //!
 //! ## Quick Start
 //!
@@ -56,6 +65,9 @@
 //! let pi = monte_carlo::monte_carlo_pi(100_000, &mut rng).unwrap();
 //! assert!((pi - std::f64::consts::PI).abs() < 0.1);
 //! ```
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 #[cfg(feature = "ai")]
 pub mod ai;

@@ -17,11 +17,13 @@ pub struct EstimateResult {
 /// Estimates a definite integral of `f` over `[a, b]` using Monte Carlo sampling.
 ///
 /// The integral is approximated as `(b - a) * mean(f(x_i))` where `x_i` are
-/// uniformly sampled from `[a, b]`.
+/// uniformly sampled from `[a, b]`. The standard error uses a numerically
+/// stable (Welford) variance of the `f(x_i)`.
 ///
 /// # Errors
 ///
-/// Returns `InvalidParameter` if `n_samples` is 0 or `a >= b`.
+/// Returns `InvalidParameter` if `n_samples` is 0, either bound is not finite,
+/// `a >= b`, or `b - a` overflows.
 #[must_use = "returns the integration estimate"]
 pub fn monte_carlo_integrate(
     f: impl Fn(f64) -> f64,
@@ -35,6 +37,11 @@ pub fn monte_carlo_integrate(
             "n_samples must be positive".into(),
         ));
     }
+    if !(a.is_finite() && b.is_finite()) {
+        return Err(PramanaError::InvalidParameter(
+            "integration bounds must be finite".into(),
+        ));
+    }
     if a >= b {
         return Err(PramanaError::InvalidParameter(
             "lower bound must be less than upper bound".into(),
@@ -42,22 +49,29 @@ pub fn monte_carlo_integrate(
     }
 
     let width = b - a;
-    let mut sum = 0.0;
-    let mut sum_sq = 0.0;
+    if !width.is_finite() {
+        return Err(PramanaError::InvalidParameter(
+            "integration width b - a overflows".into(),
+        ));
+    }
 
-    for _ in 0..n_samples {
+    // Welford's online mean/variance: no catastrophic cancellation and never
+    // negative (the old E[f²] - E[f]² form could produce a NaN std error).
+    let mut mean = 0.0;
+    let mut m2 = 0.0;
+    for i in 0..n_samples {
         let x = a + rng.next_f64() * width;
         let val = f(x);
-        sum += val;
-        sum_sq += val * val;
+        let delta = val - mean;
+        mean += delta / (i + 1) as f64;
+        m2 += delta * (val - mean);
     }
 
     let n = n_samples as f64;
-    let mean = sum / n;
     let value = width * mean;
 
-    // Variance of f(x_i)
-    let var = sum_sq / n - mean * mean;
+    // Population variance of f(x_i)
+    let var = m2 / n;
     let std_error = width * (var / n).sqrt();
 
     Ok(EstimateResult { value, std_error })
@@ -95,6 +109,27 @@ pub fn monte_carlo_pi(n_samples: usize, rng: &mut impl Rng) -> Result<f64, Prama
 // MCMC: Metropolis-Hastings
 // ---------------------------------------------------------------------------
 
+/// Validates MCMC run lengths and reserves the sample buffer.
+///
+/// Returns the total number of iterations (`n_samples + burn_in`) and an empty
+/// vector with capacity for `n_samples` samples; overflow or allocation
+/// failure is an error rather than a panic.
+fn chain_buffers(n_samples: usize, burn_in: usize) -> Result<(usize, Vec<Vec<f64>>), PramanaError> {
+    if n_samples == 0 {
+        return Err(PramanaError::InvalidParameter(
+            "n_samples must be positive".into(),
+        ));
+    }
+    let total = n_samples.checked_add(burn_in).ok_or_else(|| {
+        PramanaError::InvalidParameter("n_samples + burn_in overflows usize".into())
+    })?;
+    let mut samples = Vec::new();
+    samples.try_reserve_exact(n_samples).map_err(|_| {
+        PramanaError::InvalidParameter(format!("cannot allocate {n_samples} samples"))
+    })?;
+    Ok((total, samples))
+}
+
 /// Result of an MCMC sampling run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McmcResult {
@@ -121,10 +156,15 @@ pub struct McmcResult {
 /// * `burn_in` - Number of initial samples to discard.
 /// * `rng` - Random number generator.
 ///
+/// A log-density of NaN is treated as `-inf` (zero density). If the chain
+/// starts at a point of zero density, the first proposal with positive
+/// density is accepted, so the chain can move into the support.
+///
 /// # Errors
 ///
-/// Returns `InvalidParameter` if `initial` is empty, `proposal_std <= 0`,
-/// or `n_samples` is 0.
+/// Returns `InvalidParameter` if `initial` is empty, `proposal_std` is not
+/// positive and finite, `n_samples` is 0, or `n_samples + burn_in` overflows
+/// or cannot be allocated.
 pub fn metropolis_hastings(
     log_target: impl Fn(&[f64]) -> f64,
     initial: &[f64],
@@ -139,21 +179,20 @@ pub fn metropolis_hastings(
             "initial point must be non-empty".into(),
         ));
     }
-    if proposal_std <= 0.0 {
+    if !(proposal_std.is_finite() && proposal_std > 0.0) {
         return Err(PramanaError::InvalidParameter(
-            "proposal_std must be positive".into(),
+            "proposal_std must be positive and finite".into(),
         ));
     }
-    if n_samples == 0 {
-        return Err(PramanaError::InvalidParameter(
-            "n_samples must be positive".into(),
-        ));
-    }
+    let (total, mut samples) = chain_buffers(n_samples, burn_in)?;
 
-    let total = n_samples + burn_in;
+    let log_density = |x: &[f64]| {
+        let v = log_target(x);
+        if v.is_nan() { f64::NEG_INFINITY } else { v }
+    };
+
     let mut current = initial.to_vec();
-    let mut log_current = log_target(&current);
-    let mut samples = Vec::with_capacity(n_samples);
+    let mut log_current = log_density(&current);
     let mut accepted: u64 = 0;
 
     for step in 0..total {
@@ -168,10 +207,19 @@ pub fn metropolis_hastings(
             })
             .collect();
 
-        let log_proposal = log_target(&proposal);
+        let log_proposal = log_density(&proposal);
 
-        // Accept/reject
-        let log_alpha = log_proposal - log_current;
+        // Accept/reject. From a zero-density point (-inf), any proposal with
+        // positive density is accepted; -inf - -inf is treated as a rejection.
+        let log_alpha = if log_current == f64::NEG_INFINITY {
+            if log_proposal > f64::NEG_INFINITY {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            }
+        } else {
+            log_proposal - log_current
+        };
         let accept = if log_alpha >= 0.0 {
             true
         } else {
@@ -218,8 +266,9 @@ pub fn metropolis_hastings(
 ///
 /// # Errors
 ///
-/// Returns `InvalidParameter` if `conditionals` is empty, lengths mismatch,
-/// or `n_samples` is 0.
+/// Returns `InvalidParameter` if `conditionals` is empty, `n_samples` is 0, or
+/// `n_samples + burn_in` overflows or cannot be allocated.
+/// Returns `DimensionMismatch` if `initial` and `conditionals` lengths differ.
 pub fn gibbs_sampling<F>(
     conditionals: &[F],
     initial: &[f64],
@@ -242,15 +291,8 @@ where
             initial.len()
         )));
     }
-    if n_samples == 0 {
-        return Err(PramanaError::InvalidParameter(
-            "n_samples must be positive".into(),
-        ));
-    }
-
-    let total = n_samples + burn_in;
+    let (total, mut samples) = chain_buffers(n_samples, burn_in)?;
     let mut state = initial.to_vec();
-    let mut samples = Vec::with_capacity(n_samples);
 
     for step in 0..total {
         for (j, cond) in conditionals.iter().enumerate() {
@@ -424,5 +466,68 @@ mod tests {
         assert!(gibbs_sampling(&conds, &[0.0, 0.0], 100, 0, &mut rng).is_err());
         // n_samples = 0
         assert!(gibbs_sampling(&conds, &[0.0], 0, 0, &mut rng).is_err());
+    }
+
+    // --- Hardening regression tests -------------------------------------
+
+    #[test]
+    fn integrate_rejects_non_finite_bounds() {
+        let mut rng = SimpleRng::new(1);
+        assert!(monte_carlo_integrate(|x| x, f64::NAN, 1.0, 10, &mut rng).is_err());
+        assert!(monte_carlo_integrate(|x| x, 0.0, f64::INFINITY, 10, &mut rng).is_err());
+        assert!(monte_carlo_integrate(|x| x, -f64::MAX, f64::MAX, 10, &mut rng).is_err());
+    }
+
+    #[test]
+    fn integrate_std_error_never_nan_for_constant_offset() {
+        // E[f²] - E[f]² cancels to a negative number for large constant f.
+        let mut rng = SimpleRng::new(5);
+        let r = monte_carlo_integrate(|_| 1e9 + 0.1, 0.0, 1.0, 1000, &mut rng).unwrap();
+        assert!(
+            r.std_error.is_finite() && r.std_error >= 0.0,
+            "{}",
+            r.std_error
+        );
+        assert!(r.std_error < 1e-6);
+    }
+
+    #[test]
+    fn mcmc_run_length_overflow_is_an_error() {
+        let mut rng = SimpleRng::new(1);
+        assert!(metropolis_hastings(|_| 0.0, &[0.0], 1.0, usize::MAX, 1, &mut rng).is_err());
+        assert!(metropolis_hastings(|_| 0.0, &[0.0], 1.0, usize::MAX, 0, &mut rng).is_err());
+        let conds = [|_: &[f64], _: &mut dyn Rng| 0.0];
+        assert!(gibbs_sampling(&conds, &[0.0], 1, usize::MAX, &mut rng).is_err());
+    }
+
+    #[test]
+    fn mh_rejects_non_finite_proposal_std() {
+        let mut rng = SimpleRng::new(1);
+        assert!(metropolis_hastings(|_| 0.0, &[0.0], f64::NAN, 10, 0, &mut rng).is_err());
+        assert!(metropolis_hastings(|_| 0.0, &[0.0], f64::INFINITY, 10, 0, &mut rng).is_err());
+    }
+
+    #[test]
+    fn mh_escapes_zero_density_start() {
+        // Target: Uniform(0, 1). Starting at 5.0 (zero density) used to compute
+        // -inf - -inf = NaN and reject forever.
+        let log_target = |x: &[f64]| {
+            if (0.0..=1.0).contains(&x[0]) {
+                0.0
+            } else {
+                f64::NEG_INFINITY
+            }
+        };
+        let mut rng = SimpleRng::new(11);
+        let r = metropolis_hastings(log_target, &[0.9], 2.0, 2000, 0, &mut rng).unwrap();
+        assert!(r.acceptance_rate > 0.0);
+        let mut rng = SimpleRng::new(11);
+        let r = metropolis_hastings(log_target, &[1.5], 1.0, 4000, 1000, &mut rng).unwrap();
+        assert!(r.samples.iter().all(|s| (0.0..=1.0).contains(&s[0])));
+        // NaN log-density is treated as zero density, not as "always reject".
+        let mut rng = SimpleRng::new(3);
+        let nan_outside = |x: &[f64]| if x[0].abs() < 1.0 { 0.0 } else { f64::NAN };
+        let r = metropolis_hastings(nan_outside, &[3.0], 2.0, 500, 200, &mut rng).unwrap();
+        assert!(r.samples.iter().all(|s| s[0].abs() < 1.0));
     }
 }
