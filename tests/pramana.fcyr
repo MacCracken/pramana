@@ -1,10 +1,12 @@
 # pramana fuzz harness
 
+# Fuzz target stub. The JSON readers' harness replaces it at M8 (port plan §7).
 fn fuzz_main(data, len) {
     if (len == 0) { return 0; }
     return 0;
 }
 
+# Runs the fuzz target once on a fixed input.
 fn main() {
     alloc_init();
     fuzz_main("test", 4);

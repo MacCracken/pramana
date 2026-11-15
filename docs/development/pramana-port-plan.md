@@ -16,9 +16,9 @@
 >
 > ▶ **Status: every decision is taken (§0.2, 2026-11-15). M0 steps 0 and 1 are done:**
 > - step 0, the Rust hooks, is committed as `94a7153`;
-> - step 1, the `cyrius port` scaffold, is not committed yet.
+> - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
-> **Next is step 2:** repairing what the scaffold overwrote. The maintainer took each recommendation and
+> **Step 2,** the repairs, is done but not committed. **Next is step 3:** the full `cyrius.cyml`. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -533,30 +533,55 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
    - **The skeleton:** `cyrius build` and `cyrius test` (2 assertions) pass. `cyrius bench` fails to compile, because
      the manifest has `[test] stdlib = ["assert"]`. The manifest also says `version = "0.1.0"`. Both are the issue's
      items 2 and 3, and step 2 repairs them.
-   - **⚠ Don't commit until step 2 has restored CLAUDE.md, the roadmap and the workflows.**
-2. **Repair** (pravash's checklist):
-   - **CLAUDE.md:** merge it, keeping the identity, the process and the DO NOT list (including "NEVER use `gh`").
-     Translate the principles against §1.2:
+   - Committed as `d8e761d` ("m0 1 done"), with the scaffold's overwritten files, which step 2 then repaired.
+2. ✅ **Repair. Done 2026-11-15** (on top of `d8e761d`, the committed scaffold). The originals came from `94a7153`.
+   - **CLAUDE.md:** merged. It keeps the identity, the process and the DO NOT list (including "NEVER use `gh`"), and
+     translates the Rust principles against §1.2:
      - `#[non_exhaustive]` → append-only enums;
      - `#[must_use]` → `#must_use` / `#pure`;
      - "zero unwrap/panic" → no `+?`, `-?`, `*?`, `result_unwrap`, `assert_fatal`, unchecked `vec_get` or `vec_select_nth` in `src/`;
-     - "every type Serialize + Deserialize" → every public type has JSON codecs with validated decode (D5).
+     - "every type Serialize + Deserialize" → every public type has JSON codecs with validated decode and a round-trip test (D5).
 
-     Add the §0.1 deferral rule, and replace the MSRV line with the Cyrius pin.
-   - **Roadmap and `state.md`:** restore the roadmap from git and keep this plan's section; rewrite `state.md` for 1.3.0 → 2.0.0-dev.
-   - **Workflows:** move the Rust ones to `rust-old/.github/workflows/`, where `release.yml` can no longer publish.
-     Keep the scaffold's Cyrius CI and add `test --bounds`, `deps --locked` and `audit`. Add a Rust oracle job, and
-     **remove it before the 2.0.0 tag**.
-   - **Move Rust-only material to `rust-old/`:** `scripts/bench-history.sh`, `scripts/version-bump.sh`,
-     `bench-history.csv`, `docs/benchmarks.md`, `docs/architecture/overview.md`, `docs/guides/testing.md`,
-     `deny.toml`, `codecov.yml`.
-     `scripts/port-baseline/` stays: it becomes the seed of the reference tooling.
-   - **ADRs**, continuing pramana's numbering in `docs/decisions/`; remove the scaffold's empty `docs/adr/`:
-     - 006, the port of Rust 1.3.0 with the oracle;
+     It adds the §0.1 deferral rule, ADR 009's fixed bounds, the D11 memory rules and the `Pmn`/`PMN_`/`_pmn_` names.
+     It replaces the MSRV with the Cyrius pin, and says to run the Rust oracle from inside `rust-old/` (rustup reads
+     `rust-toolchain.toml` from the current directory).
+   - **Roadmap:** restored from `94a7153`, keeping the 2.0.0 section; it gained a "Cyrius threat model" item.
+     **`state.md`:** written for 1.3.0 → 2.0.0-dev.
+   - **Workflows:**
+     - The Rust ones are in `rust-old/.github/workflows/`, where `release.yml` can no longer publish.
+     - The scaffold's Cyrius CI gained `test --bounds`, `deps --locked` and `audit`.
+     - A `rust-oracle` job runs inside `rust-old/`, installs the pinned toolchain explicitly, and runs
+       `cargo test --locked` with all features and with `oracle` alone. Its comment says to **remove it before the
+       2.0.0 tag**.
+   - **Manifest repairs** (the clobber issue's items 2–4):
+     - `version = "${file:VERSION}"`;
+     - `bench` in `[test] stdlib`;
+     - a real description and the repository;
+     - doc comments on the six scaffold stubs.
+   - **Moved to `rust-old/`:**
+     - `scripts/bench-history.sh` and `scripts/version-bump.sh` → `rust-old/scripts/`;
+     - `docs/architecture/overview.md` → `rust-old/docs/architecture/`;
+     - `docs/guides/testing.md` → `rust-old/docs/guides/`;
+     - `docs/development/threat-model.md` and `docs/development/dependency-watch.md`, both Rust-specific →
+       `rust-old/docs/development/`.
+
+     The scaffold had already moved `bench-history.csv`, `benchmarks.md`, `deny.toml` and `codecov.yml`.
+     `scripts/port-baseline/` stays. It now reads `rust-old/src/math.rs` and builds with the recording toolchain.
+     Its `erf` filter also matches the new `oracle` cfg, which had broken its first re-run.
+   - **ADRs,** continuing pramana's numbering in `docs/decisions/`, plus a `README.md` index and `template.md` in its
+     format. The scaffold's `docs/adr/` is gone. The new records:
+     - 006, the port of Rust 1.3.0 with the oracle, including how ADRs 001–005 carry;
      - 007, the API divergences (§4.3);
      - 008, local stand-ins and the upstream ledger;
-     - 009, correct rounding and the T1 special-function tier (D2, D3).
-   - **Other docs:** rewrite CONTRIBUTING and SECURITY. Add a port banner to the README; its full rewrite is M8's.
+     - 009, correct rounding and the fixed special-function bounds (D2, D3).
+
+     005's status now says it is Rust-only.
+   - **Other docs:**
+     - CONTRIBUTING and SECURITY are rewritten for the Cyrius line; SECURITY's attack surface now covers JSON
+       decoding, the heap and `ai`.
+     - The README has a port banner, and its build section points at `rust-old/`. Its full rewrite is M8's.
+   - **Gates, all green:** `cyrius build`, `test` (warning-free), `test --bounds`, `bench`, `fuzz`, `lint`,
+     `fmt --check`, `vet`, `deps --locked`, `audit`.
 3. **`cyrius.cyml`.** The core has no hisab (§8.2). There is no `[lib]` until M1, because `modules = []` is invalid.
    Confirm the keys with `cyrius help manifest`.
    ```toml

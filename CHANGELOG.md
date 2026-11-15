@@ -22,6 +22,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **The Cyrius port scaffold** (port plan M0 steps 1–2).
+  - **`cyrius port`** moved the Rust 1.3.0 crate into `rust-old/` (330 tests still pass there on its pinned
+    toolchain) and created the Cyrius skeleton: `cyrius.cyml`, `src/main.cyr`, `tests/pramana.{tcyr,bcyr,fcyr}`.
+  - **The repairs:**
+    - CLAUDE.md merged with the Cyrius rules; the roadmap restored; `state.md` written;
+    - the Rust workflows moved to `rust-old/.github/`, and the Cyrius CI extended with a frozen-oracle job;
+    - the manifest reads `VERSION` and includes `bench`;
+    - the Rust-only docs and scripts moved to `rust-old/`;
+    - ADRs 006–009 (`docs/decisions/`);
+    - CONTRIBUTING and SECURITY rewritten, and a README port banner added.
+
+  `cyrius build`, `test`, `test --bounds`, `bench`, `fuzz`, `lint`, `fmt --check`, `vet`, `deps --locked` and
+  `audit` all pass.
 - **Toolchain pinned**: `rust-toolchain.toml` moves from `stable` to `1.100.0`, the toolchain that records the port's golden values. The CI coverage job adds `llvm-tools-preview` to the pinned toolchain
 
 ## [1.3.0] - 2026-11-14

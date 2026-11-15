@@ -3,6 +3,7 @@
 
 # Stdlib auto-included via cyrius.cyml
 
+# Entry point of the scaffold build. pramana is a library: the modules arrive with M1 (port plan §7).
 fn main() {
     alloc_init();
     println("pramana ready");

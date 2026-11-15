@@ -1,8 +1,9 @@
 [package]
 name = "pramana"
-version = "0.1.0"
-description = "pramana — Cyrius port (from 10424 lines of Rust)"
+version = "${file:VERSION}"
+description = "pramana — statistics and probability: distributions, special functions, hypothesis tests, regression, Bayesian inference, Markov chains, Monte Carlo, time series"
 license = "GPL-3.0-only"
+repository = "https://github.com/MacCracken/pramana"
 language = "cyrius"
 cyrius = "6.7.18"
 
@@ -13,5 +14,6 @@ output = "build/pramana"
 [deps]
 stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args"]
 
+# Test / bench / fuzz compiles only. `bench` was missing from the scaffold (the open cyrius port issue, item 3).
 [test]
-stdlib = ["assert"]
+stdlib = ["assert", "bench"]

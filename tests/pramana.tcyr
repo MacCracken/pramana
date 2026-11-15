@@ -1,6 +1,7 @@
 # pramana test suite
 # Stdlib auto-included via cyrius.cyml
 
+# Scaffold smoke test. The parity harness replaces it at M0 step 7 (port plan §5).
 fn main() {
     alloc_init();
     test_group("smoke");

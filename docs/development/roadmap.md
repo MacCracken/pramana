@@ -1,36 +1,208 @@
-# pramana — Roadmap
+# Roadmap
 
-> Milestone plan through v1.0. State lives in [`state.md`](state.md);
-> this file is the sequencing — what ships, in what order, against
-> what dependency gates.
+## Completed
 
-## v1.0 criteria
+### v0.1.0 (2026-03-26)
+- [x] Error types (PramanaError)
+- [x] Rng trait + SimpleRng
+- [x] Distributions: Normal, Uniform, Exponential, Poisson, Binomial, Bernoulli
+- [x] Descriptive statistics
+- [x] Hypothesis testing (t-tests, chi-squared)
+- [x] Linear regression
+- [x] Bayesian inference + naive Bayes
+- [x] Combinatorics
+- [x] Monte Carlo integration
+- [x] Markov chains
+- [x] Time series (moving average, exponential smoothing, autocorrelation)
+- [x] Serde on all public types
+- [x] Criterion benchmarks
+- [x] Integration tests
 
-_Define before tagging v0.1.0:_
+### v1.0.0 (2026-03-28)
+- [x] Additional distributions: Gamma, Beta, Chi-Squared, Student-t, F, Cauchy, Weibull
+- [x] Multivariate normal distribution (Cholesky-based sampling, log-PDF)
+- [x] Shared math foundation (ln_gamma, incomplete beta/gamma functions)
+- [x] Configurable alpha for hypothesis tests
+- [x] Scaffold hardening (struct invariants, dedup erf, Poisson/Gamma sampling fixes)
+- [x] Polynomial regression (QR-based least squares via hisab, Horner evaluation)
+- [x] Logistic regression (IRLS with L2 regularization, sigmoid, proba/class prediction)
+- [x] Confidence intervals (mean, two-means, proportion; t-quantile, z-quantile)
+- [x] One-way ANOVA (F-test with full SS decomposition)
+- [x] Kolmogorov-Smirnov test (one-sample and two-sample)
+- [x] Kernel density estimation (4 kernels, Silverman bandwidth)
+- [x] MCMC: Metropolis-Hastings and Gibbs sampling
+- [x] Hidden Markov Models (Forward, Viterbi, Baum-Welch)
+- [x] ARIMA time series (differencing, Yule-Walker AR fitting, forecasting)
+- [x] Correlation matrix (Pearson)
+- [x] Principal Component Analysis (eigendecomposition via hisab)
+- [x] AI: natural language statistical queries via hoosh (feature-gated)
+- [x] Public crate dependencies (hisab, hoosh from crates.io)
+- [x] ADRs, threat model, dependency watch, testing guide
 
-- [ ] Rust → Cyrius surface parity verified (function-level diff against `rust-old/`)
-- [ ] Test coverage adequate for the surface area
-- [ ] Benchmarks captured in `docs/benchmarks.md`
-- [ ] At least one downstream consumer green
-- [ ] CHANGELOG complete from v0.1.0 onward
-- [ ] Security audit pass (`docs/audit/YYYY-MM-DD-audit.md`)
+### v1.1.0
+- [x] `bridge.rs` cross-crate bridges: badal, kimiya, ushma
+- [x] `integration/soorat.rs` (`soorat-compat`): distribution curve, MCMC trace, regression fit, histogram, correlation matrix
 
-## Milestones
+### v1.2.0
+- [x] bodh (psychology) bridges
 
-### M0 — Port scaffold (v0.1.0) — ✅ shipped 2026-11-15
+### v1.3.0 (2026-11-14) — toolchain update + P(-1) hardening sweep
+- [x] MSRV 1.89 -> 1.100 (edition 2024 is still the latest); deps to latest (hisab 1.4, hoosh 1.3, criterion 0.8); unused `tracing` deps removed
+- [x] Special functions: fdlibm `erf`/`erfc`, both-tail incomplete gamma/beta with √shape iteration budgets, stable `ln_beta`
+- [x] Zero reachable panics (NaN sorts, serde-injected invalid state, size overflows), validated deserialization for all invariant-carrying types
+- [x] Correctness fixes: KS ties, ARIMA `d >= 2`, Binomial `p ∈ {0, 1}`, exact chi-squared p-values, ANOVA zero within-variance, bridge fits with skipped points
+- [x] O(1)/O(log n) Poisson & Binomial CDF/PMF/sampling, O(n) median/percentile, O(n log n) mode
 
-- `cyrius port` scaffold landed
-- Rust source moved to `rust-old/`
-- Doc-tree per [first-party-documentation.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-documentation.md)
+## 2.0.0 — Cyrius port (planned)
 
-### M1 — Surface parity (v0.2.0)
+Rust 1.3.0 is the final Rust release; the Cyrius port ships as 2.0.0. Plan of record:
+[pramana-port-plan.md](pramana-port-plan.md). Every decision in its §0.2 was taken on 2026-11-15; M0 is next.
 
-_Pick a parseable Rust subset and verify the Cyrius port matches it function-for-function. Specify the dep gates and the acceptance criteria._
+- [ ] M0: oracle hooks on Rust 1.3.0, `cyrius port`, the repairs (steps 0–2 done 2026-11-15); `cyrius.cyml`, golden generator, MPFR reference tooling, probes
+- [ ] M1 foundation · M2 special functions (T0 parity, then T1 accuracy) · M3 distributions
+- [ ] M4 descriptive + hypothesis · M5 regression, time series, Bayesian · M6 Markov + Monte Carlo
+- [ ] M7 soorat shapes + `ai` · M8 release 2.0.0
 
-### M2 — _Title_ (v0.3.0)
+- [ ] A Cyrius threat model (the JSON readers and the `ai` HTTP client are the input surface). The Rust 1.3.0 one is
+      at `rust-old/docs/development/threat-model.md`
 
-_…_
+The feature sections below predate the port. New features land after 2.0.0 parity, in Cyrius.
 
-## Out of scope (for v1.0)
+## v1.1 — Performance, Platform & Numerical Hardening
 
-_Capture what's deliberately NOT in scope for v1.0._
+### Performance
+- [ ] SIMD-accelerated descriptive statistics (leverage hisab parallel feature)
+- [ ] Parallel MCMC (multiple chains)
+- [ ] Streaming/online statistics (Welford's algorithm for mean/variance) — Welford already used internally by `monte_carlo_integrate`
+- [ ] Memory-mapped large dataset support
+
+### Platform
+- [ ] WASM target support (no-std compatible core)
+- [ ] C FFI bindings
+- [ ] Python bindings (via PyO3)
+
+### AI enhancements
+- [ ] Multi-turn statistical analysis sessions
+- [ ] Automated exploratory data analysis (auto-EDA)
+- [ ] Natural language report generation
+- [ ] Anomaly detection tool for AI dispatch
+
+### New distributions
+- [ ] Log-Normal distribution
+- [ ] Negative Binomial distribution
+- [ ] Hypergeometric distribution
+- [ ] Geometric distribution
+- [ ] Dirichlet distribution (multivariate generalization of Beta)
+- [ ] Multinomial distribution
+
+### Numerical improvements
+- [x] Scaled forward algorithm for HMMs (prevent underflow on long sequences)
+- [ ] MA(q) support in ARIMA via conditional sum-of-squares (currently AR-only)
+- [ ] Adaptive bandwidth selection for KDE (leave-one-out cross-validation)
+- [x] Improved Poisson CDF for large lambda (use incomplete gamma instead of summation)
+- [ ] Standardize epsilon constants across modules (see `rust-old/docs/development/threat-model.md`)
+
+### Testing
+- [ ] Property-based tests via proptest or quickcheck
+- [ ] Numerical accuracy benchmarks against R/scipy reference values
+- [ ] 90%+ line coverage
+
+## v1.2 — Non-Parametric Methods & Robust Statistics
+
+### Non-parametric tests
+- [ ] Mann-Whitney U test (two-sample rank test)
+- [ ] Wilcoxon signed-rank test (paired samples)
+- [ ] Kruskal-Wallis test (non-parametric ANOVA)
+- [ ] Friedman test (repeated measures)
+- [ ] Runs test (randomness)
+- [ ] Fisher's exact test (2x2 contingency tables)
+
+### Robust statistics
+- [ ] Median absolute deviation (MAD)
+- [ ] Trimmed mean
+- [ ] Winsorized mean
+- [ ] Huber M-estimator
+- [ ] Spearman rank correlation
+- [ ] Kendall's tau
+
+### Confidence intervals
+- [ ] Bootstrap confidence intervals (percentile, BCa)
+- [ ] Wilson score interval for proportions (replaces Wald for small n)
+
+## v1.3 — Advanced Regression & Model Selection
+
+### Regression
+- [ ] Multiple linear regression (matrix form, arbitrary predictors)
+- [ ] Ridge regression (L2-penalized OLS)
+- [ ] LASSO regression (L1 penalty, coordinate descent)
+- [ ] Elastic net
+- [ ] Generalized linear models (GLM) framework (Gaussian, Poisson, Binomial families)
+- [ ] Regression diagnostics: leverage, Cook's distance, VIF
+
+### Model selection
+- [ ] AIC (Akaike Information Criterion)
+- [ ] BIC (Bayesian Information Criterion)
+- [ ] Adjusted R-squared
+- [ ] Cross-validation (k-fold, leave-one-out)
+- [ ] Stepwise regression (forward/backward)
+
+## v1.4 — Time Series & Signal Processing
+
+### Time series
+- [ ] Seasonal ARIMA (SARIMA)
+- [ ] Holt-Winters (triple exponential smoothing)
+- [ ] Seasonal decomposition (STL)
+- [ ] Granger causality test
+- [ ] Augmented Dickey-Fuller test (stationarity)
+- [ ] Ljung-Box test (autocorrelation significance)
+- [ ] Change point detection
+
+### Signal processing
+- [ ] Spectral density estimation (periodogram, Welch's method) — leverage hisab FFT
+- [ ] Cross-correlation function
+- [ ] Coherence
+
+## v1.5 — Bayesian & Probabilistic Graphical Models
+
+### Bayesian
+- [ ] Conjugate prior families (Beta-Binomial, Normal-Normal, Gamma-Poisson)
+- [ ] Bayesian linear regression (posterior predictive)
+- [ ] Hamiltonian Monte Carlo (HMC / NUTS)
+- [ ] Variational inference (mean-field approximation)
+
+### Graphical models
+- [ ] Bayesian networks (DAG structure, exact inference)
+- [ ] Factor analysis (via EM)
+- [ ] Gaussian mixture models (EM fitting)
+- [ ] Latent Dirichlet Allocation (topic modeling)
+
+## v1.6 — Multivariate & Dimensionality Reduction
+
+### Multivariate
+- [ ] Multivariate hypothesis tests (Hotelling's T-squared, MANOVA)
+- [ ] Canonical correlation analysis
+- [ ] Discriminant analysis (LDA, QDA)
+- [ ] Mahalanobis distance (standalone utility)
+
+### Dimensionality reduction
+- [ ] Incremental PCA (streaming/online)
+- [ ] Sparse PCA
+- [ ] Independent Component Analysis (ICA)
+- [ ] t-SNE (via Barnes-Hut approximation)
+- [ ] UMAP
+
+## Cross-Crate Bridges
+
+- [x] `bridge.rs` module — primitive-value conversions for cross-crate statistics
+- [x] **badal bridge**: ensemble forecast spread → confidence intervals; observation error → likelihood weight
+- [x] **kimiya bridge**: reaction yield measurements → mean/variance; replicate data → hypothesis test p-value
+- [x] **ushma bridge**: measurement uncertainty (±K) → Gaussian error model; sensor noise → Kalman filter parameters
+
+## Soorat Integration
+
+- [x] `integration/soorat.rs` module — feature-gated `soorat-compat`
+- [x] **Distribution curve**: PDF/CDF sample points for line plot rendering
+- [x] **MCMC trace**: sample chain positions for scatter/line rendering
+- [x] **Regression fit**: predicted vs actual points with confidence band for line+ribbon rendering
+- [x] **Histogram data**: bin edges and counts for bar chart rendering
+- [x] **Correlation matrix**: NxN values for heatmap rendering

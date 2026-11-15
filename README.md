@@ -2,6 +2,13 @@
 
 **pramana** (Sanskrit: proof/measure/evidence) -- Statistics and probability library for the AGNOS ecosystem.
 
+> ⚠ **Being ported to Cyrius as 2.0.0.**
+> - Until the port lands, this README describes the **Rust 1.3.0** crate. That crate is on crates.io, and its source
+>   is frozen in [`rust-old/`](rust-old/) as the parity oracle.
+> - The plan of record is [`docs/development/pramana-port-plan.md`](docs/development/pramana-port-plan.md), and
+>   progress is in [`docs/development/state.md`](docs/development/state.md).
+> - Rust users: stay on `pramana = "1"`. The full Cyrius README arrives with the 2.0.0 release.
+
 [![CI](https://github.com/MacCracken/pramana/actions/workflows/ci.yml/badge.svg)](https://github.com/MacCracken/pramana/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/pramana.svg)](https://crates.io/crates/pramana)
 [![docs.rs](https://docs.rs/pramana/badge.svg)](https://docs.rs/pramana)
@@ -48,12 +55,17 @@ let sample = normal.sample(&mut rng);
 
 ## Building
 
+The Rust 1.3.0 crate now lives in `rust-old/`. Run it from inside that directory, so rustup applies its pinned
+toolchain:
+
 ```bash
+cd rust-old
 cargo build
-cargo test
+cargo test --all-features
 make check    # fmt + clippy + test + audit
-make bench    # criterion benchmarks with history
 ```
+
+The Cyrius port builds from the root with `cyrius deps && cyrius build && cyrius test` (CONTRIBUTING.md).
 
 ## MSRV
 

@@ -1,7 +1,7 @@
 # 5. Public Crate Dependencies
 
 Date: 2026-03-28
-Status: Accepted
+Status: Accepted for the Rust 1.x line. Not carried into the Cyrius port, whose `cyrius.cyml` `[deps]` replace it (006)
 
 ## Context
 

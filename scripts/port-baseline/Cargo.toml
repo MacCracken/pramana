@@ -10,6 +10,10 @@ publish = false
 name = "port-baseline"
 path = "src/main.rs"
 
+# math.rs declares `mod oracle` behind this feature (port plan M0 step 0); it stays off here.
+[features]
+oracle = []
+
 [workspace]
 
 [profile.release]

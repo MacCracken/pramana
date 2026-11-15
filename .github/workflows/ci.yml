@@ -48,3 +48,34 @@ jobs:
         # stub didn't exist (Issue 1) and also wouldn't ever exercise
         # tests/${proj}.tcyr.
         run: cyrius test
+
+      - name: Test (bounds-checked)
+        run: cyrius test --bounds
+
+      - name: Lockfile matches lib/
+        run: cyrius deps --locked
+
+      - name: Audit (fmt, lint, test, bench)
+        run: cyrius audit
+
+  rust-oracle:
+    # The frozen Rust 1.3.0 crate in rust-old/ is the parity oracle. It is never
+    # edited; this job only proves it still builds and passes (port plan, M0
+    # step 0). It runs inside rust-old/, so rustup applies rust-old's
+    # rust-toolchain.toml (pinned to the recording toolchain).
+    # ⚠ Remove this job before the 2.0.0 tag: release.yml gates on this whole
+    # workflow, so a Rust failure would block the Cyrius release (port plan M8e).
+    name: Rust oracle (frozen, rust-old/)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust-old
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (pinned)
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+      - name: Oracle tests (all features)
+        run: cargo test --locked --all-features
+      - name: Oracle hooks alone
+        run: cargo test --locked --features oracle --test oracle

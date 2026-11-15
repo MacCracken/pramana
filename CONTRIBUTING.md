@@ -2,65 +2,82 @@
 
 Thank you for your interest in contributing to Pramana.
 
-## Development Workflow
+pramana 2.0 is a Cyrius library, being ported from the Rust crate 1.3.0. The plan of record is
+[`docs/development/pramana-port-plan.md`](docs/development/pramana-port-plan.md), and
+[`docs/development/state.md`](docs/development/state.md) says where the port stands. The frozen Rust crate in
+`rust-old/` is the parity oracle: never edit it.
 
-1. Fork and clone the repository
-2. Create a feature branch from `main`
-3. Make your changes
-4. Run `make check` to validate
-5. Open a pull request
+## Development Setup
 
-## Prerequisites
+```sh
+git clone https://github.com/MacCracken/pramana.git
+cd pramana
 
-- Rust stable (MSRV 1.100)
-- Components: `rustfmt`, `clippy`
-- Optional: `cargo-audit`, `cargo-deny`, `cargo-llvm-cov`
+# The Cyrius toolchain version is pinned in cyrius.cyml ([package].cyrius)
+cyrius --version
 
-## Makefile Targets
+# Resolve dependencies (vendors lib/), build, test
+cyrius deps
+cyrius build src/main.cyr build/pramana
+cyrius test
 
-| Command | Description |
-|---------|-------------|
-| `make check` | fmt + clippy + test + audit |
-| `make fmt` | Check formatting |
-| `make clippy` | Lint with `-D warnings` |
-| `make test` | Run test suite |
-| `make audit` | Security audit |
-| `make deny` | Supply chain checks |
-| `make bench` | Run benchmarks with history tracking |
-| `make coverage` | Generate coverage report |
-| `make doc` | Build documentation |
+# The Rust oracle, read-only. Run it from inside rust-old/, so rustup applies its pinned toolchain
+(cd rust-old && cargo test --locked --all-features)
+```
 
-## Adding a Module
+## Pull Request Process
 
-1. Create `src/module_name.rs` with module doc comment
-2. Add `pub mod module_name;` to `src/lib.rs` (feature-gated if it brings in new deps)
-3. Re-export key types from `lib.rs`
-4. Add tests in the module
-5. Update README module table
-
-If the module requires an external dependency, gate it behind a feature flag.
+1. **Fork and branch** — create a feature branch from `main`.
+2. **Keep commits focused** — one logical change per commit, and one module at a time during the port.
+3. **Write tests.**
+   - Ported code needs golden parity rows against 1.3.0, plus reference tests: MPFR or exact values for the
+     special functions, NIST StRD for statistics.
+   - A bug fix needs a regression test.
+   - The golden corpus is generated: never patch a row by hand.
+4. **Run the cleanliness check** before pushing (CLAUDE.md lists it): `cyrius fmt --check`, `cyrius lint`,
+   `cyrius vet`, `cyrius build`, `cyrius test` (warning-free), `cyrius test --bounds`, `cyrius bench`,
+   `cyrius deps --locked`, `cyrius audit`.
+5. **Open a PR** against `main` with a clear description of the change.
+6. **Address review feedback** — maintainers may request changes before merging.
 
 ## Code Style
 
-- `cargo fmt` -- mandatory
-- `cargo clippy -- -D warnings` -- zero warnings
-- Doc comments on all public items
-- `#[non_exhaustive]` on public enums
-- No `unsafe` code
-- No `println!` or other logging in library code -- return errors instead (the crate has no logging dependency)
+- `cyrius fmt` formatting and a clean `cyrius lint` (enforced by CI).
+- `cyrius test` and `cyrius build` print no float type warnings. Each warning is a bug.
+- Public functions have doc comments.
+- `#must_use` on pure functions, `#inline` on hot paths, append-only enum values.
+- No aborts in `src/`: no `+?`, `-?`, `*?`, `assert_fatal`, `panic`, `result_unwrap`, or unchecked `vec_get` /
+  `vec_select_nth`. Errors are value-form `Result`s with `PMN_ERR_*` codes.
+- Names: `Pmn<Name>` structs, `pmn_<name>` free functions, `PMN_` globals, `_pmn_` private helpers.
+- Every transcendental goes through the correctly rounded functions (ADR 009).
+- A stand-in for a missing library routine carries an `UPSTREAM(Ln)` note and a ledger row (ADR 008).
 
-## Testing
+## Testing Requirements
 
-- Unit tests colocated in modules (`#[cfg(test)] mod tests`)
-- Integration tests in `tests/`
-- Feature-gated tests with `#[cfg(feature = "...")]`
-- Target: 80%+ line coverage
+- Every ported public function is compared against 1.3.0's golden values, within the parity class the port plan
+  (§6) assigns. Never widen a class to make a row pass.
+- The special functions meet ADR 009's fixed bounds, measured against MPFR. Never loosen a bound.
+- Every Rust test is ported, folded into golden rows, or recorded with a reason (the Rust-test ledger).
+- Every public type has a JSON round-trip test, and its decoder refuses invalid parameters.
+- Benchmarks go in `tests/*.bcyr`, beside their Rust twins, and are run before and after performance-sensitive changes.
 
-## Commits
+```sh
+cyrius test            # unit, parity and reference tests
+cyrius test --bounds   # the same, bounds-checked
+cyrius bench           # benchmarks
+cyrius fuzz            # fuzz targets
+```
 
-- Use conventional-style messages
-- One logical change per commit
+## Commit Messages
+
+Use clear, imperative-mood commit messages, one logical change per commit:
+
+```
+port the incomplete gamma function (M2 part a)
+
+fix NaN handling in Weibull parameter validation
+```
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under GPL-3.0.
+By contributing, you agree that your contributions will be licensed under GPL-3.0-only.

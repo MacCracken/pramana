@@ -24,4 +24,4 @@ cyrius test                              # run tests/*.tcyr
 4. Run `cyrius test`.
 5. Bump `VERSION` and add a CHANGELOG entry before tagging.
 
-See [`../adr/template.md`](../adr/template.md) when a non-trivial design choice deserves an ADR.
+See [`../decisions/template.md`](../decisions/template.md) when a non-trivial design choice deserves an ADR.
