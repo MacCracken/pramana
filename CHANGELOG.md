@@ -43,6 +43,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     `exp_m1` misrounds on 52 of 1,010 (5.1%).
   - **Guarantees:** the output is deterministic; a run under another glibc or rustc is refused; tampering is caught.
 
+- **`src/constants.cyr`** (port plan M0 step 6), generated from the oracle's 112 constants: the fdlibm, Lanczos,
+  Acklam and KS tables, the thresholds and tolerances, and the Rust std float constants.
+  - **Proven bit for bit** by recomputing `erf`, `erfc`, `ln_gamma`, `z_quantile` and `kolmogorov_sf` with the
+    extracted values (3,000–5,000 cases each), and the sampler thresholds by their draws.
+  - **Cross-checked** by a second, Python extractor and by compiling every value back
+    (`scripts/golden/probe_tables.py`).
+  - **Mutation-checked:** 11 of 15 one-ulp nudges are caught. Two are invisible in every output, and two are
+    extraction-only by design.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

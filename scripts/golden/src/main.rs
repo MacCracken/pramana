@@ -20,11 +20,19 @@
 //! MPFR; this program leaves them alone.
 //!
 //! Adapted from pravash's `scripts/oracle/` (same format, same rules), which took it from impetus, kimiya and
-//! tanmatra. Modules are added at the start of their milestone: `math` (M0); …
+//! tanmatra. Modules are added at the start of their milestone: `constants` and `math` (M0); …
+//!
+//! Before writing anything it extracts every constant from `rust-old/src` (`consts.rs`) and proves the tables by
+//! recomputing the oracle's functions with them (`p_constants.rs`); a failed proof writes nothing. The mutation
+//! hook `GOLDEN_NUDGE=<path>` moves one extracted f64 by an ulp, reports which proof catches it, and never writes.
 
+mod consts;
 mod glibc;
 mod grids;
+mod m_constants;
 mod m_math;
+mod p_constants;
+mod t_constants;
 mod tsv;
 
 use std::collections::BTreeSet;
@@ -33,8 +41,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Every golden emitter, in file-name order.
-fn golden_modules() -> Vec<tsv::Module> {
-    vec![m_math::emit()]
+fn golden_modules(constants: &[consts::Const]) -> Vec<tsv::Module> {
+    vec![m_constants::emit(constants), m_math::emit()]
 }
 
 /// One generated file: its path from the repo root, its contents, and a summary.
@@ -156,7 +164,32 @@ fn run() -> Result<bool, String> {
     let root = root
         .canonicalize()
         .map_err(|e| format!("{}: {e}", root.display()))?;
-    let provenance = format!("{}; libm: {}", oracle_provenance(&root)?, glibc::platform());
+    let oracle = oracle_provenance(&root)?;
+    let provenance = format!("{oracle}; libm: {}", glibc::platform());
+
+    // The constants, then the proofs; a failed proof writes nothing.
+    let nudge = std::env::var("GOLDEN_NUDGE").ok();
+    let constants = consts::extract(&root, nudge.as_deref())?;
+    let mut proven = true;
+    for v in p_constants::prove(&constants) {
+        match &v.failure {
+            None => println!("proved   {} ({} cases)", v.name, v.checked),
+            Some(why) => {
+                println!("REFUSED  {}: {why}", v.name);
+                proven = false;
+            }
+        }
+    }
+    if let Some(n) = &nudge {
+        println!(
+            "GOLDEN_NUDGE {n}: {} (the mutation hook never writes)",
+            if proven { "NOT caught by any proof" } else { "caught" }
+        );
+        return Ok(false);
+    }
+    if !proven {
+        return Err("a constant proof failed: nothing written".to_string());
+    }
     let dir = root.join("tests/golden");
     if !check {
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -169,7 +202,7 @@ fn run() -> Result<bool, String> {
 
     let mut outputs = Vec::new();
     let mut emitted = BTreeSet::new();
-    for module in golden_modules() {
+    for module in golden_modules(&constants) {
         let name = format!("{}.tsv", module.name);
         emitted.insert(name.clone());
         outputs.push(Output {
@@ -186,6 +219,11 @@ fn run() -> Result<bool, String> {
         index.push_str(name.trim_end_matches(".tsv"));
         index.push('\n');
     }
+    outputs.push(Output {
+        rel: "src/constants.cyr".to_string(),
+        text: t_constants::emit(&constants, &oracle),
+        summary: format!("{} constants", constants.len()),
+    });
     outputs.push(Output {
         rel: "tests/golden/modules.txt".to_string(),
         summary: format!("{} modules", emitted.len()),

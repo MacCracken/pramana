@@ -19,8 +19,8 @@
 > - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
-> **Step 4,** the toolchain and math check, is committed as `53078cb`. **Step 5,** the golden-value generator, is done but
-> not committed. **Next is step 6:** the constant generator. The maintainer took each recommendation and
+> **Step 4** is committed as `53078cb`, and **step 5**, the golden generator, as `30eb41b`. **Step 6,** the constant
+> generator, is done but not committed. **Next is step 7:** the parity harness. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -647,7 +647,7 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
    - **Transcendentals:** 5 of 47 rows are 1 ulp apart. MPFR shows glibc misrounds three of them (exp at 239.014,
      expm1 at 0.9204, tan at 1.4939) and the stdlib/ganita two (the exp polyfill at 1, ganita's pow at (2, 0.5)).
      Neither side is correctly rounded, which confirms D2: everything goes through the correctly rounded functions.
-5. ✅ **Golden-value generator. Done 2026-11-15** (`scripts/golden/`, from pravash's `scripts/oracle/`;
+5. ✅ **Golden-value generator. Done 2026-11-15** and committed as `30eb41b` (`scripts/golden/`, from pravash's `scripts/oracle/`;
    [`port-parity.md`](port-parity.md) §2).
    - **The crate:**
      - It depends on `rust-old/` by path, with `oracle` and `soorat-compat` on and `ai` off.
@@ -692,14 +692,43 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - the samplers' and quantiles' rows at M3 and M4;
      - each type's serde_json documents (the JSON table) with that type;
      - the constants at step 6.
-6. **Constant generator.** It writes every public and private constant into `src/constants.cyr`. Each one is proven
-   against `rust-old/src` and compiled by `probe_tables.py`. None is typed by hand. The list:
-   - `LN_SQRT_2PI`, `CONVERGENCE_EPS`, `LENTZ_TINY`, `MAX_ITERATIONS`, `GAMMA_WILSON_HILFERTY_SHAPE`;
-   - the fdlibm and Lanczos coefficients;
-   - Acklam's coefficients;
-   - `POISSON_PTRS_THRESHOLD`, `BINOMIAL_DIRECT_MAX_N`, `MVN_SYMMETRY_TOL`, `STEADY_STATE_STALL_LIMIT`,
-     `MAX_PREALLOCATED_STEPS`, `MAX_FORECAST_STEPS`, `MAX_AR_ORDER`;
-   - the std float constants.
+6. ✅ **Constant generator. Done 2026-11-15** ([`port-parity.md`](port-parity.md) §3).
+   - **What it writes:** `src/constants.cyr`, with all **112 constants**: every `const` item in `rust-old/src`'s
+     library code, and the 9 Rust std float constants that code names (`f64::MAX` only appears in tests). They are:
+     - the 55 fdlibm erf/erfc coefficients;
+     - Lanczos's 9 coefficients and `G`;
+     - Acklam's 21 coefficients, `P_LOW`, and `P_HIGH = 1.0 − P_LOW`;
+     - the KS constants;
+     - `LN_SQRT_2PI`, the convergence settings, the sampler thresholds, the tolerances and the Markov limits
+       (`MAX_PREALLOCATED_STEPS = 1 << 16`);
+     - `ai`'s two public bounds.
+   - **Values from the source:** pramana's constants are private, with no hook, so the generator reads them from the
+     source text (`scripts/golden/src/consts.rs`). Rust's own `str::parse::<f64>` rounds each literal exactly as rustc
+     does, and the two expressions are evaluated in IEEE f64. A plain count proves the list complete.
+   - **Proven against the oracle before anything is written** (`src/p_constants.rs`). Transcriptions in Rust's
+     operation order, compiled by the same rustc, are compared bit for bit:
+     - the fdlibm table against `oracle::erf` and `oracle::erfc` (5,061 cases each, every branch);
+     - Lanczos, `G` and `LN_SQRT_2PI` against `oracle::ln_gamma` (4,009);
+     - Acklam, `P_LOW` and `P_HIGH` against `oracle::z_quantile` (3,514);
+     - the KS constants against `oracle::kolmogorov_sf` (3,007);
+     - `POISSON_PTRS_THRESHOLD` and `BINOMIAL_DIRECT_MAX_N` by the draws either side of each threshold.
+   - **The mutation hook** (`GOLDEN_NUDGE`, one ulp): 11 of 15 nudges are caught.
+     - `QQ5` and `P_LOW` change no output at one ulp on any proof input: QQ5's term is about 10⁻²² relative, and
+       `z_quantile`'s branches meet at `P_LOW` after the Halley step.
+     - `CONVERGENCE_EPS` and `MVN_SYMMETRY_TOL` are extraction-only by design. Their modules' rows test them at M2
+       and M3.
+   - **The output form:**
+     - a `const` with Rust's positional `Display` digits;
+     - 1e-300 (`LENTZ_TINY`), `MIN_POSITIVE`, ±∞ and NaN as typed `f64` globals holding their bits;
+     - names `_PMN_<PATH>` (private) or `PMN_<PATH>` (`ai`'s two public bounds).
+
+     The file is fmt- and lint-clean, with no line over 120 characters.
+   - **Independent checks:**
+     - `tests/golden/constants.tsv` pins each value;
+     - `validate.py` re-reads all 112 with its own Python extractor, and they match;
+     - `probe_tables.py` compiles the file warning-free, and all 112 read back exact.
+   - **Tamper checks:** one digit changed in `src/constants.cyr` fails `probe_tables.py` and `--check`; an edited
+     `constants.tsv` value fails `validate.py`.
 7. **Parity harness.** Copy pravash's `tests/parity.tcyr`, `parity_core.cyr` and `ulp.cyr`, and add:
    - a `*.ref.tsv` comparator with per-function bounds;
    - a stream comparator: each draw by its class, draw counts class A;

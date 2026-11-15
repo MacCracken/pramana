@@ -11,6 +11,8 @@ Standard library plus ctypes: glibc's libm, and MPFR through `mpfr_ref.py`. It n
   - every class-A/B row is recomputed in Python, in Rust's operation order;
   - every glibc class-C row is recomputed by calling the same glibc function through ctypes;
   - every `cbrt` row (compiler_builtins) is proven correctly rounded with MPFR.
+- **`constants`:** every row is re-read from `rust-old/src` by this file's own extractor, a second implementation
+  beside the generator's, with Python's float parser for the literals.
 - **`math.cr.tsv`:** for every class-C row whose recorded value isn't correctly rounded, the correctly rounded value.
   This is the expectation the port's correctly rounded functions are gated against at 0 ulp (ADR 009). `--write-cr`
   writes it, and a plain run checks that the committed file is exactly what it would write.
@@ -21,6 +23,7 @@ A tampered row fails this check and the generator's `--check` alike.
 import ctypes
 import importlib.util
 import math
+import re
 import struct
 import sys
 from pathlib import Path
@@ -103,6 +106,120 @@ def read_module(path: Path, header0: str, tail: str):
             raise ValueError(f"line {k}: class {cls!r}")
         rows.append((fn, cls, parse_list(ins), parse_list(outs), ins))
     return lines, rows
+
+
+# ── constants: an independent reading of rust-old/src ──
+
+STD_CONSTANTS = [  # (path, the spellings that name it, value)
+    ("f64::EPSILON", ["f64::EPSILON"], sys.float_info.epsilon),
+    ("f64::MIN_POSITIVE", ["f64::MIN_POSITIVE"], sys.float_info.min),
+    ("f64::MAX", ["f64::MAX"], sys.float_info.max),
+    ("f64::INFINITY", ["f64::INFINITY"], math.inf),
+    ("f64::NEG_INFINITY", ["f64::NEG_INFINITY"], -math.inf),
+    ("f64::NAN", ["f64::NAN"], math.nan),
+    ("f64::consts::PI", ["consts::PI", "consts::{PI"], math.pi),
+    ("f64::consts::E", ["consts::E"], math.e),
+    ("f64::consts::TAU", ["consts::TAU"], math.tau),
+    ("f64::consts::SQRT_2", ["SQRT_2"], math.sqrt(2.0)),
+]
+
+
+def library_part(text):
+    k = text.rfind("#[cfg(test)]\nmod tests")
+    return text if k < 0 else text[:k]
+
+
+def rust_number(text, is_float):
+    t = text.strip().replace("_", "")
+    for suffix in ("f64", "usize", "u64"):
+        if t.endswith(suffix) and not t[: -len(suffix)].endswith("e"):
+            t = t[: -len(suffix)]
+    return float(t) if is_float else int(t)
+
+
+def enclosing(lines, at):
+    ind = len(lines[at]) - len(lines[at].lstrip())
+    if ind == 0:
+        return None
+    for line in reversed(lines[:at]):
+        if not line.strip() or len(line) - len(line.lstrip()) >= ind:
+            continue
+        m = re.match(r"\s*(?:pub(?:\([a-z]+\))? )?(?:fn|mod) (\w+)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def python_constants(root):
+    """Every const in rust-old/src's library code, path → value, read by this file alone."""
+    src = root / "rust-old" / "src"
+    files = sorted((p.stem, p) for p in src.glob("*.rs"))
+    files.append(("integration::soorat", src / "integration" / "soorat.rs"))
+    files.sort()
+    out, texts = {}, []
+    for module, path in files:
+        text = library_part(path.read_text(encoding="utf-8"))
+        texts.append(text)
+        lines = text.split("\n")
+        scope_vals = {}
+        k = 0
+        while k < len(lines):
+            m = re.match(r"\s*(?:pub(?:\([a-z]+\))? )?const (\w+): ([^=]+)= (.*)$", lines[k])
+            if not m:
+                k += 1
+                continue
+            name, ty, rhs = m.group(1), m.group(2).strip(), m.group(3).strip()
+            scope = enclosing(lines, k)
+            base = f"{module}::{scope}" if scope else module
+            if ty.startswith("[f64;"):
+                k += 1
+                idx = 0
+                while lines[k].strip() != "];":
+                    out[f"{base}::{name}[{idx}]"] = rust_number(lines[k].strip().rstrip(","), True)
+                    idx += 1
+                    k += 1
+                k += 1
+                continue
+            expr = rhs.rstrip(";")
+            is_float = ty == "f64"
+            if "<<" in expr:
+                a, b = expr.split("<<")
+                v = rust_number(a, False) << rust_number(b, False)
+            elif " - " in expr:
+                a, b = expr.split(" - ")
+                v = rust_number(a, True) - scope_vals[b.strip()]
+            else:
+                v = rust_number(expr, is_float)
+            scope_vals[name] = v
+            out[f"{base}::{name}"] = v
+            k += 1
+    for path, spellings, v in STD_CONSTANTS:
+        if any(re.search(re.escape(s) + r"(?![A-Za-z0-9_])", t) for s in spellings for t in texts):
+            out[path] = v
+    return out
+
+
+def check_constants(root, rows):
+    failures = []
+    ours = python_constants(root)
+    theirs = {}
+    for fn, cls, ins, outs, _raw in rows:
+        if fn != "const" or cls != "A" or len(ins) != 1 or not str(ins[0]).startswith("s:"):
+            failures.append(f"constants: malformed row {fn} {cls} {ins}")
+            continue
+        path = re.sub(r"%([0-9A-F]{2})", lambda m: chr(int(m.group(1), 16)), ins[0][2:])
+        theirs[path] = outs[0]
+    for path in sorted(set(ours) ^ set(theirs)):
+        where = "rust-old/src only" if path in ours else "constants.tsv only"
+        failures.append(f"constants: {path} is in {where}")
+    for path in sorted(set(ours) & set(theirs)):
+        a, b = ours[path], theirs[path]
+        ok = same(float(a), b) if isinstance(b, float) else (not isinstance(a, float) and a == b)
+        if not ok:
+            failures.append(f"constants: {path} is {a!r} in rust-old/src, {b!r} in constants.tsv")
+    print(f"  {len(ours)} constants read independently from rust-old/src; "
+          + ("all match" if not failures else f"{len(failures)} mismatches"))
+    return failures
 
 
 # ── math: class A / B in Python, in Rust's operation order ──
@@ -318,6 +435,8 @@ def main(argv):
             continue
         provenance = lines[1][len("# oracle: "): -len(GEN_TAIL)]
         print(f"{name}: {len(rows)} rows, format ok ({provenance})")
+        if module == "constants":
+            failures.extend(check_constants(root, rows))
         if module == "math":
             f, by_fn = check_math(rows)
             failures.extend(f)

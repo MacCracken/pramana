@@ -18,7 +18,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 
 | Milestone | Status |
 |---|---|
-| M0 Initialize | ⏳ **in progress.** **Step 0** (Rust, `94a7153`): the P(-1) gates are green; the hidden `oracle` feature exposes the private special functions, samplers, quantiles, HMM forward pass, KDE kernels and the `MultivariateNormal` factor; `tests/oracle.rs` has 11 tests, mutation-checked six ways; the toolchain is pinned to 1.100.0. **Step 1** (`d8e761d`): the `cyrius port` scaffold, with the Rust crate in `rust-old/`, where it still passes (330 tests with `--all-features`). **Step 2** (`40a8269`): repairs (CLAUDE.md, the roadmap, CI, the manifest's version and `bench`, the scaffold stubs documented, Rust-only docs and scripts moved, ADRs 006–009, CONTRIBUTING, SECURITY, a README banner). **Step 3** (`0e147d3`): the full `cyrius.cyml` (16 stdlib leaves, no hisab, `dce = true`; 43 files locked); every gate green and warning-free. **Step 4**: the semantics probe ([`port-parity.md`](port-parity.md) §1): 125 cases, 140 rows exact; helpers needed for min/max NaN, `fract` (floor-based `f64_fract`), `u64 → f64` (signed `f64_from`) and saturating `as usize`; sums start at −0.0; 5 transcendental rows 1 ulp apart, 3 of them glibc's misrounds (`53078cb`). **Step 5**: the golden generator (`scripts/golden/`): `tests/golden/math.tsv`, 35,597 rows in 31 functions, every one re-checked by `validate.py` without the oracle; `math.cr.tsv`, 76 rows where glibc misrounds (`exp_m1` 5.1%); deterministic and tamper-checked. **Steps 6–10**: pending |
+| M0 Initialize | ⏳ **in progress.** **Step 0** (Rust, `94a7153`): the P(-1) gates are green; the hidden `oracle` feature exposes the private special functions, samplers, quantiles, HMM forward pass, KDE kernels and the `MultivariateNormal` factor; `tests/oracle.rs` has 11 tests, mutation-checked six ways; the toolchain is pinned to 1.100.0. **Step 1** (`d8e761d`): the `cyrius port` scaffold, with the Rust crate in `rust-old/`, where it still passes (330 tests with `--all-features`). **Step 2** (`40a8269`): repairs (CLAUDE.md, the roadmap, CI, the manifest's version and `bench`, the scaffold stubs documented, Rust-only docs and scripts moved, ADRs 006–009, CONTRIBUTING, SECURITY, a README banner). **Step 3** (`0e147d3`): the full `cyrius.cyml` (16 stdlib leaves, no hisab, `dce = true`; 43 files locked); every gate green and warning-free. **Step 4**: the semantics probe ([`port-parity.md`](port-parity.md) §1): 125 cases, 140 rows exact; helpers needed for min/max NaN, `fract` (floor-based `f64_fract`), `u64 → f64` (signed `f64_from`) and saturating `as usize`; sums start at −0.0; 5 transcendental rows 1 ulp apart, 3 of them glibc's misrounds (`53078cb`). **Step 5**: the golden generator (`scripts/golden/`): `tests/golden/math.tsv`, 35,597 rows in 31 functions, every one re-checked by `validate.py` without the oracle; `math.cr.tsv`, 76 rows where glibc misrounds (`exp_m1` 5.1%); deterministic and tamper-checked (`30eb41b`). **Step 6**: `src/constants.cyr`, 112 constants extracted from `rust-old/src` and proven by recomputing `erf`, `erfc`, `ln_gamma`, `z_quantile` and `kolmogorov_sf` bit for bit; two independent extractors agree, and every value compiles back exact. **Steps 7–10**: pending |
 | M1–M8 | not started |
 
 ## Toolchain
@@ -32,13 +32,14 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 
 - **Rust oracle**: 4,454 library code lines in `rust-old/src/` (14 modules plus `integration/soorat.rs`, 102 `pub fn`s
   plus 65 trait methods), and the `oracle` hooks. Frozen; never edited.
-- **Cyrius**: the scaffold's `src/main.cyr` stub. No library modules yet (`[lib]` arrives with M1).
+- **Cyrius**: the scaffold's `src/main.cyr` stub and the generated `src/constants.cyr` (112 constants). No library
+  modules yet (`[lib]` arrives with M1).
 
 ## Tests
 
 - **Rust oracle**: run from inside `rust-old/` with `cargo test --all-features`: 301 unit, 15 integration, 11
   oracle and 3 doc tests (330).
-- **Golden corpus** (`tests/golden/`): `math.tsv` 35,597 rows and `math.cr.tsv` 76 rows. They are checked locally by
+- **Golden corpus** (`tests/golden/`): `constants.tsv` 112 rows, `math.tsv` 35,597 rows and `math.cr.tsv` 76 rows. They are checked locally by
   `(cd scripts/golden && cargo run --release --locked -- --check)` and `python3 -I -B scripts/golden/validate.py .`.
 - **Cyrius**: the scaffold's `tests/pramana.{tcyr,bcyr,fcyr}` stubs. The parity harness arrives at M0 step 7.
 
@@ -69,5 +70,5 @@ Direct (declared in `cyrius.cyml`; 43 files locked in `cyrius.lock`):
 
 ## Next
 
-M0 steps 6–10 (port plan §5): the constants, the parity harness, the baselines, the probes (P1–P9, among them the CORE-MATH
+M0 steps 7–10 (port plan §5): the parity harness, the baselines, the probes (P1–P9, among them the CORE-MATH
 erf/erfc port in its time slot), and filing the upstream requests.

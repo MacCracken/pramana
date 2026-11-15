@@ -19,6 +19,8 @@ cd ../..
 python3 -I -B scripts/golden/validate.py .              # independent re-check, and the .cr.tsv files
 python3 -I -B scripts/golden/validate.py . --write-cr   # rewrite the .cr.tsv files
 python3 -I -B scripts/golden/mpfr_ref.py                # MPFR binding self-checks
+python3 -I -B scripts/golden/probe_tables.py .          # compile src/constants.cyr; every value against its row
+(cd scripts/golden && GOLDEN_NUDGE='math::fdlibm::RB3' cargo run --release --locked)   # mutation hook: never writes
 ```
 
 Run cargo **from this directory**: rustup reads `rust-toolchain.toml` (the recording toolchain, 1.100.0) from the
@@ -49,14 +51,32 @@ files. This README records what is specific to pramana.
   | compiler_builtins (linked into the binary) | `cbrt` | platform-free; `validate.py` proves every one correctly rounded |
   | inline code | `sqrt`, `abs`, `floor`, `fract`, `min`, `max`, `clamp`, `is_nan`, `is_finite`, `total_cmp`, `powi` with a literal exponent, the casts, the fdlibm word operations | exact; `validate.py` recomputes them in Python |
 
+- **The constants come from the source, and the tables are proven** (`src/consts.rs`, `src/p_constants.rs`).
+  - **Why from the source:** pramana's constants are private, so no API exposes them. The generator reads every
+    `const` item in the library code, function-local tables included, through Rust's own literal parser, and proves
+    the list complete against a plain count.
+  - **The proofs:** before writing anything, it recomputes the oracle's functions with the extracted values and
+    compares bit for bit with the oracle's hooks:
+    - the fdlibm table against `erf` and `erfc`;
+    - Lanczos, `G` and `LN_SQRT_2PI` against `ln_gamma`;
+    - Acklam, `P_LOW` and `P_HIGH` against `z_quantile`;
+    - the KS constants against `kolmogorov_sf`;
+    - the two sampler thresholds by their draws.
+
+    A failed proof writes nothing.
+  - **The mutation hook:** `GOLDEN_NUDGE=<path>` moves one extracted f64 by an ulp, reports which proof catches it,
+    and never writes.
+  - **Two more checks:** `validate.py` re-reads every constant with its own Python extractor, and `probe_tables.py`
+    compiles `src/constants.cyr` and checks each value's bits.
 - **The corpus is regenerated only from the oracle.** A wrong oracle value is fixed in Rust as 1.3.x, then
   regenerated. It is never patched in a `.tsv`.
 - **Modules arrive with their milestone.** Each one starts by adding its golden emitter (`src/m_<module>.rs`, with
   the grid from the port plan §7) and registering it in `src/main.rs`. Its `validate.py` rules come in the same part.
   The special-function rows (`special.tsv`) and their MPFR reference rows (`special.ref.tsv`) arrive with M2.
 
-| Module | Milestone | Golden rows | Golden emitter | Correctly rounded rows |
+| Module | Milestone | Golden rows | Golden emitter | Generated Cyrius / correctly rounded rows |
 |---|---|---|---|---|
+| `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
 
 ## Format 1

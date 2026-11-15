@@ -286,3 +286,46 @@ Either way, `exp_m1` is the primitive glibc gets wrong most often.
 **Not in CI.** The rows are glibc 2.44's bits, so the generator check and `validate.py` are local gates, run at each
 milestone, as pravash's were.
 
+## 3. The constant generator (M0 step 6, 2026-11-15)
+
+**What ran.** `scripts/golden/` (with `src/consts.rs`, `src/p_constants.rs`, `src/m_constants.rs` and
+`src/t_constants.rs`) wrote `src/constants.cyr` and `tests/golden/constants.tsv`. It extracts **112 constants**:
+
+| From | Constants |
+|---|---|
+| `math.rs` | `LN_SQRT_2PI`, `CONVERGENCE_EPS`, `LENTZ_TINY`, `MAX_ITERATIONS`, `GAMMA_WILSON_HILFERTY_SHAPE`; the 55 fdlibm coefficients; Lanczos's 9 and `G` |
+| `hypothesis.rs` | Acklam's A[6], B[5], C[6], D[4], `P_LOW`, `P_HIGH` (= 1.0 − P_LOW, 0.97575); the KS series' `PI2_OVER_8`, `SQRT_2PI` |
+| `distribution.rs` | `POISSON_PTRS_THRESHOLD` (30.0), `BINOMIAL_DIRECT_MAX_N` (64), `MVN_SYMMETRY_TOL` (1e-10) |
+| `markov.rs` | `STEADY_STATE_STALL_LIMIT` (8), `MAX_PREALLOCATED_STEPS` (1 << 16 = 65,536) |
+| `bayesian.rs` | `COHERENCE_TOL` (1e-12) |
+| `ai.rs` (public) | `MAX_FORECAST_STEPS` (1,000), `MAX_AR_ORDER` (32) |
+| Rust std | `f64::EPSILON`, `MIN_POSITIVE`, `INFINITY`, `NEG_INFINITY`, `NAN`, `consts::PI`, `E`, `TAU`, `SQRT_2` (`f64::MAX` is named only in tests) |
+
+**The proofs** (every one passes; the generator writes nothing otherwise):
+
+| Proof | Constants | Cases | Against |
+|---|---|---|---|
+| fdlibm erf table | 55 | 5,061 | `oracle::erf` |
+| fdlibm erfc table | 55 | 5,061 | `oracle::erfc` |
+| Lanczos table, `G`, `LN_SQRT_2PI` | 11 | 4,009 | `oracle::ln_gamma` |
+| Acklam tables, `P_LOW`, `P_HIGH` | 23 | 3,514 | `oracle::z_quantile` |
+| KS series constants | 2 | 3,007 | `oracle::kolmogorov_sf` |
+| sampler thresholds | 2 | 4 | the draws of `Poisson` and `Binomial` either side of each threshold |
+
+**Mutation (`GOLDEN_NUDGE`, +1 ulp):**
+- **Caught (11):** `RB3`, `EFX8`, `PA0`, `COEFFICIENTS[4]`, `G`, `LN_SQRT_2PI`, `C[2]`, `B[4]`, the KS `SQRT_2PI` and
+  `PI2_OVER_8`, `POISSON_PTRS_THRESHOLD`.
+- **Not caught, because no output depends on that bit:**
+  - `QQ5`'s term is about 10⁻²² of its polynomial;
+  - `z_quantile`'s two branches agree at `P_LOW` after the Halley step, so moving the boundary by an ulp changes
+    no result.
+- **Not caught, because they are extraction-only by design:** `CONVERGENCE_EPS` and `MVN_SYMMETRY_TOL`. Their
+  modules' rows test them at M2 and M3.
+
+**Exactness.** Two independent extractors agree on all 112 values: the generator's (Rust's `str::parse`) and
+`validate.py`'s (Python's `float`). The Cyrius compiler reads every generated literal and bit pattern back exactly
+(`probe_tables.py`, warning-free build).
+
+**Tampering.** A one-digit change to `src/constants.cyr` fails `probe_tables.py` and `--check`. An edited
+`constants.tsv` value fails `validate.py`.
+
