@@ -84,6 +84,10 @@ pub mod integration;
 pub mod markov;
 pub(crate) mod math;
 pub mod monte_carlo;
+/// Read-only hooks for the Cyrius port's golden-value generator (feature `oracle`).
+#[cfg(feature = "oracle")]
+#[doc(hidden)]
+pub mod oracle;
 pub mod regression;
 pub mod rng;
 pub mod timeseries;

@@ -28,6 +28,7 @@ cargo test --doc
 | Integration    | 15    | `cargo test --test '*'`                  |
 | Doc            | 3     | `cargo test --doc`                       |
 | **Total**      | **319** |                                        |
+| Oracle hooks   | 11    | `cargo test --features oracle --test oracle` (hidden tooling for the Cyrius port; `--all-features` runs them too, for 330) |
 
 `ai` unit tests (tool-argument bounds, serde) need `--all-features`; the
 `soorat-compat` tests need that feature too.

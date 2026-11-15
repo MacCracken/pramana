@@ -630,6 +630,10 @@ fn validate_stochastic_row(row: &[f64], name: &str) -> Result<(), PramanaError> 
     Ok(())
 }
 
+/// Read-only hooks for the Cyrius port's golden-value generator (see `crate::oracle`).
+#[cfg(feature = "oracle")]
+pub(crate) mod oracle;
+
 #[cfg(test)]
 mod tests {
     use super::*;

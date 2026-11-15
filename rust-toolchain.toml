@@ -1,3 +1,5 @@
+# Pinned to the toolchain that records the Cyrius port's golden values (port plan, M0
+# step 0.3). It was `stable`, and the recorded bits must not move when stable does.
 [toolchain]
-channel = "stable"
+channel = "1.100.0"
 components = ["rustfmt", "clippy"]

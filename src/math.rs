@@ -64,7 +64,7 @@ fn iteration_budget(shape: f64) -> usize {
 mod fdlibm {
     pub(super) const ERX: f64 = 8.450_629_115_104_675_292_97e-01;
     // Coefficients for approximation to erf on [0, 0.84375]
-    #[cfg(test)]
+    #[cfg(any(test, feature = "oracle"))]
     pub(super) const EFX8: f64 = 1.027_033_336_764_100_690_53e+00;
     pub(super) const PP0: f64 = 1.283_791_670_955_125_585_61e-01;
     pub(super) const PP1: f64 = -3.250_421_072_470_014_993_70e-01;
@@ -174,8 +174,9 @@ fn erfc_tail(ix: u32, x: f64) -> f64 {
 /// Error function erf(x) = 2/sqrt(π) ∫₀ˣ exp(-t²) dt, accurate to < 1 ulp.
 ///
 /// The library itself only needs `erfc` (via `normal_cdf`/`normal_sf`); `erf`
-/// is kept as the test reference for `erfc` (`erf + erfc = 1`).
-#[cfg(test)]
+/// is kept as the test reference for `erfc` (`erf + erfc = 1`), and for the
+/// `oracle` hooks.
+#[cfg(any(test, feature = "oracle"))]
 #[must_use]
 pub(crate) fn erf(x: f64) -> f64 {
     let hx = high_word(x);
@@ -595,6 +596,10 @@ fn gamma_cf_q(a: f64, x: f64) -> f64 {
 
     (h * prefix).clamp(0.0, 1.0)
 }
+
+/// Read-only hooks for the Cyrius port's golden-value generator (see `crate::oracle`).
+#[cfg(feature = "oracle")]
+pub(crate) mod oracle;
 
 #[cfg(test)]
 mod tests {

@@ -65,9 +65,9 @@ jobs:
         with:
           toolchain: ${{ env.MSRV }}
       - uses: Swatinem/rust-cache@v2
-      # rust-toolchain.toml pins `stable`, which takes precedence over the
-      # `rustup default` set above, so plain `cargo` would run the runner's
-      # preinstalled stable instead of the MSRV. `+toolchain` overrides the file.
+      # rust-toolchain.toml takes precedence over the `rustup default` set
+      # above, so plain `cargo` would run the file's toolchain instead of the
+      # MSRV. `+toolchain` overrides the file.
       - run: cargo +${{ env.MSRV }} check --all-features
       - run: cargo +${{ env.MSRV }} test --all-features
   coverage:
@@ -79,6 +79,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+      # rust-toolchain.toml pins the toolchain cargo runs, so add the component to it too.
+      - run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-llvm-cov
       - run: cargo llvm-cov --all-features --lcov --output-path lcov.info

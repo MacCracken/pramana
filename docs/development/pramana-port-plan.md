@@ -14,9 +14,10 @@
 > - §2 lists what is different about pramana.
 > - §3 answers how accurate the Cyrius port can be against Rust. It starts from a measured baseline of Rust 1.3.0 against MPFR.
 >
-> ⏳ **Status: draft. The decisions in §0.2 are the maintainer's.** D3 is decided: option C, 2026-11-15. The rest are
-> open. Nothing has been ported. The one artifact so far is the accuracy-baseline tool, `scripts/port-baseline/`,
-> which produced §3.2.
+> ▶ **Status: every decision is taken (§0.2, 2026-11-15). M0 step 0 is done (the hooks, their tests, the toolchain pin),
+> waiting on the maintainer's commit before step 1.** The maintainer took each recommendation and
+> chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
+> `scripts/port-baseline/`, which produced §3.2.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -59,24 +60,24 @@
 - **Three targets at every milestone:** x86_64 ELF, x86_64 PE (wine) and aarch64 (qemu). pravash's PE `chdir` gap
   surfaced only when its release gate first ran every suite cross-target.
 
-### 0.2 Open questions for the maintainer
+### 0.2 Decided 2026-11-15 (the maintainer took every recommendation, and option C for D3)
 
-Each row gives a recommendation, which is the plan as written, and the alternatives not chosen.
+Each row gives the decision and the alternatives not chosen.
 
-| # | Question | Recommendation | Not chosen |
+| # | Question | Decision | Not chosen |
 |---|---|---|---|
-| D1 | **The freeze point.** 1.3.0 is already tagged (`284eb18`, and so published by `release.yml`), without the `oracle` hooks the generator needs: the 14 `pub(crate)` functions of `math.rs`, the private samplers and quantiles, and the private state of `MarkovChain`, `HiddenMarkovModel`, `KernelDensity` and `MultivariateNormal` | Land the read-only `oracle` feature on main after the tag, as unreleased tooling (as impetus did). It moves into `rust-old/` with the crate and is never published. `tests/oracle.rs` proves it read-only | Publish 1.3.1 with the hooks (no value to crates.io users). Or port without hooks: every `math.rs` row would then be reachable only through public pdf/cdf calls, losing per-function parity |
-| D2 | **Correctly rounded primitives.** pramana needs exp, ln, ln_1p, exp_m1, pow, sin, cos, tan, atan and log2. kimiya's `src/mathx.cyr` has exp, expm1, ln, log10, pow, sin, cos, sincos, atan2 and acos, with `cr_verify.py` and `mpfr_ref.py`. **No sibling has a public log1p, tan or log2.** ushma 2.0.0 has a triple-double log1p kernel inside its ln (`ushma/src/mathx.cyr:819`), which is a starting point | Vendor kimiya's two-phase primitives (L1). By the two crates' own benchmarks they are faster than the impetus-derived crmath the ganita issue measures (§1.3): exp 39 against 110 ns, pow about 135 against 757 ns, atan2 111 ns against 1.41 µs. Compute atan(x) as the correctly rounded atan2(x, 1), which is the same value. Build correctly rounded log1p, tan and log2 with kimiya's method, verified on ≥ 1M MPFR arguments each. Join the open ganita correctly-rounded-tier issue as a consumer, adding the three new functions | ganita's private fdlibm `_gn_log1p` / `_gn_expm1` (≤ 0.87 ulp) and `ganita_f64_tan` (≤ 1 ulp): not correctly rounded, so not "better than glibc" |
-| D3 | ✅ **How accurate the special functions are** (§3). Correctly rounded primitives alone leave Rust's special-function errors in place: up to 1.2×10⁶ ulp in `ln_gamma`, 1,590 ulp in `normal_cdf` tails, and 583 ulp in `beta_inc` | **Decided 2026-11-15: option C.** M2 part a ports `math.rs` in Rust's operation order over the correctly rounded primitives (0 ulp against `*.cr.tsv`), which proves the transcription. M2 part b replaces the five weak spots in §3.4 with the T1 algorithms. **erf and erfc are correctly rounded**: a port of CORE-MATH's binary64 erf and erfc without FMA (§3.4). The other replacements are each gated against reference rows (`*.ref.tsv`) at a bound written down before measuring (probe P9), and ADR 0009 accepts all of them as "more accurate than Rust". Downstream rows are remapped once, before M3 uses them. **Fallback (decided 2026-11-15):** if the erf/erfc port does not verify within its time slot, ship erf/erfc at ≤ 1 ulp (option B's algorithm) and keep the port as a 2.x item. **Still open:** whether the other four targets are set by P9 or fixed now | A, T0 only (every distribution and hypothesis row would be remapped twice for later fixes). B, the same without correctly rounded erf/erfc (≤ 1 ulp). D, T1 without part a (a T1 defect could not be told apart from a transcription defect) |
-| D4 | **Numerical upgrades outside the special functions:** compensated summation in `sum` / `mean`, and polynomial regression on a centered, scaled Vandermonde matrix with Householder QR | Not in 2.0: in those chains Rust's operation order is the definition (as pravash). Measure them against NIST StRD in M4/M5 (class R, §3.6) and file the failures as 2.1 candidates, with numbers | Change them in 2.0: that alters every descriptive and regression row, a scope kimiya's mid-port overflow audit showed is costly (1.7 days, about 30 ADR rows) |
-| D5 | **JSON.** Rust serializes 38 types and validates 20 on deserialize, with 32 round-trip tests; CLAUDE.md requires serde on every type. tanmatra dropped serde and kimiya marked it n/a. pravash wrote hand codecs over bayan's value tree (1,947 lines). The `#derive` has **no validation hook**, no `Vec<Vec<f64>>`, `u64` or data-variant support, and four open defects | Carry JSON for all 38 types with hand codecs (pravash's `src/json.cyr` as template). Every document serde_json writes from 1.3.0 decodes to the same bits, and every Cyrius document round-trips. Text identity is not required: bayan prints Grisu2 digits. Every decoder goes through the validating constructor, as Rust's `try_from` does | `#derive` (it cannot validate). Or dropping JSON (it breaks a CLAUDE.md principle) |
-| D6 | **Errors.** Rust's five `PramanaError` variants carry message strings | `PMN_ERR_*` codes, append-only, with no detail strings (as every sibling), plus `PMN_ERR_OUT_OF_MEMORY` and `PMN_ERR_DESERIALIZE`. `pmn_err_name(code)` gives the text. A 1.3.0 error document decodes to its code, and the message is dropped (ADR 0007) | A thread-local "last error detail" string: no sibling precedent |
-| D7 | **Traits and callbacks.** `Distribution` has 13 impls, with `sample(&self, rng: &mut impl Rng)`. `Rng` is implemented by users. Closures are taken by `monte_carlo_integrate`, `metropolis_hastings`, `gibbs_sampling` (`Fn(&[f64], &mut dyn Rng)`) and `ks_one_sample` | A checked `trait PmnRng { fn next_f64(self): f64 }`, passed as `dyn PmnRng` at API boundaries (one indirect call per draw), with `PmnSimpleRng` as its impl. `Distribution` as a checked trait on each struct, statically dispatched. Callbacks as a function pointer plus a context pointer (kimiya): nothing allocates, and any arity works through `callptr`. Probes P2 and P3 confirm the costs | Capturing closures: they allocate on the heap and take at most 5 parameters (3 on Windows); a Gibbs conditional needs 4 |
-| D8 | **`ai`.** `StatQuery::query` is async (tokio) and uses the Rust hoosh 1.3 client with five tools (`describe`, `correlate`, `regress`, `t_test`, `forecast`). The Cyrius hoosh has no client library | Port it onto `sandhi_http_post` (synchronous) and bayan, against hoosh's OpenAI-compatible tool-calling API. It lives in `src/ai.cyr`, outside the core `[lib]`, or in a `[lib.ai]` profile (probe P8 decides), so core consumers never compile sandhi or TLS. Tests run on a recorded-response transport. File a client-library request in hoosh (L9) | Drop `ai`: there is no language reason, so the §0.1 rule forbids it |
-| D9 | **`soorat-compat`.** Five data shapes plus `HistogramData::from_data`; soorat is still Rust | Port it into the core bundle, with JSON. Dead-code elimination removes it for consumers who don't call it, and a Rust soorat can read the JSON. No feature flag | Leave it out until soorat ports |
-| D10 | **u128 results.** `factorial`, `permutations` and `combinations` return `Result<u128>` | An out-pointer `PmnU128 { lo, hi }` with pramana's own overflow-checked multiply and divide by u64 (about 60 lines; class A) | bayan's `u128` handles: they pull bayan's big-integer layer into a 4-function module |
-| D11 | **Memory convention.** About 20 functions return a `Vec`, and nine types own `Vec`s | **Caller buffers** `(out, cap)` plus a count, wherever the length follows from the inputs: `residuals*`, `moving_average`, `exponential_smoothing`, `difference`, `integrate`, `arima_forecast`, `evaluate_grid`, `simulate`, `viterbi`, `steady_state` and the MVN sample. **Owned structs** (`KernelDensity`, `MultivariateNormal`, `MarkovChain`, `HiddenMarkovModel`, the models, `PcaResult`, `McmcResult`) are freelist-allocated, with `_drop`. **Constructors** write into caller storage (`PmnNormal_new(out, mean, sd)`), which avoids the open small-struct-in-`Result` miscompile. **Scratch** (median and percentile copies, sort buffers, HMM tables) comes from a work-table pool (kimiya ADR 0007). Probe P4 confirms the heap stays flat | Returning `alloc`'d pointers: the bump heap never frees, so a `pdf` in a loop leaks |
-| D12 | **`Debug`.** Rust derives it on every public type. pravash's maintainer chose to port it, but that was found only at M8, which cost a part | Port it, per milestone, by reusing pravash's `src/fmtf.cyr` (Rust's shortest float text) and its `debug(sb, alternate)` builders | Don't carry it (JSON covers inspection) |
+| D1 | ✅ **The freeze point.** 1.3.0 is already tagged (`284eb18`, and so published by `release.yml`), without the `oracle` hooks the generator needs: the 14 `pub(crate)` functions of `math.rs`, the private samplers and quantiles, and `MultivariateNormal`'s private factorization | Land the read-only `oracle` feature on main after the tag, as unreleased tooling (as impetus did). It moves into `rust-old/` with the crate and is never published. `tests/oracle.rs` proves it read-only | Publish 1.3.1 with the hooks (no value to crates.io users). Or port without hooks: every `math.rs` row would then be reachable only through public pdf/cdf calls, losing per-function parity |
+| D2 | ✅ **Correctly rounded primitives.** pramana needs exp, ln, ln_1p, exp_m1, pow, sin, cos, tan, atan and log2. kimiya's `src/mathx.cyr` has exp, expm1, ln, log10, pow, sin, cos, sincos, atan2 and acos, with `cr_verify.py` and `mpfr_ref.py`. **No sibling has a public log1p, tan or log2.** ushma 2.0.0 has a triple-double log1p kernel inside its ln (`ushma/src/mathx.cyr:819`), which is a starting point | Vendor kimiya's two-phase primitives (L1). By the two crates' own benchmarks they are faster than the impetus-derived crmath the ganita issue measures (§1.3): exp 39 against 110 ns, pow about 135 against 757 ns, atan2 111 ns against 1.41 µs. Compute atan(x) as the correctly rounded atan2(x, 1), which is the same value. Build correctly rounded log1p, tan and log2 with kimiya's method, verified on ≥ 1M MPFR arguments each. Join the open ganita correctly-rounded-tier issue as a consumer, adding the three new functions | ganita's private fdlibm `_gn_log1p` / `_gn_expm1` (≤ 0.87 ulp) and `ganita_f64_tan` (≤ 1 ulp): not correctly rounded, so not "better than glibc" |
+| D3 | ✅ **How accurate the special functions are** (§3). Correctly rounded primitives alone leave Rust's special-function errors in place: up to 1.2×10⁶ ulp in `ln_gamma`, 1,590 ulp in `normal_cdf` tails, and 583 ulp in `beta_inc` | **Decided 2026-11-15: option C.** M2 part a ports `math.rs` in Rust's operation order over the correctly rounded primitives (0 ulp against `*.cr.tsv`), which proves the transcription. M2 part b replaces the five weak spots in §3.4 with the T1 algorithms. **erf and erfc are correctly rounded**: a port of CORE-MATH's binary64 erf and erfc without FMA (§3.4). The other replacements are each gated against reference rows (`*.ref.tsv`) at the bounds **fixed on 2026-11-15** (§3.4): `normal_cdf` ≤ 1 ulp, `ln_gamma` ≤ 2, `gamma_inc` ≤ 4, `beta_inc` ≤ 8, each over a stated domain. ADR 0009 accepts all of them as "more accurate than Rust". Downstream rows are remapped once, before M3 uses them. **Fallback (decided 2026-11-15):** if the erf/erfc port does not verify within its time slot, ship erf/erfc at ≤ 1 ulp (option B's algorithm) and keep the port as a 2.x item. | A, T0 only (every distribution and hypothesis row would be remapped twice for later fixes). B, the same without correctly rounded erf/erfc (≤ 1 ulp). D, T1 without part a (a T1 defect could not be told apart from a transcription defect) |
+| D4 | ✅ **Numerical upgrades outside the special functions:** compensated summation in `sum` / `mean`, and polynomial regression on a centered, scaled Vandermonde matrix with Householder QR | Not in 2.0: in those chains Rust's operation order is the definition (as pravash). Measure them against NIST StRD in M4/M5 (class R, §3.6) and file the failures as 2.1 candidates, with numbers | Change them in 2.0: that alters every descriptive and regression row, a scope kimiya's mid-port overflow audit showed is costly (1.7 days, about 30 ADR rows) |
+| D5 | ✅ **JSON.** Rust serializes 38 types and validates 20 on deserialize, with 32 round-trip tests; CLAUDE.md requires serde on every type. tanmatra dropped serde and kimiya marked it n/a. pravash wrote hand codecs over bayan's value tree (1,947 lines). The `#derive` has **no validation hook**, no `Vec<Vec<f64>>`, `u64` or data-variant support, and four open defects | Carry JSON for all 38 types with hand codecs (pravash's `src/json.cyr` as template). Every document serde_json writes from 1.3.0 decodes to the same bits, and every Cyrius document round-trips. Text identity is not required: bayan prints Grisu2 digits. Every decoder goes through the validating constructor, as Rust's `try_from` does | `#derive` (it cannot validate). Or dropping JSON (it breaks a CLAUDE.md principle) |
+| D6 | ✅ **Errors.** Rust's five `PramanaError` variants carry message strings | `PMN_ERR_*` codes, append-only, with no detail strings (as every sibling), plus `PMN_ERR_OUT_OF_MEMORY` and `PMN_ERR_DESERIALIZE`. `pmn_err_name(code)` gives the text. A 1.3.0 error document decodes to its code, and the message is dropped (ADR 0007) | A thread-local "last error detail" string: no sibling precedent |
+| D7 | ✅ **Traits and callbacks.** `Distribution` has 13 impls, with `sample(&self, rng: &mut impl Rng)`. `Rng` is implemented by users. Closures are taken by `monte_carlo_integrate`, `metropolis_hastings`, `gibbs_sampling` (`Fn(&[f64], &mut dyn Rng)`) and `ks_one_sample` | A checked `trait PmnRng { fn next_f64(self): f64 }`, passed as `dyn PmnRng` at API boundaries (one indirect call per draw), with `PmnSimpleRng` as its impl. `Distribution` as a checked trait on each struct, statically dispatched. Callbacks as a function pointer plus a context pointer (kimiya): nothing allocates, and any arity works through `callptr`. Probes P2 and P3 confirm the costs | Capturing closures: they allocate on the heap and take at most 5 parameters (3 on Windows); a Gibbs conditional needs 4 |
+| D8 | ✅ **`ai`.** `StatQuery::query` is async (tokio) and uses the Rust hoosh 1.3 client with five tools (`describe`, `correlate`, `regress`, `t_test`, `forecast`). The Cyrius hoosh has no client library | Port it onto `sandhi_http_post` (synchronous) and bayan, against hoosh's OpenAI-compatible tool-calling API. It lives in `src/ai.cyr`, outside the core `[lib]`, or in a `[lib.ai]` profile (probe P8 decides), so core consumers never compile sandhi or TLS. Tests run on a recorded-response transport. File a client-library request in hoosh (L9) | Drop `ai`: there is no language reason, so the §0.1 rule forbids it |
+| D9 | ✅ **`soorat-compat`.** Five data shapes plus `HistogramData::from_data`; soorat is still Rust | Port it into the core bundle, with JSON. Dead-code elimination removes it for consumers who don't call it, and a Rust soorat can read the JSON. No feature flag | Leave it out until soorat ports |
+| D10 | ✅ **u128 results.** `factorial`, `permutations` and `combinations` return `Result<u128>` | An out-pointer `PmnU128 { lo, hi }` with pramana's own overflow-checked multiply and divide by u64 (about 60 lines; class A) | bayan's `u128` handles: they pull bayan's big-integer layer into a 4-function module |
+| D11 | ✅ **Memory convention.** About 20 functions return a `Vec`, and nine types own `Vec`s | **Caller buffers** `(out, cap)` plus a count, wherever the length follows from the inputs: `residuals*`, `moving_average`, `exponential_smoothing`, `difference`, `integrate`, `arima_forecast`, `evaluate_grid`, `simulate`, `viterbi`, `steady_state` and the MVN sample. **Owned structs** (`KernelDensity`, `MultivariateNormal`, `MarkovChain`, `HiddenMarkovModel`, the models, `PcaResult`, `McmcResult`) are freelist-allocated, with `_drop`. **Constructors** write into caller storage (`PmnNormal_new(out, mean, sd)`), which avoids the open small-struct-in-`Result` miscompile. **Scratch** (median and percentile copies, sort buffers, HMM tables) comes from a work-table pool (kimiya ADR 0007). Probe P4 confirms the heap stays flat | Returning `alloc`'d pointers: the bump heap never frees, so a `pdf` in a loop leaks |
+| D12 | ✅ **`Debug`.** Rust derives it on every public type. pravash's maintainer chose to port it, but that was found only at M8, which cost a part | Port it, per milestone, by reusing pravash's `src/fmtf.cyr` (Rust's shortest float text) and its `debug(sb, alternate)` builders | Don't carry it (JSON covers inspection) |
 
 ---
 
@@ -199,7 +200,7 @@ What it adds to §1.2:
    - the series and continued fractions (stop at `CONVERGENCE_EPS` = 1e-15, a budget of 200 + 20·√shape, Lentz's 1e-300);
    - the Wilson–Hilferty switch at a > 1e9;
    - `steady_state` (power iteration, switching to the lazy chain after 8 stalls);
-   - Baum–Welch, logistic regression's Newton steps, the Jacobi eigen solver, `t_quantile`'s Newton and `z_quantile`'s Halley step.
+   - Baum–Welch, logistic regression's Newton steps, the Jacobi eigen solver, `t_quantile`'s bisection and `z_quantile`'s Halley step.
 
    A 1-ulp primitive difference can move a stopping decision, so each one is a branch point (§6), and the Python
    transcription records term counts.
@@ -306,10 +307,31 @@ There are three tiers:
   **≤ 1 ulp** (decided 2026-11-15): erfc's tail exp(−x²−0.5625)·exp(…) becomes one correctly rounded exp of a
   double-double argument. The CORE-MATH port then moves to 2.x, and ADR 0009 records the bound actually shipped.
 
-The T1 targets are **targets**. Probe P9 prototypes each one against MPFR, and the bound is written into ADR 0009
-before M2 part b compares a single row.
+**The T1 bounds are fixed** (the maintainer, 2026-11-15). They are commitments, not outcomes of P9. A row that misses
+its bound is a defect in the new algorithm, and the algorithm is reworked. A bound is never loosened. Only an ADR 0009
+amendment by the maintainer can narrow a domain.
 
-| Function | Rust 1.3.0 (measured) | Cyrius T0 (parity) | Cyrius T1 target | How T1 gets there |
+| Function | Bound | Committed domain | Outside the domain |
+|---|---|---|---|
+| erf, erfc | correctly rounded (0.5 ulp); ≤ 1 ulp under the fallback | every finite x | — |
+| `normal_cdf`, `normal_sf` | ≤ 1 ulp | every finite z | — |
+| `ln_gamma` | ≤ 2 ulp | finite x > 0, up to where lnΓ overflows (≈ 2.55×10³⁰⁵), including beside the roots at 1 and 2 | x < 0. It occurs only inside the reflection formula: every caller in pramana passes a positive argument. The bound is ≤ 2 ulp of max(\|lnΓ(x)\|, 1), a mixed bound, because without extra precision the relative error is unbounded at the negative-axis zeros |
+| `gamma_inc`, P and Q | ≤ 4 ulp | a ∈ [1e-3, 1e5], x > 0 | a ∈ (1e5, 1e9]: no row less accurate than Rust 1.3.0 on the same input. a > 1e9: Rust's Wilson–Hilferty approximation is kept as it is. It is not ulp-accurate, and replacing it (Temme's uniform expansion) is a 2.x item |
+| `beta_inc`, I and 1 − I | ≤ 8 ulp | a, b ∈ [1e-3, 1e5], x ∈ [0, 1] | larger shapes: no row less accurate than Rust 1.3.0 on the same input |
+
+Rules for every row:
+- **Errors are in ulps of the correctly rounded value.** Zero and subnormal results are measured in units of the
+  subnormal spacing, 2⁻¹⁰⁷⁴, against the same bound.
+- **Verification covers:**
+  - M2's grids across every branch point;
+  - §3.2's sets;
+  - seeded MPFR or exact-rational arguments: ≥ 1M each for erf, erfc, `normal_cdf` and `ln_gamma`, and ≥ 50k each
+    for `gamma_inc` and `beta_inc`, since MPFR's `gamma_inc` is slow at 1,024 bits. These are weighted toward the
+    hard regions: x ≈ a, deep tails, small shapes, and the series/continued-fraction switch.
+- **Targets:** every row is checked on all three.
+- **"No less accurate than Rust"** is checked row by row, against Rust 1.3.0's own error on the same reference value.
+
+| Function | Rust 1.3.0 (measured) | Cyrius T0 (parity) | Cyrius T1 (fixed bound; means are expectations) | How T1 gets there |
 |---|---|---|---|---|
 | exp, ln, pow, sin, cos, atan | ≤ 0.51 ulp; 0–0.15% misrounded; host-glibc dependent | **0.5 ulp, 0% misrounded, identical on 3 targets** | same | kimiya's two-phase primitives (D2) |
 | ln_1p, exp_m1, tan, log2 | ≤ 0.75 ulp; up to 1.19% misrounded | **0.5 ulp, 0%** | same | kimiya's expm1; new log1p, tan, log2 (D2) |
@@ -317,12 +339,12 @@ before M2 part b compares a single row.
 | erfc | **2.49** max, 30.6% not CR | ≈ Rust | **0.5 ulp, correctly rounded** (D3 = C) | as erf |
 | normal_cdf, normal_sf | 29 ulp in [−5, 5]; **1,590** in the tails | ≈ Rust | **≤ 1 ulp** | carry z/√2 as a double-double, then take the correctly rounded erfc of the high part plus a first-order correction for the low part: erfc(h + l) ≈ erfc(h) − l·(2/√π)e^(−h²). The ×½ is exact |
 | ln_gamma, x > 0 | 4.85–8.2 ulp at large and small x; 65 mean / 1.2×10⁶ max on [0.5, 10]; **4.3×10¹³** beside 1 and 2 | ≈ Rust (every term is Rust's) | **≤ 2 ulp** on x > 0, including beside 1 and 2 | rational/series forms of lnΓ(1 + ε) and lnΓ(2 + ε) around the roots (fdlibm's `e_lgamma_r` layout); `stirling_error` (already in pramana) for large x |
-| ln_gamma, x < 0 | 6.9×10⁴ max | ≈ Rust | bounded away from the negative-axis zeros; documented as unbounded at them | reflection with sin(πx) reduced exactly (x − round(x) first) |
+| ln_gamma, x < 0 | 6.9×10⁴ max | ≈ Rust | ≤ 2 ulp of max(\|lnΓ\|, 1) (mixed; see the bounds above) | reflection with sin(πx) reduced exactly (x − round(x) first) |
 | gamma_inc P, Q | 4.9 / 12.1 mean; **58 / 246** max | ≈ Rust | **≤ 4 ulp** max, ~1 mean | double-double prefactor exponent plus a correctly rounded exp of it; stop at 2⁻⁵⁶ with compensated sums; small-a Q directly (Temme / DiDonato–Morris form, not 1 − P) |
 | beta_inc I, 1 − I | 13–14 mean; **550 / 583** max | ≈ Rust | **≤ 8 ulp** max, ~1–2 mean | TOMS 708-style prefactor in double-double; a tightened continued fraction |
 | Gamma, Beta, χ², t, F pdfs | inherit lnΓ's absolute error (~1e-14 relative, from §3.3) | ≈ Rust | ~1–3 ulp | from the lnΓ fix |
 | Student-t, F, χ², Binomial, Poisson CDFs; every p-value | inherit `beta_inc` / `gamma_inc` (tens to hundreds of ulp in tails) | ≈ Rust | ≤ ~8 ulp | from the incomplete-function fixes |
-| `z_quantile`, `t_quantile` | not measured (Acklam + Halley; Newton on the t CDF) | ≈ Rust | bounded by the CDF's accuracy | measured at M4 against MPFR inversion |
+| `z_quantile`, `t_quantile` | not measured (Acklam + Halley; bisection on the t CDF) | ≈ Rust | bounded by the CDF's accuracy | measured at M4 against MPFR inversion |
 | Samplers (every distribution) | each draw carries its formula's primitive errors | **0-ulp primitives**; streams equal Rust's except a rare last-bit change | same | — |
 | sum, mean, polynomial regression | naive summation; MGS on the raw Vandermonde | = Rust (D4) | 2.1 candidates (D4) | Neumaier sums; a centered, scaled Householder fit |
 
@@ -441,22 +463,51 @@ This is the seed list, finalized at M0 step 2. Each row says how the harness sti
 
 Shared mechanics are as pravash's §4; the pramana specifics follow.
 
-0. **Freeze and hook the Rust crate.**
-   1. Re-run the P(-1) gates on rustc 1.100.0: fmt; clippy with all features, the defaults and each feature alone;
-      rustdoc; audit; deny; the tests per feature set.
-   2. **The `oracle` feature** (D1): non-default, `#[doc(hidden)] pub mod oracle`, read-only. It exposes:
-      - the 14 `pub(crate)` functions of `math.rs`, with both tails;
-      - `student_t_cdf`, `student_t_two_tailed`, `f_cdf_sf`, `standard_normal`, the PTRS and Beta-splitting samplers;
-      - `z_quantile`, `t_quantile`, `kolmogorov_sf` and the Welch statistics;
-      - the private state of `MarkovChain`, `HiddenMarkovModel`, `KernelDensity` (data, bandwidth) and
-        `MultivariateNormal` (`cholesky_l`, `log_det`).
+0. **Freeze and hook the Rust crate.** Steps 0.1–0.3 were done 2026-11-15. Step 0.4, the commit, is the maintainer's.
+   1. ✅ **The P(-1) gates, re-run on rustc 1.100.0 with the hooks in.** All green:
+      - fmt;
+      - clippy `-D warnings` with all features, the defaults, and each of `soorat-compat`, `logging`, `ai` and `oracle` alone;
+      - rustdoc `-D warnings`, `cargo audit`, `cargo deny`.
 
-      Draw counts come from comparing the RNG state before and after a call, so nothing is written inside a sampler.
-      `tests/oracle.rs` proves the hooks are read-only: seeded runs of every sampler, MCMC chain and Baum–Welch fit,
-      with and without dumps, must be identical. The harness itself is mutation-checked.
-   3. `Cargo.lock` is already tracked; it moves to `rust-old/Cargo.lock`. `rust-toolchain.toml` says `stable` today;
-      pin it to `1.100.0` (lesson 7). Record **glibc 2.44** and **rustc 1.100.0** in every TSV header, and have
-      `--check` refuse a corpus from either another glibc or another rustc.
+      Tests: defaults 306, `soorat-compat` 315, `logging` 306, `ai` 310, `oracle` 317, `--all-features` 330
+      (1.3.0's 319 plus the 11 hook tests). Every count without `oracle` equals 1.3.0's.
+   2. ✅ **The `oracle` feature** (D1): non-default, `#[doc(hidden)] pub mod oracle` (`src/oracle.rs`), read-only.
+      - **Layout:** the hooks live in child modules (`src/{math,distribution,hypothesis,markov,descriptive}/oracle.rs`),
+        which can read their parent's private items. So each audited source gains only a three-line `mod oracle;`
+        declaration. `math.rs` also builds its test-only `erf` (and its `EFX8` constant) under `oracle`.
+      - **What it exposes:**
+        - the 14 `pub(crate)` functions of `math.rs`, with both tails;
+        - `standard_normal`, `sample_poisson_ptrs` and `sample_gamma_standard` (the gamma sampler is the Beta-splitting
+          building block);
+        - `student_t_cdf`, `student_t_two_tailed`, `f_cdf_sf`;
+        - `z_quantile`, `t_quantile` (bisection on the t CDF), `kolmogorov_sf`, `ks_pvalue`, `chi_squared_pvalue`, and
+          the Welch statistics as a `(diff, se, df)` tuple;
+        - the HMM's scaled forward pass `(alpha, scales)` and its log-likelihood;
+        - `Kernel::evaluate`;
+        - `MultivariateNormal`'s factorization `(cholesky_l, log_det)`. This is the **only** private state:
+          `MarkovChain`, `HiddenMarkovModel` and `KernelDensity` already have public fields.
+      - **Guards:** the two samplers' hooks return NaN, drawing nothing, for parameters the crate never passes
+        (λ < 10 or non-finite; α ≤ 0 or non-finite), where the samplers would loop forever.
+      - **Draw counts** come from a counting `Rng` wrapper in the generator (`Rng` is a public trait), so nothing is
+        written inside a sampler.
+      - **`tests/oracle.rs`, 11 tests:**
+        - every hook gives, bit for bit, what the public API computes through the same private code: the normal,
+          gamma, χ², beta, t and F CDFs; the Gamma pdf through `ln_gamma`; Welch's t, `ci_two_means`, `ci_proportion`,
+          the KS and χ² p-values; the HMM log-likelihood; KDE with one point;
+        - each sampler hook draws the same values and the same number of uniforms as the public sampler (10⁴ normal
+          draws, PTRS at λ = 31…10⁸, gamma at α = 0.3…50);
+        - the quantiles match pinned 1.3.0 bits;
+        - a Baum–Welch fit and 2,000 MVN draws are identical with and without the hooks in use.
+      - **Mutation-checked six ways**, each caught: an extra uniform in the gamma hook; one ulp in `z_quantile`,
+        `t_quantile`, `ln_gamma` and `log_det`; the HMM hook skipping its input checks. The `z_quantile` and
+        `t_quantile` mutations first got through, because a confidence interval's rounding absorbed them; that is
+        why the quantiles are now pinned to bits.
+   3. ✅ **The toolchain.** `rust-toolchain.toml` is pinned to `1.100.0` (it was `stable`); it moves to `rust-old/` at
+      step 1. The CI coverage job now adds `llvm-tools-preview` to the pinned toolchain, and the MSRV comment no longer
+      says `stable`. `Cargo.lock` is already tracked; it moves to `rust-old/Cargo.lock`. Every TSV header will record
+      **glibc 2.44** and **rustc 1.100.0**, and `--check` will refuse a corpus from either another glibc or another rustc.
+   4. ⏳ **Commit (the maintainer's).** This commit is the freeze point: step 1's scaffold moves the crate into
+      `rust-old/`, and from then on `src/` there never changes.
 1. **Scaffold.** `cargo clean`, then `cyrius port --dry-run .`, then `cyrius port .`. The clobber issue
    (`cyrius/docs/development/issues/2026-11-08-cyrius-port-clobbers-project-docs-and-omits-bench.md`) is still open.
    Expect it to:
@@ -561,7 +612,9 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
       a `[lib.ai]` profile against an outside-bundle file (D8).
    9. **T1 feasibility** (D3 = C).
       - Prototype the dd-argument `normal_cdf`, root-centred `ln_gamma`, and the dd prefactors of `gamma_inc` and
-        `beta_inc`. Measure each against MPFR with `scripts/port-baseline/`, plus its cost. The bounds go into ADR 0009.
+        `beta_inc`. Measure each against MPFR with `scripts/port-baseline/`, plus its cost. Check each against its
+        **fixed** bound (§3.4). A prototype that misses shows where the algorithm needs more precision before M2 part b
+        starts; it is never a reason to move the bound. ADR 0009 records the bounds as fixed.
       - Port CORE-MATH's erf and erfc without FMA, in a fixed time slot. Classify every fma site: a Dekker product, or
         an exact software fma. Verify as §3.4 says; if it misses the slot, fall back to ≤ 1 ulp (§3.4).
 10. **File the upstream requests and seed the ledger** (§10).
@@ -776,7 +829,9 @@ the probe numbers. Where an issue is already open, pramana adds itself as a cons
 ## 11. Risks
 
 1. **T1 scope creep.** kimiya's mid-port overflow audit cost 1.7 days and about 30 ADR rows, and is still unfinished.
-   M2 part b is bounded to the five functions of §3.4 at P9's written bounds. Everything else goes to D4 or 2.1.
+   M2 part b is bounded to the five functions of §3.4, at the bounds and domains fixed there. Everything else goes to
+   D4 or 2.1. Because the bounds are fixed, a miss costs time, not accuracy: more double-double evaluation where a
+   prototype falls short. P9 exists to find those places before M2 part b starts.
    The CORE-MATH erf/erfc port (D3 = C) is the largest single item. It has a fixed slot in P9; if it misses,
    erf/erfc ship at ≤ 1 ulp and the port moves to 2.x.
 2. **The recording toolchain moving.** pravash's `--check` broke when stable moved to 1.100, through a generated

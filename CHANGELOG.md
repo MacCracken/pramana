@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **Cyrius port plan**: `docs/development/pramana-port-plan.md`, the plan of record for porting 1.3.0 to Cyrius 6.7.18 as 2.0.0, drawn from the tanmatra, kimiya and pravash ports and a review of ganita. Decision D3 is taken: correctly rounded erf/erfc, plus more accurate `normal_cdf`, `ln_gamma` and incomplete gamma/beta. The other decisions are open
+- **Cyrius port plan**: `docs/development/pramana-port-plan.md`, the plan of record for porting 1.3.0 to Cyrius 6.7.18 as 2.0.0, drawn from the tanmatra, kimiya and pravash ports and a review of ganita. Every decision was taken on 2026-11-15, among them D3: correctly rounded erf/erfc, and fixed accuracy bounds for `normal_cdf` (≤ 1 ulp), `ln_gamma` (≤ 2), `gamma_inc` (≤ 4) and `beta_inc` (≤ 8)
 - **Accuracy baseline tool**: `scripts/port-baseline/` measures 1.3.0's special functions and the glibc primitives against MPFR 4.2.2 (and exact rationals for the integer-shape incomplete beta). Max error in ulps:
   - glibc primitives: 0.75 or less;
   - `erf` 0.82, `erfc` 2.49;
@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - `beta_inc` 583.
 
   The tool is not part of the crate.
+- **`oracle` feature** (hidden, read-only, never published): hooks that expose the private special functions, samplers, quantiles, HMM forward pass, KDE kernels and `MultivariateNormal` factorization to the port's golden-value generator. They live in child modules, so each audited source gains only a `mod oracle;` declaration. `tests/oracle.rs` (11 tests) proves each hook is the public code path, bit for bit, and draws the same uniforms; it is mutation-checked six ways. Without the feature, nothing changes: every per-feature test count equals 1.3.0's
+
+### Changed
+
+- **Toolchain pinned**: `rust-toolchain.toml` moves from `stable` to `1.100.0`, the toolchain that records the port's golden values. The CI coverage job adds `llvm-tools-preview` to the pinned toolchain
 
 ## [1.3.0] - 2026-11-14
 

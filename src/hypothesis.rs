@@ -790,6 +790,10 @@ fn z_quantile(p: f64) -> f64 {
     }
 }
 
+/// Read-only hooks for the Cyrius port's golden-value generator (see `crate::oracle`).
+#[cfg(feature = "oracle")]
+pub(crate) mod oracle;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -30,6 +30,9 @@ soorat-compat = []
 # Reserved: pramana does no logging. Kept as a no-op so `features = ["logging"]` keeps building.
 logging = []
 ai = ["dep:hoosh", "dep:tokio", "dep:serde_json"]
+# Hidden, read-only hooks for the Cyrius port's golden-value generator
+# (docs/development/pramana-port-plan.md, M0 step 0). Not public API; never published.
+oracle = []
 
 [[bench]]
 name = "benchmarks"
