@@ -52,6 +52,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **Mutation-checked:** 11 of 15 one-ulp nudges are caught. Two are invisible in every output, and two are
     extraction-only by design.
 
+- **The parity harness** (port plan M0 step 7): `tests/parity.tcyr` replays the golden corpus against the port.
+  - **The parts:** it is built on pravash's `parity_core.cyr` and `ulp.cyr`, adapted to ADR 009's correctly rounded
+    rows and ADR 007's mapped rows, with two print-length bugs fixed. A generated lookup (`tests/constants_rows.cyr`)
+    serves the constants rows.
+  - **First run:** 2 modules, 0 failing. 3,963 rows ok (every constant, sqrt, abs, floor, the fdlibm word
+    operations), 24,669 transcendental rows measured, and 7,077 pending for M1's helpers. Warning-free, and the same
+    under `--bounds`.
+  - **Mutation-checked** four ways. It runs in `cyrius test` and `cyrius audit`.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

@@ -1,0 +1,181 @@
+# parity.tcyr — replays the golden corpus (tests/golden/*.tsv) against the port.
+#
+# Port plan §5 step 7, adapted from pravash's tests/parity.tcyr (its M0 version), itself impetus's, kimiya's and
+# tanmatra's. Format and comparison rules: scripts/golden/README.md. The module list is tests/golden/modules.txt,
+# which the generator writes. The replay machinery is tests/parity_core.cyr; this file holds the hooks and the
+# dispatchers.
+#
+# Every row of every module is one of:
+# - ok: every output matched within its class;
+# - FAILED: an output differs; the first 10 per module are printed with the row's note and both bit patterns;
+# - measured: class C, with no bound set yet for its function. The ulp distance is recorded but not gated. The bound
+#   for each correctly rounded function is 0, set when M1 dispatches it (ADR 009); the stdlib counterparts here are
+#   the step 8 baseline;
+# - accepted: a divergence an ADR accepts (ADR 9: the correctly rounded rows, tests/golden/<module>.cr.tsv);
+# - pending: its function isn't ported yet (no dispatcher entry).
+#
+# Per function it prints the row counts and the ulp histogram. Shadow lines (`fn ~ candidate`) compare the same rows
+# against another Cyrius candidate and are never gated. The exit code is the number of modules with a failure.
+
+include "tests/ulp.cyr"
+include "src/constants.cyr"
+
+alloc_init();
+
+include "tests/parity_core.cyr"
+include "tests/constants_rows.cyr"
+
+# ── hooks ───────────────────────────────────────────────────────────────────────────
+
+# The Rust variant name of an error code. src/error.cyr (M1) brings the real table; until then no dispatcher returns
+# an error.
+#must_use
+fn _par_error_name(code): i64 {
+    return "Unknown";
+}
+
+# ── dispatch ────────────────────────────────────────────────────────────────────────
+# Each module's dispatcher fills the got list for one row. It returns 1 when it handled the function, 0 when the
+# function is pending (not ported), or -1 when the inputs are unusable (a defect, counted as a failure). Add a function
+# the moment it's ported.
+
+# `const` rows (input `s:<path>`): src/constants.cyr's value for the path, through the generated lookup
+# (tests/constants_rows.cyr). An unknown path is a defect.
+fn _par_constants(fp, fl): i64 {
+    if (_par_eq(fp, fl, "const") != 1 || _par_in_n != 1) { return 0 - 1; }
+    return _par_constant_row(load64(_par_in_v), load64(_par_in_l));
+}
+
+# `f64::*` and `u64::*` rows: the Rust std reference values (port plan §8.1).
+#
+# Dispatched now:
+# - the exact builtins sqrt, abs and floor;
+# - the fdlibm word operations, which the port writes inline: `bits >> 32` (logical) and `bits & 0xFFFFFFFF00000000`;
+# - for each transcendental, the stdlib or ganita counterpart with the same bits on every target (the polyfills, not
+#   the x87 builtins), measured until M1's correctly rounded functions replace them (ledger L1). ln_1p and exp_m1 have
+#   only ganita's private fdlibm ports.
+#
+# Pending until M1's src/mathx.cyr (ledger L2; port-parity §1):
+# - min, max, clamp: f64_min / f64_max ignore a NaN only as the FIRST operand;
+# - fract: the stdlib's f64_fract is floor-based; Rust's is x − trunc(x);
+# - is_nan, is_finite, total_cmp: no public stdlib counterpart;
+# - as_usize: f64_to doesn't saturate; u64::as_f64: f64_from reads the word as signed;
+# - the powi expansions, which the port writes in LLVM's order.
+fn _par_math(fp, fl): i64 {
+    var w = _par_in(0);
+    var x: f64 = _par_in(0);
+    if (_par_eq(fp, fl, "f64::sqrt") == 1) { var r: f64 = f64_sqrt(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::abs") == 1) { var r: f64 = f64_abs(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::floor") == 1) { var r: f64 = f64_floor(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::high_word") == 1) { _par_got_i(w >> 32); return 1; }
+    if (_par_eq(fp, fl, "f64::low_masked") == 1) { _par_got_f(w & 0xFFFFFFFF00000000); return 1; }
+    if (_par_eq(fp, fl, "f64::exp") == 1) { var r: f64 = _f64_exp_polyfill(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::ln") == 1) { var r: f64 = _f64_ln_polyfill(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::ln_1p") == 1) { var r: f64 = _gn_log1p(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { var r: f64 = _gn_expm1(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::sin") == 1) { var r: f64 = f64_sin(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::cos") == 1) { var r: f64 = f64_cos(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::tan") == 1) { var r: f64 = ganita_f64_tan(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::atan") == 1) { var r: f64 = _f64_atan_polyfill(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::log2") == 1) { var r: f64 = _f64_log2_polyfill(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::cbrt") == 1) { var r: f64 = ganita_f64_cbrt(x); _par_got_f(r); return 1; }
+    if (_par_in_n < 2) { return 0; }
+    var y: f64 = _par_in(1);
+    if (_par_eq(fp, fl, "f64::powf") == 1) { var r: f64 = ganita_f64_pow(x, y); _par_got_f(r); return 1; }
+    return 0;
+}
+
+fn _par_dispatch(mp, ml, fp, fl): i64 {
+    _par_got_n = 0;
+    if (_par_eq(mp, ml, "constants") == 1) { return _par_constants(fp, fl); }
+    if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
+    return 0;
+}
+
+# Shadow comparisons, never gated: the same golden rows through another Cyrius candidate.
+# - the native exp, ln, atan and log2 builtins: x87 on x86_64, so their bits differ between targets, and the polyfill
+#   forms are dispatched instead;
+# - the stdlib min / max, to show where their NaN semantics differ from Rust's.
+fn _par_shadows(mp, ml, fp, fl, cls) {
+    if (_par_eq(mp, ml, "math") != 1) { return 0; }
+    var x: f64 = _par_in(0);
+    if (_par_eq(fp, fl, "f64::exp") == 1) {
+        _par_got_n = 0;
+        var r: f64 = f64_exp(x);
+        _par_got_f(r);
+        _par_shadow_record("f64::exp ~ f64_exp (native)", cls);
+        return 0;
+    }
+    if (_par_eq(fp, fl, "f64::ln") == 1) {
+        _par_got_n = 0;
+        var r: f64 = f64_ln(x);
+        _par_got_f(r);
+        _par_shadow_record("f64::ln ~ f64_ln (native)", cls);
+        return 0;
+    }
+    if (_par_eq(fp, fl, "f64::atan") == 1) {
+        _par_got_n = 0;
+        var r: f64 = f64_atan(x);
+        _par_got_f(r);
+        _par_shadow_record("f64::atan ~ f64_atan (native)", cls);
+        return 0;
+    }
+    if (_par_eq(fp, fl, "f64::log2") == 1) {
+        _par_got_n = 0;
+        var r: f64 = f64_log2(x);
+        _par_got_f(r);
+        _par_shadow_record("f64::log2 ~ f64_log2 (native)", cls);
+        return 0;
+    }
+    if (_par_in_n < 2) { return 0; }
+    var y: f64 = _par_in(1);
+    if (_par_eq(fp, fl, "f64::max") == 1) {
+        _par_got_n = 0;
+        var r: f64 = f64_max(x, y);
+        _par_got_f(r);
+        _par_shadow_record("f64::max ~ f64_max", cls);
+        return 0;
+    }
+    if (_par_eq(fp, fl, "f64::min") == 1) {
+        _par_got_n = 0;
+        var r: f64 = f64_min(x, y);
+        _par_got_f(r);
+        _par_shadow_record("f64::min ~ f64_min", cls);
+        return 0;
+    }
+    return 0;
+}
+
+# The class-C bound for a function, in ulps; -1 while none is set (the rows are measured). A correctly rounded
+# function's bound is 0 (ADR 009), set when M1 dispatches it; never raised to make a row pass.
+#must_use
+fn _par_c_bound(fp, fl): i64 {
+    return 0 - 1;
+}
+
+# The ADR accepting a divergent row (function and raw input field), or 0. The correctly rounded rows are ADR 009's,
+# accepted by parity_core itself; ADR 007's mapped rows arrive with their modules.
+#must_use
+fn _par_accepted(fp, fl, ip, il): i64 {
+    return 0;
+}
+
+# 1 for an ADR whose accepted rows are counted but not printed row by row. None yet.
+#must_use
+fn _par_accepted_quiet(adr): i64 {
+    return 0;
+}
+
+# Module-specific summary lines after a module's report. None yet (step 8 adds the cross-target digests).
+fn _par_module_done(mp, ml) {
+    return 0;
+}
+
+# Every module is replayed here.
+#must_use
+fn _par_skip(mp, ml): i64 {
+    return 0;
+}
+
+var exit_code = _par_main();
+sys_exit_group(exit_code);

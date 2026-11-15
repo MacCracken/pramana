@@ -225,6 +225,11 @@ fn run() -> Result<bool, String> {
         summary: format!("{} constants", constants.len()),
     });
     outputs.push(Output {
+        rel: "tests/constants_rows.cyr".to_string(),
+        text: t_constants::emit_rows(&constants, &oracle),
+        summary: format!("{} lookups", constants.len()),
+    });
+    outputs.push(Output {
         rel: "tests/golden/modules.txt".to_string(),
         summary: format!("{} modules", emitted.len()),
         text: index,

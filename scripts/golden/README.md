@@ -76,7 +76,7 @@ files. This README records what is specific to pramana.
 
 | Module | Milestone | Golden rows | Golden emitter | Generated Cyrius / correctly rounded rows |
 |---|---|---|---|---|
-| `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` (`src/t_constants.rs`) |
+| `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
 
 ## Format 1
@@ -94,7 +94,9 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
   4. the column legend
   5. `# rows: <n>`
 
-  A `.cr.tsv` file has the same five lines, naming MPFR and the provenance of the rows it corrects.
+  A `.cr.tsv` file (the siblings' correction format, which `tests/parity_core.cyr` reads) also has five header lines,
+  naming the provenance of the rows it corrects and MPFR. Its rows have four columns: `fn <TAB> inputs <TAB> outputs
+  <TAB> note`. The fn and inputs are the golden row's, byte for byte, and are the key.
 - **Tokens** (space-separated; `-` when a list is empty):
   - `f:<16 hex>`: an f64 as its bit pattern, lowercase;
   - `i:<decimal>`: an integer, or a boolean as 0 / 1. A 64-bit word ≥ 2⁶³ (a u64, or `as usize` of a huge value) reads

@@ -19,8 +19,8 @@
 > - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
-> **Step 4** is committed as `53078cb`, and **step 5**, the golden generator, as `30eb41b`. **Step 6,** the constant
-> generator, is done but not committed. **Next is step 7:** the parity harness. The maintainer took each recommendation and
+> **Steps 4, 5 and 6** are committed (`53078cb`, `30eb41b`, `bb0f938`). **Step 7,** the parity harness, is done but
+> not committed. **Next is step 8:** the cross-target baselines. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -692,7 +692,7 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - the samplers' and quantiles' rows at M3 and M4;
      - each type's serde_json documents (the JSON table) with that type;
      - the constants at step 6.
-6. ✅ **Constant generator. Done 2026-11-15** ([`port-parity.md`](port-parity.md) §3).
+6. ✅ **Constant generator. Done 2026-11-15** and committed as `bb0f938` ([`port-parity.md`](port-parity.md) §3).
    - **What it writes:** `src/constants.cyr`, with all **112 constants**: every `const` item in `rust-old/src`'s
      library code, and the 9 Rust std float constants that code names (`f64::MAX` only appears in tests). They are:
      - the 55 fdlibm erf/erfc coefficients;
@@ -729,11 +729,36 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - `probe_tables.py` compiles the file warning-free, and all 112 read back exact.
    - **Tamper checks:** one digit changed in `src/constants.cyr` fails `probe_tables.py` and `--check`; an edited
      `constants.tsv` value fails `validate.py`.
-7. **Parity harness.** Copy pravash's `tests/parity.tcyr`, `parity_core.cyr` and `ulp.cyr`, and add:
-   - a `*.ref.tsv` comparator with per-function bounds;
-   - a stream comparator: each draw by its class, draw counts class A;
-   - the JSON comparator: decode 1.3.0's document, compare bits, re-encode, decode again;
-   - the divergence table, which reports every ADR 0007 / 0009 row by name.
+7. ✅ **Parity harness. Done 2026-11-15** ([`port-parity.md`](port-parity.md) §4).
+   - **The files:**
+     - `tests/ulp.cyr` is pravash's, unchanged.
+     - `tests/parity_core.cyr` is pravash's final version (2.0.1), which already handles correctly rounded rows. It is
+       adapted to pramana's ADRs:
+       - a correctly rounded row passes as *accepted (ADR 9)*;
+       - pravash's `.d3.tsv` table becomes pramana's mapped rows, `<module>.map.tsv`, accepted as *ADR 7*;
+       - two print calls whose lengths didn't match their literals in pravash's copy are fixed, and every literal's
+         length is now audited by script.
+     - `tests/parity.tcyr` holds pramana's hooks and dispatchers.
+     - `tests/constants_rows.cyr` is the generated lookup from each path to its value.
+     - `validate.py` writes `math.cr.tsv` in the siblings' four-column format, which the harness reads.
+   - **First run:** 2 modules, 0 failing, warning-free and the same under `--bounds`. Of the rows:
+     - **3,963 ok:** all 112 constants, and sqrt, abs, floor and the fdlibm word operations;
+     - **24,669 measured:** the transcendentals on their stdlib and ganita counterparts, the step 8 baseline;
+     - **7,077 pending:** the helpers M1 brings.
+
+     The 76 correctly rounded rows load and match their golden rows.
+   - **Mutation-checked four ways**, each failing its module:
+     - one bit of a golden `sqrt` row;
+     - `LN_SQRT_2PI` one ulp off in `src/constants.cyr`;
+     - `floor` dispatched to `f64_ceil` (613 rows fail);
+     - a correction row matching no golden row.
+   - **In every run:** `cyrius test` and `cyrius audit` now run the harness, about 1 s for the suite. The comparison
+     reads only committed files, so CI runs it too.
+   - **Comparators that arrive with their modules, as in pravash:**
+     - the `*.ref.tsv` comparator (M2 part b);
+     - the stream comparator (M3, the samplers);
+     - the JSON comparator (M1, the first codecs);
+     - the mapped-rows reporting (ADR 007's first remap).
 8. **Baselines.** Sweep the math through every Cyrius counterpart on x86_64 ELF, PE (wine) and aarch64 (qemu), and set
    K by the port-parity rule.
 9. **Probes**, each a small program answered with numbers before M1 writes code (`scripts/probes/`, results in

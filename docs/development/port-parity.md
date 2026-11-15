@@ -329,3 +329,55 @@ milestone, as pravash's were.
 **Tampering.** A one-digit change to `src/constants.cyr` fails `probe_tables.py` and `--check`. An edited
 `constants.tsv` value fails `validate.py`.
 
+## 4. The parity harness (M0 step 7, 2026-11-15)
+
+**What ran.** `cyrius test tests/parity.tcyr` (also part of plain `cyrius test` and `cyrius audit`). It uses
+pravash's `tests/parity_core.cyr` and `tests/ulp.cyr`, pramana's hooks in `tests/parity.tcyr`, and the generated
+`tests/constants_rows.cyr`.
+
+**First run: 2 modules, 0 failing; 3,963 ok, 0 failed, 24,669 measured, 7,077 pending.** It is warning-free, and the
+report is identical under `--bounds`.
+
+| Rows | Functions |
+|---|---|
+| ok (exact) | all 112 constants; sqrt 1,274, abs 374, floor 843, high_word 680, low_masked 680 |
+| measured (class C, no bound yet) | exp, ln, ln_1p, exp_m1, powf, sin, cos, tan, atan, log2, cbrt on their stdlib and ganita counterparts |
+| pending (M1's helpers) | fract, max, min, clamp, is_finite, is_nan, total_cmp, as_usize, u64::as_f64, the six powi expansions |
+
+**The measured rows are the step 8 baseline** (x86_64 ELF). Rows 1 ulp off Rust's (glibc's) value:
+
+| Function | Counterpart | Rows 1 ulp off | Shadow (native builtin) |
+|---|---|---|---|
+| exp | `_f64_exp_polyfill` | 264 of 3,274 | `f64_exp`: 96 |
+| ln | `_f64_ln_polyfill` | 64 of 3,112 | `f64_ln`: 14 |
+| ln_1p | `_gn_log1p` | 6 of 1,013 | — |
+| exp_m1 | `_gn_expm1` | 52 of 1,010 | — |
+| powf | `ganita_f64_pow` | 348 of 4,400, plus 1 NaN/∞ | — |
+| sin / cos | `f64_sin` / `f64_cos` | 89 / 78 of 2,510 | — |
+| tan | `ganita_f64_tan` | 82 of 2,010 | — |
+| atan | `_f64_atan_polyfill` | 22 of 1,510 | `f64_atan`: 0 |
+| log2 | `_f64_log2_polyfill` | 1 of 2,510 | `f64_log2`: 0 |
+| cbrt | `ganita_f64_cbrt` | 0 of 810 | — |
+
+**Notes on the baseline:**
+- **The NaN/∞ powf row is ganita's open `pow(−1, huge)` defect.** `powf(−1, f64::MAX)` gives +∞ where Rust gives 1.
+- **The native builtins** agree with glibc more often on x86_64, since they are x87 there. They differ across targets
+  (step 8), so the polyfills are dispatched.
+- **The stdlib `f64_min` / `f64_max`** differ from Rust on all 69 rows with a NaN second operand, as the shadow lines
+  show: ledger L2.
+
+**Against MPFR:** the 76 correctly rounded rows (`math.cr.tsv`) load and each matches its golden row. Today's
+counterparts agree with the corrected value on:
+- powf: 4 of 6;
+- tan: 3 of 7;
+- log2: 1 of 1;
+- exp_m1, ln_1p and sin: none. Their counterparts give glibc's misrounded value on all 52, 6 and 4.
+
+Every corrected row is measured until M1 dispatches the correctly rounded functions at 0 ulp.
+
+**Mutation checks**, each failing its module (exit 1):
+- one bit of a golden `sqrt` row: 1 FAILED;
+- `LN_SQRT_2PI` one ulp off in `src/constants.cyr`: 1 FAILED;
+- `floor` dispatched to `f64_ceil`: 613 FAILED;
+- a correction row that matches no golden row: the module fails with "a correction matches no golden row".
+
