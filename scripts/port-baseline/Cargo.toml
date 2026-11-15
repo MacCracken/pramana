@@ -1,0 +1,16 @@
+# Accuracy-baseline generator for docs/development/pramana-port-plan.md §3.
+# Not part of the pramana crate; run.sh builds it in a scratch directory.
+[package]
+name = "port-baseline"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "port-baseline"
+path = "src/main.rs"
+
+[workspace]
+
+[profile.release]
+opt-level = 3

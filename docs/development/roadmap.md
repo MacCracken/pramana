@@ -53,6 +53,18 @@
 - [x] Correctness fixes: KS ties, ARIMA `d >= 2`, Binomial `p ∈ {0, 1}`, exact chi-squared p-values, ANOVA zero within-variance, bridge fits with skipped points
 - [x] O(1)/O(log n) Poisson & Binomial CDF/PMF/sampling, O(n) median/percentile, O(n log n) mode
 
+## 2.0.0 — Cyrius port (planned)
+
+Rust 1.3.0 is the final Rust release; the Cyrius port ships as 2.0.0. Plan of record:
+[pramana-port-plan.md](pramana-port-plan.md). Its open decisions (§0.2) are the maintainer's.
+
+- [ ] M0: oracle hooks on Rust 1.3.0, `cyrius port`, golden generator, MPFR reference tooling, probes
+- [ ] M1 foundation · M2 special functions (T0 parity, then T1 accuracy) · M3 distributions
+- [ ] M4 descriptive + hypothesis · M5 regression, time series, Bayesian · M6 Markov + Monte Carlo
+- [ ] M7 soorat shapes + `ai` · M8 release 2.0.0
+
+The feature sections below predate the port. New features land after 2.0.0 parity, in Cyrius.
+
 ## v1.1 — Performance, Platform & Numerical Hardening
 
 ### Performance

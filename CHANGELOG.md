@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **Cyrius port plan**: `docs/development/pramana-port-plan.md`, the plan of record for porting 1.3.0 to Cyrius 6.7.18 as 2.0.0, drawn from the tanmatra, kimiya and pravash ports and a review of ganita. Decision D3 is taken: correctly rounded erf/erfc, plus more accurate `normal_cdf`, `ln_gamma` and incomplete gamma/beta. The other decisions are open
+- **Accuracy baseline tool**: `scripts/port-baseline/` measures 1.3.0's special functions and the glibc primitives against MPFR 4.2.2 (and exact rationals for the integer-shape incomplete beta). Max error in ulps:
+  - glibc primitives: 0.75 or less;
+  - `erf` 0.82, `erfc` 2.49;
+  - `normal_cdf` tails 1,590;
+  - `ln_gamma` 1.2×10⁶ on [0.5, 10], and 4.3×10¹³ beside its roots at 1 and 2;
+  - `gamma_inc` 246;
+  - `beta_inc` 583.
+
+  The tool is not part of the crate.
+
 ## [1.3.0] - 2026-11-14
 
 Toolchain/dependency update and P(-1) audit/hardening sweep.
