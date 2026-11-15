@@ -35,6 +35,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
   `cyrius build`, `test`, `test --bounds`, `bench`, `fuzz`, `lint`, `fmt --check`, `vet`, `deps --locked` and
   `audit` all pass.
+- **`cyrius.cyml`** (port plan M0 step 3):
+  - **stdlib leaves:** math, ganita, overflow, tagged, result, freelist, fnptr, atomic and bayan, on top of the core
+    leaves; `args` is dropped, since a library reads no command-line arguments;
+  - **no hisab** (its four routines will be transcribed);
+  - **dead-code elimination on:** the skeleton builds to 407,872 bytes, with 806,256 bytes eliminated;
+  - **the lock:** 43 files.
 - **Toolchain pinned**: `rust-toolchain.toml` moves from `stable` to `1.100.0`, the toolchain that records the port's golden values. The CI coverage job adds `llvm-tools-preview` to the pinned toolchain
 
 ## [1.3.0] - 2026-11-14

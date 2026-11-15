@@ -18,7 +18,8 @@
 > - step 0, the Rust hooks, is committed as `94a7153`;
 > - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
-> **Step 2,** the repairs, is done but not committed. **Next is step 3:** the full `cyrius.cyml`. The maintainer took each recommendation and
+> **Step 2,** the repairs, is committed as `40a8269`. **Step 3,** the full `cyrius.cyml`, is done but not committed.
+> **Next is step 4:** the toolchain and math check. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -534,7 +535,7 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      the manifest has `[test] stdlib = ["assert"]`. The manifest also says `version = "0.1.0"`. Both are the issue's
      items 2 and 3, and step 2 repairs them.
    - Committed as `d8e761d` ("m0 1 done"), with the scaffold's overwritten files, which step 2 then repaired.
-2. ✅ **Repair. Done 2026-11-15** (on top of `d8e761d`, the committed scaffold). The originals came from `94a7153`.
+2. ✅ **Repair. Done 2026-11-15** and committed as `40a8269` (on top of `d8e761d`, the committed scaffold). The originals came from `94a7153`.
    - **CLAUDE.md:** merged. It keeps the identity, the process and the DO NOT list (including "NEVER use `gh`"), and
      translates the Rust principles against §1.2:
      - `#[non_exhaustive]` → append-only enums;
@@ -582,8 +583,19 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - The README has a port banner, and its build section points at `rust-old/`. Its full rewrite is M8's.
    - **Gates, all green:** `cyrius build`, `test` (warning-free), `test --bounds`, `bench`, `fuzz`, `lint`,
      `fmt --check`, `vet`, `deps --locked`, `audit`.
-3. **`cyrius.cyml`.** The core has no hisab (§8.2). There is no `[lib]` until M1, because `modules = []` is invalid.
-   Confirm the keys with `cyrius help manifest`.
+3. ✅ **`cyrius.cyml`. Done 2026-11-15** (on `40a8269`). It is written as planned below.
+   - **Keys:** confirmed against `cyrius help manifest`. `entry`, `output`, `description` and `repository` are kept,
+     and every stdlib leaf has a comment saying why it is there. There is no hisab (§8.2), and no `[lib]` until M1,
+     because `modules = []` is invalid.
+   - **`args` dropped:** the scaffold had listed it, but a library reads no command-line arguments.
+     - `cyrius deps` flagged `lib/args.cyr` and `lib/args_win.cyr` as outside the footprint. They were removed, and
+       `cyrius deps --lock` re-locked.
+     - `args_agnos.cyr` and `args_macos.cyr` stay: `io.cyr` and the syscall peers reference them.
+   - **The lock:** 43 files, and `cyrius deps --locked` confirms `lib/` matches it exactly.
+   - **Dead-code elimination:** the skeleton builds to 407,872 bytes, with 806,256 bytes of dead code removed. That
+     matches pravash's empty consumer at 408 KB.
+   - **Gates, all green and warning-free:** `build`, `test`, `test --bounds`, `bench`, `fuzz`, `lint`, `fmt --check`,
+     `vet`, `deps --locked`, `audit`.
    ```toml
    [package]
    name = "pramana"

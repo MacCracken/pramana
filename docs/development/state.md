@@ -18,7 +18,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 
 | Milestone | Status |
 |---|---|
-| M0 Initialize | ⏳ **in progress.** **Step 0** (Rust, `94a7153`): the P(-1) gates are green; the hidden `oracle` feature exposes the private special functions, samplers, quantiles, HMM forward pass, KDE kernels and the `MultivariateNormal` factor; `tests/oracle.rs` has 11 tests, mutation-checked six ways; the toolchain is pinned to 1.100.0. **Step 1** (`d8e761d`): the `cyrius port` scaffold, with the Rust crate in `rust-old/`, where it still passes (330 tests with `--all-features`). **Step 2**: repairs (CLAUDE.md, the roadmap, CI, the manifest's version and `bench`, the scaffold stubs documented, Rust-only docs and scripts moved, ADRs 006–009, CONTRIBUTING, SECURITY, a README banner). **Steps 3–10**: pending |
+| M0 Initialize | ⏳ **in progress.** **Step 0** (Rust, `94a7153`): the P(-1) gates are green; the hidden `oracle` feature exposes the private special functions, samplers, quantiles, HMM forward pass, KDE kernels and the `MultivariateNormal` factor; `tests/oracle.rs` has 11 tests, mutation-checked six ways; the toolchain is pinned to 1.100.0. **Step 1** (`d8e761d`): the `cyrius port` scaffold, with the Rust crate in `rust-old/`, where it still passes (330 tests with `--all-features`). **Step 2** (`40a8269`): repairs (CLAUDE.md, the roadmap, CI, the manifest's version and `bench`, the scaffold stubs documented, Rust-only docs and scripts moved, ADRs 006–009, CONTRIBUTING, SECURITY, a README banner). **Step 3**: the full `cyrius.cyml` (16 stdlib leaves, no hisab, `dce = true`; 43 files locked); every gate green and warning-free. **Steps 4–10**: pending |
 | M1–M8 | not started |
 
 ## Toolchain
@@ -51,10 +51,13 @@ The conversion ledger is in the port plan, §10. Requests are filed at M0 step 1
 
 ## Dependencies
 
-Direct (declared in `cyrius.cyml`; step 3 sets the port's full list):
+Direct (declared in `cyrius.cyml`; 43 files locked in `cyrius.lock`):
 
-- stdlib: string, fmt, alloc, vec, str, syscalls, io, args (the scaffold's)
+- stdlib: syscalls, string, alloc, str, fmt, io, vec, math, ganita, overflow, tagged, result, freelist, fnptr, atomic,
+  bayan
 - test stdlib (`[test] stdlib`, test / bench / fuzz builds only): assert, bench
+- no hisab (port plan §8.2); sandhi joins only for the `ai` code, outside the core bundle (D8)
+- `[build] dce = true`: the skeleton builds to 407,872 bytes
 
 ## Consumers
 
@@ -64,6 +67,6 @@ Direct (declared in `cyrius.cyml`; step 3 sets the port's full list):
 
 ## Next
 
-M0 step 3 (port plan §5): the full `cyrius.cyml`. Then steps 4–10: the semantics probe, the golden generator and its
+M0 steps 4–10 (port plan §5): the semantics probe, the golden generator and its
 MPFR reference rows, the constants, the parity harness, the baselines, the probes (P1–P9, among them the CORE-MATH
 erf/erfc port in its time slot), and filing the upstream requests.

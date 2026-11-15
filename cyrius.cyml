@@ -10,10 +10,28 @@ cyrius = "6.7.18"
 [build]
 entry = "src/main.cyr"
 output = "build/pramana"
+# Dead-code elimination: a consumer that calls one function doesn't carry the rest (port plan §4.3 row 10, probe P8).
+dce = true
 
+# stdlib leaves, vendored into lib/ by `cyrius deps` and prepended to every compile (port plan §5 step 3).
+#   math     — f64 basics (sqrt, floor, abs, f64_from / f64_to) and the polyfills; every transcendental goes
+#              through pramana's correctly rounded functions instead (ADR 009)
+#   ganita   — ganita_f64_cbrt (exact; the Wilson–Hilferty branch), and the Cholesky pair if probe P5 keeps it
+#   overflow — the saturating `+|` / `-|` / `*|` operators (u64 / PmnU128 combinatorics, the ulp distance)
+#   tagged / result — the value-form Option and Result
+#   freelist — fl_alloc / fl_free: owned objects with a `_drop` (port plan D11)
+#   fnptr    — callbacks as a function pointer plus a context (Monte Carlo, MH, Gibbs, the KS one-sample CDF; D7)
+#   atomic   — compare-and-swap for the work-table pool (kimiya ADR 0007; D11)
+#   bayan    — the JSON value tree under the hand codecs (D5)
+# No hisab: its four 1.4.0 routines are transcribed into src/linalg.cyr (port plan §8.2, ADR 008).
+# sandhi (HTTP) joins only for the `ai` code, outside the core bundle (D8, probe P8).
 [deps]
-stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args"]
+stdlib = ["syscalls", "string", "alloc", "str", "fmt", "io", "vec", "math", "ganita",
+    "overflow", "tagged", "result", "freelist", "fnptr", "atomic", "bayan"]
 
-# Test / bench / fuzz compiles only. `bench` was missing from the scaffold (the open cyrius port issue, item 3).
+# Test / bench / fuzz compiles only.
 [test]
 stdlib = ["assert", "bench"]
+
+# There is no `[lib]` yet: `modules = []` is invalid. It arrives with M1's first module (port plan §5 step 3 gives
+# the order: error → constants → crmath_data → crmath → mathx → json → rng → combinatorics → bridge → special → …).
