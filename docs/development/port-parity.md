@@ -445,3 +445,78 @@ correctly rounded value. That is a weaker statement than M1's.
 The first attempt at these "ulp" mutations wrote `r + 3` on a typed `f64`, which is float arithmetic, not a bit step.
 They were redone with an untyped word helper: the left-operand typing trap the plan warns about (§8.1).
 
+## 6. Probes (M0 step 9)
+
+The probes answer the plan's design questions with numbers before M1 writes code. The Cyrius probes are in
+`scripts/probes/`. Their Rust twins are binaries of `scripts/probes/rust/`, a crate on the oracle by path, its lock
+seeded from `scripts/golden/` (hisab 1.4.0). Run them from that directory, on the recording toolchain.
+
+### 6.1 Part 9a: P1, P5, P6 (2026-11-15)
+
+**P1, integers: everything identical to the oracle** (`p1_integers.cyr` against `p1_integers`, the oracle's own
+functions). 3,736 cases, 3,736 the same:
+- **`SimpleRng`:** 10⁶ draws from each of five seeds (1, 42, 2⁶³, u64::MAX, 0x9e3779b97f4a7c15), folded into an FNV-1a
+  digest. `>>` is the logical shift, and the wrapping `<<` matches.
+- **`PmnU128`, D10's prototype:** a two-word u128 with a 128 × 64-bit multiply over 32-bit limbs (no partial product
+  overflows a word) and overflow detection, and a 128 / 64-bit restoring division.
+  - It ran `factorial(0..=36)`, and `permutations` and `combinations` on 54 values of n (0–40, the u128 edge 130–133,
+    2³², 2⁶³ and u64::MAX) × each n's r grid.
+  - Outcomes and words are identical, errors included. `combinations(130, 65)` is an overflow error in Rust too: an
+    intermediate product overflows although the result fits.
+- **Mutation:** dropping `combinations`' `r = min(r, n − r)` changes 30 cases. Breaking the multiply's overflow check
+  makes `permutations(2⁶³, …)` wrap instead of stopping, so the probe runs for about 2⁶³ steps.
+
+**P5, the linear algebra: transcribe all four hisab 1.4.0 routines** (plan §8.2, ledger L4–L6). The Rust twin calls
+1.4.0's routines. `p5_linalg.cyr` computes the same seeded inputs with ganita, and with hisab 3.5's
+`eigen_symmetric`, whose 4.2 MB bundle is included by absolute path (`CYRIUS_ALLOW_ABSOLUTE_INCLUDES=1`). The inputs
+are SPD matrices BᵀB + n·I for n = 2, 3, 4, 6, 8, 10 at 10 seeds, and a degree 1–4 fit to 40 points at 10 seeds.
+
+| Routine (against hisab 1.4.0) | Elements | Identical | 1 ulp | 2 ulp | 3–16 ulp | More | Max |
+|---|---|---|---|---|---|---|---|
+| `ganita_mat_cholesky` | 1,310 | 1,046 | 204 | 41 | 15 | 4 | 40 ulp |
+| `ganita_mat_cholesky_solve` (on ganita's L) | 330 | 231 | 46 | 29 | 23 | 1 | 18 ulp |
+| `ganita_mat_eigen_sym` | 330 | 61 | 77 | 68 | 124 | 0 | 14 ulp |
+| hisab 3.5 `eigen_symmetric` | 330 | the same as ganita's on every element | | | | | 14 ulp |
+| `ganita_mat_least_squares` (Householder) | 140 | 9 | 4 | 8 | 71 | 48 | 13,619 ulp |
+
+Why each differs:
+- **Cholesky:** ganita accumulates Σ l·l and subtracts it once; 1.4.0 subtracts each term in turn.
+- **The eigensolvers:** ganita's Jacobi picks the largest pivot and stops at an absolute 1e-12; 1.4.0's is cyclic
+  with an absolute 1e-24 stop.
+- **Least squares:** ganita is Householder QR; 1.4.0 is modified Gram–Schmidt on the raw Vandermonde matrix.
+
+**What each call leaves on the bump heap:**
+
+| Routine | Bytes left per call |
+|---|---|
+| `ganita_mat_cholesky_solve` | 8n |
+| `ganita_mat_eigen_sym` | 64–896 (≈ 9n²) |
+| hisab 3.5 `eigen_symmetric` | 80–1,680 (≈ 16n²) |
+| `ganita_mat_least_squares` (40 × 2–5) | 1,296–2,256 |
+
+**A caveat for M4.** 1.4.0's Jacobi takes its angle from glibc's `atan`, `cos` and `sin`. So a faithful
+transcription on correctly rounded primitives will still differ wherever glibc misrounds. The PCA rows will need
+`.cr` rows from a Python transcription, or class D.
+
+**P6, sort and select: Rust's unstable selection leaks the sign of a zero.** `median` and `percentile` take the k-th
+element from `select_nth_unstable_by`, and its successor as the first minimum of the rest, in whatever order the
+algorithm left them. Equal non-zero floats have identical bits, so only ±0 can differ.
+
+The Rust twin ran 20,000 zero-heavy inputs (elements from −0, +0, −1, 1, 2; lengths 1–24) through `median` and
+8 percentiles. `p6_model.py` recomputes each with selection from a stable sort.
+
+| Result | Differ from stable selection |
+|---|---|
+| `median` | 2,102 of 20,000 |
+| `percentile(0)` | 0 |
+| `percentile(10 / 25 / 33.3 / 50 / 75 / 90 / 100)` | 170 / 1,181 / 1,519 / 2,102 / 1,009 / 149 / 1,161 |
+| all | **9,393 of 180,000**, every one only in the sign of a zero |
+
+By length, the rate rises sharply from 17 elements, where Rust's selection leaves its small-slice path for
+partitioning. It still occurs at every length from 2 (17–169 per length below 17; 677–1,348 from 17 to 24).
+
+To reproduce it, the port would transcribe rustc 1.100's `select_nth_unstable_by` whole: its small-slice and min/max
+paths, pivot choice, partitioning and fallback, about 300 lines of Rust's core library, pinned to that compiler.
+Otherwise it accepts the divergence as ADR 007 row 14, with a documented stable rule. **This is the maintainer's
+decision**; the plan's §4.3 row 14 waits on it.
+

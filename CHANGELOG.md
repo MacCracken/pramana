@@ -70,6 +70,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **Gated result:** 0 failing, 24,162 ok, on all three targets.
   - **Mutation-checked** at the bounds' edges.
 
+- **Probes, part 9a** (port plan M0 step 9; `scripts/probes/`, Rust twins in `scripts/probes/rust/`).
+  - **P1, integers:** 3,736 cases are bit-identical to the oracle: 10⁶ RNG draws from each of five seeds, and a
+    two-word u128 prototype under `factorial`, `permutations` and `combinations` across the u64 range.
+  - **P5, linear algebra:** ganita's Cholesky, solve, eigensolver and least squares, and hisab 3.5's eigensolver,
+    differ from hisab 1.4.0 by up to 40, 18, 14 and 13,619 ulp, and each call leaks. All four will be transcribed.
+  - **P6, sort and select:** Rust's unstable selection leaks the sign of a zero into `median` and `percentile` on
+    9,393 of 180,000 zero-heavy inputs. A decision is open.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

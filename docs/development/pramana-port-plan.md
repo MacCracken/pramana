@@ -19,8 +19,8 @@
 > - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
-> **Steps 4–7** are committed (`53078cb`, `30eb41b`, `bb0f938`, `d7941bc`). **Step 8,** the cross-target baselines, is
-> done but not committed. **Next is step 9:** the probes P1–P9. The maintainer took each recommendation and
+> **Steps 4–8** are committed (`53078cb`, `30eb41b`, `bb0f938`, `d7941bc`, `aec9861`). **Step 9,** the probes, is in
+> progress: part 9a (P1, P5, P6) is done but not committed, and P6 leaves a decision open (§5 step 9). The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -759,7 +759,7 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - the stream comparator (M3, the samplers);
      - the JSON comparator (M1, the first codecs);
      - the mapped-rows reporting (ADR 007's first remap).
-8. ✅ **Baselines. Done 2026-11-15** ([`port-parity.md`](port-parity.md) §5).
+8. ✅ **Baselines. Done 2026-11-15** and committed as `aec9861` ([`port-parity.md`](port-parity.md) §5).
    - **Method:** the harness prints a 64-bit FNV-1a digest per function, folded from every output word in row order
      (pravash's). It runs three ways: `cyrius test` (x86_64 ELF), `--win` (x86_64 PE, under wine) and `--aarch64`
      (under qemu). All three are warning-free.
@@ -784,8 +784,23 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - exp 3 ulps off fails 3,129 rows under K = 2;
      - exp 2 ulps off fails only the 246 rows it pushes to 3 ulps or into NaN/∞;
      - cbrt 1 ulp off fails 809 of 810 rows under K = 0.
-9. **Probes**, each a small program answered with numbers before M1 writes code (`scripts/probes/`, results in
-   `port-parity.md`):
+9. ⏳ **Probes**, each a small program answered with numbers before M1 writes code (`scripts/probes/`, with Rust twins
+   in `scripts/probes/rust/`; results in `port-parity.md` §6). Run in five parts:
+   - **9a ✅ (2026-11-15): P1, P5, P6.**
+     - **P1:** all 3,736 cases are bit-identical to the oracle. These cover 10⁶ RNG draws from each of five seeds,
+       and the `PmnU128` prototype under `factorial`, `permutations` and `combinations` across the u64 range,
+       including Rust's intermediate-overflow errors.
+     - **P5:** transcribe all four hisab routines. ganita and hisab 3.5 differ from 1.4.0 (Cholesky up to 40 ulp,
+       solve 18, eigenvalues 14, least squares 13,619), and every call leaks.
+     - **P6:** Rust's unstable selection leaks the sign of a zero into `median` and `percentile` (9,393 of 180,000
+       zero-heavy results). A decision is open: transcribe rustc 1.100's `select_nth_unstable_by`, or accept the
+       divergence as ADR 007 row 14.
+   - **9b:** P2, P3, P4.
+   - **9c:** P7, P8.
+   - **9d:** P9's prototypes.
+   - **9e:** the CORE-MATH erf/erfc port.
+
+   The probes as planned:
    1. **Integers.** 10⁶ xorshift64 draws and their f64 mapping against Rust (class A); `PmnU128` against Rust's u128
       on `factorial(0..=34)`, `permutations` and `combinations` (D10).
    2. **Dispatch.** Cost per `pdf` call and per draw for a checked trait with generics, for `dyn`, and for a function
@@ -1014,9 +1029,9 @@ the probe numbers. Where an issue is already open, pramana adds itself as a cons
 | L1 | no correctly rounded tier: exp, ln, pow, sin, cos, atan2, expm1, and **log1p, tan, log2 (new asks)** | ganita (open issue 2026-11-09; pramana joins as the fifth consumer, §1.3) | `src/crmath.cyr` |
 | L2 | the Rust f64 surface: `is_nan`, `is_finite`, `copysign`, typed constants, NaN-symmetric min/max; plus, from the step 4 probe, a trunc-based `fract` (`f64_fract` is floor-based), an unsigned `u64 → f64`, and saturating `as usize` | cyrius (open issue 2026-11-11; the three new items filed at step 10) | `src/mathx.cyr` |
 | L3 | sort/select on raw f64 arrays without aborts | cyrius (`vec`) | `src/sort.cyr` |
-| L4 | `cholesky_solve` allocates n words per call; `_into` forms | ganita (**new issue**: the third of the `mat_inv` / `mat_lu_solve` family, §1.3) | `src/linalg.cyr` |
-| L5 | polynomial least squares | hisab | `src/linalg.cyr` (kimiya's transcription) |
-| L6 | `eigen_symmetric` with tol/max_iter and a Rust-compatible order | hisab (its absolute-stop issue is related) | `src/linalg.cyr` |
+| L4 | `cholesky_solve` allocates n words per call (P5: 8n bytes left on the heap), and ganita's Cholesky sums in another order (P5: up to 40 ulp from 1.4.0); `_into` forms | ganita (**new issue**: the third of the `mat_inv` / `mat_lu_solve` family, §1.3) | `src/linalg.cyr` |
+| L5 | polynomial least squares (P5: ganita's Householder fit is up to 13,619 ulp from 1.4.0's Gram–Schmidt, and leaves 1.3–2.3 KB per call) | hisab | `src/linalg.cyr` (kimiya's transcription) |
+| L6 | `eigen_symmetric` with tol/max_iter and a Rust-compatible order (P5: ganita and hisab 3.5 agree with each other, but only 61 of 330 eigenvalues match 1.4.0, up to 14 ulp; 9n²–16n² bytes per call) | hisab (its absolute-stop issue is related) | `src/linalg.cyr` |
 | L7 | `#derive`: a validation hook, `Vec<Vec<f64>>`, `u64` | cyrius (the vector-array issue is open; pramana adds the hook) | `src/json.cyr` |
 | L8 | lgamma, erf/erfc, incomplete gamma/beta in ganita | ganita: a **scope** request, since these are in neither its scope nor its out-of-scope list (§1.3). pramana's T1 functions are the seed, and a second consumer is the cue to extract them | `src/special.cyr` |
 | L9 | a hoosh client library (tool calling) | hoosh | `src/ai.cyr` |

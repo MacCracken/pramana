@@ -41,3 +41,4 @@ supply-chain/.cache/
 
 # The golden-value generator (port plan M0 step 5)
 /scripts/golden/target/
+/scripts/probes/rust/target/

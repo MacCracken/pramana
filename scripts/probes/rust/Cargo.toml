@@ -1,0 +1,19 @@
+# The Rust twins of the M0 step 9 probes (port plan §5 step 9). Each binary prints `case <TAB> type <TAB> bits` for
+# scripts/probes/p0_compare.py, or a report of its own. Run from this directory, so rustup applies
+# rust-toolchain.toml (the recording toolchain, 1.100.0):
+#   cargo run --release --locked --bin <probe>
+[package]
+name = "pramana-probes"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# The frozen oracle by path; Cargo.lock seeded from scripts/golden's, so hisab is 1.4.0.
+[dependencies]
+pramana = { path = "../../../rust-old", default-features = false, features = ["oracle"] }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]
