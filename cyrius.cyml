@@ -1,0 +1,17 @@
+[package]
+name = "pramana"
+version = "0.1.0"
+description = "pramana — Cyrius port (from 10424 lines of Rust)"
+license = "GPL-3.0-only"
+language = "cyrius"
+cyrius = "6.7.18"
+
+[build]
+entry = "src/main.cyr"
+output = "build/pramana"
+
+[deps]
+stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args"]
+
+[test]
+stdlib = ["assert"]

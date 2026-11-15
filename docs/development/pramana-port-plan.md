@@ -14,8 +14,11 @@
 > - §2 lists what is different about pramana.
 > - §3 answers how accurate the Cyrius port can be against Rust. It starts from a measured baseline of Rust 1.3.0 against MPFR.
 >
-> ▶ **Status: every decision is taken (§0.2, 2026-11-15). M0 step 0 is done (the hooks, their tests, the toolchain pin),
-> waiting on the maintainer's commit before step 1.** The maintainer took each recommendation and
+> ▶ **Status: every decision is taken (§0.2, 2026-11-15). M0 steps 0 and 1 are done:**
+> - step 0, the Rust hooks, is committed as `94a7153`;
+> - step 1, the `cyrius port` scaffold, is not committed yet.
+>
+> **Next is step 2:** repairing what the scaffold overwrote. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -463,7 +466,7 @@ This is the seed list, finalized at M0 step 2. Each row says how the harness sti
 
 Shared mechanics are as pravash's §4; the pramana specifics follow.
 
-0. **Freeze and hook the Rust crate.** Steps 0.1–0.3 were done 2026-11-15. Step 0.4, the commit, is the maintainer's.
+0. ✅ **Freeze and hook the Rust crate. Done 2026-11-15** and committed as `94a7153`.
    1. ✅ **The P(-1) gates, re-run on rustc 1.100.0 with the hooks in.** All green:
       - fmt;
       - clippy `-D warnings` with all features, the defaults, and each of `soorat-compat`, `logging`, `ai` and `oracle` alone;
@@ -506,15 +509,31 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
       step 1. The CI coverage job now adds `llvm-tools-preview` to the pinned toolchain, and the MSRV comment no longer
       says `stable`. `Cargo.lock` is already tracked; it moves to `rust-old/Cargo.lock`. Every TSV header will record
       **glibc 2.44** and **rustc 1.100.0**, and `--check` will refuse a corpus from either another glibc or another rustc.
-   4. ⏳ **Commit (the maintainer's).** This commit is the freeze point: step 1's scaffold moves the crate into
+   4. ✅ **Committed as `94a7153` ("m0 0 done").** This commit is the freeze point: step 1's scaffold moves the crate into
       `rust-old/`, and from then on `src/` there never changes.
-1. **Scaffold.** `cargo clean`, then `cyrius port --dry-run .`, then `cyrius port .`. The clobber issue
-   (`cyrius/docs/development/issues/2026-11-08-cyrius-port-clobbers-project-docs-and-omits-bench.md`) is still open.
-   Expect it to:
-   - overwrite CLAUDE.md, the roadmap, `state.md` and the workflows;
-   - write version 0.1.0;
-   - leave `bench` out of `[test] stdlib`;
-   - write stubs that fail `cyrius audit`.
+1. ✅ **Scaffold. Done 2026-11-15** on the freeze commit `94a7153`.
+   - **Order:** `cargo clean` first, which removed 7.3 GiB of `target/` that would otherwise have moved, then
+     `cyrius port --dry-run`, then `cyrius port`.
+   - **The dry run under-reported, as the clobber issue says**
+     (`cyrius/docs/development/issues/2026-11-08-cyrius-port-clobbers-project-docs-and-omits-bench.md`, still open on
+     6.7.18). It named no overwritten file.
+   - **What the scaffold did:**
+     - **Moved to `rust-old/`:** `Cargo.toml`, `Cargo.lock`, `src/` (with the `oracle` modules), `tests/`, `benches/`,
+       `examples/`, `Makefile`, `deny.toml`, `codecov.yml`, `rust-toolchain.toml`, `bench-history.csv`, `benchmarks.md`.
+       It also wrote `rust-old/LINES_OF_SOURCE.txt`: 10,424 lines.
+     - **Overwrote with templates:** CLAUDE.md, `docs/development/roadmap.md`, `.github/workflows/ci.yml` and `release.yml`.
+     - **Created:** `src/main.cyr`, `cyrius.cyml`, `cyrius.lock` and `lib/` (26 stdlib files vendored), `.gitattributes`,
+       `tests/pramana.{tcyr,bcyr,fcyr}`, `docs/development/state.md`, `docs/adr/`, `docs/architecture/README.md`,
+       `docs/examples/`, `docs/guides/getting-started.md`.
+     - **Appended to `.gitignore`:** `/rust-old/target/`, `/rust-old/**/__pycache__/` and `/build/`. Its message
+       said `/rust-old/`, but `rust-old/` stays tracked, as wanted. `Cargo.lock` was never ignored, so
+       `rust-old/Cargo.lock` stays tracked.
+   - **The frozen crate still passes in `rust-old/`** on its pinned 1.100.0: 330 tests with `--all-features` (the 11
+     oracle tests among them), and clippy `-D warnings` is clean.
+   - **The skeleton:** `cyrius build` and `cyrius test` (2 assertions) pass. `cyrius bench` fails to compile, because
+     the manifest has `[test] stdlib = ["assert"]`. The manifest also says `version = "0.1.0"`. Both are the issue's
+     items 2 and 3, and step 2 repairs them.
+   - **⚠ Don't commit until step 2 has restored CLAUDE.md, the roadmap and the workflows.**
 2. **Repair** (pravash's checklist):
    - **CLAUDE.md:** merge it, keeping the identity, the process and the DO NOT list (including "NEVER use `gh`").
      Translate the principles against §1.2:

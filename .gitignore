@@ -33,3 +33,8 @@ supply-chain/.cache/
 # Environment / secrets
 .env
 .env.*
+
+# Cyrius port
+/rust-old/target/
+/rust-old/**/__pycache__/
+/build/

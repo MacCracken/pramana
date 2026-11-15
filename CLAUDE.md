@@ -1,76 +1,69 @@
-# Pramana -- Claude Code Instructions
+# pramana — Claude Code Instructions
+
+> **Core rule**: this file is **preferences, process, and procedures** —
+> durable rules that change rarely. Volatile state (current version,
+> module line counts, port progress, test counts, consumers) lives in
+> [`docs/development/state.md`](docs/development/state.md).
+> Do not inline state here.
 
 ## Project Identity
 
-**Pramana** (Sanskrit: proof/measure/evidence) -- Statistics and probability library for AGNOS
+**pramana** — Cyrius port of a Rust project (10424 lines preserved at `rust-old/`).
 
-- **Type**: Flat library crate
-- **License**: GPL-3.0
-- **MSRV**: 1.100
-- **Version**: SemVer 1.3.0
+- **Type**: Port (Rust → Cyrius)
+- **License**: GPL-3.0-only
+- **Language**: Cyrius (toolchain pinned in `cyrius.cyml [package].cyrius`)
+- **Version**: `VERSION` at the project root is the source of truth — do not inline the number here
+- **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md) · [First-Party Documentation](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-documentation.md)
 
-## Consumers
+## Goal
 
-AGNOS components that need statistical analysis, probability distributions, hypothesis testing, Monte Carlo simulation, or Markov chain modeling.
+_TODO: one-or-two-sentence mission statement. What does pramana OWN in the stack? Durable — doesn't change per release._
 
-## Development Process
+## Current State
 
-### P(-1): Scaffold Hardening (before any new features)
+> Volatile state lives in [`docs/development/state.md`](docs/development/state.md) —
+> port progress, surface parity, in-flight work. Refreshed every release.
 
-0. Read roadmap, CHANGELOG, and open issues
-1. Test + benchmark sweep of existing code
-2. Cleanliness check: `cargo fmt --check`, `cargo clippy --all-features --all-targets -- -D warnings`, `cargo audit`, `cargo deny check`, `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps`
-3. Get baseline benchmarks (`./scripts/bench-history.sh`)
-4. Internal deep review
-5. External research
-6. Cleanliness check
-7. Additional tests/benchmarks from findings
-8. Post-review benchmarks
-9. Repeat if heavy
+This file (`CLAUDE.md`) is durable rules.
 
-### Work Loop (continuous)
+## Scaffolding
 
-1. Work phase
-2. Cleanliness check
-3. Test + benchmark additions for new code
-4. Run benchmarks (`./scripts/bench-history.sh`)
-5. Internal review
-6. Cleanliness check
-7. Deeper tests/benchmarks from review observations
-8. Run benchmarks again
-9. If review heavy -> return to step 5
-10. Documentation -- update CHANGELOG, roadmap, docs
-11. Version check -- VERSION, Cargo.toml, recipe all in sync
-12. Return to step 1
+Project was scaffolded with `cyrius port`. Original Rust at `rust-old/` is the reference oracle — do not modify it; cross-check the port against it.
 
-### Key Principles
+## Quick Start
 
-- Never skip benchmarks
-- `#[non_exhaustive]` on ALL public enums
-- `#[must_use]` on all pure functions
-- Every type must be Serialize + Deserialize (serde)
-- Zero unwrap/panic in library code
-- All types must have serde roundtrip tests
-
-## DO NOT
-
-- **Do not commit or push** -- the user handles all git operations
-- **NEVER use `gh` CLI** -- use `curl` to GitHub API only
-- Do not add unnecessary dependencies
-- Do not break backward compatibility without a major version bump
-- Do not skip benchmarks before claiming performance improvements
-
-## Documentation Structure
-
-```
-Root files (required):
-  README.md, CHANGELOG.md, CLAUDE.md, CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md, LICENSE
-
-docs/ (required):
-  architecture/overview.md
-  development/roadmap.md
+```sh
+cyrius deps                              # resolve dependencies
+cyrius build src/main.cyr build/pramana    # compile
+cyrius test                              # run tests/*.tcyr
 ```
 
-## CHANGELOG Format
+## Key Principles
 
-Follow [Keep a Changelog](https://keepachangelog.com/). Performance claims MUST include benchmark numbers.
+- **Cross-check against `rust-old/`** — the port's correctness bar is "matches what Rust did". Diverge only with an ADR.
+- **Correctness over cleverness** — if the Cyrius behavior diverges silently from Rust, the bugs win
+- Test after every change, not after the feature is "done"
+- ONE change at a time — never bundle unrelated changes
+- Build with `cyrius build`, not raw `cat file | cc5` — the manifest auto-resolves deps
+- Source files only need project includes — stdlib auto-resolves from `cyrius.cyml`
+- `var buf[N]` = N **bytes**, not N entries
+
+## Rules (Hard Constraints)
+
+- **Do not commit or push** — the user handles all git operations
+- **Never use `gh` CLI** — use `curl` to the GitHub API if needed
+- Do not modify `rust-old/` — it's the parity oracle
+- Do not skip tests before claiming changes work
+- Do not modify `lib/` files (vendored stdlib / dep symlinks)
+- Do not hardcode toolchain versions in CI YAML — `cyrius = "X.Y.Z"` in `cyrius.cyml` is the source of truth
+
+## Documentation
+
+- [`docs/adr/`](docs/adr/) — Architecture Decision Records (*why X over Y?*)
+- [`docs/architecture/`](docs/architecture/) — Non-obvious constraints
+- [`docs/guides/`](docs/guides/) — Task-oriented how-tos
+- [`docs/examples/`](docs/examples/) — Runnable examples
+- [`docs/development/state.md`](docs/development/state.md) — Live state
+- [`docs/development/roadmap.md`](docs/development/roadmap.md) — Milestones through v1.0
+
