@@ -381,3 +381,67 @@ Every corrected row is measured until M1 dispatches the correctly rounded functi
 - `floor` dispatched to `f64_ceil`: 613 FAILED;
 - a correction row that matches no golden row: the module fails with "a correction matches no golden row".
 
+## 5. Cross-target baselines and the class-C bounds (M0 step 8, 2026-11-15)
+
+**Method.** The same replay runs three ways:
+- `cyrius test tests/parity.tcyr` (x86_64 Linux ELF);
+- with `--win` (x86_64 PE, under wine);
+- with `--aarch64` (aarch64 Linux, under qemu).
+
+Each run is warning-free. Beside the histograms, the harness prints a **digest** per function (pravash's): a 64-bit
+FNV-1a fold of every output word the port returns, in row order. Equal digests mean bit-identical results on every
+row, which histograms alone can't show.
+
+**Result: every dispatched function gives the same bits on all three targets.**
+
+| Digest | x86_64 ELF | x86_64 PE | aarch64 |
+|---|---|---|---|
+| `const` | `0x3b0f41cb2166df8d` | same | same |
+| `f64::exp (_f64_exp_polyfill)` | `0x32a64c8e05b9e1fc` | same | same |
+| `f64::ln (_f64_ln_polyfill)` | `0x907874d5c725c32d` | same | same |
+| `f64::ln_1p (_gn_log1p)` | `0xd4b8213088231be3` | same | same |
+| `f64::exp_m1 (_gn_expm1)` | `0x4c3f65a2313500af` | same | same |
+| `f64::powf (ganita_f64_pow)` | `0xec08705faae6b14e` | same | same |
+| `f64::sin (f64_sin)` | `0xf6944bfca1fa873a` | same | same |
+| `f64::cos (f64_cos)` | `0x4376d8853d781d23` | same | same |
+| `f64::tan (ganita_f64_tan)` | `0x8283e403faee3d66` | same | same |
+| `f64::atan (_f64_atan_polyfill)` | `0x1e6b9857f97bd6c0` | same | same |
+| `f64::log2 (_f64_log2_polyfill)` | `0xd39f611333e1ba8f` | same | same |
+| `f64::cbrt (ganita_f64_cbrt)` | `0x96d8cfa0746d7e84` | same | same |
+| `class A/B math rows` | `0x3072bceffdb8a1fa` | same | same |
+| `shadow: f64_exp (native)` | `0xe1c91bbeb7773532` | same | `0x32a64c8e05b9e1fc` |
+| `shadow: f64_ln (native)` | `0x695843fe8604429` | same | `0x907874d5c725c32d` |
+| `shadow: f64_atan (native)` | `0x3858beef12ee1f82` | same | `0x1e6b9857f97bd6c0` |
+| `shadow: f64_log2 (native)` | `0x53e07328846fc92c` | same | `0xd39f611333e1ba8f` |
+
+**The native builtins differ on aarch64, by design.** On x86_64, `f64_exp`, `f64_ln`, `f64_atan` and `f64_log2` are
+x87 code. On aarch64 they are the polyfills, so there each shadow's digest equals the dispatched polyfill form's
+x86_64 digest. That cross-match independently confirms the choice: the polyfills are the cross-target forms. PE
+matches ELF in every line, shadows included, as wine runs the same x87 code. The per-function histograms are
+identical on all three targets, except the four native shadows'.
+
+**The class-C bounds** (`_par_c_bound` in `tests/parity.tcyr`), set before each function's first gated comparison:
+
+| Function | K (ulp) | Why | Measured max (all 3 targets) |
+|---|---|---|---|
+| exp, ln, ln_1p, exp_m1, sin, cos, tan, atan, log2 | **2** | the siblings' rule for primitives: glibc and each Cyrius counterpart are within about 1 ulp of the correctly rounded value, so two implementations can differ by 2 | 1 |
+| cbrt | **0** | Rust's (compiler_builtins) and ganita's are both correctly rounded | 0 |
+| powf | — (measured until M1) | today's counterpart, ganita's, is within 1 ulp on 4,399 of 4,400 rows. The other row is ganita's open `pow(−1, \|y\| > 2^64)` defect: +∞ against Rust's 1. M1's correctly rounded pow replaces it, and no ADR accepts a counterpart that is being replaced | 1, plus that row |
+
+These are the interim bounds. When M1 dispatches the correctly rounded functions, every bound becomes **0** (ADR 009).
+Until then, a corrected row (`math.cr.tsv`) passes as "accepted (ADR 9)" when the counterpart is within 2 ulp of the
+correctly rounded value. That is a weaker statement than M1's.
+
+**Gated result, identical on all three targets:** 2 modules, 0 failing; 24,162 ok, 0 failed, 4,400 measured (powf),
+7,077 pending, and 70 accepted (ADR 9). The other 6 corrected rows are powf's, measured.
+
+**Mutation checks at the bounds' edges** (ELF; each fails, exit 1):
+- exp's bound set from 2 to 0: its 264 one-ulp rows fail;
+- exp moved 3 ulps under K = 2: 3,129 rows fail;
+- exp moved 2 ulps under K = 2: only the 246 rows it pushes to 3 ulps or into NaN/∞ fail, so exactly 2 passes and
+  3 fails;
+- cbrt moved 1 ulp under K = 0: 809 of 810 rows fail.
+
+The first attempt at these "ulp" mutations wrote `r + 3` on a typed `f64`, which is float arithmetic, not a bit step.
+They were redone with an untyped word helper: the left-operand typing trap the plan warns about (§8.1).
+

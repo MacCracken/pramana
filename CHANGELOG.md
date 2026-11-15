@@ -61,6 +61,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     under `--bounds`.
   - **Mutation-checked** four ways. It runs in `cyrius test` and `cyrius audit`.
 
+- **Cross-target baselines** (port plan M0 step 8). The parity harness prints a digest per function.
+  - **Identical on all three targets:** every dispatched function gives identical bits on x86_64 ELF, x86_64 PE
+    (wine) and aarch64 (qemu). The native x87 builtins differ on aarch64, where they equal the polyfills, which
+    confirms the polyfill choice.
+  - **The bounds:** class-C bounds are set at K = 2 for the interim primitives and 0 for `cbrt`; `powf` stays
+    measured, because of ganita's open `pow(−1, huge)` defect.
+  - **Gated result:** 0 failing, 24,162 ok, on all three targets.
+  - **Mutation-checked** at the bounds' edges.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

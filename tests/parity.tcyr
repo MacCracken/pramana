@@ -25,6 +25,60 @@ alloc_init();
 include "tests/parity_core.cyr"
 include "tests/constants_rows.cyr"
 
+# ── cross-target digests (M0 step 8) ────────────────────────────────────────────────
+# A 64-bit FNV-1a fold of every output word the port returns for a function, in row order (pravash's). Run on x86_64
+# ELF, x86_64 PE and aarch64: equal digests mean bit-identical results on every row, which ADR 007 row 11 promises and
+# histograms alone can't show. Slots 0–10 are the dispatched class-C functions, 11 the class-A/B math rows together,
+# 12 the constants, 13–16 the native-builtin shadows (which differ on aarch64 by design: there the builtins are the
+# polyfills).
+var _PAR_DG_N = 17;
+var _par_dg[136];
+
+fn _par_dg_init() {
+    for (var k = 0; k < _PAR_DG_N; k = k + 1) { store64(&_par_dg + k * 8, 0xcbf29ce484222325); }
+    return 0;
+}
+
+# The digest slot of a math function's dispatched outputs.
+#must_use
+fn _par_dg_slot(fp, fl): i64 {
+    if (_par_eq(fp, fl, "f64::exp") == 1) { return 0; }
+    if (_par_eq(fp, fl, "f64::ln") == 1) { return 1; }
+    if (_par_eq(fp, fl, "f64::ln_1p") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { return 3; }
+    if (_par_eq(fp, fl, "f64::powf") == 1) { return 4; }
+    if (_par_eq(fp, fl, "f64::sin") == 1) { return 5; }
+    if (_par_eq(fp, fl, "f64::cos") == 1) { return 6; }
+    if (_par_eq(fp, fl, "f64::tan") == 1) { return 7; }
+    if (_par_eq(fp, fl, "f64::atan") == 1) { return 8; }
+    if (_par_eq(fp, fl, "f64::log2") == 1) { return 9; }
+    if (_par_eq(fp, fl, "f64::cbrt") == 1) { return 10; }
+    return 11;
+}
+
+# Folds the got list into digest `slot`.
+fn _par_dg_fold(slot) {
+    var at = &_par_dg + slot * 8;
+    var h = load64(at);
+    for (var k = 0; k < _par_got_n; k = k + 1) {
+        h = (h ^ load64(_par_got_v + k * 8)) * 0x100000001b3;
+    }
+    store64(at, h);
+    return 0;
+}
+
+# Prints digest `slot` under `name`.
+fn _par_dg_print(slot, name) {
+    print("  digest ", 9);
+    _par_print_pad(name, strlen(name), 40);
+    print(" 0x", 3);
+    fmt_hex(load64(&_par_dg + slot * 8));
+    println("");
+    return 0;
+}
+
+_par_dg_init();
+
 # ── hooks ───────────────────────────────────────────────────────────────────────────
 
 # The Rust variant name of an error code. src/error.cyr (M1) brings the real table; until then no dispatcher returns
@@ -92,64 +146,87 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     return 0;
 }
 
-# Shadow comparisons, never gated: the same golden rows through another Cyrius candidate.
+# Shadow comparisons, never gated: the same golden rows through another Cyrius candidate. Each row's own outputs are
+# folded into its digest first (a pending row has none), before a shadow replaces them.
 # - the native exp, ln, atan and log2 builtins: x87 on x86_64, so their bits differ between targets, and the polyfill
-#   forms are dispatched instead;
+#   forms are dispatched instead (digests 13–16);
 # - the stdlib min / max, to show where their NaN semantics differ from Rust's.
+fn _par_shadow_f(name, cls, r: f64) {
+    _par_got_n = 0;
+    _par_got_f(r);
+    _par_shadow_record(name, cls);
+    return 0;
+}
+
 fn _par_shadows(mp, ml, fp, fl, cls) {
+    if (_par_eq(mp, ml, "constants") == 1) {
+        if (_par_got_n > 0) { _par_dg_fold(12); }
+        return 0;
+    }
     if (_par_eq(mp, ml, "math") != 1) { return 0; }
+    if (_par_got_n > 0) { _par_dg_fold(_par_dg_slot(fp, fl)); }
     var x: f64 = _par_in(0);
     if (_par_eq(fp, fl, "f64::exp") == 1) {
-        _par_got_n = 0;
         var r: f64 = f64_exp(x);
-        _par_got_f(r);
-        _par_shadow_record("f64::exp ~ f64_exp (native)", cls);
+        _par_shadow_f("f64::exp ~ f64_exp (native)", cls, r);
+        _par_dg_fold(13);
         return 0;
     }
     if (_par_eq(fp, fl, "f64::ln") == 1) {
-        _par_got_n = 0;
         var r: f64 = f64_ln(x);
-        _par_got_f(r);
-        _par_shadow_record("f64::ln ~ f64_ln (native)", cls);
+        _par_shadow_f("f64::ln ~ f64_ln (native)", cls, r);
+        _par_dg_fold(14);
         return 0;
     }
     if (_par_eq(fp, fl, "f64::atan") == 1) {
-        _par_got_n = 0;
         var r: f64 = f64_atan(x);
-        _par_got_f(r);
-        _par_shadow_record("f64::atan ~ f64_atan (native)", cls);
+        _par_shadow_f("f64::atan ~ f64_atan (native)", cls, r);
+        _par_dg_fold(15);
         return 0;
     }
     if (_par_eq(fp, fl, "f64::log2") == 1) {
-        _par_got_n = 0;
         var r: f64 = f64_log2(x);
-        _par_got_f(r);
-        _par_shadow_record("f64::log2 ~ f64_log2 (native)", cls);
+        _par_shadow_f("f64::log2 ~ f64_log2 (native)", cls, r);
+        _par_dg_fold(16);
         return 0;
     }
     if (_par_in_n < 2) { return 0; }
     var y: f64 = _par_in(1);
     if (_par_eq(fp, fl, "f64::max") == 1) {
-        _par_got_n = 0;
         var r: f64 = f64_max(x, y);
-        _par_got_f(r);
-        _par_shadow_record("f64::max ~ f64_max", cls);
+        _par_shadow_f("f64::max ~ f64_max", cls, r);
         return 0;
     }
     if (_par_eq(fp, fl, "f64::min") == 1) {
-        _par_got_n = 0;
         var r: f64 = f64_min(x, y);
-        _par_got_f(r);
-        _par_shadow_record("f64::min ~ f64_min", cls);
+        _par_shadow_f("f64::min ~ f64_min", cls, r);
         return 0;
     }
     return 0;
 }
 
-# The class-C bound for a function, in ulps; -1 while none is set (the rows are measured). A correctly rounded
-# function's bound is 0 (ADR 009), set when M1 dispatches it; never raised to make a row pass.
+# The class-C bound for a function, in ulps; -1 while none is set (the rows are measured). Set in M0 step 8
+# (port-parity §5), before each function's first gated comparison, and never raised to make a row pass:
+# - 2 for the interim counterparts of the primitives: glibc and each counterpart are within about 1 ulp of the
+#   correctly rounded value, so two implementations can differ by 2 (the siblings' rule for primitives). On a row
+#   with a correction (math.cr.tsv) the reference is the correctly rounded value, so a pass there means within 2 ulp
+#   of it: "accepted (ADR 9)" is that weaker statement until M1;
+# - 0 for cbrt: Rust's (compiler_builtins) and ganita's are both correctly rounded;
+# - powf stays measured: ganita's open pow(−1, |y| > 2^64) defect gives +inf against Rust's 1, and no ADR accepts a
+#   counterpart that M1 replaces.
+# M1 dispatches the correctly rounded functions, and every bound becomes 0 (ADR 009).
 #must_use
 fn _par_c_bound(fp, fl): i64 {
+    if (_par_eq(fp, fl, "f64::cbrt") == 1) { return 0; }
+    if (_par_eq(fp, fl, "f64::exp") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::ln") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::ln_1p") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::sin") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::cos") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::tan") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::atan") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::log2") == 1) { return 2; }
     return 0 - 1;
 }
 
@@ -166,8 +243,26 @@ fn _par_accepted_quiet(adr): i64 {
     return 0;
 }
 
-# Module-specific summary lines after a module's report. None yet (step 8 adds the cross-target digests).
+# Module-specific summary lines after a module's report: the cross-target digests (M0 step 8).
 fn _par_module_done(mp, ml) {
+    if (_par_eq(mp, ml, "constants") == 1) { _par_dg_print(12, "const"); }
+    if (_par_eq(mp, ml, "math") != 1) { return 0; }
+    _par_dg_print(0, "f64::exp (_f64_exp_polyfill)");
+    _par_dg_print(1, "f64::ln (_f64_ln_polyfill)");
+    _par_dg_print(2, "f64::ln_1p (_gn_log1p)");
+    _par_dg_print(3, "f64::exp_m1 (_gn_expm1)");
+    _par_dg_print(4, "f64::powf (ganita_f64_pow)");
+    _par_dg_print(5, "f64::sin (f64_sin)");
+    _par_dg_print(6, "f64::cos (f64_cos)");
+    _par_dg_print(7, "f64::tan (ganita_f64_tan)");
+    _par_dg_print(8, "f64::atan (_f64_atan_polyfill)");
+    _par_dg_print(9, "f64::log2 (_f64_log2_polyfill)");
+    _par_dg_print(10, "f64::cbrt (ganita_f64_cbrt)");
+    _par_dg_print(11, "class A/B math rows");
+    _par_dg_print(13, "shadow: f64_exp (native)");
+    _par_dg_print(14, "shadow: f64_ln (native)");
+    _par_dg_print(15, "shadow: f64_atan (native)");
+    _par_dg_print(16, "shadow: f64_log2 (native)");
     return 0;
 }
 

@@ -19,8 +19,8 @@
 > - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
-> **Steps 4, 5 and 6** are committed (`53078cb`, `30eb41b`, `bb0f938`). **Step 7,** the parity harness, is done but
-> not committed. **Next is step 8:** the cross-target baselines. The maintainer took each recommendation and
+> **Steps 4–7** are committed (`53078cb`, `30eb41b`, `bb0f938`, `d7941bc`). **Step 8,** the cross-target baselines, is
+> done but not committed. **Next is step 9:** the probes P1–P9. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -729,7 +729,7 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - `probe_tables.py` compiles the file warning-free, and all 112 read back exact.
    - **Tamper checks:** one digit changed in `src/constants.cyr` fails `probe_tables.py` and `--check`; an edited
      `constants.tsv` value fails `validate.py`.
-7. ✅ **Parity harness. Done 2026-11-15** ([`port-parity.md`](port-parity.md) §4).
+7. ✅ **Parity harness. Done 2026-11-15** and committed as `d7941bc` ([`port-parity.md`](port-parity.md) §4).
    - **The files:**
      - `tests/ulp.cyr` is pravash's, unchanged.
      - `tests/parity_core.cyr` is pravash's final version (2.0.1), which already handles correctly rounded rows. It is
@@ -759,8 +759,31 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - the stream comparator (M3, the samplers);
      - the JSON comparator (M1, the first codecs);
      - the mapped-rows reporting (ADR 007's first remap).
-8. **Baselines.** Sweep the math through every Cyrius counterpart on x86_64 ELF, PE (wine) and aarch64 (qemu), and set
-   K by the port-parity rule.
+8. ✅ **Baselines. Done 2026-11-15** ([`port-parity.md`](port-parity.md) §5).
+   - **Method:** the harness prints a 64-bit FNV-1a digest per function, folded from every output word in row order
+     (pravash's). It runs three ways: `cyrius test` (x86_64 ELF), `--win` (x86_64 PE, under wine) and `--aarch64`
+     (under qemu). All three are warning-free.
+   - **Identical on all three targets for every dispatched function:** the 11 transcendental counterparts, all class
+     A/B math rows, and the constants.
+   - **The native builtins differ on aarch64, as designed:** `f64_exp`, `f64_ln`, `f64_atan` and `f64_log2` are x87
+     on x86_64. On aarch64 each one's digest equals the dispatched polyfill's x86_64 digest, which independently
+     confirms the polyfills are the cross-target forms.
+   - **The bounds** (`_par_c_bound`), set before each function's first gated comparison:
+     - **K = 2** for the interim counterparts of exp, ln, ln_1p, exp_m1, sin, cos, tan, atan and log2 (the siblings'
+       rule for primitives; measured max 1 on all three targets);
+     - **K = 0** for cbrt, since both sides are correctly rounded (measured max 0);
+     - **powf stays measured:** ganita's open `pow(−1, huge)` defect gives +∞ where Rust gives 1, and M1 replaces
+       ganita's pow.
+
+     At M1 the correctly rounded functions arrive, and every bound becomes 0 (ADR 009).
+   - **Gated result, identical on all three:** 0 failing; 24,162 ok, 4,400 measured (powf), 7,077 pending, and
+     70 corrected rows accepted (ADR 9). Until M1, "accepted (ADR 9)" means within K = 2 of the correctly rounded
+     value.
+   - **Mutation-checked at the edges:**
+     - exp's bound set to 0 fails its 264 one-ulp rows;
+     - exp 3 ulps off fails 3,129 rows under K = 2;
+     - exp 2 ulps off fails only the 246 rows it pushes to 3 ulps or into NaN/∞;
+     - cbrt 1 ulp off fails 809 of 810 rows under K = 0.
 9. **Probes**, each a small program answered with numbers before M1 writes code (`scripts/probes/`, results in
    `port-parity.md`):
    1. **Integers.** 10⁶ xorshift64 draws and their f64 mapping against Rust (class A); `PmnU128` against Rust's u128
