@@ -18,8 +18,8 @@
 > - step 0, the Rust hooks, is committed as `94a7153`;
 > - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
-> **Step 2,** the repairs, is committed as `40a8269`. **Step 3,** the full `cyrius.cyml`, is done but not committed.
-> **Next is step 4:** the toolchain and math check. The maintainer took each recommendation and
+> **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
+> **Step 4,** the toolchain and math check, is done but not committed. **Next is step 5:** the golden-value generator. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -583,7 +583,7 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - The README has a port banner, and its build section points at `rust-old/`. Its full rewrite is M8's.
    - **Gates, all green:** `cyrius build`, `test` (warning-free), `test --bounds`, `bench`, `fuzz`, `lint`,
      `fmt --check`, `vet`, `deps --locked`, `audit`.
-3. ✅ **`cyrius.cyml`. Done 2026-11-15** (on `40a8269`). It is written as planned below.
+3. ✅ **`cyrius.cyml`. Done 2026-11-15** and committed as `0e147d3`. It is written as planned below.
    - **Keys:** confirmed against `cyrius help manifest`. `entry`, `output`, `description` and `repository` are kept,
      and every stdlib leaf has a comment saying why it is there. There is no hisab (§8.2), and no `[lib]` until M1,
      because `modules = []` is invalid.
@@ -618,13 +618,34 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
    Module order: error → constants → crmath_data → crmath → mathx → json → rng → combinatorics → bridge → special →
    linalg → sort → dist → dist_cont → dist_gamma → dist_disc → dist_mvn → descriptive → kde → pca → hypothesis →
    regression → timeseries → bayesian → markov → monte_carlo → soorat (→ ai, per D8).
-4. **Toolchain and math check** (`scripts/probes/p0_semantics.{cyr,rs}`). Compare the bits of every operation in §8.1:
-   - `powi` in LLVM's square-and-multiply order (17 sites);
-   - the u64 xorshift and `(x >> 11) as f64 / 2⁵³`;
-   - `f64::MIN_POSITIVE`, `EPSILON`, ±∞ and NaN as typed globals;
-   - the three `as usize` sites, saturating as Rust does;
-   - `f64_min` / `f64_max` NaN behaviour, at all 30 min/max and 10 clamp sites;
-   - `cbrt` (Rust's comes from compiler_builtins).
+4. ✅ **Toolchain and math check. Done 2026-11-15** ([`port-parity.md`](port-parity.md) §1).
+   - **The probe:** `scripts/probes/p0_semantics.cyr` against its Rust twin `p0_semantics.rs`, built in release mode
+     on 1.100.0 against glibc 2.44, with `p0_compare.py` joining the two.
+   - **Coverage:** 125 cases in 155 rows, warning-free:
+     - 136 rows give the same bits, and 4 are identical NaNs;
+     - the 15 that differ are all variants the port won't use, or L1 transcendentals.
+   - **Exact as they are:**
+     - floor, ceil, trunc, sqrt and abs (including −0);
+     - sin and cos; atan, log2 and ln (builtin and polyfill); cbrt; the exp builtin;
+     - `powi` at all six exponents (2, 3, 4, 9, 25, 49) in LLVM's square-and-multiply order;
+     - `SimpleRng`'s xorshift64 through 1,000 steps for four seeds (`>>` is logical);
+     - the `total_cmp` keys and the fdlibm word operations;
+     - the typed constants;
+     - **every exponent literal written positionally**, up to 326 characters (`MIN_POSITIVE`), each correctly
+       rounded by the lexer. Lines over 120 characters fail `cyrius lint`, though, so step 6 writes those constants
+       as typed globals holding their bits;
+     - IEEE comparisons.
+   - **Needs a helper (ledger L2):**
+     - `f64_min` / `f64_max` return NaN for a NaN second operand;
+     - **`f64_fract` is floor-based** (`f64_fract(−2.75) = 0.25`, Rust gives −0.75), so the port uses `x − f64_trunc(x)`;
+     - **`f64_from` reads a u64 ≥ 2⁶³ as negative** (Binomial's `n`), so the port uses `_pmn_u64_to_f64` (sticky halving);
+     - `f64_to` doesn't saturate like `as usize`.
+
+     Each helper was probed: same bits on every case.
+   - **A rule:** on rustc 1.100, an f64 sum starts at **−0.0** (`sum([]) = −0.0`), so every port sum starts there.
+   - **Transcendentals:** 5 of 47 rows are 1 ulp apart. MPFR shows glibc misrounds three of them (exp at 239.014,
+     expm1 at 0.9204, tan at 1.4939) and the stdlib/ganita two (the exp polyfill at 1, ganita's pow at (2, 0.5)).
+     Neither side is correctly rounded, which confirms D2: everything goes through the correctly rounded functions.
 5. **Golden-value generator** (`scripts/golden/`, from pravash's crate). TSV format 1 with f64 values as bit patterns,
    deterministic output, `--check`, and the header from step 0.3. Two runs must give the same bytes.
    - **`validate.py`** transcribes `math.rs`, the samplers and the quantiles in Python: glibc through ctypes, MPFR
@@ -767,12 +788,16 @@ These are every std f64 method in `src/` outside tests, as of 1.3.0.
 | Rust (calls) | Cyrius | Parity |
 |---|---|---|
 | `sqrt` (25), `abs` (38), `floor` (4) | builtins | exact on every target |
-| `max` (21), `min` (9), `clamp` (10) | `_pmn_max` / `_pmn_min` / `_pmn_clamp` with Rust's NaN-ignoring semantics | exact |
+| `max` (21), `min` (9), `clamp` (10) | `_pmn_max` / `_pmn_min` / `_pmn_clamp` with Rust's NaN-ignoring semantics (`f64_min` / `f64_max` return NaN for a NaN second operand, port-parity §1) | exact |
+| `fract` (2: the Poisson and Binomial pdfs' integer test) | `x − f64_trunc(x)`. **Never `f64_fract`**, which is floor-based (`f64_fract(−2.75) = 0.25`) | exact (probed) |
+| `u64 as f64` (Binomial's `n`, `trials`, `successes`) | `_pmn_u64_to_f64`: `f64_from` reads a word ≥ 2⁶³ as negative, so halve with a sticky bit, convert and double | exact (probed at 2⁶³, 2⁶³ + 2¹¹ + 1, u64::MAX) |
+| `f64 as usize` (3: `percentile`'s rank, the iteration budget, the histogram bin) | `_pmn_sat_usize`: NaN and negatives → 0, ≥ 2⁶⁴ → u64::MAX | exact (probed) |
+| `iter().sum::<f64>()` | a loop that **starts at −0.0**, as rustc 1.100's `Sum for f64` does (`sum([]) = −0.0`) | A on the sign of zero (probed) |
 | `is_finite` (39), `is_nan` (23) | `x - x == 0`, `x != x` on typed locals | exact |
 | `exp` (32), `ln` (53), `powf` (7), `sin` (2), `cos` (3) | kimiya's correctly rounded primitives (D2, L1) | C, 0 ulp against `*.cr.tsv` |
 | `ln_1p` (11), `exp_m1` (2), `tan` (1), `atan` (1), `log2` (1) | correctly rounded: expm1 from kimiya; log1p, tan and log2 new; atan as atan2(x, 1) | C, 0 ulp |
 | `cbrt` (1, Wilson–Hilferty) | `ganita_f64_cbrt`, exact like Rust's compiler_builtins | C, expected 0 (probe 4) |
-| `powi` (17) | explicit products in LLVM's square-and-multiply order | B |
+| `powi` (17: exponents 2, 3, 4, 9, 25, 49) | explicit products in LLVM's square-and-multiply order: the result accumulates the set bits low to high, e.g. x²⁵ = (x · x⁸) · x¹⁶ | exact (probed) |
 | `total_cmp` (3), `partial_cmp` (2) | integer compare on the sign-folded bits; `f64_lt` on NaN-free data | A |
 | fdlibm `high_word` / `low_word` | shifts and masks on the word | A |
 | `f64::{EPSILON, MIN_POSITIVE, INFINITY, NEG_INFINITY, NAN}`, `consts::{PI, E, TAU}` | typed globals generated with their bits (M0 step 6) | A |
@@ -870,7 +895,7 @@ the probe numbers. Where an issue is already open, pramana adds itself as a cons
 | Row | Gap | Owner | Stand-in |
 |---|---|---|---|
 | L1 | no correctly rounded tier: exp, ln, pow, sin, cos, atan2, expm1, and **log1p, tan, log2 (new asks)** | ganita (open issue 2026-11-09; pramana joins as the fifth consumer, §1.3) | `src/crmath.cyr` |
-| L2 | the Rust f64 surface: `is_nan`, `is_finite`, `copysign`, typed constants, NaN-symmetric min/max | cyrius (open issue 2026-11-11) | `src/mathx.cyr` |
+| L2 | the Rust f64 surface: `is_nan`, `is_finite`, `copysign`, typed constants, NaN-symmetric min/max; plus, from the step 4 probe, a trunc-based `fract` (`f64_fract` is floor-based), an unsigned `u64 → f64`, and saturating `as usize` | cyrius (open issue 2026-11-11; the three new items filed at step 10) | `src/mathx.cyr` |
 | L3 | sort/select on raw f64 arrays without aborts | cyrius (`vec`) | `src/sort.cyr` |
 | L4 | `cholesky_solve` allocates n words per call; `_into` forms | ganita (**new issue**: the third of the `mat_inv` / `mat_lu_solve` family, §1.3) | `src/linalg.cyr` |
 | L5 | polynomial least squares | hisab | `src/linalg.cyr` (kimiya's transcription) |

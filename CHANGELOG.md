@@ -20,6 +20,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   The tool is not part of the crate.
 - **`oracle` feature** (hidden, read-only, never published): hooks that expose the private special functions, samplers, quantiles, HMM forward pass, KDE kernels and `MultivariateNormal` factorization to the port's golden-value generator. They live in child modules, so each audited source gains only a `mod oracle;` declaration. `tests/oracle.rs` (11 tests) proves each hook is the public code path, bit for bit, and draws the same uniforms; it is mutation-checked six ways. Without the feature, nothing changes: every per-feature test count equals 1.3.0's
 
+- **The semantics probe** (port plan M0 step 4; `scripts/probes/`, results in `docs/development/port-parity.md` §1).
+  - **What it compares:** every f64 and u64 operation 1.3.0 uses, bit for bit against a release-built Rust twin on
+    rustc 1.100.0 and glibc 2.44: 125 cases in 155 rows.
+  - **Exact as they are:** 136 rows, plus 4 identical NaNs. Among them are `powi` in LLVM's order, the xorshift RNG,
+    the `total_cmp` keys and every positional exponent literal.
+  - **Needs a helper:**
+    - `f64_min` / `f64_max` with a NaN second operand;
+    - `fract`, because the stdlib's `f64_fract` is floor-based;
+    - `u64 → f64` at or above 2⁶³, because `f64_from` is signed;
+    - saturating `as usize`.
+  - **A rule:** f64 sums start at −0.0, as Rust's do.
+  - **Transcendentals:** 5 of 47 rows differ by 1 ulp. MPFR shows glibc misrounds three of them, and the stdlib and
+    ganita two.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).
