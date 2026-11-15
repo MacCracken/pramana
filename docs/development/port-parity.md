@@ -517,6 +517,12 @@ partitioning. It still occurs at every length from 2 (17–169 per length below 
 
 To reproduce it, the port would transcribe rustc 1.100's `select_nth_unstable_by` whole: its small-slice and min/max
 paths, pivot choice, partitioning and fallback, about 300 lines of Rust's core library, pinned to that compiler.
-Otherwise it accepts the divergence as ADR 007 row 14, with a documented stable rule. **This is the maintainer's
-decision**; the plan's §4.3 row 14 waits on it.
+Otherwise it accepts the divergence as ADR 007 row 14, with a documented stable rule.
+
+**Decided (the maintainer, 2026-11-15): accept the divergence.**
+- **The rule:** `median`, `percentile`, `quartiles` and `iqr` take the k-th element, and its successor, of a stable
+  sort of the input. Ties, −0 and +0 among them, keep their input order. That is `p6_model.py`'s rule.
+- **What the harness does:** the values always equal Rust's. Where Rust's sign of zero differs, `validate.py` maps
+  the row to the stable rule's result (`descriptive.map.tsv`, at M4), and it passes as accepted (ADR 7).
+- **The precedent:** pravash's sort ties (its ADR 0002 #3).
 

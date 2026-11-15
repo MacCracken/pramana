@@ -76,7 +76,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **P5, linear algebra:** ganita's Cholesky, solve, eigensolver and least squares, and hisab 3.5's eigensolver,
     differ from hisab 1.4.0 by up to 40, 18, 14 and 13,619 ulp, and each call leaks. All four will be transcribed.
   - **P6, sort and select:** Rust's unstable selection leaks the sign of a zero into `median` and `percentile` on
-    9,393 of 180,000 zero-heavy inputs. A decision is open.
+    9,393 of 180,000 zero-heavy inputs. Decided: the port selects from a stable sort, and the rows where Rust's zero
+    differs are mapped (ADR 007 row 14).
 
 ### Changed
 

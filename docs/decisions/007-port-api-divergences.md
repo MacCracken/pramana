@@ -30,7 +30,7 @@ The Cyrius API differs from Rust 1.3.0 only in the rows below, each with how the
 | 11 | bits depend on the host glibc | bits identical on every target | measured on x86_64 ELF, PE and aarch64 |
 | 12 | glibc's last-ulp misrounds | correctly rounded primitives (ADR 009) | `*.cr.tsv` at 0 ulp |
 | 13 | `math.rs`'s erf/erfc, `normal_cdf`, `ln_gamma`, `gamma_inc`, `beta_inc` | the more accurate algorithms of ADR 009 | `*.ref.tsv` at the ADR's bounds; downstream rows remapped by name |
-| 14 | ±0 order in `median` / `percentile` when both zeros occur | as probe P6 decides | A on the value, with the sign as P6 decides |
+| 14 | `median`, `percentile`, `quartiles` and `iqr` take the k-th element from `select_nth_unstable_by`, whose order decides which zero a mix of −0 and +0 yields (P6: 9,393 of 180,000 zero-heavy results) | the k-th element, and its successor, of a **stable** sort of the input (ties, −0 and +0 among them, kept in input order). Decided 2026-11-15 | A on the value. Where Rust's sign of zero differs, the row maps to the stable rule's result (`descriptive.map.tsv`, from `validate.py`'s stable model) and passes as accepted (ADR 7) |
 | 15 | derived `Debug` | `x.debug(sb, alternate)` writers, with pravash's shortest-float printer (D12) | A on the text |
 
 ## Consequences

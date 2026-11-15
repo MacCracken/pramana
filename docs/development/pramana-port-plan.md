@@ -20,7 +20,7 @@
 >
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
 > **Steps 4–8** are committed (`53078cb`, `30eb41b`, `bb0f938`, `d7941bc`, `aec9861`). **Step 9,** the probes, is in
-> progress: part 9a (P1, P5, P6) is done but not committed, and P6 leaves a decision open (§5 step 9). The maintainer took each recommendation and
+> progress: part 9a (P1, P5, P6) is done but not committed. P6's decision is taken: ADR 007 row 14. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -459,7 +459,7 @@ This is the seed list, finalized at M0 step 2. Each row says how the harness sti
 | 11 | bits depend on the host glibc | bits identical on every target | measured on 3 targets |
 | 12 | glibc's last-ulp misrounds | correctly rounded primitives (ADR 0009) | `*.cr.tsv` at 0 ulp |
 | 13 | `math.rs`'s erf/erfc, `normal_cdf`, `ln_gamma`, `gamma_inc`, `beta_inc` | the T1 algorithms (D3, ADR 0009) | `*.ref.tsv` at the ADR's bound; downstream remapped by name |
-| 14 | ±0 order in `median` / `percentile` when both zeros occur | per probe P6 | A on the value, with its sign as P6 decides |
+| 14 | `median`, `percentile`, `quartiles` and `iqr` take the k-th element from `select_nth_unstable_by`, whose order decides which zero a mix of −0 and +0 yields (P6: 9,393 of 180,000 zero-heavy results) | the k-th element, and its successor, of a **stable** sort of the input (ties, −0 and +0 among them, kept in input order). Decided 2026-11-15 | A on the value. Where Rust's sign of zero differs, the row maps to the stable rule's result (`descriptive.map.tsv`, from `validate.py`'s stable model) and passes as accepted (ADR 7) |
 | 15 | derived `Debug` | `x.debug(sb, alternate)` (D12) | A on the text |
 
 ---
@@ -793,8 +793,9 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
      - **P5:** transcribe all four hisab routines. ganita and hisab 3.5 differ from 1.4.0 (Cholesky up to 40 ulp,
        solve 18, eigenvalues 14, least squares 13,619), and every call leaks.
      - **P6:** Rust's unstable selection leaks the sign of a zero into `median` and `percentile` (9,393 of 180,000
-       zero-heavy results). A decision is open: transcribe rustc 1.100's `select_nth_unstable_by`, or accept the
-       divergence as ADR 007 row 14.
+       zero-heavy results). **Decided 2026-11-15: accept the divergence** (ADR 007 row 14). The port selects from a
+       stable sort, and the rows where Rust's zero differs are mapped. rustc 1.100's `select_nth_unstable_by`
+       (about 300 lines of Rust's core library) was not chosen.
    - **9b:** P2, P3, P4.
    - **9c:** P7, P8.
    - **9d:** P9's prototypes.
@@ -813,7 +814,7 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
       `eigen_symmetric` and ganita's least squares, against 1.4.0's `cholesky`, `cholesky_solve`, `least_squares_poly`
       and `eigen_symmetric`. Use seeded SPD, Vandermonde and covariance matrices; record bits and allocations. Each
       routine is then marked "use" or "transcribe" (§8.2).
-   6. **Sort and select.** The f64 quickselect and introsort stand-in against Rust's `select_nth_unstable_by` and
+   6. **Sort and select** (done in 9a; decided as ADR 007 row 14). The f64 quickselect and introsort stand-in against Rust's `select_nth_unstable_by` and
       `sort_unstable_by`, on tie-heavy and ±0-heavy inputs (median, percentile, KS, mode, PCA's eigenvalue order).
    7. **JSON.** Hand codecs for the 38 types, fed 1.3.0's documents: bits, round trips, how often Grisu2's digits
       differ, validation refusals, non-finite values (`null` on both sides), the error form.
