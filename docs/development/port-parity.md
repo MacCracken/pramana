@@ -236,3 +236,53 @@ an integer. The probe file itself keeps four such lines (lint warnings only).
 | `lt(-0,+0)` | < | `0x0` | `0x0` | same |
 | `eq(-0,+0)` | == | `0x1` | `0x1` | same |
 | `ge(nan,0)` | >= | `0x0` | `0x0` | same |
+
+## 2. The golden-value generator (M0 step 5, 2026-11-15)
+
+**What ran:**
+- **The generator:** `scripts/golden/`, adapted from pravash's `scripts/oracle/`. It drives `rust-old/` with
+  `oracle` and `soorat-compat`, on rustc 1.100.0 and glibc 2.44 (x86_64, FMA ifuncs).
+- **The re-check:** `scripts/golden/validate.py`, which never runs the oracle.
+- **Correct rounding:** MPFR 4.2.2, through kimiya's binding core (`scripts/golden/mpfr_ref.py`, 8 of 8 self-checks).
+
+**Result.** `tests/golden/math.tsv` has 35,597 rows in 31 functions, and every one re-checks:
+
+| Class | Functions (rows) | How `validate.py` recomputes them |
+|---|---|---|
+| A | sqrt (1,274), abs (374), floor (843), fract (871), max (760), min (760), clamp (520), is_finite (34), is_nan (34), total_cmp (169), as_usize (633), u64::as_f64 (536), high_word (680), low_masked (680) | Python, in Rust's operation order |
+| B | powi 2, 3, 4 (510 each); powi 9, 25, 49 (410 each) | LLVM's square-and-multiply, low bits first |
+| C, glibc | exp (3,274), ln (3,112), ln_1p (1,013), exp_m1 (1,010), powf (4,400), sin (2,510), cos (2,510), tan (2,010), atan (1,510), log2 (2,510) | the same glibc functions through ctypes |
+| C, compiler_builtins | cbrt (810) | MPFR: **every row correctly rounded** |
+
+**Where glibc misrounds.** MPFR's correctly rounded value differs on 76 of the 24,709 class-C rows, each by exactly
+1 ulp. These 76 rows are `tests/golden/math.cr.tsv`, the 0-ulp expectations for M1's correctly rounded primitives
+(ADR 009):
+
+| Function | Not correctly rounded |
+|---|---|
+| `exp_m1` | **52 of 1,010 (5.1%)** |
+| `tan` | 7 of 2,010 (0.35%) |
+| `ln_1p` | 6 of 1,013 (0.59%) |
+| `powf` | 6 of 4,400 (0.14%) |
+| `sin` | 4 of 2,510 (0.16%) |
+| `log2` | 1 of 2,510 (0.04%) |
+| `exp`, `ln`, `cos`, `atan` | 0 on these grids |
+| `cbrt` (compiler_builtins) | 0: correctly rounded |
+
+`exp_m1` stands out, at 5.1%. kimiya measured 7% on its own corpus, and the plan's random baseline (§3.2) found
+1.19%. The rate depends on where the inputs are:
+- 39 of the 52 misrounds are at x ≥ 10, where expm1(x) ≈ exp(x). The 400-row sweep over [−40, 710] puts most of
+  its rows there.
+- 5 are at negative x, which is where pramana's Exponential and Weibull CDFs call it (−exp_m1(−x)).
+
+Either way, `exp_m1` is the primitive glibc gets wrong most often.
+
+**Determinism and tampering:**
+- two runs give byte-identical files, and `--check` passes;
+- a one-bit change to an `exp` row fails both `--check` (`DIFFERS`) and `validate.py`;
+- an edited `.cr.tsv` row fails `validate.py`;
+- a header naming glibc 2.45 is refused by `--check` with a `PROVENANCE` line naming both.
+
+**Not in CI.** The rows are glibc 2.44's bits, so the generator check and `validate.py` are local gates, run at each
+milestone, as pravash's were.
+

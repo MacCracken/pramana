@@ -1,0 +1,27 @@
+[package]
+name = "pramana-golden"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100"
+license = "GPL-3.0-only"
+publish = false
+description = "Drives the frozen Rust pramana 1.3.0 in rust-old/ to write the Cyrius port's golden corpus"
+build = "build.rs"
+
+# The oracle is used by path and never built or edited in place (CLAUDE.md: do not modify rust-old/).
+# Cargo.lock was seeded from rust-old/Cargo.lock, so every shared dependency (hisab 1.4.0 above all) resolves to
+# the version the oracle was tested with. `oracle` is the hidden hook feature (port plan M0 step 0); `soorat-compat`
+# carries the soorat data shapes (M7). `ai` stays off: its rows use a recorded transport, not hoosh.
+[dependencies]
+pramana = { path = "../../rust-old", default-features = false, features = ["oracle", "soorat-compat"] }
+
+[[bin]]
+name = "golden"
+path = "src/main.rs"
+
+[profile.release]
+# Correctness, not speed: keep overflow checks so a bad grid index fails loudly.
+overflow-checks = true
+
+# Not part of the pramana workspace (there is none); a standalone tool crate.
+[workspace]

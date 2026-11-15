@@ -34,6 +34,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **Transcendentals:** 5 of 47 rows differ by 1 ulp. MPFR shows glibc misrounds three of them, and the stdlib and
     ganita two.
 
+- **The golden-value generator** (port plan M0 step 5; `scripts/golden/`, adapted from pravash's).
+  - **The corpus:** `tests/golden/math.tsv`, 35,597 rows in 31 functions. Every std f64 operation 1.3.0 calls, plus
+    the casts and word operations the probe flagged, recorded on rustc 1.100.0 and glibc 2.44.
+  - **The independent re-check:** `validate.py` re-checks every row without the oracle. It uses Python for the exact
+    rows, glibc through ctypes for the transcendentals, and MPFR to prove every `cbrt` row correctly rounded.
+  - **The correctly rounded rows:** `tests/golden/math.cr.tsv`, the 76 rows where glibc misrounds, each by 1 ulp.
+    `exp_m1` misrounds on 52 of 1,010 (5.1%).
+  - **Guarantees:** the output is deterministic; a run under another glibc or rustc is refused; tampering is caught.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

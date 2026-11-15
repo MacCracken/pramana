@@ -19,7 +19,8 @@
 > - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
-> **Step 4,** the toolchain and math check, is done but not committed. **Next is step 5:** the golden-value generator. The maintainer took each recommendation and
+> **Step 4,** the toolchain and math check, is committed as `53078cb`. **Step 5,** the golden-value generator, is done but
+> not committed. **Next is step 6:** the constant generator. The maintainer took each recommendation and
 > chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
 > `scripts/port-baseline/`, which produced §3.2.
 
@@ -618,7 +619,7 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
    Module order: error → constants → crmath_data → crmath → mathx → json → rng → combinatorics → bridge → special →
    linalg → sort → dist → dist_cont → dist_gamma → dist_disc → dist_mvn → descriptive → kde → pca → hypothesis →
    regression → timeseries → bayesian → markov → monte_carlo → soorat (→ ai, per D8).
-4. ✅ **Toolchain and math check. Done 2026-11-15** ([`port-parity.md`](port-parity.md) §1).
+4. ✅ **Toolchain and math check. Done 2026-11-15** and committed as `53078cb` ([`port-parity.md`](port-parity.md) §1).
    - **The probe:** `scripts/probes/p0_semantics.cyr` against its Rust twin `p0_semantics.rs`, built in release mode
      on 1.100.0 against glibc 2.44, with `p0_compare.py` joining the two.
    - **Coverage:** 125 cases in 155 rows, warning-free:
@@ -646,12 +647,51 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
    - **Transcendentals:** 5 of 47 rows are 1 ulp apart. MPFR shows glibc misrounds three of them (exp at 239.014,
      expm1 at 0.9204, tan at 1.4939) and the stdlib/ganita two (the exp polyfill at 1, ganita's pow at (2, 0.5)).
      Neither side is correctly rounded, which confirms D2: everything goes through the correctly rounded functions.
-5. **Golden-value generator** (`scripts/golden/`, from pravash's crate). TSV format 1 with f64 values as bit patterns,
-   deterministic output, `--check`, and the header from step 0.3. Two runs must give the same bytes.
-   - **`validate.py`** transcribes `math.rs`, the samplers and the quantiles in Python: glibc through ctypes, MPFR
-     through kimiya's `mpfr_ref.py`. It writes the `*.cr.tsv` and `*.ref.tsv` rows of §3.5.
-   - **JSON table:** a serde_json document for each of the 38 types, from seeded values, including every `Kernel`
-     variant and every validation failure.
+5. ✅ **Golden-value generator. Done 2026-11-15** (`scripts/golden/`, from pravash's `scripts/oracle/`;
+   [`port-parity.md`](port-parity.md) §2).
+   - **The crate:**
+     - It depends on `rust-old/` by path, with `oracle` and `soorat-compat` on and `ai` off.
+     - Its `Cargo.lock` was seeded from `rust-old/Cargo.lock` (hisab 1.4.0), and its own `rust-toolchain.toml` pins
+       1.100.0.
+     - A `build.rs` records the rustc.
+   - **The output:** TSV format 1 with f64 values as bit patterns.
+     - Every header records `pramana 1.3.0 (rust-old/), hisab 1.4.0, rustc 1.100.0; libm: glibc 2.44 x86_64 fma`.
+     - `--check` refuses any other provenance, naming both.
+     - Two runs give the same bytes.
+   - **`tests/golden/math.tsv`: 35,597 rows in 31 functions.** It covers every std f64 method pramana calls (§8.1),
+     plus the operations the step 4 probe flagged: `fract`, `u64 as f64`, `as usize`, `total_cmp`, and the fdlibm
+     word operations.
+     - The grids follow pramana's uses: Box–Muller's 2π·u, the Cauchy tan(π(u − ½)), Silverman's n^(−0.2), Hick's
+       log2 of counts, the KS series' y⁹, y²⁵, y⁴⁹.
+     - `nm -D` confirms where each result comes from. glibc supplies exactly the ten transcendentals exp, log, log1p,
+       expm1, pow, sin, cos, tan, atan and log2. `cbrt` is compiler_builtins', and the rest is inline code.
+   - **`validate.py`** (standard library plus ctypes) checks all 35,597 rows without the oracle:
+     - the format and `modules.txt`;
+     - every A/B row recomputed in Python, in Rust's order (LLVM's `powi`, Rust's `fract`, the saturating casts);
+     - every glibc row through ctypes;
+     - every `cbrt` row proven correctly rounded by MPFR.
+
+     `mpfr_ref.py` is kimiya's binding core, which passes 8 self-checks.
+   - **`tests/golden/math.cr.tsv`: 76 rows** where glibc misrounds, each by 1 ulp, with MPFR's correctly rounded
+     value. These are the M1 primitives' 0-ulp expectations:
+
+     | Function | Rows glibc misrounds |
+     |---|---|
+     | `exp_m1` | **52 of 1,010 (5.1%)** |
+     | `tan` | 7 of 2,010 |
+     | `ln_1p` | 6 of 1,013 |
+     | `powf` | 6 of 4,400 |
+     | `sin` | 4 of 2,510 |
+     | `log2` | 1 of 2,510 |
+     | exp, ln, cos, atan | none on these grids |
+   - **Tamper checks:** a one-bit change to an `exp` row fails both `--check` and `validate.py`; an edited `.cr.tsv`
+     row fails `validate.py`; a header naming glibc 2.45 is refused by `--check` with a `PROVENANCE` line.
+   - **Local gates, not CI:** the corpus holds glibc 2.44's bits, so a CI runner's glibc would be refused by design.
+   - **Each module's rows arrive with its milestone, as in pravash:**
+     - `special.tsv`, with its Python transcription and its MPFR reference rows `special.ref.tsv`, at M2;
+     - the samplers' and quantiles' rows at M3 and M4;
+     - each type's serde_json documents (the JSON table) with that type;
+     - the constants at step 6.
 6. **Constant generator.** It writes every public and private constant into `src/constants.cyr`. Each one is proven
    against `rust-old/src` and compiled by `probe_tables.py`. None is typed by hand. The list:
    - `LN_SQRT_2PI`, `CONVERGENCE_EPS`, `LENTZ_TINY`, `MAX_ITERATIONS`, `GAMMA_WILSON_HILFERTY_SHAPE`;
