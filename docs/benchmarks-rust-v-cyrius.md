@@ -62,3 +62,15 @@ The same bodies, one row added. Three rounds, interleaved, pinned to core 5, at 
 **Finding.** `tan` costs about one `sin` plus one `cos` (95–96 and 88 ns in the same rounds). It evaluates both on
 one reduction, then divides in double-double. kimiya's joint sin-and-cos evaluation shares the table lookups and is
 the candidate to measure if `tan` ever matters; Rust 1.3.0 calls it once, in the Cauchy sampler.
+
+## M1 part b4: log2 (2026-11-15)
+
+The same bodies, one row added. Three rounds, interleaved, pinned to core 5, at a load average of 1.7–2.7.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `log2`, x ∈ [0.001, 1000) | 5.1–5.3 ns | 104–109 ns | 20.6× |
+
+**Finding.** `log2` costs about 50 ns over `ln` (56 ns in the same rounds): separate split and fast-path calls with
+multi-value returns, ln's core called rather than inlined, and the Dekker product by 1/ln 2. `ln_1p` shows the same
+pattern; inlining both is the candidate to measure together. Rust 1.3.0 calls `log2` once, in the Hick's-law fit.

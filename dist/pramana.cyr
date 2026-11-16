@@ -4640,3 +4640,105 @@ fn _pmn_cr_tan(x: f64): f64 {
     var a: f64 = _pmn_cr_tan_acc(x);
     return a;
 }
+
+# ── log2 (M1 part b4) ─────────────────────────────────────────────────────────────────────────────
+#
+# log2 x = E + ln(m)/ln 2 on kimiya's ln, with E an exact integer: x = 2^E·m with m in [0.7495, 1.499) (ln's
+# reduction, bits(x) − 0x3FE7FC0000000000; a subnormal is first scaled by 2^54). |ln m| ≤ 0.405 < ln 2, so
+# |log2 m| < 0.585 and E + log2 m never cancels by more than 1.3 bits.
+# - log2 x is rational only at x = 2^E (log2 x = p/q means x^q = 2^p), so the powers of two give E exactly and are
+#   the only exact cases; there are no ties. log2(1) = +0.
+# - Fast path: ln's fast core at m (E = 0 there, so its hi + lo is ln m = L_j + log1p(r), with its bound eln), times
+#   1/ln 2 = IH + IM (Dekker's product for hi·IH, rounded hi·IM and lo·IH), then E + that by Fast2Sum (|E| ≥ 1 >
+#   |log2 m| when E ≠ 0). The bound: 1.4427·eln plus the product's roundings and IL (below 2^-104·|ph|), plus the
+#   rounding of the low word and the test's own (below 2^-104·|hi|): err = 1.5·eln + 2^-100·|ph| + 2^-103·|hi|.
+#   Relative to ln m near m = 1 (ln's core is relative to r there) and below 2^-75 elsewhere.
+# - Accurate path: ln's triple-double path at m (E = 0: L_j + log1p(r), below 2^-135 by its operation count, measured
+#   2^-150), times 1/ln 2 as a triple-double (below 2^-153), plus E (exact: the renormalising TwoSums keep the sum),
+#   rounded once: below 2^-135, past the hardest case expected over 2^64 arguments (about 2^-(53 + 64)) and past
+#   ln's tabulated 2^-118, the argument kimiya makes for its expm1 and log10 and part b2 for log1p.
+# Special values, as ln's: log2(NaN) = NaN, log2(±0) = −∞, log2(+∞) = +∞, NaN for x < 0 (−∞ included).
+
+var _PMN_CR_INVLN2_H: f64 = 0x3FF71547652B82FE;   # 1/ln 2 = H + M + L; scripts/crverify/consts.py checks them
+var _PMN_CR_INVLN2_M: f64 = 0x3C7777D0FFDA0D24;
+var _PMN_CR_INVLN2_L: f64 = 0xB9160BB8A5442AB9;
+
+# x = 2^E·m for a positive finite x: (E, bits(m)), m in [0.7495, 1.499).
+#must_use
+fn _pmn_log2_split(x: f64): (i64, i64) {
+    var ui = load64(&x);
+    var eb = 0;
+    if (ui < 0x0010000000000000) {                      # subnormal: scaled exactly by 2^54
+        var p54: f64 = 0x4350000000000000;
+        var xs: f64 = x * p54;
+        ui = load64(&xs);
+        eb = 0 - 54;
+    }
+    var t = ui - 0x3FE7FC0000000000;
+    var e0 = t >>> 52;
+    var mb = ui - (e0 << 52);
+    return (e0 + eb, mb);
+}
+
+# log2(x) by the fast path: (RN(log2 x), 1), or (0, 0) when the rounding test fails.
+#must_use
+fn _pmn_cr_log2_fast(x: f64): (f64, i64) {
+    var sv, sp = _pmn_km_ln_special(x);
+    if (sp == 1) { return (sv, 1); }
+    var e, mb = _pmn_log2_split(x);
+    var ef: f64 = f64_from(e);
+    if (mb == 0x3FF0000000000000) { return (ef, 1); }   # x = 2^E: exactly E
+    var fh, fl, eln = _pmn_km_ln_core(mb, 0);
+    var ih: f64 = _PMN_CR_INVLN2_H;
+    var im: f64 = _PMN_CR_INVLN2_M;
+    var ph, pe = _pmn_km_two_prod(fh, ih);
+    var pl: f64 = pe + ((fh * im) + (fl * ih));
+    var hi: f64 = ph;
+    var lo: f64 = pl;
+    if (e != 0) {
+        var sh, st = _pmn_km_fast_two_sum(ef, ph);
+        hi = sh;
+        lo = st + pl;
+    }
+    var ap: f64 = f64_abs(ph);
+    var ah: f64 = f64_abs(hi);
+    var k100: f64 = 0x39B0000000000000;                 # 2^-100
+    var k103: f64 = 0x3980000000000000;                 # 2^-103
+    var err: f64 = ((eln * 1.5) + (ap * k100)) + (ah * k103);
+    var u: f64 = hi + (lo - err);
+    var v: f64 = hi + (lo + err);
+    if (u == v) { return (u, 1); }
+    return (0.0, 0);
+}
+
+# log2(x), correctly rounded, by the accurate path alone (also the fast path's fallback).
+#must_use
+fn _pmn_cr_log2_acc(x: f64): f64 {
+    var sv, sp = _pmn_km_ln_special(x);
+    if (sp == 1) { return sv; }
+    var e, mb = _pmn_log2_split(x);
+    var ef: f64 = f64_from(e);
+    if (mb == 0x3FF0000000000000) { return ef; }       # x = 2^E: exactly E
+    var m: f64 = 0.0;
+    store64(&m, mb);
+    var buf: f64[3];
+    _pmn_km_ln_acc_td(m, &buf);                         # ln m = L_j + log1p(r): E = 0 at m
+    var yh, ym, yl = _pmn_km_td_mul(buf[0], buf[1], buf[2], _PMN_CR_INVLN2_H, _PMN_CR_INVLN2_M, _PMN_CR_INVLN2_L);
+    if (e != 0) {
+        var zh, zm, zl = _pmn_km_td_add_d(yh, ym, yl, ef);
+        yh = zh;
+        ym = zm;
+        yl = zl;
+    }
+    var r: f64 = _pmn_km_rn3(yh, ym, yl);
+    return r;
+}
+
+# log2(x), correctly rounded. log2(2^k) = k, log2(±0) = −∞, log2(+∞) = +∞, NaN for NaN and x < 0. Mirrors `f64::log2`.
+#must_use
+fn _pmn_cr_log2(x: f64): f64 {
+    var r, ok = _pmn_cr_log2_fast(x);
+    if (ok == 1) { return r; }
+    var a: f64 = _pmn_cr_log2_acc(x);
+    return a;
+}

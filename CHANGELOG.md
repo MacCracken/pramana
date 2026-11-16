@@ -265,6 +265,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **fixed on the way:** the first version divided kimiya's unnormalised fast pair as if normalised. Its bound was
     then wrong, and the golden rows caught 1,803 misrounded rows before MPFR ran;
   - **cost:** 188–190 ns a call, 17.4× glibc, about one sin plus one cos.
+- **M1 part b4: a correctly rounded log2** (`src/crmath_ext.cyr`, `_pmn_cr_log2`; port plan D2; ledger L1; results in
+  `docs/development/port-parity.md` §7.5). New, on kimiya's ln, with the exponent kept exact (log2 x = E + ln(m)/ln 2):
+  - **exact cases:** the powers of two give E exactly, and they are the only ones;
+  - **the constant:** 1/ln 2 as three bit patterns, checked against 90-digit decimal arithmetic by
+    `scripts/crverify/consts.py`, in CI;
+  - **accuracy:** `log2` is at 0 ulp on all 2,510 golden rows. It is correctly rounded on 1,318,874 MPFR rows on three
+    targets: every power of two and its neighbours, and 200,000 through the accurate path alone;
+  - **cost:** 104–109 ns a call, 20.6× glibc.
+- **The primitives are complete** (M1 part b): every transcendental Rust 1.3.0 calls is correctly rounded, and every
+  class-C math row of the golden corpus is gated at 0 ulp (28,556 rows ok, nothing measured), identically on x86_64,
+  PE and aarch64. The ten functions are correctly rounded on 11.6M MPFR rows, at 8–21× glibc's cost.
 
 ### Changed
 

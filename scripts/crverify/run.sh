@@ -11,6 +11,7 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$root/build/crverify
 mkdir -p "$work/chunks"
 cd "$root"
+python3 -I -B scripts/crverify/consts.py .
 quiet() { grep -v -e '^note' -e '^OK' -e 'warning:lib/' -e 'unreachable fns' || true; }
 cyrius build scripts/crverify/rows.cyr "$work/rows" 2>&1 | quiet
 cyrius build --win scripts/crverify/rows.cyr "$work/rows.exe" 2>&1 | quiet

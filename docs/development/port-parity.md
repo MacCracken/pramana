@@ -1406,3 +1406,56 @@ The rows are byte-identical on the three targets, sha256 `99ae1269…`. The fast
 rounds): two evaluations of the shared reduction, then the division. kimiya's joint sin-and-cos evaluation, which
 shares the table lookups, is the candidate to measure if `tan` ever matters; Rust 1.3.0 calls it once, in the Cauchy
 sampler.
+
+### 7.5 Part b4: a correctly rounded log2, and part b's result (2026-11-15)
+
+**What it is.** `_pmn_cr_log2` in `src/crmath_ext.cyr`, on kimiya's ln with the exponent kept exact:
+x = 2^E·m with m in [0.7495, 1.499), as ln reduces it, so log2 x = E + ln(m)/ln 2, and |log2 m| < 0.585.
+- **x = 2^E:** E, exactly. log2 x is rational only at the powers of two, so these are the only exact cases.
+- **The fast path:** ln's fast core at m (E = 0 there), times 1/ln 2 by Dekker's product, then E added by
+  Fast2Sum. The bound is 1.5·eln + 2⁻¹⁰⁰·|ph| + 2⁻¹⁰³·|hi|.
+- **The accurate path:** ln's triple-double path at m, times 1/ln 2 in triple-double, plus E, rounded once.
+- **1/ln 2** is three bit patterns that `scripts/crverify/consts.py` checks against 90-digit decimal arithmetic, in CI
+  and in `run.sh`.
+
+**The golden rows.** `log2` is dispatched to it with its bound at 0: all 2,510 rows at 0 ulp, the one where glibc
+misrounds included. The digest is the same on x86_64 ELF, PE and aarch64.
+
+**Against MPFR** (`scripts/crverify/`, now 11,618,874 rows):
+
+| Set | Rows | Max ulp | Not CR |
+|---|---|---|---|
+| every binade from 2⁻¹⁰⁷⁴ to 2¹⁰²³ | 400,000 | 0.5 | 0 |
+| 1 ± 2⁻⁶⁰ … 2⁻⁶ | 300,000 | 0.5 | 0 |
+| (½, 2) | 150,000 | 0.5 | 0 |
+| integers to 10⁶ | 100,000 | 0.5 | 0 |
+| every power of two, 2⁻¹⁰⁷⁴ … 2¹⁰²³, and ±1 … 4 ulps of each | 18,874 | 0.4987 (the powers exact) | 0 |
+| any bits (x < 0 gives NaN, checked) | 150,000 | 0.5 | 0 |
+| the accurate path alone: 1 ± 2⁻⁶⁰ … 2⁻⁶, every binade | 200,000 | 0.5 | 0 |
+
+The rows are byte-identical on the three targets, sha256 `6026da23…`. The fast path declines on 11 of 2,000,000
+arguments in (0.999, 1.001), and on none of 4,000,000 in (½, 2) and (1, 10³⁰).
+
+**Cost:** `log2`, x ∈ [0.001, 1000), takes 104–109 ns against Rust's 5.1–5.3 ns, 20.6×. That is about 50 ns over ln,
+from the separate split and fast-path calls (with their multi-value returns), the core's call, and the product.
+Inlining, as kimiya inlines ln's core, is the candidate to measure. Rust 1.3.0 calls it once, in the Hick's-law fit.
+
+**Part b's result.** Every transcendental pramana 1.3.0 calls is correctly rounded in the port, and every class-C
+math row of the golden corpus is gated at 0 ulp:
+
+| Function | Golden rows at 0 ulp | MPFR rows | Source | Cost (Rust, ns) |
+|---|---|---|---|---|
+| exp | 3,274 | 1,100,000 | kimiya, vendored | 46 (5.7) |
+| ln | 3,112 | 1,100,000 | kimiya | 54–55 (5.3) |
+| exp_m1 | 1,010 | 1,100,000 | kimiya | 50–51 (5.7) |
+| powf | 4,400 | 1,200,000 | kimiya | 134–136 (12.1) |
+| sin, cos | 2,510 each | 1,100,000 each | kimiya | 87–96 (9.0–9.4) |
+| atan | 1,510 | 1,000,000 | kimiya (atan2(x, 1)) | 119–120 (8.4) |
+| ln_1p | 1,013 | 1,300,000 | new (b2) | 51–96 (5.5–6.9) |
+| tan | 2,010 | 1,300,000 | new (b3) | 188–190 (10.8) |
+| log2 | 2,510 | 1,318,874 | new (b4) | 104–109 (5.1–5.3) |
+| cbrt | 810 | — | ganita (exact, as Rust's) | — |
+
+All 76 MPFR-corrected rows are accepted, nothing is measured, and the replay is identical on three targets: 28,556
+rows ok, 0 failed. The cost is 8–21× glibc. That is the price of correct rounding and the same bits everywhere; speed
+is measured, not gated.

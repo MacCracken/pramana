@@ -67,6 +67,9 @@ jobs:
       - name: Vendored primitives current (src/crmath*.cyr; unverified without ../kimiya)
         run: python3 -I -B scripts/vendor_crmath.py . --check
 
+      - name: Correctly rounded constants (src/crmath_ext.cyr against their definitions)
+        run: python3 -I -B scripts/crverify/consts.py .
+
   rust-oracle:
     # The frozen Rust 1.3.0 crate in rust-old/ is the parity oracle. It is never
     # edited; this job only proves it still builds and passes (port plan, M0

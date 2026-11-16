@@ -29,8 +29,8 @@
 > `normal_cdf` prototype on it, within 0.5 ulp (`26f04f2`), and step 10, the upstream requests and the ledger
 > (`aa5df35`): **M0 is complete.** **M1** is in progress: part a (the error codes) and part b1 (kimiya's correctly
 > rounded primitives, vendored) are committed (`1f718c6`), and so is part b2, a new correctly rounded log1p
-> (`f08f233`). Part b3, a new correctly rounded tan, is done but not committed. The primitives are verified on 10.3M
-> MPFR rows. The maintainer took each
+> (`f08f233`) and part b3, a new correctly rounded tan (`3257918`). Part b4, a new correctly rounded log2, is done
+> but not committed; with it every class-C math row is at 0 ulp, and the primitives are verified on 11.6M MPFR rows. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1071,7 +1071,8 @@ Every milestone, and every part of a large one, ends with pravash's gates:
   atan2 vendored by `scripts/vendor_crmath.py`, verified by `scripts/crverify/` on ≥ 1M MPFR rows each ✅;
 - **b2:** a correctly rounded log1p, new, in `src/crmath_ext.cyr`, on kimiya's ln cores ✅;
 - **b3:** a correctly rounded tan, new, on kimiya's sin and cos ✅;
-- **b4:** a correctly rounded log2, new, verified the same way;
+- **b4:** a correctly rounded log2, new, on kimiya's ln with the exponent kept exact ✅. Part b is complete: every
+  class-C math row of the golden corpus is at 0 ulp;
 - **c:** `src/mathx.cyr`, the Rust-semantics helpers;
 - **d:** the JSON core, `src/fmtf.cyr` and the `SimpleRng` codec;
 - **e:** the RNG, combinatorics with `PmnU128`, and the bridges;

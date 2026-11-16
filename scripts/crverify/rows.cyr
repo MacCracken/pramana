@@ -184,6 +184,18 @@ fn cv_tan_acc(set: cstring, x: f64): i64 {
     return 0;
 }
 
+fn cv_log2(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_cr_log2(x);
+    cv_row1("log2", set, x, r);
+    return 0;
+}
+
+fn cv_log2_acc(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_cr_log2_acc(x);
+    cv_row1("log2", set, x, r);
+    return 0;
+}
+
 fn cv_atan(set: cstring, x: f64): i64 {
     var r: f64 = _pmn_km_cr_atan2(x, 1.0);
     cv_row1("atan", set, x, r);
@@ -464,9 +476,57 @@ fn rows_tan(): i64 {
     return 0;
 }
 
+# log2 (M1 part b4): over 1,100,000 through the whole function, and 200,000 through the accurate path alone.
+fn rows_log2(): i64 {
+    var i = 0;
+    while (i < 400000) { cv_log2("binades", cv_scale(0 - 1074, 1023, 0)); i = i + 1; }
+    i = 0;
+    while (i < 300000) {
+        var t: f64 = cv_scale(0 - 60, 0 - 6, 1);
+        var x: f64 = 1.0 + t;
+        cv_log2("near1", x);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 150000) { cv_log2("unit", cv_range(0.5, 2.0)); i = i + 1; }
+    i = 0;
+    while (i < 100000) {
+        var k = 1 + (cv_word() >> 1) % 1000000;
+        var kf: f64 = f64_from(k);
+        cv_log2("ints", kf);
+        i = i + 1;
+    }
+    # every power of two, 2^-1074 … 2^1023 (log2 exact), and ±1 … 4 ulps of each
+    var e = 0 - 1074;
+    while (e <= 1023) {
+        var p: f64 = cv_scale(e, e, 0);
+        var b = load64(&p);
+        if (e >= 0 - 1022) { b = (e + 1023) << 52; } else { b = 1 << (e + 1074); }
+        var d = 0 - 4;
+        while (d <= 4) {
+            var y: f64 = cv_bits(b + d);
+            if (b + d > 0) { cv_log2("pow2", y); }
+            d = d + 1;
+        }
+        e = e + 1;
+    }
+    i = 0;
+    while (i < 150000) { cv_log2("bits", cv_anybits()); i = i + 1; }
+    i = 0;
+    while (i < 100000) {
+        var ta: f64 = cv_scale(0 - 60, 0 - 6, 1);
+        var xa: f64 = 1.0 + ta;
+        cv_log2_acc("acc_near1", xa);
+        cv_log2_acc("acc_binades", cv_scale(0 - 1074, 1023, 0));
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn main(): i64 {
     alloc_init();
     g_out = str_builder_new();
+    rows_log2();
     rows_tan();
     rows_log1p();
     rows_exp();
