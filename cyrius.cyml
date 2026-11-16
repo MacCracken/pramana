@@ -48,4 +48,5 @@ modules = [
     "src/pool.cyr",
     "src/json.cyr",
     "src/rng.cyr",
+    "src/combinatorics.cyr",
 ]

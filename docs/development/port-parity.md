@@ -1953,3 +1953,77 @@ by ADR 7).
 | through a bounded generic | 10 ns | 1.70–1.72 ns | 6× |
 
 Rust inlines the draw either way; Cyrius makes a call, and the generic a second one (P2 measured the same 2–3 ns).
+
+### 7.13 Part e2: combinatorics with `PmnU128` (2026-11-15)
+
+**The module** (`src/combinatorics.cyr`) is 1.3.0's four functions:
+- **`pmn_factorial(n, out)`, `pmn_permutations(n, r, out)` and `pmn_combinations(n, r, out)`** return Rust's
+  `Result<u128>` as a code, with the value in a caller's `PmnU128 { lo, hi }`, written only on success (D10). Their
+  arithmetic is 1.3.0's step for step:
+  - every u64 is compared as unsigned;
+  - each product is checked, so an overflow stops a loop at once, whatever r is;
+  - `combinations` takes r = min(r, n − r), and checks each product before it divides. So C(130, 65) refuses although
+    the result fits, as in Rust.
+- **`pmn_stirling_approx(n)`** is √((2π)·n) · (n / e)^n in Rust's order, with n converted unsigned and powf
+  correctly rounded.
+
+**The u128 arithmetic** is probe P1's:
+- a 128 × 64-bit multiply over 32-bit limbs, with overflow detection;
+- a 128 / 64-bit restoring division.
+
+The division was the one cost cliff. It runs 128 steps whatever the divisor, and `combinations` divides at every
+step. So part e2 gives it a fast path for d < 2³¹, which covers every divisor `combinations` makes in practice:
+long division by 32-bit limbs, where each partial numerator stays below 2⁶³ and the native division is exact.
+C(60, 30) fell from 28.5 µs to 1.14 µs, measured in the same pinned run. Larger divisors keep the restoring
+division.
+
+**The golden rows.** A new `combinatorics` module, 2,405 rows:
+- **`factorial`**, 48 rows: n from 0 to 40, 2³², 2⁶³ and u64::MAX; 13 overflow.
+- **`permutations` and `combinations`**, 1,021 rows each, on P1's grid:
+  - n from 0 to 40, the u128 edge 130–133, 2³², 2⁶³ and u64::MAX;
+  - each n against r in {0, 1, 2, 3, 5, 10, 20, 33–35, 64–67, n − 2, n − 1, n, n + 1};
+  - 200 seeded pairs.
+
+  Each has 442 InvalidParameter rows; there are 183 overflows in permutations and 54 in combinations.
+- **`stirling_approx`**, 315 rows, class C: n from 0 to 200 (it is finite to 170, then ∞), every power of two,
+  u64::MAX and seeded words.
+
+A u128 is two `i:` tokens, its low word then its high word. `validate.py` recomputes the counts with Python's exact
+integers in 1.3.0's checked loops, and Stirling's rows through glibc's `pow` by ctypes. It writes
+`combinatorics.cr.tsv` from MPFR's correctly rounded pow, and that file has 0 rows: glibc's pow is correctly rounded
+on all 315 inputs, so those rows compare directly at 0 ulp.
+
+**The result.** All 2,405 rows pass on x86_64 ELF, PE and aarch64, warning-free. The replay is six modules, 69,653
+rows ok and 106 accepted.
+
+**Mutation checks:**
+- **no r = min(r, n − r):** 30 `combinations` rows fail, the 30 cases P1 found;
+- **signed comparisons:** 66 rows fail across the three counting functions;
+- **a signed `n as f64` in Stirling:** 2 rows fail (2⁶³ and u64::MAX);
+- **the division taking the low word only:** 124 `combinations` rows fail.
+
+A broken overflow check is not run as a mutation: P1 found it makes `permutations(2⁶³, …)` wrap and loop for about
+2⁶³ steps.
+
+**Tests.** `tests/combinatorics.tcyr`, 40 checks:
+- 1.3.0's unit tests carried over, with 34! in full;
+- the u64::MAX and r > n edges, compared unsigned;
+- the out-pointer written only on success, and null outs;
+- the multiply at the 128-bit edge;
+- the division on both paths, and 20,000 seeded fast-path divisions checked by multiplying back;
+- Stirling at 0, 10, its overflow, and u64::MAX.
+
+**Cost** (`tests/combinatorics.bcyr` against the twin's `comb` rows; both print every result's words, and they agree;
+pinned, three interleaved rounds, run once the 1-minute load had fallen to 2.0):
+
+| Call | Cyrius | Rust | Ratio |
+|---|---|---|---|
+| `factorial(34)` | 930–935 ns | 65.3–74.2 ns | 14× |
+| `permutations(30, 15)` | 372–376 ns | 15.7–15.8 ns | 24× |
+| `combinations(60, 30)` | 1.10 µs | 131.2–131.3 ns | 8.4× |
+| `combinations(130, 65)`, an overflow | 1.87–1.89 µs | 474.9–481.5 ns | 3.9× |
+| `stirling_approx(100)` | 145–147 ns | 13.9–14.2 ns | 10× |
+
+Rust's u128 multiply is two machine multiplies; pramana's is eight 32-bit partial products and their carries (P1's
+form), about 28 ns each. Stirling's cost is the correctly rounded powf. None of these sits on a hot path in 1.3.0,
+whose only other caller is a test.

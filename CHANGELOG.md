@@ -392,8 +392,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 7 ns a draw direct and 10 ns through the generic, against 1.7 ns for Rust's inlined draw
     (`tests/rng.bcyr` and its twin, the same stream).
 
+- **M1 part e2: combinatorics with `PmnU128`** (`src/combinatorics.cyr`; port plan D10, ADR 007 row 4; results in
+  `docs/development/port-parity.md` §7.13):
+  - **the counting functions:** `pmn_factorial`, `pmn_permutations` and `pmn_combinations` return 1.3.0's
+    `Result<u128>` as a code, with the value in a caller's `PmnU128 { lo, hi }`, written only on success. Their checked
+    arithmetic is 1.3.0's step for step, every u64 compared unsigned, and C(130, 65) refuses on its intermediate
+    overflow as Rust does;
+  - **`pmn_stirling_approx`**, through the correctly rounded powf;
+  - **the arithmetic** is probe P1's 128 × 64 multiply with overflow detection and its 128 / 64 division, which gains
+    a 32-bit-limb fast path for divisors below 2³¹;
+  - **a golden `combinatorics` module:** 2,405 rows on P1's grid and seeded pairs, with Stirling class C.
+    `validate.py` re-checks them with exact integers and glibc's pow. `combinatorics.cr.tsv` has 0 rows, because
+    glibc's pow is correctly rounded on all 315 inputs. All match on x86_64, PE and aarch64;
+  - **tests:** `tests/combinatorics.tcyr` has 40 checks, among them 20,000 seeded fast-path divisions checked by
+    multiplying back.
+
 ### Performance
 
+- **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),
+  and is 8.4× Rust's 131 ns. The other counting rows are 4–24× Rust (`tests/combinatorics.bcyr` and its twin).
 - **The pool's release** is a compare-and-swap rather than kimiya's full fence and plain store: a claim and its release
   fall from 35–36 ns to 18–19 ns (`tests/pool.bcyr`, three pinned, interleaved rounds each way). The stdlib's CAS
   already orders as acquire-release on x86_64 and aarch64.

@@ -75,6 +75,11 @@ files. This README records what is specific to pramana.
     value's tokens in and serde_json's text out. `PramanaError`'s variants are written with an empty message, as
     pramana writes a code (ADR 007 row 8, amended). `validate.py` re-writes each with its own model of serde_json's
     writing: the escape table, the f64 text model it checks `fmt.tsv` with, and the struct and enum forms.
+- **`combinatorics.tsv`** (M1 part e2, `src/m_combinatorics.rs`): `factorial`, `permutations` and `combinations` on
+  probe P1's grid (n from 0 to 40, the u128 edge 130–133, 2³², 2⁶³, u64::MAX, each against an r grid, and 200 seeded
+  pairs), and `stirling_approx` (class C) on 315 n. A u128 result is two `i:` tokens, its low word then its high
+  word. `validate.py` recomputes the counts with exact integers in 1.3.0's checked loops, Stirling through glibc's
+  pow, and its correctly rounded rows through MPFR's.
 - **`rng.tsv`** (M1 part e1, `src/m_rng.rs`): 1.3.0's `SimpleRng`: the first 256 draws from 40 seeds, and 10⁶-draw
   FNV-1a digests from six. `validate.py` re-draws each with its own xorshift. `json.tsv` gains SimpleRng's codec
   rows in the same part.
@@ -112,6 +117,7 @@ files. This README records what is specific to pramana.
 | `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
 | `json` | M1 d3a–d4, e1 | 6,399 | `src/m_json.rs` | `json.map.tsv`, 30 rows (ADR 007 row 16) |
 | `rng` | M1 e1 | 46 | `src/m_rng.rs` | — |
+| `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
 
 ## Format 1
 
@@ -140,7 +146,8 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
   - `n:`: `None`;
   - `E:<Variant>`: `Err(PramanaError::<Variant>)`, with the payload not compared. `E:Deserialize` is serde_json's own
     refusal, which pramana reports as `PMN_ERR_DESERIALIZE` (port plan D6);
-  - `v:<len>`: a sequence, whose element tokens follow.
+  - `v:<len>`: a sequence, whose element tokens follow;
+  - a u128 is two `i:` tokens, its low word then its high word.
 - **Classes** (port plan §6):
   - **A** exact (NaN matches any NaN);
   - **B** ≤ 2 ulp, expected 0;

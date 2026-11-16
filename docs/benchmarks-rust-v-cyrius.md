@@ -204,3 +204,23 @@ print the 10⁶th draw, `0x3fe327c85d8ff932`. Three rounds, interleaved, pinned 
 
 Rust inlines the draw in both forms. Cyrius calls it, and the generic adds a call (P2's 2–3 ns). Sampling-heavy code
 draws in loops, so this is the cost to watch in M3's samplers and M6's MCMC.
+
+## M1 part e2: combinatorics (2026-11-15)
+
+**Bodies.** `tests/combinatorics.bcyr` calls each function 10⁵ times on fixed arguments; the twin's `comb` rows call
+1.3.0's. Both print the results' words, which agree. Three rounds, interleaved, pinned to core 5. The box had been
+loaded (9–14) by another project's processes; these rounds waited for the 1-minute load to fall to 2.0.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `factorial(34)` | 65.3–74.2 ns | 930–935 ns | 14× |
+| `permutations(30, 15)` | 15.7–15.8 ns | 372–376 ns | 24× |
+| `combinations(60, 30)` | 131.2–131.3 ns | 1.10 µs | 8.4× |
+| `combinations(130, 65)`, an overflow | 474.9–481.5 ns | 1.87–1.89 µs | 3.9× |
+| `stirling_approx(100)` | 13.9–14.2 ns | 145–147 ns | 10× |
+
+**A win inside the part.** The u128 division was probe P1's restoring division, 128 steps a call. `combinations`
+divides at every step, so C(60, 30) took 28.5 µs (215× Rust). A 32-bit-limb fast path for divisors below 2³¹, which
+covers every divisor `combinations` makes in practice, took it to 1.14 µs. Old and new were measured in the same
+pinned run while the box was loaded, and gave the same words. The remaining gap is the multiply: eight 32-bit partial
+products against Rust's two machine multiplies.

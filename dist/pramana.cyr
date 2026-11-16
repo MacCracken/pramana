@@ -6435,3 +6435,207 @@ fn PmnSimpleRng_from_json(out: *PmnSimpleRng, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
     return _pmn_json_decode(buf, len, &_pmn_simple_rng_from_root, out);
 }
+
+# --- combinatorics.cyr ---
+
+# combinatorics.cyr — counting (port of Rust 1.3.0's src/combinatorics.rs; port plan D10, ADR 007 row 4; M1 part e2).
+#
+# `factorial`, `permutations` and `combinations` return Rust's `Result<u128>`: here a code, with the value in a
+# caller's `PmnU128 { lo, hi }`, written only on success (D10). Their arithmetic is 1.3.0's, step for step, with every
+# u64 compared as unsigned:
+# - **factorial(n):** n > 34 refuses (ComputationError); otherwise 2 · 3 · … · n, checked.
+# - **permutations(n, r):** r > n refuses (InvalidParameter); otherwise n · (n − 1) · … · (n − r + 1), each product
+#   checked, so an overflow stops the loop at once (ComputationError), whatever r is.
+# - **combinations(n, r):** r > n refuses; otherwise r = min(r, n − r), then result · (n − i) / (i + 1) for each i,
+#   the product checked before the division. So, as in Rust, an intermediate product can overflow although the result
+#   fits: combinations(130, 65) refuses (probe P1).
+#
+# The u128 arithmetic is probe P1's, which matched 1.3.0 on 3,736 cases: a 128 × 64-bit multiply over 32-bit limbs (no
+# partial product overflows a word), with overflow detection, and a 128 / 64-bit restoring division, which part e2
+# gives a 32-bit-limb fast path for the small divisors `combinations` makes (C(60, 30): 28.5 µs → 1.14 µs).
+# `stirling_approx(n)` is √(2πn) · (n / e)^n in 1.3.0's operation order, through the correctly rounded powf (ADR 009).
+
+struct PmnU128 {
+    lo;
+    hi;
+}
+
+# 1 when a < b as unsigned 64-bit words.
+#must_use
+#pure
+fn _pmn_u64_lt(a, b): i64 {
+    if ((a ^ 0x8000000000000000) < (b ^ 0x8000000000000000)) { return 1; }
+    return 0;
+}
+
+# (hi, lo) × b: the product's (hi, lo), and 1 when it needs more than 128 bits. Each limb's sum of at most four
+# 32-bit pieces stays below 2^35, so no carry is lost.
+#must_use
+fn _pmn_u128_mul_u64(hi, lo, b): (i64, i64, i64) {
+    var x0 = lo & 0xFFFFFFFF;
+    var x1 = lo >> 32;
+    var x2 = hi & 0xFFFFFFFF;
+    var x3 = hi >> 32;
+    var b0 = b & 0xFFFFFFFF;
+    var b1 = b >> 32;
+    var p = x0 * b0;
+    var a0 = p & 0xFFFFFFFF;
+    var a1 = p >> 32;
+    p = x0 * b1;
+    a1 = a1 + (p & 0xFFFFFFFF);
+    var a2 = p >> 32;
+    p = x1 * b0;
+    a1 = a1 + (p & 0xFFFFFFFF);
+    a2 = a2 + (p >> 32);
+    p = x1 * b1;
+    a2 = a2 + (p & 0xFFFFFFFF);
+    var a3 = p >> 32;
+    p = x2 * b0;
+    a2 = a2 + (p & 0xFFFFFFFF);
+    a3 = a3 + (p >> 32);
+    p = x2 * b1;
+    a3 = a3 + (p & 0xFFFFFFFF);
+    var a4 = p >> 32;
+    p = x3 * b0;
+    a3 = a3 + (p & 0xFFFFFFFF);
+    a4 = a4 + (p >> 32);
+    p = x3 * b1;
+    a4 = a4 + (p & 0xFFFFFFFF);
+    var a5 = p >> 32;
+    a1 = a1 + (a0 >> 32);
+    a2 = a2 + (a1 >> 32);
+    a3 = a3 + (a2 >> 32);
+    a4 = a4 + (a3 >> 32);
+    a5 = a5 + (a4 >> 32);
+    var rlo = (a0 & 0xFFFFFFFF) | ((a1 & 0xFFFFFFFF) << 32);
+    var rhi = (a2 & 0xFFFFFFFF) | ((a3 & 0xFFFFFFFF) << 32);
+    var ovf = 0;
+    if ((a4 & 0xFFFFFFFF) != 0 || a5 != 0) { ovf = 1; }
+    return (rhi, rlo, ovf);
+}
+
+# (hi, lo) / d for d ≥ 1: the quotient's (hi, lo).
+# - **d < 2^31,** which is every divisor `combinations` makes (i + 1 for i below r, and r stays small before a product
+#   overflows): long division by 32-bit limbs. Each partial numerator is a remainder below d times 2^32 plus a limb,
+#   so below 2^63, where the native (signed) division is exact.
+# - **Otherwise,** restoring division over the 128 bits. The remainder stays below d < 2^64; a carry out of its top bit
+#   means it is already ≥ d.
+#must_use
+fn _pmn_u128_div_u64(hi, lo, d): (i64, i64) {
+    if (d > 0 && d < 0x80000000) {
+        var n3 = hi >> 32;
+        var q3 = n3 / d;
+        var n2 = ((n3 - q3 * d) << 32) | (hi & 0xFFFFFFFF);
+        var q2 = n2 / d;
+        var n1 = ((n2 - q2 * d) << 32) | (lo >> 32);
+        var q1 = n1 / d;
+        var n0 = ((n1 - q1 * d) << 32) | (lo & 0xFFFFFFFF);
+        var q0 = n0 / d;
+        return ((q3 << 32) | q2, (q1 << 32) | q0);
+    }
+    var qhi = 0;
+    var qlo = 0;
+    var rem = 0;
+    var i = 127;
+    while (i >= 0) {
+        var bit = 0;
+        if (i >= 64) {
+            bit = (hi >> (i - 64)) & 1;
+        } else {
+            bit = (lo >> i) & 1;
+        }
+        var top = rem >> 63;
+        rem = (rem << 1) | bit;
+        if (top == 1 || _pmn_u64_lt(rem, d) == 0) {
+            rem = rem - d;
+            if (i >= 64) {
+                qhi = qhi | (1 << (i - 64));
+            } else {
+                qlo = qlo | (1 << i);
+            }
+        }
+        i = i - 1;
+    }
+    return (qhi, qlo);
+}
+
+# Rust's `factorial(n)`: n! into out. PMN_ERR_COMPUTATION_ERROR for n > 34, whose factorial overflows u128.
+#must_use
+fn pmn_factorial(n, out: *PmnU128): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_u64_lt(34, n) == 1) { return PMN_ERR_COMPUTATION_ERROR; }
+    var hi = 0;
+    var lo = 1;
+    var i = 2;
+    while (_pmn_u64_lt(n, i) == 0) {
+        var h, l, ovf = _pmn_u128_mul_u64(hi, lo, i);
+        if (ovf == 1) { return PMN_ERR_COMPUTATION_ERROR; }
+        hi = h;
+        lo = l;
+        i = i + 1;
+    }
+    out.lo = lo;
+    out.hi = hi;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `permutations(n, r)`: n! / (n − r)! into out. PMN_ERR_INVALID_PARAMETER for r > n, and
+# PMN_ERR_COMPUTATION_ERROR when the product overflows u128.
+#must_use
+fn pmn_permutations(n, r, out: *PmnU128): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_u64_lt(n, r) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var hi = 0;
+    var lo = 1;
+    var i = 0;
+    while (i != r) {
+        var h, l, ovf = _pmn_u128_mul_u64(hi, lo, n - i);
+        if (ovf == 1) { return PMN_ERR_COMPUTATION_ERROR; }
+        hi = h;
+        lo = l;
+        i = i + 1;
+    }
+    out.lo = lo;
+    out.hi = hi;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `combinations(n, r)`: the binomial coefficient into out. PMN_ERR_INVALID_PARAMETER for r > n, and
+# PMN_ERR_COMPUTATION_ERROR when an intermediate product overflows u128.
+#must_use
+fn pmn_combinations(n, r, out: *PmnU128): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_u64_lt(n, r) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var k = r;
+    if (_pmn_u64_lt(n - r, k) == 1) { k = n - r; }
+    var hi = 0;
+    var lo = 1;
+    var i = 0;
+    while (i != k) {
+        var h, l, ovf = _pmn_u128_mul_u64(hi, lo, n - i);
+        if (ovf == 1) { return PMN_ERR_COMPUTATION_ERROR; }
+        var qh, ql = _pmn_u128_div_u64(h, l, i + 1);
+        hi = qh;
+        lo = ql;
+        i = i + 1;
+    }
+    out.lo = lo;
+    out.hi = hi;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `stirling_approx(n)`: 1 for n = 0, else √(2π · n) · (n / e)^n, with n converted as Rust's `n as f64`
+# (unsigned, to nearest). ∞ once (n / e)^n overflows.
+#must_use
+fn pmn_stirling_approx(n): f64 {
+    if (n == 0) { return 1.0; }
+    var nf: f64 = _pmn_u64_to_f64(n);
+    var pi: f64 = _PMN_F64_PI;
+    var e: f64 = _PMN_F64_E;
+    var two_pi: f64 = 2.0 * pi;
+    var a: f64 = two_pi * nf;
+    var root: f64 = f64_sqrt(a);
+    var base: f64 = nf / e;
+    var pw: f64 = _pmn_powf(base, nf);
+    return root * pw;
+}

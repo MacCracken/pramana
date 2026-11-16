@@ -548,6 +548,35 @@ fn _par_rng(fp, fl): i64 {
     return 0;
 }
 
+# `combinatorics` rows (M1 part e2): src/combinatorics.cyr. A u128 is two tokens, its low word then its high word.
+fn _par_combinatorics(fp, fl): i64 {
+    var x: PmnU128;
+    var e = 0 - 1;
+    if (_par_eq(fp, fl, "combinatorics::stirling_approx") == 1) {
+        if (_par_in_n != 1) { return 0 - 1; }
+        var s: f64 = pmn_stirling_approx(_par_in(0));
+        _par_got_f(s);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "combinatorics::factorial") == 1) {
+        if (_par_in_n != 1) { return 0 - 1; }
+        e = pmn_factorial(_par_in(0), &x);
+    } elif (_par_in_n == 2 && _par_eq(fp, fl, "combinatorics::permutations") == 1) {
+        e = pmn_permutations(_par_in(0), _par_in(1), &x);
+    } elif (_par_in_n == 2 && _par_eq(fp, fl, "combinatorics::combinations") == 1) {
+        e = pmn_combinations(_par_in(0), _par_in(1), &x);
+    } else {
+        return 0;
+    }
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_i(x.lo);
+    _par_got_i(x.hi);
+    return 1;
+}
+
 # `f64::*` and `u64::*` rows: the Rust std reference values (port plan §8.1), every one through src/mathx.cyr, the
 # names the rest of the port calls (M1 part c):
 # - the exact builtins sqrt, abs and floor;
@@ -600,6 +629,7 @@ fn _par_math(fp, fl): i64 {
 
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
+    if (_par_eq(mp, ml, "combinatorics") == 1) { return _par_combinatorics(fp, fl); }
     if (_par_eq(mp, ml, "constants") == 1) { return _par_constants(fp, fl); }
     if (_par_eq(mp, ml, "fmt") == 1) { return _par_fmt(fp, fl); }
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
@@ -691,6 +721,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "f64::ln_1p") == 1) { return 0; }
     if (_par_eq(fp, fl, "f64::tan") == 1) { return 0; }
     if (_par_eq(fp, fl, "f64::log2") == 1) { return 0; }
+    if (_par_eq(fp, fl, "combinatorics::stirling_approx") == 1) { return 0; }   # powf, correctly rounded (part e2)
     return 0 - 1;
 }
 

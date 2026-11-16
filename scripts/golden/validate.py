@@ -990,8 +990,6 @@ def render_map(module, provenance, rows):
 
 # ── rng: 1.3.0's SimpleRng, xorshift64 (13, 7, 17), modelled in Python ──
 
-MASK64 = (1 << 64) - 1
-
 
 def xorshift_draws(seed, n):
     """The bits of SimpleRng::new(seed)'s first n draws: each step, then (x >> 11) / 2^53."""
@@ -1023,6 +1021,75 @@ def check_rng(rows):
         if not ok:
             failures.append(f"rng: {fn}({seed}, {n}) differs from the model")
     return failures, by_fn
+
+
+# ── combinatorics: Python's exact integers in 1.3.0's checked u128 loops ──
+
+U128_MAX = (1 << 128) - 1
+
+
+def counting(fn, n, r):
+    """factorial / permutations / combinations as 1.3.0 computes them: ("ok", value) or ("err", variant)."""
+    if fn == "combinatorics::factorial":
+        if n > 34:
+            return ("err", "ComputationError")
+        acc = 1
+        for k in range(2, n + 1):
+            acc *= k
+            if acc > U128_MAX:
+                return ("err", "ComputationError")
+        return ("ok", acc)
+    if r > n:
+        return ("err", "InvalidParameter")
+    acc = 1
+    if fn == "combinatorics::permutations":
+        for k in range(r):
+            acc *= n - k
+            if acc > U128_MAX:                       # each product checked: the loop stops at the first overflow
+                return ("err", "ComputationError")
+        return ("ok", acc)
+    k = min(r, n - r)
+    for j in range(k):
+        acc *= n - j
+        if acc > U128_MAX:                           # the product before the division: an intermediate can overflow
+            return ("err", "ComputationError")
+        acc //= j + 1
+    return ("ok", acc)
+
+
+def stirling(n, pow_fn):
+    """stirling_approx(n) in Rust's operation order, with the pow given: √((2π)·n) · (n / e)^n."""
+    if n == 0:
+        return 1.0
+    nf = float(n)                                    # Rust's `n as f64`: to nearest, ties to even
+    return math.sqrt((2.0 * math.pi) * nf) * pow_fn(nf / math.e, nf)
+
+
+def check_combinatorics(rows):
+    failures, by_fn, crs = [], {}, []
+    for fn, cls, ins, outs, raw in rows:
+        args = [v % (1 << 64) for v in ins]
+        stat = by_fn.setdefault(fn, [0, 0])
+        if fn == "combinatorics::stirling_approx":
+            want = stirling(args[0], _libm.pow)
+            ok = same(outs[0], want)
+            cr = stirling(args[0], lambda x, y: mpfr_ref.cr2("pow", x, y))
+            if not same(outs[0], cr):
+                ulps = abs(ordered(bits(outs[0])) - ordered(bits(cr)))
+                crs.append(f"{fn}\t{raw}\tf:{bits(cr):016x}\t1.3.0 f:{bits(outs[0]):016x}; stirling_approx({args[0]}) "
+                           f"through glibc's pow {outs[0]!r}, {ulps} ulp off; through the correctly rounded pow {cr!r}")
+        else:
+            kind, v = counting(fn, args[0], args[1] if len(args) > 1 else 0)
+            if kind == "err":
+                want_toks = [f"E:{v}"]
+            else:
+                lo, hi = v & MASK64, v >> 64
+                want_toks = [lo - (1 << 64) if lo >= 1 << 63 else lo, hi - (1 << 64) if hi >= 1 << 63 else hi]
+            ok = outs == want_toks
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"combinatorics: {fn}{tuple(args)} recorded {outs}, modelled otherwise")
+    return failures, by_fn, crs
 
 
 def check_math(rows):
@@ -1116,6 +1183,23 @@ def main(argv):
                 failures.append(f"{map_path.name} differs from what the bayan model gives")
             else:
                 print(f"  {map_path.name}: {len(mapped)} rows, as the bayan model gives")
+        if module == "combinatorics":
+            f, by_fn, crs = check_combinatorics(rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:32s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
+            text = render_cr(module, provenance, crs)
+            cr_path = gdir / f"{module}.cr.tsv"
+            if write_cr:
+                cr_path.write_text(text, encoding="utf-8")
+                print(f"  wrote {cr_path.name}: {len(crs)} rows")
+            elif not cr_path.exists():
+                failures.append(f"{cr_path.name} missing (run with --write-cr)")
+            elif cr_path.read_text(encoding="utf-8") != text:
+                failures.append(f"{cr_path.name} differs from what MPFR gives")
+            else:
+                print(f"  {cr_path.name}: {len(crs)} rows, as MPFR gives")
         if module == "rng":
             f, by_fn = check_rng(rows)
             failures.extend(f)

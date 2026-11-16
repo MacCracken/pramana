@@ -1,4 +1,4 @@
-//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr, tests/pool.bcyr, tests/json.bcyr and tests/rng.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
+//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr, tests/pool.bcyr, tests/json.bcyr, tests/rng.bcyr and tests/combinatorics.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
 //! arguments, regions and loop: 4,096 values per row, cycled 250 times, ns per call. Run pinned, interleaved with
 //! `cyrius bench tests/crmath.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m1_primitives
@@ -226,7 +226,41 @@ fn rng() {
     black_box(s);
 }
 
+// tests/combinatorics.bcyr's counterpart: 1.3.0's counting functions, 10^5 calls per row.
+fn comb_row(name: &str, f: impl Fn() -> Result<u128, pramana::PramanaError>) {
+    let t0 = Instant::now();
+    let mut r = f();
+    for _ in 0..100_000 {
+        r = black_box(f());
+    }
+    let ns = t0.elapsed().as_nanos() as f64 / 100_000.0;
+    match r {
+        Ok(x) => println!("  {name}: {:x} {:x}", (x >> 64) as u64, x as u64),
+        Err(e) => println!("  {name}: {e:?}"),
+    }
+    println!("  {name}: {ns:.1} ns");
+}
+
+fn comb() {
+    use pramana::combinatorics::{combinations, factorial, permutations, stirling_approx};
+    comb_row("factorial(34)", || factorial(black_box(34)));
+    comb_row("permutations(30, 15)", || permutations(black_box(30), black_box(15)));
+    comb_row("combinations(60, 30)", || combinations(black_box(60), black_box(30)));
+    comb_row("combinations(130, 65), an overflow", || combinations(black_box(130), black_box(65)));
+    let mut s = 0.0;
+    let t0 = Instant::now();
+    for _ in 0..100_000 {
+        s += stirling_approx(black_box(100));
+    }
+    black_box(s);
+    println!("  stirling_approx(100): {:.1} ns", t0.elapsed().as_nanos() as f64 / 100_000.0);
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("comb") {
+        comb();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("rng") {
         rng();
         return;

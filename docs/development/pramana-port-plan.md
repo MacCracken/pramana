@@ -34,8 +34,8 @@
 > c, the Rust f64 surface (`d13fb61`), so the whole golden corpus is gated. Part d1, serde_json's f64 text, is
 > committed (`d34db7c`), and so is part d2, the work-table pool (`c302838`), and part d3a, the JSON read core's
 > value readers (`c61f76b`), part d3b, serde's struct rules and the two enum forms (`18c4e70`), and part d4, the JSON
-> write core and the error codec (`daf9084`). Part e1, the RNG and its codec, is done but not committed. The
-> maintainer took each
+> write core and the error codec (`daf9084`), and part e1, the RNG and its codec (`5d80e5a`). Part e2, combinatorics with
+> `PmnU128`, is done but not committed. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1094,8 +1094,8 @@ Every milestone, and every part of a large one, ends with pravash's gates:
   written, the Cyrius-only codes refused) ✅;
 - **e1:** `src/rng.cyr`: the `PmnRng` trait, `PmnSimpleRng` and its JSON codec (a zero state reads as 1), against
   1.3.0's own streams (40 seeds × 256 draws, and 10⁶-draw digests from six seeds) and 190 serde_json codec rows ✅;
-- **e2:** `src/combinatorics.cyr`: `factorial`, `permutations` and `combinations` with `PmnU128` (D10), and
-  `stirling_approx`;
+- **e2:** `src/combinatorics.cyr`: `factorial`, `permutations` and `combinations` into a `PmnU128` (D10), and
+  `stirling_approx`, against 1.3.0 on 2,405 rows (probe P1's grid, seeded pairs, Stirling's overflow edge) ✅;
 - **e3:** `src/bridge.cyr`: the 11 bridge functions;
 - **f:** M1's gate.
 
@@ -1163,6 +1163,7 @@ which keeps every consumer's compile free of it.
 | `Vec<f64>` returns | `(out, cap)` plus a count returned, or an owned result with `_drop` (D11) |
 | `Vec<Vec<f64>>` (covariance, transition and emission matrices) | flat row-major f64 arrays with dimensions |
 | `Option<f64>` (`select_pair`) | an out-pointer plus 1/0 |
+| `Result<u128>` (`factorial`, `permutations`, `combinations`) | a code, with the value in a caller's `PmnU128 { lo, hi }`, written only on success (D10, part e2) |
 | `Result<T, PramanaError>` | value-form `Result` with a `PMN_ERR_*` code; never through `callptr` |
 | `impl Fn…` | function pointer plus context word (D7); a parameter declared `f: *fn(f64): f64` takes `&fn` or a closure (P3) |
 | a closure capturing an f64 (tests, examples) | copy the capture into a typed local before arithmetic: `var kf: f64 = k;` (P3) |

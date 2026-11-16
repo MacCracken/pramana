@@ -1,4 +1,5 @@
 # pramana golden corpus: one module per line; tests/parity.tcyr replays each
+combinatorics
 constants
 fmt
 json
