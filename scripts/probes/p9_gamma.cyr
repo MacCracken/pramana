@@ -1,0 +1,238 @@
+# p9_gamma.cyr — probe P9, gamma_inc: accuracy rows for scripts/port-baseline/check.c (port plan §5 step 9d-2).
+#
+# Reads the Rust baseline's incomplete-gamma rows (build/p9/gamma_rust.txt, from scripts/port-baseline/main.rs:
+# §3.2's 20,000 pairs, a in [0.01, 1000], x near a, with Rust 1.3.0's P and Q) and prints, per pair, Rust's, T0's
+# and T1's P and Q as `gref_p/set/variant a x value` rows (check.c's 320-bit reference). The first 400 pairs with
+# a ≤ 200 also print a `gref_vs_mpfr` row, which checks that reference against mpfr_gamma_inc. Then five seeded
+# sets over ADR 009's domain, a in [1e-3, 1e5], T0 and T1 only.
+#   bash scripts/probes/p9_gamma.sh
+# Built with `-D P9_LITE` it prints T1b's rows for every fourth pair instead (the plain-double-loop experiment).
+
+include "scripts/probes/p9_gamma_impl.cyr"
+
+var g_rng = 0x9E3779B97F4A7C15;
+var g_out = 0;
+
+fn p9_unit(): f64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    var top = (x * 0x2545F4914F6CDD1D) >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# Log-uniform in [lo, hi].
+fn p9_logr(lo: f64, hi: f64): f64 {
+    var l1: f64 = _km_cr_ln(lo);
+    var l2: f64 = _km_cr_ln(hi);
+    var w: f64 = l2 - l1;
+    var u: f64 = p9_unit();
+    var t: f64 = l1 + w * u;
+    var r: f64 = _km_cr_exp(t);
+    return r;
+}
+
+fn p9_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+fn p9_hexval(c): i64 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    return c - 87;
+}
+
+fn p9_flush(): i64 {
+    print(load64(g_out), load64(g_out + 8));
+    store64(g_out + 8, 0);
+    return 0;
+}
+
+# One row: `fname/set/variant a x value`.
+fn p9_row(fname: cstring, set: cstring, variant: cstring, a: f64, x: f64, v: f64): i64 {
+    str_builder_add_cstr(g_out, fname);
+    str_builder_putc(g_out, 47);
+    str_builder_add_cstr(g_out, set);
+    str_builder_putc(g_out, 47);
+    str_builder_add_cstr(g_out, variant);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, a);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, x);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, v);
+    str_builder_putc(g_out, 10);
+    if (load64(g_out + 8) > 1048576) { p9_flush(); }
+    return 0;
+}
+
+# T0's and T1's P and Q for one pair, four consecutive rows (check.c reuses its reference across them).
+# Built with `-D P9_LITE`, every fourth pair prints T1b's rows instead (the cost experiment; same seeds).
+var g_pairs = 0;
+
+fn p9_pair(set: cstring, a: f64, x: f64): i64 {
+    #ifdef P9_LITE
+    g_pairs = g_pairs + 1;
+    if ((g_pairs & 3) == 0) {
+        var pb, qb = p9_t1b_gamma_inc(a, x);
+        p9_row("gref_p", set, "t1b", a, x, pb);
+        p9_row("gref_q", set, "t1b", a, x, qb);
+    }
+    return 0;
+    #endif
+    var p0, q0 = p9_t0_gamma_inc(a, x);
+    var p1, q1 = p9_t1_gamma_inc(a, x);
+    p9_row("gref_p", set, "t0", a, x, p0);
+    p9_row("gref_p", set, "t1", a, x, p1);
+    p9_row("gref_q", set, "t0", a, x, q0);
+    p9_row("gref_q", set, "t1", a, x, q1);
+    return 0;
+}
+
+# §3.2's pairs: the baseline prints `gamma_p a x p`, then `gamma_q a x q` for the same pair.
+fn p9_baseline(buf, n): i64 {
+    var s = 0;
+    var i = 0;
+    var nval = 0;
+    var w[24];
+    var pr: f64 = 0.0;
+    while (i < n) {
+        if (load8(buf + i) == 10) {
+            var line = buf + s;
+            var j = 8;
+            var k = 0;
+            while (k < 3) {
+                var word = 0;
+                while (j < i - s && load8(line + j) != 32) {
+                    word = (word << 4) | p9_hexval(load8(line + j));
+                    j = j + 1;
+                }
+                store64(&w + k * 8, word);
+                j = j + 1;
+                k = k + 1;
+            }
+            var a: f64 = load64(&w);
+            var x: f64 = load64(&w + 8);
+            var r: f64 = load64(&w + 16);
+            if (load8(line + 6) == 112) {
+                pr = r;
+            } else {
+                #ifdef P9_LITE
+                p9_pair("base", a, x);
+                s = i + 1;
+                i = i + 1;
+                continue;
+                #endif
+                var p0, q0 = p9_t0_gamma_inc(a, x);
+                var p1, q1 = p9_t1_gamma_inc(a, x);
+                p9_row("gref_p", "base", "rust", a, x, pr);
+                p9_row("gref_p", "base", "t0", a, x, p0);
+                p9_row("gref_p", "base", "t1", a, x, p1);
+                p9_row("gref_q", "base", "rust", a, x, r);
+                p9_row("gref_q", "base", "t0", a, x, q0);
+                p9_row("gref_q", "base", "t1", a, x, q1);
+                var lim: f64 = 200.0;
+                if (nval < 400 && a <= lim) {
+                    str_builder_add_cstr(g_out, "gref_vs_mpfr ");
+                    p9_hex64(g_out, a);
+                    str_builder_putc(g_out, 32);
+                    p9_hex64(g_out, x);
+                    str_builder_add_cstr(g_out, " 0000000000000000\n");
+                    nval = nval + 1;
+                }
+            }
+            s = i + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    var cap = 16777216;
+    var buf = alloc(cap);
+    var n = file_read_all("build/p9/gamma_rust.txt", buf, cap);
+    if (n <= 0) {
+        var msg = "cannot read build/p9/gamma_rust.txt\n";
+        print(msg, strlen(msg));
+        return 1;
+    }
+    p9_baseline(buf, n);
+    var amin: f64 = 0.001;
+    var amax: f64 = 100000.0;
+    var i = 0;
+    # x near a: x = a + t·√a, t in [−5, 5], kept above a/1000.
+    while (i < 20000) {
+        var a1: f64 = p9_logr(amin, amax);
+        var t1: f64 = -5.0 + 10.0 * p9_unit();
+        var sq: f64 = f64_sqrt(a1);
+        var x1: f64 = a1 + t1 * sq;
+        var fl: f64 = a1 * 0.001;
+        if (x1 < fl) { x1 = fl; }
+        p9_pair("near", a1, x1);
+        i = i + 1;
+    }
+    # The lower tail: x = a·r, r log-uniform in [1e-8, 0.95].
+    i = 0;
+    while (i < 10000) {
+        var a2: f64 = p9_logr(amin, amax);
+        var r2: f64 = p9_logr(0.00000001, 0.95);
+        var x2: f64 = a2 * r2;
+        p9_pair("lower", a2, x2);
+        i = i + 1;
+    }
+    # The upper tail: half x = a·r, r log-uniform in [1.05, 50]; half x = a + t·√a, t in [5, 40].
+    i = 0;
+    while (i < 10000) {
+        var a3: f64 = p9_logr(amin, amax);
+        var x3: f64 = 0.0;
+        if (p9_unit() < 0.5) {
+            var r3: f64 = p9_logr(1.05, 50.0);
+            x3 = a3 * r3;
+        } else {
+            var t3: f64 = 5.0 + 35.0 * p9_unit();
+            var s3: f64 = f64_sqrt(a3);
+            x3 = a3 + t3 * s3;
+        }
+        p9_pair("upper", a3, x3);
+        i = i + 1;
+    }
+    # Small shapes: a in [1e-3, 1], x log-uniform in [1e-8, 60] (Rust's 246-ulp Q).
+    i = 0;
+    while (i < 10000) {
+        var a4: f64 = p9_logr(amin, 1.0);
+        var x4: f64 = p9_logr(0.00000001, 60.0);
+        p9_pair("smalla", a4, x4);
+        i = i + 1;
+    }
+    # The switches: a in [0.95, 1.05] with x in [1, 1.2] (the small-a edge at x = 1.1), and x = a(1 ± δ),
+    # δ log-uniform in [1e-12, 1e-2] (the series and fraction meet at x = a).
+    i = 0;
+    while (i < 5000) {
+        var a5: f64 = 0.95 + 0.1 * p9_unit();
+        var x5: f64 = 1.0 + 0.2 * p9_unit();
+        p9_pair("switch", a5, x5);
+        var a6: f64 = p9_logr(1.0, amax);
+        var d6: f64 = p9_logr(0.000000000001, 0.01);
+        var x6: f64 = a6 + a6 * d6;
+        if (p9_unit() < 0.5) { x6 = a6 - a6 * d6; }
+        p9_pair("switch", a6, x6);
+        i = i + 1;
+    }
+    p9_flush();
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

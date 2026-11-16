@@ -23,9 +23,9 @@
 > progress: part 9a (P1, P5, P6) is committed (`96ae9d5`, and P6's decision, ADR 007 row 14, as `aa3dc1e`). Part 9b
 > (P2, P3, P4) and the D7 amendment it led to (the RNG is generic) are committed as `4a051bf`. Part 9c (P7, P8) is
 > committed as `155dce0`. After it, the maintainer amended D5 (serde_json's text, byte for byte) and accepted ADR 007
-> row 16. Part 9d-1, P9's `ln_gamma` prototype, is done: its probe is committed as `998b64b`, its record not yet. The
-> maintainer took each recommendation and chose option C for D3. Nothing has been ported. The one artifact
-> so far is the accuracy-baseline tool, `scripts/port-baseline/`, which produced §3.2.
+> row 16. Part 9d-1, P9's `ln_gamma` prototype, is committed (`998b64b`, `d424b90`). Part 9d-2, `gamma_inc`, is done
+> but not committed. The maintainer took each recommendation and chose option C for D3. Nothing has been ported. The
+> one artifact so far is the accuracy-baseline tool, `scripts/port-baseline/`, which produced §3.2.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -268,6 +268,10 @@ This is the seed of M0's reference tooling.
 | `beta_inc` I_x(a, b) | integer a, b ∈ [1, 60] | 4,000 | **550** | 14.1 | 57.1% | (36, 15, x = 2.8e-4) |
 | `beta_inc` 1 − I_x | same | 4,000 | **583** | 12.8 | 56.7% | (22, 50, x = 0.99916) |
 
+P9 (§5 step 9d-2) re-measured the incomplete gamma rows on all 20,000 pairs, against a 320-bit reference: Rust reaches
+**97** ulp on P and **485** on Q (means 4.82 and 12.4). Outside these sets it is far worse: 2.9×10⁹ ulp on P in the
+deep lower tail, and 2.8×10⁴ on Q for small shapes (`port-parity.md` §6.5).
+
 ### 3.3 What the numbers say
 
 - **glibc's primitives are already good:** ≤ 0.75 ulp, misrounding 0.075–1.2% of results. Correct rounding fixes the
@@ -348,7 +352,7 @@ Rules for every row:
 | normal_cdf, normal_sf | 29 ulp in [−5, 5]; **1,590** in the tails | ≈ Rust | **≤ 1 ulp** | carry z/√2 as a double-double, then take the correctly rounded erfc of the high part plus a first-order correction for the low part: erfc(h + l) ≈ erfc(h) − l·(2/√π)e^(−h²). The ×½ is exact |
 | ln_gamma, x > 0 | 4.85–8.2 ulp at large and small x; 65 mean / 1.2×10⁶ max on [0.5, 10]; **4.3×10¹³** beside 1 and 2 | ≈ Rust (every term is Rust's) | **≤ 2 ulp** on x > 0, including beside 1 and 2 | rational/series forms of lnΓ(1 + ε) and lnΓ(2 + ε) around the roots (fdlibm's `e_lgamma_r` layout), with double-double logarithms and products and one rounding. **P9 prototype (§5 step 9d-1): ≤ 1.31 ulp, mean 0.26, on 450,000 rows** (Rust: 4.3×10¹³ beside the roots) |
 | ln_gamma, x < 0 | 6.9×10⁴ max | ≈ Rust | ≤ 2 ulp of max(\|lnΓ\|, 1) (mixed; see the bounds above) | reflection with sin(πx) reduced exactly (x − round(x) first), subtracted in double-double. **P9 prototype: ≤ 1.40 ulp of max(\|lnΓ\|, 1)** on 123,655 rows (Rust: 1,583) |
-| gamma_inc P, Q | 4.9 / 12.1 mean; **58 / 246** max | ≈ Rust | **≤ 4 ulp** max, ~1 mean | double-double prefactor exponent plus a correctly rounded exp of it; stop at 2⁻⁵⁶ with compensated sums; small-a Q directly (Temme / DiDonato–Morris form, not 1 − P) |
+| gamma_inc P, Q | 4.9 / 12.1 mean; **58 / 246** max (97 / 485 on all of §3.2's pairs; 2.9×10⁹ in the deep lower tail) | ≈ Rust | **≤ 4 ulp** max, ~1 mean | a double-double prefactor exponent and exp of it; the series and continued fraction in double-double to 2⁻⁶²; small-a Q directly, not 1 − P. **P9 prototype (§5 step 9d-2): ≤ 1.0 ulp, mean ≤ 0.25, on 360,000 rows; 10–17× T0's cost.** Plain-double loops miss (to 79 ulp) |
 | beta_inc I, 1 − I | 13–14 mean; **550 / 583** max | ≈ Rust | **≤ 8 ulp** max, ~1–2 mean | TOMS 708-style prefactor in double-double; a tightened continued fraction |
 | Gamma, Beta, χ², t, F pdfs | inherit lnΓ's absolute error (~1e-14 relative, from §3.3) | ≈ Rust | ~1–3 ulp | from the lnΓ fix |
 | Student-t, F, χ², Binomial, Poisson CDFs; every p-value | inherit `beta_inc` / `gamma_inc` (tens to hundreds of ulp in tails) | ≈ Rust | ≤ ~8 ulp | from the incomplete-function fixes |
@@ -862,7 +866,23 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
        - **The same bits** on x86_64, PE and aarch64.
        - **Cost:** 72–192 ns for x > 0, against T0's 168; 570 ns for x < 0, against 400.
        - **Found:** Rust 1.3.0 returns +∞ for 0 < x < about 3.2e-301. Its reflection gives up when |sin(πx)| < 1e-300.
-     - **9d-2:** `gamma_inc`.
+     - **9d-2 ✅ (2026-11-15): `gamma_inc`** (`port-parity.md` §6.5).
+       - **The prototype:**
+         - a double-double prefactor exponent: lnΓ from a ζ-series table below a = 10, and Rust's Stirling kernel
+           with an exact u − ln(1 + u) from there;
+         - the series and the continued fraction in double-double;
+         - the split at x = a;
+         - a direct small-a Q.
+       - **The reference** is a 320-bit series and continued fraction in `check.c`, because `mpfr_gamma_inc` takes up
+         to 0.8 s a call near a = 1e5. It is checked against `mpfr_gamma_inc` to 6×10⁻⁷⁵ ulp.
+       - **Measured on 360,400 rows** (§3.2's pairs and five seeded sets over a ∈ [10⁻³, 10⁵]): T1 is at most
+         1.0 ulp (mean ≤ 0.25), against ≤ 4. Rust reaches 97 / 485 ulp on §3.2's own pairs, and 2.9×10⁹ on P in the
+         deep lower tail.
+       - **The same bits** on x86_64, PE and aarch64.
+       - **Cost:** 2.5–64 µs a call, against T0's 0.23–3.8 µs, which is 10–17×.
+       - **The cost experiment:** T1 with Rust's plain-double loops (T1b) misses, at up to 79 ulp near x = a for large
+         a and 58 on Q for small a just past x = 1.1. M2 part b should speed those two regions with Temme's uniform
+         expansion (after 9e's erfc) and a wider direct small-a form, not with less precision.
      - **9d-3:** `beta_inc`.
      - **9d-4:** `normal_cdf`, after 9e.
    - **9e:** the CORE-MATH erf/erfc port.

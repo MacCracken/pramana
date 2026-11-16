@@ -1,0 +1,722 @@
+# p9_gamma_impl.cyr — probe P9's gamma_inc prototypes (port plan §5 step 9d-2, §3.4; ADR 009). Functions only:
+# p9_gamma.cyr measures them against an MPFR reference, p9_gamma.bcyr times them.
+#
+# - T0, `p9_t0_gamma_inc`: Rust 1.3.0's gamma_inc (the series below x = a + 1, Lentz's continued fraction above, the
+#   other function as 1 − the first, a 1e-15 stop, and ln_gamma_kernel's prefactor) in Rust's operation order, on
+#   correctly rounded primitives. This is what M2 part a ports.
+# - T1, `p9_t1_gamma_inc`: the same two expansions, with four changes:
+#   - the prefactor's exponent a ln x − x − lnΓ(a) is a double-double: lnΓ(a) below 10 from the ζ series of
+#     lnΓ(1 + f) and an exact recurrence, and from 10 up Rust's cancellation-free kernel with u − ln(1 + u) as an
+#     exact series; exp takes the double-double exponent (kimiya's core, relative error near 2^-70);
+#   - the series and the continued fraction run in double-double and stop at 2^-62;
+#   - the split is at x = a (Q = 1 − P only where P ≤ 0.64, P = 1 − Q only where Q ≤ 1/2);
+#   - for a < 1 and x < 1.1, Q comes directly from (Γ(1 + a) − x^a − a·x^a·Σ (−x)^n/(n!(a + n)))/Γ(1 + a), in
+#     double-double, not from 1 − P (Rust's 246-ulp row).
+#   Each result is rounded once.
+
+include "scripts/probes/p9_lgamma_impl.cyr"
+include "scripts/probes/p9_zeta.cyr"
+
+# ── shared ──────────────────────────────────────────────────────────────────────────────────────────
+
+# 2^e·r for any e: two exact scalings, so only a subnormal result rounds a second time (at most 2^-1074).
+fn p9_ldexp(r: f64, e): f64 {
+    var e1 = e / 2;
+    var e2 = e - e1;
+    var s1: f64 = _km_cr_pow2(e1);
+    var s2: f64 = _km_cr_pow2(e2);
+    var y: f64 = r * s1;
+    return y * s2;
+}
+
+# ── T0: Rust 1.3.0 ──────────────────────────────────────────────────────────────────────────────────
+
+# Rust's iteration_budget: min(200 + 20·√a, 10^6), truncated.
+fn p9_budget(a: f64): i64 {
+    var root: f64 = 0.0;
+    if (a - a == 0.0 && a > 0.0) { root = f64_sqrt(a); }
+    var b: f64 = 200.0 + 20.0 * root;
+    var mx: f64 = 1000000.0;
+    if (b > mx) { b = mx; }
+    return f64_to(b);
+}
+
+# ln(1 + u) for u > −1, through a double-double ln of the exact 1 + u: correctly rounded except on a tie
+# (the stand-in for M1's correctly rounded log1p).
+fn p9_log1p(u: f64): f64 {
+    var vh, vl = _km_two_sum(1.0, u);
+    var floor: f64 = 0x0010000000000000;
+    if (vh < floor) {
+        var lz: f64 = _km_cr_ln(vh);
+        return lz;
+    }
+    var lh, ll = p9_ln_dd(vh);
+    var c: f64 = vl / vh;
+    var l2: f64 = ll + c;
+    var r: f64 = lh + l2;
+    return r;
+}
+
+# Rust's stirling_error for a ≥ 10, in its operation order.
+fn p9_stirling(a: f64): f64 {
+    var r: f64 = 1.0 / a;
+    var r2: f64 = r * r;
+    var c12: f64 = 1.0 / 12.0;
+    var c360: f64 = 1.0 / 360.0;
+    var c1260: f64 = 1.0 / 1260.0;
+    var c1680: f64 = 1.0 / 1680.0;
+    var c1188: f64 = 1.0 / 1188.0;
+    var c691: f64 = 691.0 / 360360.0;
+    var t6: f64 = r2 / 156.0;
+    var t5: f64 = c691 - t6;
+    var t4: f64 = c1188 - r2 * t5;
+    var t3: f64 = c1680 - r2 * t4;
+    var t2: f64 = c1260 - r2 * t3;
+    var t1: f64 = c360 - r2 * t2;
+    var t0: f64 = c12 - r2 * t1;
+    return r * t0;
+}
+
+# Rust's ln_gamma_kernel: a ln x − x − lnΓ(a), the Stirling form from a = 10.
+fn p9_t0_kernel(a: f64, x: f64): f64 {
+    if (a < 10.0) {
+        var lx: f64 = _km_cr_ln(x);
+        var t: f64 = a * lx;
+        var t2: f64 = t - x;
+        var lg: f64 = p9_t0_ln_gamma(a);
+        return t2 - lg;
+    }
+    var xa: f64 = x - a;
+    var u: f64 = xa / a;
+    var l1: f64 = p9_log1p(u);
+    var d: f64 = u - l1;
+    var na: f64 = -a;
+    var m: f64 = na * d;
+    var la: f64 = _km_cr_ln(a);
+    var h: f64 = 0.5 * la;
+    var r: f64 = m + h;
+    var ls: f64 = _PMN_MATH_LN_SQRT_2PI;
+    var r2: f64 = r - ls;
+    var st: f64 = p9_stirling(a);
+    return r2 - st;
+}
+
+fn p9_clamp01(v: f64): f64 {
+    if (v < 0.0) { return 0.0; }
+    if (v > 1.0) { return 1.0; }
+    return v;
+}
+
+# Rust's gamma_series_p.
+fn p9_t0_series(a: f64, x: f64): f64 {
+    var k: f64 = p9_t0_kernel(a, x);
+    var prefix: f64 = _km_cr_exp(k);
+    if (prefix == 0.0) { return 0.0; }
+    var ap: f64 = a;
+    var sum: f64 = 1.0 / a;
+    var del: f64 = sum;
+    var n = p9_budget(a);
+    var eps: f64 = _PMN_MATH_CONVERGENCE_EPS;
+    var i = 0;
+    while (i < n) {
+        ap = ap + 1.0;
+        var q: f64 = x / ap;
+        del = del * q;
+        sum = sum + del;
+        var ad: f64 = f64_abs(del);
+        var as: f64 = f64_abs(sum);
+        var lim: f64 = as * eps;
+        if (ad < lim) { break; }
+        i = i + 1;
+    }
+    var r: f64 = sum * prefix;
+    var c: f64 = p9_clamp01(r);
+    return c;
+}
+
+# Rust's gamma_cf_q (modified Lentz).
+fn p9_t0_cf(a: f64, x: f64): f64 {
+    var k: f64 = p9_t0_kernel(a, x);
+    var prefix: f64 = _km_cr_exp(k);
+    if (prefix == 0.0) { return 0.0; }
+    var tiny: f64 = _PMN_MATH_LENTZ_TINY;
+    var eps: f64 = _PMN_MATH_CONVERGENCE_EPS;
+    var x1: f64 = x + 1.0;
+    var b: f64 = x1 - a;
+    var c: f64 = 1.0 / tiny;
+    var d: f64 = 1.0 / b;
+    var h: f64 = d;
+    var n = p9_budget(a);
+    var i = 1;
+    while (i <= n) {
+        var fi: f64 = f64_from(i);
+        var nfi: f64 = -fi;
+        var ima: f64 = fi - a;
+        var an: f64 = nfi * ima;
+        b = b + 2.0;
+        var ad: f64 = an * d;
+        d = ad + b;
+        var dabs: f64 = f64_abs(d);
+        if (dabs < tiny) { d = tiny; }
+        var ac: f64 = an / c;
+        c = b + ac;
+        var cabs: f64 = f64_abs(c);
+        if (cabs < tiny) { c = tiny; }
+        d = 1.0 / d;
+        var del: f64 = d * c;
+        h = h * del;
+        var dm: f64 = del - 1.0;
+        var dma: f64 = f64_abs(dm);
+        if (dma < eps) { break; }
+        i = i + 1;
+    }
+    var r: f64 = h * prefix;
+    var cl: f64 = p9_clamp01(r);
+    return cl;
+}
+
+# Rust's gamma_inc for a ≤ 1e9 (the Wilson–Hilferty branch past 1e9 is outside the probe): (P, Q).
+fn p9_t0_gamma_inc(a: f64, x: f64): (f64, f64) {
+    var nan: f64 = _PMN_F64_NAN;
+    if (x != x || a != a || a <= 0.0) { return (nan, nan); }
+    if (x <= 0.0) { return (0.0, 1.0); }
+    var inf: f64 = _PMN_F64_INFINITY;
+    if (x == inf) { return (1.0, 0.0); }
+    if (a == inf) { return (0.0, 1.0); }
+    var a1: f64 = a + 1.0;
+    if (x < a1) {
+        var p: f64 = p9_t0_series(a, x);
+        var q: f64 = 1.0 - p;
+        return (p, q);
+    }
+    var q2: f64 = p9_t0_cf(a, x);
+    var p2: f64 = 1.0 - q2;
+    return (p2, q2);
+}
+
+# ── T1: the prototype ───────────────────────────────────────────────────────────────────────────────
+
+# Double-double arithmetic on (h, l) pairs (each near 2^-104 relative; Dekker and Knuth).
+fn p9_dd_add(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var s, e = _km_two_sum(ah, bh);
+    var t: f64 = al + bl;
+    var e2: f64 = e + t;
+    var h, l = _km_fast_two_sum(s, e2);
+    return (h, l);
+}
+
+fn p9_dd_mul_d(ah: f64, al: f64, b: f64): (f64, f64) {
+    var p, e = _km_two_prod(ah, b);
+    var c: f64 = al * b;
+    var e2: f64 = e + c;
+    var h, l = _km_fast_two_sum(p, e2);
+    return (h, l);
+}
+
+fn p9_dd_div(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var q1: f64 = ah / bh;
+    var p, pe = _km_two_prod(q1, bh);
+    var r0: f64 = ah - p;
+    var r1: f64 = r0 - pe;
+    var r2: f64 = r1 + al;
+    var qb: f64 = q1 * bl;
+    var r3: f64 = r2 - qb;
+    var q2: f64 = r3 / bh;
+    var h, l = _km_fast_two_sum(q1, q2);
+    return (h, l);
+}
+
+# ln x as a double-double for any positive finite x (a subnormal x is scaled by 2^54 first, as kimiya's core expects).
+fn p9_ln_dd_any(x: f64): (f64, f64) {
+    var floor: f64 = 0x0010000000000000;
+    var eb = 0;
+    var xs: f64 = x;
+    if (x < floor) {
+        var p54: f64 = 0x4350000000000000;
+        xs = x * p54;
+        eb = 0 - 54;
+    }
+    var ui = load64(&xs);
+    var h, l, err = _km_ln_core(ui, eb);
+    return (h, l);
+}
+
+# lnΓ(1 + f) for 0 ≤ f < 1 as a double-double: −γf + Σ (−1)^k ζ(k)/k·f^k up to f = 1/2, and with y = f − 1,
+# (1 − γ)y + Σ (−1)^k (ζ(k) − 1)/k·y^k above (terms below 2^-k and 4^-k: the sums stop under 2^-62 of the value).
+fn p9_lngamma1p_dd(f: f64): (f64, f64) {
+    if (f == 0.0) { return (0.0, 0.0); }
+    var gh: f64 = _P9_Z_EULER_H;
+    var gl: f64 = _P9_Z_EULER_L;
+    var thr: f64 = 0x3C10000000000000;          # 2^-62
+    var y: f64 = f;
+    var ch: f64 = 0.0;
+    var cl: f64 = 0.0;
+    var useh = 1;
+    if (f > 0.5) {
+        y = f - 1.0;
+        var oh, ol = _km_two_sum(1.0, -gh);
+        var ol2: f64 = ol - gl;
+        ch = oh;
+        cl = ol2;
+        useh = 0;
+    } else {
+        ch = -gh;
+        cl = -gl;
+    }
+    var acc, accl = p9_dd_mul_d(ch, cl, y);
+    var ph: f64 = y;
+    var pl: f64 = 0.0;
+    var k = 2;
+    while (k <= 64) {
+        var nh, nl = p9_dd_mul_d(ph, pl, y);
+        ph = nh;
+        pl = nl;
+        var zh: f64 = load64(&_P9_Z_ZH + k * 8);
+        var zl: f64 = load64(&_P9_Z_ZL + k * 8);
+        if (useh == 0) {
+            zh = load64(&_P9_Z_MH + k * 8);
+            zl = load64(&_P9_Z_ML + k * 8);
+        }
+        var th, tl = p9_dd_mul(zh, zl, ph, pl);
+        var fk: f64 = f64_from(k);
+        var uh, ul = p9_dd_div(th, tl, fk, 0.0);
+        if ((k & 1) == 1) {
+            uh = -uh;
+            ul = -ul;
+        }
+        var sh, sl = p9_dd_add(acc, accl, uh, ul);
+        acc = sh;
+        accl = sl;
+        var au: f64 = f64_abs(uh);
+        var aa: f64 = f64_abs(acc);
+        var lim: f64 = aa * thr;
+        if (au < lim) { break; }
+        k = k + 1;
+    }
+    return (acc, accl);
+}
+
+# lnΓ(a) for 0 < a < 10 as a double-double: lnΓ(1 + f) − ln a below 1, else lnΓ(1 + f) + ln((1 + f)…(m − 1 + f))
+# with a = m + f and the product a double-double.
+fn p9_lngamma_small_dd(a: f64): (f64, f64) {
+    if (a < 1.0) {
+        var gh, gl = p9_lngamma1p_dd(a);
+        var lh, ll = p9_ln_dd_any(a);
+        var rh, rl = p9_dd_add(gh, gl, -lh, -ll);
+        return (rh, rl);
+    }
+    var mf: f64 = f64_floor(a);
+    var f: f64 = a - mf;
+    var m = f64_to(mf);
+    var g2h, g2l = p9_lngamma1p_dd(f);
+    if (m < 2) { return (g2h, g2l); }
+    var zh, zl = _km_two_sum(1.0, f);
+    var j = 2;
+    while (j < m) {
+        var fj: f64 = f64_from(j);
+        var th, tl = _km_two_sum(fj, f);
+        var nh, nl = p9_dd_mul(zh, zl, th, tl);
+        zh = nh;
+        zl = nl;
+        j = j + 1;
+    }
+    var lzh, lzl = p9_ln_dd(zh);
+    var cz: f64 = zl / zh;
+    var lzl2: f64 = lzl + cz;
+    var sh, sl = p9_dd_add(g2h, g2l, lzh, lzl2);
+    return (sh, sl);
+}
+
+# The prefactor's exponent M = a ln x − x − lnΓ(a) as a double-double.
+fn p9_t1_lnpre(a: f64, x: f64): (f64, f64) {
+    if (a < 10.0) {
+        var lh, ll = p9_ln_dd_any(x);
+        var th, tl = p9_dd_mul_d(lh, ll, a);
+        var sh, sl = p9_dd_add(th, tl, -x, 0.0);
+        var gh, gl = p9_lngamma_small_dd(a);
+        var mh, ml = p9_dd_add(sh, sl, -gh, -gl);
+        return (mh, ml);
+    }
+    # a ≥ 10: −a·φ(u) + ½ ln a − ln √(2π) − stirling(a), u = (x − a)/a, φ(u) = u − ln(1 + u).
+    var dh, dl = _km_two_sum(x, -a);
+    var uh, ul = p9_dd_div(dh, dl, a, 0.0);
+    var fh: f64 = 0.0;
+    var fl: f64 = 0.0;
+    var lah, lal = p9_ln_dd(a);
+    var au: f64 = f64_abs(uh);
+    if (au <= 0.25) {
+        # φ(u) = Σ_{k≥2} (−u)^k/k, exactly enough: terms fall by 4 or more.
+        var wh: f64 = -uh;
+        var wl: f64 = -ul;
+        var ph, pl = p9_dd_mul(wh, wl, wh, wl);
+        var thr: f64 = 0x3C10000000000000;
+        var k = 2;
+        while (k < 200) {
+            var fk: f64 = f64_from(k);
+            var th2, tl2 = p9_dd_div(ph, pl, fk, 0.0);
+            var sh2, sl2 = p9_dd_add(fh, fl, th2, tl2);
+            fh = sh2;
+            fl = sl2;
+            var at: f64 = f64_abs(th2);
+            var af: f64 = f64_abs(fh);
+            var lim: f64 = af * thr;
+            if (at < lim) { break; }
+            var nh, nl = p9_dd_mul(ph, pl, wh, wl);
+            ph = nh;
+            pl = nl;
+            k = k + 1;
+        }
+    } else {
+        # ln(1 + u) = ln x − ln a exactly, so u's rounding never enters the logarithm.
+        var lxh, lxl = p9_ln_dd_any(x);
+        var l1h, l1l = p9_dd_add(lxh, lxl, -lah, -lal);
+        var ph2, pl2 = p9_dd_add(uh, ul, -l1h, -l1l);
+        fh = ph2;
+        fl = pl2;
+    }
+    var ah, al = p9_dd_mul_d(fh, fl, a);
+    var hh: f64 = 0.5 * lah;
+    var hl: f64 = 0.5 * lal;
+    var pih: f64 = _KM_CR_SC_PIH;
+    var pim: f64 = _KM_CR_SC_PIM;
+    var tph: f64 = 2.0 * pih;
+    var tpm: f64 = 2.0 * pim;
+    var lph, lpl = p9_ln_dd(tph);
+    var cp: f64 = tpm / tph;
+    var lpl2: f64 = lpl + cp;
+    var sph: f64 = 0.5 * lph;
+    var spl: f64 = 0.5 * lpl2;
+    var st: f64 = p9_stirling(a);
+    var r1h, r1l = p9_dd_add(hh, hl, -ah, -al);
+    var r2h, r2l = p9_dd_add(r1h, r1l, -sph, -spl);
+    var r3h, r3l = p9_dd_add(r2h, r2l, -st, 0.0);
+    return (r3h, r3l);
+}
+
+# e^M for a double-double M, as (h, l, E) with h + l = e^M/2^E near 2^-70; E = −100000 when e^M underflows.
+fn p9_exp_dd(mh: f64, ml: f64): (f64, f64, i64) {
+    var lo: f64 = -1100.0;
+    if (mh < lo) { return (0.0, 0.0, 0 - 100000); }
+    var h, l, e = _km_exp_core(mh, ml);
+    return (h, l, e);
+}
+
+# The series Σ_{n≥0} Π_{k=1..n} x/(a + k) as a double-double, stopping under 2^-62 of the sum.
+fn p9_t1_series(a: f64, x: f64): (f64, f64) {
+    var sh: f64 = 1.0;
+    var sl: f64 = 0.0;
+    var th: f64 = 1.0;
+    var tl: f64 = 0.0;
+    var thr: f64 = 0x3C10000000000000;
+    var n = 1;
+    var cap = 2000 + 100 * f64_to(f64_sqrt(a));
+    while (n < cap) {
+        var fnn: f64 = f64_from(n);
+        var dh, dl = _km_two_sum(a, fnn);
+        var qh, ql = p9_dd_div(x, 0.0, dh, dl);
+        var mh, ml = p9_dd_mul(th, tl, qh, ql);
+        th = mh;
+        tl = ml;
+        var nh, nl = p9_dd_add(sh, sl, th, tl);
+        sh = nh;
+        sl = nl;
+        var lim: f64 = sh * thr;
+        if (th < lim) { break; }
+        n = n + 1;
+    }
+    return (sh, sl);
+}
+
+# Legendre's continued fraction for Γ(a, x)·e^x·x^-a by modified Lentz, in double-double, stopping when a step
+# changes the value by under 2^-62.
+fn p9_t1_cf(a: f64, x: f64): (f64, f64) {
+    var tiny: f64 = 0x0010000000000000;
+    var bh, bl0 = _km_two_sum(x, -a);
+    var b1h, b1l = p9_dd_add(bh, bl0, 1.0, 0.0);
+    bh = b1h;
+    var bl: f64 = b1l;
+    var dh, dl = p9_dd_div(1.0, 0.0, bh, bl);
+    var hh: f64 = dh;
+    var hl: f64 = dl;
+    var ch: f64 = 0.0;
+    var cl: f64 = 0.0;
+    var thr: f64 = 0x3C10000000000000;
+    var cap = 2000 + 100 * f64_to(f64_sqrt(a));
+    var i = 1;
+    while (i < cap) {
+        var fi: f64 = f64_from(i);
+        var ih, il = _km_two_sum(fi, -a);
+        var anh, anl = p9_dd_mul_d(ih, il, fi);
+        anh = -anh;
+        anl = -anl;
+        var b2h, b2l = p9_dd_add(bh, bl, 2.0, 0.0);
+        bh = b2h;
+        bl = b2l;
+        var adh, adl = p9_dd_mul(anh, anl, dh, dl);
+        var d2h, d2l = p9_dd_add(adh, adl, bh, bl);
+        var dab: f64 = f64_abs(d2h);
+        if (dab < tiny) {
+            d2h = tiny;
+            d2l = 0.0;
+        }
+        if (i == 1) {
+            # c starts at "infinity", so the first c is b itself.
+            ch = bh;
+            cl = bl;
+        } else {
+            var qh, ql = p9_dd_div(anh, anl, ch, cl);
+            var c2h, c2l = p9_dd_add(bh, bl, qh, ql);
+            ch = c2h;
+            cl = c2l;
+        }
+        var cab: f64 = f64_abs(ch);
+        if (cab < tiny) {
+            ch = tiny;
+            cl = 0.0;
+        }
+        var rdh, rdl = p9_dd_div(1.0, 0.0, d2h, d2l);
+        dh = rdh;
+        dl = rdl;
+        var delh, dell = p9_dd_mul(dh, dl, ch, cl);
+        var nhh, nhl = p9_dd_mul(hh, hl, delh, dell);
+        hh = nhh;
+        hl = nhl;
+        var dm1h, dm1l = p9_dd_add(delh, dell, -1.0, 0.0);
+        var dev: f64 = f64_abs(dm1h);
+        if (dev < thr) { break; }
+        i = i + 1;
+    }
+    return (hh, hl);
+}
+
+# e^t − 1 for a double-double t: a Taylor sum below |t| = 1/8, else e^t (kimiya's core) minus 1.
+fn p9_expm1_dd(th: f64, tl: f64): (f64, f64) {
+    var at: f64 = f64_abs(th);
+    if (at < 0.125) {
+        var sh: f64 = th;
+        var sl: f64 = tl;
+        var ph: f64 = th;
+        var pl: f64 = tl;
+        var thr: f64 = 0x3C10000000000000;
+        var k = 2;
+        while (k < 40) {
+            var mh, ml = p9_dd_mul(ph, pl, th, tl);
+            var fk: f64 = f64_from(k);
+            var qh, ql = p9_dd_div(mh, ml, fk, 0.0);
+            ph = qh;
+            pl = ql;
+            var nh, nl = p9_dd_add(sh, sl, ph, pl);
+            sh = nh;
+            sl = nl;
+            var ap: f64 = f64_abs(ph);
+            var as: f64 = f64_abs(sh);
+            var lim: f64 = as * thr;
+            if (ap < lim) { break; }
+            k = k + 1;
+        }
+        return (sh, sl);
+    }
+    var lo: f64 = -700.0;
+    if (th < lo) { return (-1.0, 0.0); }
+    var eh, el, e = _km_exp_core(th, tl);
+    var s: f64 = _km_cr_pow2(e);
+    var xh: f64 = eh * s;
+    var xl: f64 = el * s;
+    var rh, rl = p9_dd_add(xh, xl, -1.0, 0.0);
+    return (rh, rl);
+}
+
+# Q for a < 1 and x < 1.1, directly: (Γ(1 + a) − x^a − a·x^a·T)/Γ(1 + a), T = Σ_{n≥1} (−x)^n/(n!(a + n)),
+# with Γ(1 + a) − 1 = expm1(lnΓ(1 + a)) and x^a − 1 = expm1(a ln x), all in double-double.
+fn p9_t1_small_q(a: f64, x: f64): f64 {
+    var lgh, lgl = p9_lngamma1p_dd(a);
+    var g1h, g1l = p9_expm1_dd(lgh, lgl);
+    var lxh, lxl = p9_ln_dd_any(x);
+    var alh, all = p9_dd_mul_d(lxh, lxl, a);
+    var p1h, p1l = p9_expm1_dd(alh, all);
+    var th: f64 = 0.0;
+    var tl: f64 = 0.0;
+    var ch: f64 = 1.0;
+    var cl: f64 = 0.0;
+    var nx: f64 = -x;
+    var thr: f64 = 0x3C10000000000000;
+    var n = 1;
+    while (n < 80) {
+        var fnn: f64 = f64_from(n);
+        var mh, ml = p9_dd_mul_d(ch, cl, nx);
+        var qh, ql = p9_dd_div(mh, ml, fnn, 0.0);
+        ch = qh;
+        cl = ql;
+        var dh, dl = _km_two_sum(a, fnn);
+        var uh, ul = p9_dd_div(ch, cl, dh, dl);
+        var sh, sl = p9_dd_add(th, tl, uh, ul);
+        th = sh;
+        tl = sl;
+        var au: f64 = f64_abs(uh);
+        var as: f64 = f64_abs(th);
+        var lim: f64 = as * thr;
+        if (au < lim) { break; }
+        n = n + 1;
+    }
+    var xah, xal = p9_dd_add(1.0, 0.0, p1h, p1l);
+    var axh, axl = p9_dd_mul_d(xah, xal, a);
+    var wh, wl = p9_dd_mul(axh, axl, th, tl);
+    var dfh, dfl = p9_dd_add(g1h, g1l, -p1h, -p1l);
+    var nmh, nml = p9_dd_add(dfh, dfl, -wh, -wl);
+    var gmh, gml = p9_dd_add(1.0, 0.0, g1h, g1l);
+    var qh2, ql2 = p9_dd_div(nmh, nml, gmh, gml);
+    var r: f64 = qh2 + ql2;
+    return r;
+}
+
+# T1 (P, Q) for a ≤ 1e9 (the Wilson–Hilferty region past 1e9 keeps Rust's form and is outside the probe).
+fn p9_t1_gamma_inc(a: f64, x: f64): (f64, f64) {
+    var nan: f64 = _PMN_F64_NAN;
+    if (x != x || a != a || a <= 0.0) { return (nan, nan); }
+    if (x <= 0.0) { return (0.0, 1.0); }
+    var inf: f64 = _PMN_F64_INFINITY;
+    if (x == inf) { return (1.0, 0.0); }
+    if (a == inf) { return (0.0, 1.0); }
+    var mh, ml = p9_t1_lnpre(a, x);
+    var eh, el, e = p9_exp_dd(mh, ml);
+    if (x < a || (a < 1.0 && x < 1.1)) {
+        var sh, sl = p9_t1_series(a, x);
+        var s2h, s2l = p9_dd_div(sh, sl, a, 0.0);
+        var ph, pl = p9_dd_mul(eh, el, s2h, s2l);
+        var pr: f64 = ph + pl;
+        var p: f64 = p9_ldexp(pr, e);
+        if (a < 1.0 && x < 1.1) {
+            var qs: f64 = p9_t1_small_q(a, x);
+            return (p, qs);
+        }
+        # Q = 1 − P, with P ≤ 0.64 here (x < a, a ≥ 1): the scaled double-double, then one rounding.
+        var s: f64 = _km_cr_pow2(e);
+        if (e < 0 - 1000) { s = 0.0; }
+        var psh: f64 = ph * s;
+        var psl: f64 = pl * s;
+        var qh, ql = p9_dd_add(1.0, 0.0, -psh, -psl);
+        var q: f64 = qh + ql;
+        return (p, q);
+    }
+    var hh, hl = p9_t1_cf(a, x);
+    var qqh, qql = p9_dd_mul(eh, el, hh, hl);
+    var qr: f64 = qqh + qql;
+    var q2: f64 = p9_ldexp(qr, e);
+    var s2: f64 = _km_cr_pow2(e);
+    if (e < 0 - 1000) { s2 = 0.0; }
+    var qsh: f64 = qqh * s2;
+    var qsl: f64 = qql * s2;
+    var p2h, p2l = p9_dd_add(1.0, 0.0, -qsh, -qsl);
+    var p2: f64 = p2h + p2l;
+    return (p2, q2);
+}
+
+# ── T1b: T1 with plain-double loops (the cost experiment) ───────────────────────────────────────────
+# The same prefactor and small-shape Q as T1, but the series and the continued fraction run in double, as Rust's do,
+# with a Neumaier-compensated sum and a 2^-56 stop. It asks which part of T1's cost its accuracy needs.
+
+fn p9_t1b_series(a: f64, x: f64): f64 {
+    var s: f64 = 1.0;
+    var c: f64 = 0.0;
+    var t: f64 = 1.0;
+    var ap: f64 = a;
+    var thr: f64 = 0x3C70000000000000;          # 2^-56
+    var n = 1;
+    var cap = 2000 + 100 * f64_to(f64_sqrt(a));
+    while (n < cap) {
+        ap = ap + 1.0;
+        var q: f64 = x / ap;
+        t = t * q;
+        var sn: f64 = s + t;
+        var as: f64 = f64_abs(s);
+        var at: f64 = f64_abs(t);
+        if (as >= at) {
+            var d1: f64 = s - sn;
+            c = c + (d1 + t);
+        } else {
+            var d2: f64 = t - sn;
+            c = c + (d2 + s);
+        }
+        s = sn;
+        var lim: f64 = s * thr;
+        if (t < lim) { break; }
+        n = n + 1;
+    }
+    return s + c;
+}
+
+fn p9_t1b_cf(a: f64, x: f64): f64 {
+    var tiny: f64 = 0x0010000000000000;
+    var thr: f64 = 0x3C70000000000000;
+    var x1: f64 = x + 1.0;
+    var b: f64 = x1 - a;
+    var d: f64 = 1.0 / b;
+    var h: f64 = d;
+    var c: f64 = 0.0;
+    var cap = 2000 + 100 * f64_to(f64_sqrt(a));
+    var i = 1;
+    while (i < cap) {
+        var fi: f64 = f64_from(i);
+        var nfi: f64 = -fi;
+        var ima: f64 = fi - a;
+        var an: f64 = nfi * ima;
+        b = b + 2.0;
+        var ad: f64 = an * d;
+        d = ad + b;
+        var dab: f64 = f64_abs(d);
+        if (dab < tiny) { d = tiny; }
+        if (i == 1) {
+            c = b;
+        } else {
+            var ac: f64 = an / c;
+            c = b + ac;
+        }
+        var cab: f64 = f64_abs(c);
+        if (cab < tiny) { c = tiny; }
+        d = 1.0 / d;
+        var del: f64 = d * c;
+        h = h * del;
+        var dm: f64 = del - 1.0;
+        var dma: f64 = f64_abs(dm);
+        if (dma < thr) { break; }
+        i = i + 1;
+    }
+    return h;
+}
+
+fn p9_t1b_gamma_inc(a: f64, x: f64): (f64, f64) {
+    var nan: f64 = _PMN_F64_NAN;
+    if (x != x || a != a || a <= 0.0) { return (nan, nan); }
+    if (x <= 0.0) { return (0.0, 1.0); }
+    var mh, ml = p9_t1_lnpre(a, x);
+    var eh, el, e = p9_exp_dd(mh, ml);
+    if (x < a || (a < 1.0 && x < 1.1)) {
+        var sv: f64 = p9_t1b_series(a, x);
+        var s2h, s2l = p9_dd_div(sv, 0.0, a, 0.0);
+        var ph, pl = p9_dd_mul(eh, el, s2h, s2l);
+        var pr: f64 = ph + pl;
+        var p: f64 = p9_ldexp(pr, e);
+        if (a < 1.0 && x < 1.1) {
+            var qs: f64 = p9_t1_small_q(a, x);
+            return (p, qs);
+        }
+        var s: f64 = _km_cr_pow2(e);
+        if (e < 0 - 1000) { s = 0.0; }
+        var psh: f64 = ph * s;
+        var psl: f64 = pl * s;
+        var qh, ql = p9_dd_add(1.0, 0.0, -psh, -psl);
+        var q: f64 = qh + ql;
+        return (p, q);
+    }
+    var hv: f64 = p9_t1b_cf(a, x);
+    var qqh, qql = p9_dd_mul_d(eh, el, hv);
+    var qr: f64 = qqh + qql;
+    var q2: f64 = p9_ldexp(qr, e);
+    var s2: f64 = _km_cr_pow2(e);
+    if (e < 0 - 1000) { s2 = 0.0; }
+    var qsh: f64 = qqh * s2;
+    var qsl: f64 = qql * s2;
+    var p2h, p2l = p9_dd_add(1.0, 0.0, -qsh, -qsl);
+    var p2: f64 = p2h + p2l;
+    return (p2, q2);
+}

@@ -873,3 +873,95 @@ T1 costs about what T0 does for x > 0. It is 2.3× faster beside 1, where no log
 - T1's design stands: fdlibm's layout, double-double logarithms and products, and one rounding.
 - `src/crmath.cyr` keeps the double-double ln core (kimiya's `_km_ln_core`) callable inside pramana, beside the
   correctly rounded ln. The prototype is its first consumer.
+
+### 6.5 Part 9d-2: P9, `gamma_inc` (2026-11-15)
+
+**The reference.** MPFR's own `gamma_inc` takes 0.05–0.8 s a call at 1,024 bits once a nears 1e5, too slow for
+50,000 rows. So `check.c` gained `gref`: P and Q at 320 bits from x^a e^−x/Γ(a) and one of two expansions.
+- **x ≤ a:** P from the positive series, stopped under 2⁻³³⁰. Q = 1 − P, which here is at least about 0.3, so it keeps
+  about 318 bits.
+- **x > a:** Q from Legendre's continued fraction by modified Lentz, stopped at 2⁻³¹⁰. P = 1 − Q.
+
+Zero and subnormal results count in units of 2⁻¹⁰⁷⁴ (ADR 009). On 400 of the baseline's pairs, `gref` agrees with
+`mpfr_gamma_inc` at 1,024 bits to 6×10⁻⁷⁵ ulp.
+
+**What it compares** (`p9_gamma_impl.cyr`):
+- **Rust 1.3.0's own results**, on §3.2's 20,000 pairs (a ∈ [0.01, 1000], x near a);
+- **T0:** Rust's `gamma_inc` in its operation order, on correctly rounded primitives;
+- **T1, the prototype,** with four changes:
+  - **the prefactor's exponent a ln x − x − lnΓ(a) is a double-double.** Below a = 10, lnΓ(a) is exact to about 2⁻⁶⁰,
+    from the ζ series of lnΓ(1 + f) and the recurrence. From a = 10, it uses Rust's Stirling kernel with
+    u − ln(1 + u) as an exact series, and ln(1 + u) taken as ln x − ln a, so u's rounding never enters.
+    kimiya's exp core takes the double-double;
+  - **the series and Legendre's continued fraction run in double-double** and stop at 2⁻⁶²;
+  - **the split moves to x = a,** so a complement is taken only where it can't cancel;
+  - **for a < 1 and x < 1.1, Q is computed directly:** (Γ(1 + a) − x^a − a·x^a·Σ(−x)ⁿ/(n!(a + n)))/Γ(1 + a).
+    Γ(1 + a) − 1 and x^a − 1 are expm1s of double-doubles.
+
+  The ζ(k) table comes from `p9_zeta_table.c` (MPFR, checked to 2⁻¹⁰⁴).
+
+**The sets:** five seeded sets over ADR 009's committed domain, a ∈ [10⁻³, 10⁵]:
+- 20,000 with x = a + t√a, t ∈ [−5, 5];
+- 10,000 in the lower tail, x/a down to 10⁻⁸;
+- 10,000 in the upper tail, out to 50a and a + 40√a;
+- 10,000 with small shapes, a ≤ 1 and x ∈ [10⁻⁸, 60];
+- 10,000 at the switches, x ≈ 1.1 and x = a(1 ± δ).
+
+That makes 360,400 rows, checked in about 25 minutes.
+
+| Set | Function | Rust 1.3.0, max (mean) | T0, max | T1, max (mean) | T1 not CR |
+|---|---|---|---|---|---|
+| §3.2's 20,000 pairs | P | 97.0 (4.82) | 97.0 | **0.60** (0.249) | 0.09% |
+| | Q | 485 (12.4) | 485 | **0.64** (0.249) | 0.11% |
+| x near a, a ∈ [10⁻³, 10⁵] | P | — | 1.6×10⁴ | **0.59** (0.250) | 0.26% |
+| | Q | — | 7,489 | **0.60** (0.246) | 0.10% |
+| lower tail | P | — | 2.9×10⁹ | **1.00** (0.162) | 0.10% |
+| | Q | — | 1,132 | **0.50** (0.120) | 0% |
+| upper tail | P | — | 49.6 | **0.50** (0.127) | 0% |
+| | Q | — | 2.8×10⁴ | **0.59** (0.209) | 0.14% |
+| small shapes | P | — | 26.9 | **0.50** (0.244) | 0% |
+| | Q | — | 2.6×10⁴ | **0.50** (0.248) | 0.01% |
+| switches | P | — | 381 | **0.58** (0.249) | 0.26% |
+| | Q | — | 405 | **0.55** (0.251) | 0.58% |
+
+- **T1 meets ADR 009's fixed bound with room to spare.** Its worst row is 1.0 ulp, against ≤ 4. That row's P is about
+  10⁻³⁰⁷, where the final scale by 2^E rounds a second time. Every other row is within 0.64, and the means are
+  0.12–0.25.
+- **Rust is worse than §3.2 recorded.** On its own 20,000 pairs, against this reference, it reaches 97 ulp on P and 485
+  on Q. §3.2's 4,000-row subsample recorded 58 and 246.
+- **Rust is far worse outside §3.2's sets.** Every T0 row that misses is Rust's algorithm (T0 = Rust on §3.2's pairs):
+  - **in the deep lower tail, P is off by up to 2.9×10⁹ ulp** (a = 38, x = 4.6×10⁻⁷). From a = 10, Rust forms
+    u = (x − a)/a ≈ −1, so u's rounding becomes a large relative error in 1 + u;
+  - **for small a, Q is off by up to 2.8×10⁴ ulp,** from the 1 − P complement and the continued fraction's slow
+    convergence in double.
+- **One answer on every target:** the probe's 360,400 rows are byte-identical on x86_64 ELF, PE and aarch64, sha256
+  `819b4f57…`.
+
+**Cost** (`p9_gamma.bcyr`): ns per (P, Q) call, pinned, three runs.
+
+| Inputs | T0 | T1 |
+|---|---|---|
+| a ∈ [0.5, 10], x = a ± 3√a | 542–544 | 9,546–9,771 |
+| a ∈ [10, 10³], x = a ± 3√a | 843–847 | 11,734–12,010 |
+| a ∈ [10³, 10⁵], x = a ± 3√a | 3,750–3,782 | 63,578–64,533 |
+| a ∈ [10⁻³, 1], x ∈ [10⁻⁴, 1.1] | 615–620 | 8,080–8,086 |
+| a ∈ [1, 10³], x ∈ [2×10³, 10⁵] | 234–235 | 2,467–2,502 |
+
+T1 costs 10–17× T0, because every loop runs in double-double.
+
+**Can the loops run in double?** T1b is T1 with Rust's double loops, a Neumaier-compensated sum and a 2⁻⁵⁶ stop,
+keeping the double-double prefactor and the direct small-shape Q. It was checked on every fourth pair. It misses
+the bound in two places:
+- **x near a for large a:** up to 78.6 ulp on P (a = 65,354), where both expansions run for hundreds of steps;
+- **the continued fraction's slow region just past x = 1.1 for small a:** up to 58 ulp on Q.
+
+So the loops' extra precision is what meets the bound, and the cost has to be won by better algorithms in those two
+regions, not by less precision.
+
+**What it means for M2 part b:**
+- T1's design stands.
+- Speed is measured, not gated, so the 10–17× is a finding. The candidates to measure:
+  - Temme's uniform asymptotic expansion near x = a for large a, which is O(1) and needs 9e's correctly rounded erfc;
+  - the direct small-shape form carried further than x = 1.1, in place of the slow continued fraction.
+- The double-double toolkit (add, multiply, divide, expm1 and ln of a double-double) becomes part of
+  `src/crmath.cyr`, with the ζ(k) table generated beside it.
