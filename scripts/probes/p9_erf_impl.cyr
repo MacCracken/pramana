@@ -1,0 +1,694 @@
+# p9_erf_impl.cyr — probe P9's FMA-free port of CORE-MATH's binary64 erf and erfc (port plan §5 step 9e, §3.4; D3).
+#
+# CORE-MATH's src/binary64/erf/erf.c and erfc/erfc.c (Paul Zimmermann, MIT licence; the notice is in p9_erf_data.cyr,
+# with every table), transcribed function for function. Cyrius has no scalar FMA, so every __builtin_fma(a, b, c) is
+# `p9e_fma`: a·b = p + e exactly by Dekker's product (Veltkamp's split), then RN(p + e + c) exactly by Boldo and
+# Melquiond's round-to-odd sum (kimiya's _km_rn3). That is an exact fma for every operand these functions reach except
+# one: erf's tiny path ends with fma(l, 2^-106, y), whose product can be subnormal, so `p9e_fma_tiny` rounds that sum
+# once on the subnormal grid instead. The FMA-free C build with the same two functions (build/p9/stage1) gives
+# CORE-MATH's own bits on all 369,190 of its worst cases (both signs) and 40 million more arguments; this file must
+# give that build's bits. a_mul's fma(a, b, −a·b) is the same Dekker product, and both TwoSum forms compute the exact
+# error, so those helpers are kimiya's. Floating-point flags (fenv) and errno are not ported: Cyrius has neither.
+
+include "/home/macro/Repos/kimiya/src/mathx_data.cyr"
+include "/home/macro/Repos/kimiya/src/mathx.cyr"
+include "scripts/probes/p9_erf_data.cyr"
+
+# ── helpers ────────────────────────────────────────────────────────────────────────────────────────
+
+# fma(a, b, c), exactly: RN(a·b + c) with one rounding.
+fn p9e_fma(a: f64, b: f64, c: f64): f64 {
+    var p, e = _km_two_prod(a, b);
+    var r: f64 = _km_rn3(p, e, c);
+    return r;
+}
+
+# RN(y + l·2^-106) exactly, for erf's tiny path: Y = y·2^106, Y + l = sh + sl exactly; a normal result is sh·2^-106,
+# a subnormal one N·2^-1074 with N = RN(2^52 + (sh + sl)·2^968) − 2^52 (the grid of [2^52, 2^53) is 1).
+fn p9e_fma_tiny(l: f64, y: f64): f64 {
+    var s106: f64 = 0x4690000000000000;          # 0x1p106
+    var ys: f64 = y * s106;
+    var sh, sl = _km_two_sum(ys, l);
+    var ash: f64 = f64_abs(sh);
+    var lim: f64 = 0x06B0000000000000;           # 0x1p-916
+    if (ash >= lim) {
+        var d106: f64 = 0x3950000000000000;      # 0x1p-106
+        var r: f64 = sh * d106;
+        return r;
+    }
+    var m: f64 = 0x4330000000000000;             # 0x1p52
+    if (sh < 0.0) { m = -m; }
+    var up: f64 = 0x7C70000000000000;            # 0x1p968
+    var a: f64 = sh * up;
+    var b: f64 = sl * up;
+    var z: f64 = _km_rn3(m, a, b);
+    var n: f64 = z - m;
+    var tiny: f64 = p9e_bits(1);                 # 0x1p-1074
+    var r2: f64 = n * tiny;
+    return r2;
+}
+
+# s_mul: a·(bh + bl) as a double-double.
+fn p9e_s_mul(a: f64, bh: f64, bl: f64): (f64, f64) {
+    var h, l = _km_two_prod(a, bh);
+    var l2: f64 = p9e_fma(a, bl, l);
+    return (h, l2);
+}
+
+# d_mul: (ah + al)·(bh + bl) − al·bl.
+fn p9e_d_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var h, l = _km_two_prod(ah, bh);
+    var l2: f64 = p9e_fma(ah, bl, l);
+    var l3: f64 = p9e_fma(al, bh, l2);
+    return (h, l3);
+}
+
+# fast_sum: a + (bh + bl), for |a| ≥ |bh|.
+fn p9e_fast_sum(a: f64, bh: f64, bl: f64): (f64, f64) {
+    var h, l = _km_fast_two_sum(a, bh);
+    var l2: f64 = l + bl;
+    return (h, l2);
+}
+
+# Round to the nearest integer, ties to even, for |x| < 2^51.
+fn p9e_roundeven(x: f64): f64 {
+    var t: f64 = x + 6755399441055744.0;         # 1.5·2^52
+    var r: f64 = t - 6755399441055744.0;
+    return r;
+}
+
+# 2^e·r with one rounding (C's ldexp): two exact scalings, of which only the second can round.
+fn p9e_ldexp(r: f64, e): f64 {
+    var e1 = e / 2;
+    var e2 = e - e1;
+    var s1: f64 = _km_cr_pow2(e1);
+    var s2: f64 = _km_cr_pow2(e2);
+    var y: f64 = r * s1;
+    var z: f64 = y * s2;
+    return z;
+}
+
+# A double from its bit pattern, for the subnormal constants (a small hex literal in an f64 slot reads as an integer).
+fn p9e_bits(w): f64 {
+    var r: f64 = 0.0;
+    store64(&r, w);
+    return r;
+}
+
+fn p9e_tab(t, i): f64 {
+    var v: f64 = load64(t + i * 8);
+    return v;
+}
+
+# ── erf ────────────────────────────────────────────────────────────────────────────────────────────
+
+# cr_erf_fast: for 0 ≤ z ≤ 0x1.7afb48dc96626p+2, (h, l, err) with |(h + l)/erf(z) − 1| < err.
+fn p9e_erf_fast(z0: f64): (f64, f64, f64) {
+    var z: f64 = z0;
+    if (z < 0.0625) {
+        var t = &_P9E_FAST_C0;
+        var z2h, z2l = _km_two_prod(z, z);
+        var z4: f64 = z2h * z2h;
+        var c9: f64 = p9e_fma(p9e_tab(t, 7), z2h, p9e_tab(t, 6));
+        var c5: f64 = p9e_fma(p9e_tab(t, 5), z2h, p9e_tab(t, 4));
+        c5 = p9e_fma(c9, z4, c5);
+        var th, tl = _km_two_prod(z2h, c5);
+        var h, l = _km_fast_two_sum(p9e_tab(t, 2), th);
+        var a1: f64 = tl + p9e_tab(t, 3);
+        l = l + a1;
+        var hc: f64 = h;
+        var th2, tl2 = _km_two_prod(z2h, h);
+        var f1: f64 = p9e_fma(z2h, l, p9e_tab(t, 1));
+        tl2 = tl2 + f1;
+        var h2, l2 = _km_fast_two_sum(p9e_tab(t, 0), th2);
+        var f2: f64 = p9e_fma(z2l, hc, tl2);
+        l2 = l2 + f2;
+        var h3, tl3 = _km_two_prod(h2, z);
+        var l3: f64 = p9e_fma(l2, z, tl3);
+        var err0: f64 = 0x3BA7800000000000;     # 0x1.78p-69
+        return (h3, l3, err0);
+    }
+    var sz: f64 = 16.0 * z;
+    var v: f64 = f64_floor(sz);
+    var i = f64_to(sz);
+    var zm: f64 = z - 0.03125;
+    var vz: f64 = 0.0625 * v;
+    z = zm - vz;
+    var c = &_P9E_C + (i - 1) * 13 * 8;
+    var z2: f64 = z * z;
+    var z4b: f64 = z2 * z2;
+    var d9: f64 = p9e_fma(p9e_tab(c, 12), z, p9e_tab(c, 11));
+    var d7: f64 = p9e_fma(p9e_tab(c, 10), z, p9e_tab(c, 9));
+    var d5: f64 = p9e_fma(p9e_tab(c, 8), z, p9e_tab(c, 7));
+    var zc6: f64 = z * p9e_tab(c, 6);
+    var c3h, c3l = _km_fast_two_sum(p9e_tab(c, 5), zc6);
+    d7 = p9e_fma(d9, z2, d7);
+    var m5: f64 = d5 * z2;
+    var c3h2, t1 = _km_fast_two_sum(c3h, m5);
+    c3l = c3l + t1;
+    var m7: f64 = d7 * z4b;
+    var c3h3, t2 = _km_fast_two_sum(c3h2, m7);
+    c3l = c3l + t2;
+    var th3, tl3b = _km_two_prod(z, c3h3);
+    var c2h, c2l = _km_fast_two_sum(p9e_tab(c, 4), th3);
+    var f3: f64 = p9e_fma(z, c3l, tl3b);
+    c2l = c2l + f3;
+    var th4, tl4 = _km_two_prod(z, c2h);
+    var hh, ll = _km_fast_two_sum(p9e_tab(c, 2), th4);
+    var f4: f64 = p9e_fma(z, c2l, p9e_tab(c, 3));
+    var a4: f64 = tl4 + f4;
+    ll = ll + a4;
+    var th5, tl5 = _km_two_prod(z, hh);
+    tl5 = p9e_fma(z, ll, tl5);
+    var hf, lf = _km_fast_two_sum(p9e_tab(c, 0), th5);
+    var a5: f64 = tl5 + p9e_tab(c, 1);
+    lf = lf + a5;
+    var err1: f64 = 0x3BA1100000000000;         # 0x1.11p-69
+    return (hf, lf, err1);
+}
+
+# cr_erf_accurate_tiny's polynomial, for 2^-61 ≤ z < 1/8 (erfc.c's copy, without erf's exception list).
+fn p9e_erf_acc_tiny_poly(z: f64): (f64, f64) {
+    var p = &_P9E_TINY_P;
+    var z2: f64 = z * z;
+    var h: f64 = p9e_tab(p, 14);
+    var a = 19;
+    while (a > 11) {
+        h = p9e_fma(h, z2, p9e_tab(p, a / 2 + 4));
+        a = a - 2;
+    }
+    var l: f64 = 0.0;
+    a = 11;
+    while (a > 7) {
+        var th, tl = _km_two_prod(h, z);
+        tl = p9e_fma(l, z, tl);
+        var h2, l2 = _km_two_prod(th, z);
+        l2 = p9e_fma(tl, z, l2);
+        var h3, t3 = _km_fast_two_sum(p9e_tab(p, a / 2 + 4), h2);
+        h = h3;
+        l = l2 + t3;
+        a = a - 2;
+    }
+    a = 7;
+    while (a >= 1) {
+        var th4, tl4 = _km_two_prod(h, z);
+        tl4 = p9e_fma(l, z, tl4);
+        var h4, l4 = _km_two_prod(th4, z);
+        l4 = p9e_fma(tl4, z, l4);
+        var h5, t5 = _km_fast_two_sum(p9e_tab(p, a - 1), h4);
+        h = h5;
+        var s5: f64 = p9e_tab(p, a) + t5;
+        l = l4 + s5;
+        a = a - 2;
+    }
+    var h6, tl6 = _km_two_prod(h, z);
+    var l6: f64 = p9e_fma(l, z, tl6);
+    return (h6, l6);
+}
+
+# cr_erf_accurate's polynomial, for 1/8 ≤ z ≤ 0x1.7afb48dc96626p+2.
+fn p9e_erf_acc_poly(z0: f64): (f64, f64) {
+    var sz: f64 = 8.0 * z0;
+    var v: f64 = f64_floor(sz);
+    var i = f64_to(sz);
+    var zm: f64 = z0 - 0.0625;
+    var vz: f64 = 0.125 * v;
+    var z: f64 = zm - vz;
+    var p = &_P9E_C2 + (i - 1) * 27 * 8;
+    var h: f64 = p9e_tab(p, 26);
+    var j = 17;
+    while (j > 10) {
+        h = p9e_fma(h, z, p9e_tab(p, 8 + j));
+        j = j - 1;
+    }
+    var l: f64 = 0.0;
+    j = 10;
+    while (j > 7) {
+        var th, tl = _km_two_prod(h, z);
+        tl = p9e_fma(l, z, tl);
+        var h2, l2 = _km_two_sum(p9e_tab(p, 8 + j), th);
+        h = h2;
+        l = l2 + tl;
+        j = j - 1;
+    }
+    j = 7;
+    while (j >= 0) {
+        var th3, tl3 = _km_two_prod(h, z);
+        tl3 = p9e_fma(l, z, tl3);
+        var h3, l3 = _km_two_sum(p9e_tab(p, 2 * j), th3);
+        h = h3;
+        var s3: f64 = p9e_tab(p, 2 * j + 1) + tl3;
+        l = l3 + s3;
+        j = j - 1;
+    }
+    return (h, l);
+}
+
+# erf.c's cr_erf_accurate: its five exceptions, then the tiny path (with its own 171) or the polynomial.
+fn p9e_erf_accurate(z: f64): (f64, f64) {
+    var e = &_P9E_ACC_EXC;
+    var i = 0;
+    while (i < 5) {
+        if (z == p9e_tab(e, 3 * i)) { return (p9e_tab(e, 3 * i + 1), p9e_tab(e, 3 * i + 2)); }
+        i = i + 1;
+    }
+    if (z < 0.125) {
+        var x = &_P9E_TINY_EXC;
+        var lo = 0;
+        var hi = 171;
+        while (lo + 1 < hi) {
+            var k = (lo + hi) / 2;
+            if (p9e_tab(x, 3 * k) <= z) { lo = k; } else { hi = k; }
+        }
+        if (z == p9e_tab(x, 3 * lo)) { return (p9e_tab(x, 3 * lo + 1), p9e_tab(x, 3 * lo + 2)); }
+        var th, tl = p9e_erf_acc_tiny_poly(z);
+        return (th, tl);
+    }
+    var ph, pl = p9e_erf_acc_poly(z);
+    return (ph, pl);
+}
+
+# erfc.c's cr_erf_accurate: no exceptions (cr_erfc_accurate keeps its own).
+fn p9e_erf_acc_core(z: f64): (f64, f64) {
+    if (z < 0.125) {
+        var th, tl = p9e_erf_acc_tiny_poly(z);
+        return (th, tl);
+    }
+    var ph, pl = p9e_erf_acc_poly(z);
+    return (ph, pl);
+}
+
+# erf(x), correctly rounded (cr_erf).
+fn p9_cr_erf(x: f64): f64 {
+    var z: f64 = f64_abs(x);
+    var ux = load64(&z);
+    if (ux > 0x4017AFB48DC96626) {
+        var os: f64 = 1.0;
+        if (x < 0.0) { os = -1.0; }
+        if (ux > 0x7FF0000000000000) {
+            var nn: f64 = x + x;
+            return nn;
+        }
+        if (ux == 0x7FF0000000000000) { return os; }
+        var e54: f64 = 0x3C90000000000000;      # 0x1p-54
+        var q: f64 = e54 * os;
+        var r: f64 = os - q;
+        return r;
+    }
+    var t61: f64 = 0x3C20000000000000;          # 0x1p-61
+    if (z < t61) {
+        if (x == 0.0) { return x; }
+        var ch: f64 = _P9E_D_CH;
+        var cl: f64 = _P9E_D_CL;
+        var y: f64 = ch * x;
+        var s106: f64 = 0x4690000000000000;     # 0x1p106
+        var sx: f64 = x * s106;
+        var h, l = _km_two_prod(ch, sx);
+        l = p9e_fma(cl, sx, l);
+        var ys: f64 = y * s106;
+        var d: f64 = h - ys;
+        l = l + d;
+        var res: f64 = p9e_fma_tiny(l, y);
+        return res;
+    }
+    var fh, fl, err = p9e_erf_fast(z);
+    var sgn = load64(&x) & 0x8000000000000000;
+    var ub = load64(&fh) ^ sgn;
+    var vb = load64(&fl) ^ sgn;
+    var u: f64 = ub;
+    var v: f64 = vb;
+    var nu: f64 = -u;
+    var a1: f64 = p9e_fma(err, nu, v);
+    var left: f64 = u + a1;
+    var a2: f64 = p9e_fma(err, u, v);
+    var right: f64 = u + a2;
+    if (left == right) { return left; }
+    var ah, al = p9e_erf_accurate(z);
+    if (x >= 0.0) {
+        var rp: f64 = ah + al;
+        return rp;
+    }
+    var nh: f64 = -ah;
+    var nl: f64 = -al;
+    var rn: f64 = nh + nl;
+    return rn;
+}
+
+# The accurate path alone, for every finite x with 2^-61 ≤ |x| ≤ 0x1.7afb48dc96626p+2 (the verification's entry).
+fn p9_cr_erf_acc(x: f64): f64 {
+    var z: f64 = f64_abs(x);
+    var ah, al = p9e_erf_accurate(z);
+    if (x >= 0.0) {
+        var rp: f64 = ah + al;
+        return rp;
+    }
+    var nh: f64 = -ah;
+    var nl: f64 = -al;
+    var rn: f64 = nh + nl;
+    return rn;
+}
+
+# ── erfc ───────────────────────────────────────────────────────────────────────────────────────────
+
+# q_1: exp(zh + zl) for |z| < 0.000130273, as a double-double.
+fn p9e_q_1(zh: f64, zl: f64): (f64, f64) {
+    var q1 = &_P9E_Q1;
+    var z: f64 = zh + zl;
+    var q: f64 = p9e_fma(p9e_tab(q1, 4), zh, p9e_tab(q1, 3));
+    q = p9e_fma(q, z, p9e_tab(q1, 2));
+    var qz: f64 = q * z;
+    var h, l = _km_fast_two_sum(p9e_tab(q1, 1), qz);
+    var h2, l2 = p9e_d_mul(zh, zl, h, l);
+    var h3, l3 = p9e_fast_sum(p9e_tab(q1, 0), h2, l2);
+    return (h3, l3);
+}
+
+# exp_1: exp(xh + xl) as a double-double (pow.[ch]'s fast path).
+fn p9e_exp_1(xh: f64, xl: f64): (f64, f64) {
+    var inv: f64 = _P9E_D_INVLOG2;
+    var xi: f64 = xh * inv;
+    var k: f64 = p9e_roundeven(xi);
+    var l2h: f64 = _P9E_D_LOG2H;
+    var l2l: f64 = _P9E_D_LOG2L;
+    var kh, kl = p9e_s_mul(k, l2h, l2l);
+    var dk: f64 = xh - kh;
+    var yh, yl = _km_fast_two_sum(dk, xl);
+    yl = yl - kl;
+    var kk = f64_to(k);
+    var m = (kk >>> 12) + 0x3FF;
+    var i2 = (kk >>> 6) & 0x3F;
+    var i1 = kk & 0x3F;
+    var t1h: f64 = p9e_tab(&_P9E_T1, 2 * i2);
+    var t1l: f64 = p9e_tab(&_P9E_T1, 2 * i2 + 1);
+    var t2h: f64 = p9e_tab(&_P9E_T2, 2 * i1);
+    var t2l: f64 = p9e_tab(&_P9E_T2, 2 * i1 + 1);
+    var hh, hl = p9e_d_mul(t2h, t2l, t1h, t1l);
+    var qh, ql = p9e_q_1(yh, yl);
+    var rh, rl = p9e_d_mul(hh, hl, qh, ql);
+    var sb = m << 52;
+    var sc: f64 = sb;
+    var oh: f64 = rh * sc;
+    var ol: f64 = rl * sc;
+    return (oh, ol);
+}
+
+# exp_accurate: exp(xh + xl) = 2^e·(h + l) for −742 ≤ xh + xl ≤ −2.92, to about 104 bits.
+fn p9e_exp_accurate(xh: f64, xl: f64): (f64, f64, i64) {
+    var inv: f64 = _P9E_D_INVLOG2acc;
+    var xi: f64 = xh * inv;
+    var kf: f64 = p9e_roundeven(xi);
+    var k = f64_to(kf);
+    var nk: f64 = -kf;
+    var l2h: f64 = _P9E_D_LOG2Hacc;
+    var l2l: f64 = _P9E_D_LOG2Lacc;
+    var l2t: f64 = _P9E_D_LOG2tiny;
+    var yh: f64 = p9e_fma(nk, l2h, xh);
+    var kl: f64 = nk * l2l;
+    var th, tl = _km_two_sum(kl, xl);
+    var yh2, yl = _km_fast_two_sum(yh, th);
+    var ytl: f64 = yl + tl;
+    var yl2: f64 = p9e_fma(nk, l2t, ytl);
+    var e2 = &_P9E_E2;
+    var h: f64 = p9e_tab(e2, 27);
+    var i = 18;
+    while (i >= 16) {
+        h = p9e_fma(h, yh2, p9e_tab(e2, i + 8));
+        i = i - 1;
+    }
+    var ah, al = _km_two_prod(h, yh2);
+    al = p9e_fma(h, yl2, al);
+    var hh, ll = _km_fast_two_sum(p9e_tab(e2, 23), ah);
+    ll = ll + al;
+    i = 14;
+    while (i >= 8) {
+        var bh, bl = _km_two_prod(hh, yh2);
+        bl = p9e_fma(hh, yl2, bl);
+        bl = p9e_fma(ll, yh2, bl);
+        var ch, cl = _km_fast_two_sum(p9e_tab(e2, i + 8), bh);
+        hh = ch;
+        ll = cl + bl;
+        i = i - 1;
+    }
+    i = 7;
+    while (i >= 0) {
+        var dh, dl = _km_two_prod(hh, yh2);
+        dl = p9e_fma(hh, yl2, dl);
+        dl = p9e_fma(ll, yh2, dl);
+        var fh, fl = _km_fast_two_sum(p9e_tab(e2, 2 * i), dh);
+        hh = fh;
+        var s: f64 = dl + p9e_tab(e2, 2 * i + 1);
+        ll = fl + s;
+        i = i - 1;
+    }
+    return (hh, ll, k);
+}
+
+# erfc_asympt_fast: for THRESHOLD1 < x < 0x1.b39dc41e48bfdp+4, (h, l, err), err an absolute bound.
+fn p9e_erfc_asympt_fast(x: f64): (f64, f64, f64) {
+    var top: f64 = 0x4039DB1BB14E15CA;          # 0x1.9db1bb14e15cap+4
+    if (x >= top) { return (0.0, 0.0, 1.0); }
+    var uh, ul = _km_two_prod(x, x);
+    var nuh: f64 = -uh;
+    var nul: f64 = -ul;
+    var eh, el = p9e_exp_1(nuh, nul);
+    var yh: f64 = 1.0 / x;
+    var nx: f64 = -x;
+    var f: f64 = p9e_fma(nx, yh, 1.0);
+    var yl: f64 = yh * f;
+    var thr = &_P9E_ASFAST_THR;
+    var i = 0;
+    while (yh > p9e_tab(thr, i)) { i = i + 1; }
+    var p = &_P9E_T + i * 13 * 8;
+    var vh, vl = _km_two_prod(yh, yh);
+    var y2: f64 = 2.0 * yh;
+    vl = p9e_fma(y2, yl, vl);
+    var zh: f64 = p9e_tab(p, 12);
+    zh = p9e_fma(zh, vh, p9e_tab(p, 11));
+    zh = p9e_fma(zh, vh, p9e_tab(p, 10));
+    var h, l = p9e_s_mul(zh, vh, vl);
+    var zh2, zl = _km_fast_two_sum(p9e_tab(p, 9), h);
+    zl = zl + l;
+    var j = 15;
+    while (j >= 3) {
+        var h2, l2 = p9e_d_mul(zh2, zl, vh, vl);
+        var zh3, zl3 = _km_fast_two_sum(p9e_tab(p, (j + 1) / 2), h2);
+        zh2 = zh3;
+        zl = zl3 + l2;
+        j = j - 2;
+    }
+    var h4, l4 = p9e_d_mul(zh2, zl, vh, vl);
+    var zh5, zl5 = _km_fast_two_sum(p9e_tab(p, 0), h4);
+    var s5: f64 = l4 + p9e_tab(p, 1);
+    zl5 = zl5 + s5;
+    var wh, wl = p9e_d_mul(zh5, zl5, yh, yl);
+    var rh, rl = p9e_d_mul(wh, wl, eh, el);
+    var lim: f64 = 0x044151B9A3FDD5C9;          # 0x1.151b9a3fdd5c9p-955
+    if (rh >= lim) {
+        var c: f64 = 0x3BBD900000000000;        # 0x1.d9p-68
+        var er: f64 = c * rh;
+        return (rh, rl, er);
+    }
+    var floor: f64 = 0x0010000000000000;        # 0x1p-1022
+    return (rh, rl, floor);
+}
+
+# cr_erfc_fast: for −0x1.7744f8f74e94bp2 < x < 0x1.b39dc41e48bfdp+4, (h, l, err), err an absolute bound.
+fn p9e_erfc_fast(x: f64): (f64, f64, f64) {
+    if (x < 0.0) {
+        var nx: f64 = -x;
+        var h, l, err = p9e_erf_fast(nx);
+        var ea: f64 = err * h;
+        var h2, t = _km_fast_two_sum(1.0, h);
+        var l2: f64 = t + l;
+        var c: f64 = 0x3994000000000000;        # 0x1.4p-102
+        var e2: f64 = ea + c;
+        return (h2, l2, e2);
+    }
+    var t1: f64 = _P9E_D_THRESHOLD1;
+    if (x <= t1) {
+        var h3, l3, err3 = p9e_erf_fast(x);
+        var ea3: f64 = err3 * h3;
+        var nh: f64 = -h3;
+        var h4, t4 = _km_fast_two_sum(1.0, nh);
+        var l4: f64 = t4 - l3;
+        var half: f64 = 0x3FDE861FBB24C00A;     # 0x1.e861fbb24c00ap-2
+        if (x >= half) { return (h4, l4, ea3); }
+        var c4: f64 = 0x3974000000000000;       # 0x1.4p-104
+        var e4: f64 = ea3 + c4;
+        return (h4, l4, e4);
+    }
+    var h5, l5, e5 = p9e_erfc_asympt_fast(x);
+    return (h5, l5, e5);
+}
+
+# erfc_asympt_accurate: for 0x1.b59ffb450828cp+0 < x < 0x1.b39dc41e48bfdp+4.
+fn p9e_erfc_asympt_accurate(x: f64): f64 {
+    var ex = &_P9E_ASACC_EXC;
+    var n = 0;
+    while (n < 22) {
+        if (x == p9e_tab(ex, 3 * n)) {
+            var r0: f64 = p9e_tab(ex, 3 * n + 1) + p9e_tab(ex, 3 * n + 2);
+            return r0;
+        }
+        n = n + 1;
+    }
+    var sx: f64 = 0x403A8F7BFBD15495;           # 0x1.a8f7bfbd15495p+4: the subnormal exception
+    if (x == sx) {
+        var rs: f64 = p9e_bits(0x000667BD620FD95B);   # CORE-MATH's result there (its fma, read from the C build)
+        return rs;
+    }
+    var uh, ul = _km_two_prod(x, x);
+    var nuh: f64 = -uh;
+    var nul: f64 = -ul;
+    var eh, el, e = p9e_exp_accurate(nuh, nul);
+    var yh: f64 = 1.0 / x;
+    var nx: f64 = -x;
+    var f: f64 = p9e_fma(nx, yh, 1.0);
+    var yl: f64 = yh * f;
+    var thr = &_P9E_ASACC_THR;
+    var i = 0;
+    while (yh > p9e_tab(thr, i)) { i = i + 1; }
+    var p = &_P9E_TACC + i * 30 * 8;
+    var vh, vl = _km_two_prod(yh, yh);
+    var y2: f64 = 2.0 * yh;
+    vl = p9e_fma(y2, yl, vl);
+    var zh: f64 = p9e_tab(p, 14 + 6 + i);
+    var zl: f64 = 0.0;
+    var j = 27 + 2 * i;
+    while (j >= 13) {
+        var h, l = _km_two_prod(zh, vh);
+        l = p9e_fma(zh, vl, l);
+        l = p9e_fma(zl, vh, l);
+        var zh2, zl2 = _km_two_sum(p9e_tab(p, (j - 1) / 2 + 6), h);
+        zh = zh2;
+        zl = zl2 + l;
+        j = j - 2;
+    }
+    j = 11;
+    while (j >= 1) {
+        var h3, l3 = _km_two_prod(zh, vh);
+        l3 = p9e_fma(zh, vl, l3);
+        l3 = p9e_fma(zl, vh, l3);
+        var zh3, zl3 = _km_two_sum(p9e_tab(p, j - 1), h3);
+        zh = zh3;
+        var s3: f64 = l3 + p9e_tab(p, j);
+        zl = zl3 + s3;
+        j = j - 2;
+    }
+    var wh, wl = _km_two_prod(zh, yh);
+    wl = p9e_fma(zh, yl, wl);
+    wl = p9e_fma(zl, yh, wl);
+    var wh2, wl2 = _km_fast_two_sum(wh, wl);
+    var rh, rl = _km_two_prod(wh2, eh);
+    rl = p9e_fma(wh2, el, rl);
+    rl = p9e_fma(wl2, eh, rl);
+    var sum: f64 = rh + rl;
+    var res: f64 = p9e_ldexp(sum, e);
+    var dmin: f64 = 0x0010000000000000;         # 0x1p-1022
+    if (res < dmin) {
+        var back: f64 = p9e_ldexp(res, 0 - e);
+        var corr: f64 = rh - back;
+        corr = corr + rl;
+        var add: f64 = p9e_ldexp(corr, e);
+        res = res + add;
+    }
+    return res;
+}
+
+# cr_erfc_accurate.
+fn p9e_erfc_accurate(x: f64): f64 {
+    if (x < 0.0) {
+        var en = &_P9E_ERFC_NEG_EXC;
+        var n = 0;
+        while (n < 17) {
+            if (x == p9e_tab(en, 3 * n)) {
+                var r0: f64 = p9e_tab(en, 3 * n + 1) + p9e_tab(en, 3 * n + 2);
+                return r0;
+            }
+            n = n + 1;
+        }
+        var nx: f64 = -x;
+        var h, l = p9e_erf_acc_core(nx);
+        var h2, t = _km_fast_two_sum(1.0, h);
+        var l2: f64 = t + l;
+        var r: f64 = h2 + l2;
+        return r;
+    }
+    var mid: f64 = 0x3FFB59FFB450828C;          # 0x1.b59ffb450828cp+0
+    if (x <= mid) {
+        var ep = &_P9E_ERFC_POS_EXC;
+        var m = 0;
+        while (m < 29) {
+            if (x == p9e_tab(ep, 3 * m)) {
+                var r1: f64 = p9e_tab(ep, 3 * m + 1) + p9e_tab(ep, 3 * m + 2);
+                return r1;
+            }
+            m = m + 1;
+        }
+        var h3, l3 = p9e_erf_acc_core(x);
+        var nh: f64 = -h3;
+        var h4, t4 = _km_fast_two_sum(1.0, nh);
+        var l4: f64 = t4 - l3;
+        var r4: f64 = h4 + l4;
+        return r4;
+    }
+    var r5: f64 = p9e_erfc_asympt_accurate(x);
+    return r5;
+}
+
+# erfc(x), correctly rounded (cr_erfc).
+fn p9_cr_erfc(x: f64): f64 {
+    var t = load64(&x);
+    var at = t & 0x7FFFFFFFFFFFFFFF;
+    if (t < 0) {
+        if (t >= 0xC017744F8F74E94B) {
+            if (t >= 0xFFF0000000000000) {
+                if (t == 0xFFF0000000000000) { return 2.0; }
+                var nn: f64 = x + x;
+                return nn;
+            }
+            var e54: f64 = 0x3C90000000000000;  # 0x1p-54
+            var r2: f64 = 2.0 - e54;
+            return r2;
+        }
+        var lo: f64 = 0xBC9C5BF891B4EF6A;       # -0x1.c5bf891b4ef6ap-54
+        if (lo <= x) {
+            var nx: f64 = -x;
+            var s54: f64 = 0x3C90000000000000;
+            var r1: f64 = p9e_fma(nx, s54, 1.0);
+            return r1;
+        }
+    } else {
+        if (at >= 0x403B39DC41E48BFD) {
+            if (at >= 0x7FF0000000000000) {
+                if (at == 0x7FF0000000000000) { return 0.0; }
+                var np: f64 = x + x;
+                return np;
+            }
+            var t1074: f64 = p9e_bits(1);           # 0x1p-1074
+            var rq: f64 = t1074 * 0.25;
+            return rq;
+        }
+        var hi: f64 = 0x3C8C5BF891B4EF6A;       # 0x1.c5bf891b4ef6ap-55
+        if (x <= hi) {
+            var nx2: f64 = -x;
+            var s542: f64 = 0x3C90000000000000;
+            var r3: f64 = p9e_fma(nx2, s542, 1.0);
+            return r3;
+        }
+    }
+    var h, l, err = p9e_erfc_fast(x);
+    var a: f64 = l - err;
+    var left: f64 = h + a;
+    var b: f64 = l + err;
+    var right: f64 = h + b;
+    if (left == right) { return left; }
+    var ra: f64 = p9e_erfc_accurate(x);
+    return ra;
+}
+
+# The accurate path alone, for every finite x the fast path serves (the verification's entry).
+fn p9_cr_erfc_acc(x: f64): f64 {
+    var ra: f64 = p9e_erfc_accurate(x);
+    return ra;
+}

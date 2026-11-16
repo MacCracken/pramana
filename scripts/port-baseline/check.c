@@ -149,8 +149,8 @@ int main(void){
     else if(!strcmp(nm,"cos")) mpfr_cos(v,a,MPFR_RNDN);
     else if(!strcmp(nm,"tan")) mpfr_tan(v,a,MPFR_RNDN);
     else if(!strcmp(nm,"pow")) mpfr_pow(v,a,b,MPFR_RNDN);
-    else if(!strcmp(nm,"erf")) mpfr_erf(v,a,MPFR_RNDN);
-    else if(!strcmp(nm,"erfc")) mpfr_erfc(v,a,MPFR_RNDN);
+    else if(!strncmp(nm,"erfc",4)) mpfr_erfc(v,a,MPFR_RNDN);  // "erfc", and probe P9's "erfc/set", "erfc_acc/set"
+    else if(!strncmp(nm,"erf",3)) mpfr_erf(v,a,MPFR_RNDN);    // "erf", "erf/set", "erf_acc/set"
     else if(!strncmp(nm,"ncdf",4)){ mpfr_sqrt_ui(t,2,MPFR_RNDN); mpfr_div(t,a,t,MPFR_RNDN); mpfr_neg(t,t,MPFR_RNDN); mpfr_erfc(v,t,MPFR_RNDN); mpfr_div_ui(v,v,2,MPFR_RNDN); }
     else if(!strncmp(nm,"lgamma",6)){ int sg; mpfr_lgamma(v,&sg,a,MPFR_RNDN); }
     else if(!strcmp(nm,"gamma_q")||!strcmp(nm,"gamma_p")){
@@ -174,7 +174,10 @@ int main(void){
     Stat *s=get(nm);
     if(!ok){ s->skipped++; continue; }
     double cr=mpfr_get_d(v,MPFR_RNDN);
-    if(!isfinite(cr) || (!gr && fabs(cr) < 2.2250738585072014e-308) || isnan(r)){ s->skipped++; continue; }
+    // Probe P9's erf/erfc rows ("erf/…", "erfc/…", "erf_acc/…") count zero and subnormal results in units of 2^-1074
+    // (ADR 009), as gref's do; every other row keeps the baseline's rule of skipping them.
+    int p9e=strchr(nm,'/')!=NULL && !strncmp(nm,"erf",3);
+    if(!isfinite(cr) || (!gr && !p9e && fabs(cr) < 2.2250738585072014e-308) || isnan(r)){ s->skipped++; continue; }
     double u=nextafter(fabs(cr),INFINITY)-fabs(cr);
     // A name ending "_mixed" is measured in ulps of max(|cr|, 1): ADR 009's bound for lnΓ at x < 0 (probe P9).
     size_t nl=strlen(nm);

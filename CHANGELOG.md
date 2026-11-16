@@ -160,6 +160,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **Targets:** the same bits on x86_64, PE and aarch64.
   - **Cost:** 7.5–71 µs a call, 10–17× Rust's form on correctly rounded primitives.
 
+- **Probes, part 9e: correctly rounded erf and erfc, CORE-MATH's without FMA** (port plan M0 step 9;
+  `scripts/probes/p9_erf*`, `p9_coremath_tables.py` and the C helpers in `p9_erf_c/`; results in
+  `docs/development/port-parity.md` §6.7).
+  - **The port:** CORE-MATH's binary64 `erf.c` and `erfc.c` (MIT; fetched, never committed), function for function,
+    with the 17 tables (3,929 words) generated from the sources and their notice kept.
+  - **No FMA:** of the 59 fma sites, 2 are Dekker products and 57 run as an exact fma (Dekker's product, then
+    Boldo and Melquiond's round-to-odd three-term sum). The one product that can be subnormal, at the end of erf's
+    tiny path, is rounded once on the subnormal grid instead.
+  - **Stage 1, in C:** the emulation matches hardware fma on 10⁸ triples, and CORE-MATH built with it matches its own
+    hardware-FMA build on all 369,190 worst cases (both signs) and 4×10⁷ arguments.
+  - **Accuracy:** the Cyrius port gives CORE-MATH's own bits on 2,568,534 rows, and MPFR 4.2.2 at 1,024 bits finds
+    every one of the 2,768,518 non-NaN rows correctly rounded, 100,000 through each accurate path alone included.
+    Rust 1.3.0 is at 0.82 ulp on erf and 2.49 on erfc (§3.2).
+  - **Targets:** the same bits on x86_64, PE and aarch64.
+  - **Cost:** 508–675 ns a call on the main ranges and 2.3 µs on erfc's asymptotic range, 18–31× glibc. Most of it
+    is the emulated fma (6.5–20× CORE-MATH's cost in C), so a scalar fma is requested from cyrius (ledger L12).
+  - **D3 = C holds:** the port verified inside its slot, so the ≤ 1 ulp fallback is not needed.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

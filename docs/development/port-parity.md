@@ -1046,3 +1046,101 @@ T1 costs 10–17× T0, as `gamma_inc` does, and for the same reason: the continu
 - M2 part b can trade some of that margin for speed. TOMS 708's region-specific expansions (`bgrat` for one large shape,
   `basym` for two) are O(1) where the continued fraction takes O(√max(a, b)) steps.
 - The ≥ 50k verification must keep the switch set and the small-shape set, where the defects above lived.
+
+### 6.7 Part 9e: P9, erf and erfc, CORE-MATH without FMA (2026-11-15)
+
+**The source.** CORE-MATH's binary64 `erf.c` (710 lines) and `erfc.c` (1,256 lines), with their worst-case lists
+(65,957 and 118,638 inputs). They are MIT-licensed, fetched into `build/p9/coremath/` and never committed.
+- `p9_coremath_tables.py` writes every table and hex constant as bit patterns into `p9_erf_data.cyr`: 17 tables of
+  3,929 words, and 10 constants. Each literal is read by `float.fromhex`, so no digit is typed by hand. The tables
+  `erfc.c` repeats from `erf.c` are checked identical and written once. The header carries the sources' sha256 and
+  their MIT notice.
+- `p9_erf_impl.cyr` transcribes both files function for function, on kimiya's two-sum, Dekker product and exact
+  three-term sum. fenv flags and errno are not ported: Cyrius has neither, and Rust's erf sets neither.
+
+**The fma sites.** There are 59 distinct ones: 28 in `erf.c`, and 31 more in `erfc.c`, which repeats `erf.c`'s fast
+and accurate paths. §3.4 asked for each to be classified:
+- **a Dekker product** (2 sites): `a_mul`'s lo = fma(a, b, −a·b) is the exact error of a product. Dekker's product with
+  Veltkamp's split gives the same word;
+- **an exact fma** (the other 57): Horner steps, `s_mul`, `d_mul`, the exp reductions. CORE-MATH's bits depend on
+  their single rounding, so each one is `p9e_fma`. It computes a·b = p + e exactly by Dekker's product, then
+  RN(p + e + c) exactly by Boldo and Melquiond's round-to-odd sum (kimiya's `_km_rn3`), in place of the plan's
+  integer fma (musl's). It is exact whenever the product's error is representable, which holds at every site but one.
+- **That site's product can fall below the subnormal grid,** where Dekker's product is not exact: erf's tiny path
+  (|x| < 2⁻⁶¹) ends with fma(l, 2⁻¹⁰⁶, y). `p9e_fma_tiny` rounds y + l·2⁻¹⁰⁶ once instead, on a 2¹⁰⁶-scaled TwoSum
+  and, for a subnormal result, an exact rn3 against 2⁵² at the scaled subnormal grid. The tiny path's other products
+  stay exact: x is a multiple of 2⁻¹⁰⁷⁴, and the constants' short significands put them on grids of 2⁻¹⁰²⁰ and
+  2⁻¹⁰⁶⁹.
+
+**Stage 1, in C** (`p9_erf_c/`):
+- the emulation against hardware fma on 10⁸ seeded triples, weighted to cancellation and to far addends: 0 differ;
+- CORE-MATH built FMA-free (every `__builtin_fma` forced to the emulation, `-mno-fma`, and `objdump` showing no FMA
+  instruction) against its own build with hardware FMA, bit for bit: 0 differ, on all 369,190 worst cases (each input
+  and its negation) and 40 million seeded arguments.
+- The first tiny-path emulation added 1.5·2⁵², which rounded 480 results just above 2⁻¹⁰²³ on the wrong grid. 2⁵²
+  keeps every subnormal result's scaled sum in [2⁵², 2⁵³), and the diffs went to 0.
+
+**Stage 2, the Cyrius port** (`p9_erf.cyr`): 2,768,534 rows.
+- **The worst cases,** each input and its negation: 131,914 for erf and 237,276 for erfc.
+- **Seeded arguments:** 1,049,344 for erf and 1,150,000 for erfc, weighted to every interval edge (i/16 and i/8, the
+  clamps, 2⁻⁶¹), the subnormal range, erfc's asymptotic range up to its underflow at 27.2, and random bit patterns.
+- **The accurate paths alone,** 100,000 each, inside the domains their callers give them. Beyond those domains the
+  `C2` index runs past its end, as it would in C. An early sampler sent arguments there, and the only cross-target
+  difference P9 found (180 rows on aarch64) was that out-of-domain read.
+
+**Against MPFR** (`check.c` at 1,024 bits, run as ten interleaved chunks and merged by `scripts/port-baseline/merge.py`;
+zero and subnormal results count, in units of 2⁻¹⁰⁷⁴):
+
+| Set | n | Max ulp | Mean ulp | Not CR |
+|---|---|---|---|---|
+| erf, the worst cases, both signs | 131,906 | 0.5 | 0.246 | 0% |
+| erf, (−6, 6) | 400,000 | 0.5 | 0.249 | 0% |
+| erf, \|x\| from 2⁻¹⁰⁷⁴ to 16 | 300,000 | 0.5 | 0.238 | 0% |
+| erf, \|x\| in [2⁻⁶¹, 2⁻⁴) | 100,000 | 0.5 | 0.250 | 0% |
+| erf, any finite bits | 100,000 | 0.5 | 0.124 | 0% |
+| erf, the interval edges | 149,344 | 0.5 | 0.244 | 0% |
+| erf, the accurate path alone | 100,000 | 0.5 | 0.250 | 0% |
+| erfc, the worst cases, both signs | 237,268 | 0.5 | 0.188 | 0% |
+| erfc, (−6, 28) | 400,000 | 0.5 | 0.238 | 0% |
+| erfc, \|x\| from 2⁻¹⁰⁷⁴ to 32 | 200,000 | 0.4999 | 0.0137 | 0% |
+| erfc, [25, 27.3), the tail to underflow | 150,000 | 0.5 | 0.167 | 0% |
+| erfc, (−5.9, 0) | 100,000 | 0.5 | 0.250 | 0% |
+| erfc, any finite bits | 100,000 | 0.4999 | 0.0071 | 0% |
+| erfc, the branch edges | 200,000 | 0.5 | 0.250 | 0% |
+| erfc, the accurate path alone | 100,000 | 0.5 | 0.247 | 0% |
+
+- **Every row is correctly rounded:** all 2,768,518 (the 16 NaN inputs are not compared), the accurate paths' 200,000
+  included. Rust 1.3.0 is at 0.82 ulp on erf and 2.49 on erfc, misrounding 3.1% and 30.6% of §3.2's rows.
+- **One answer on every target:** the 2,768,534 rows are byte-identical on x86_64 ELF, PE and aarch64, sha256
+  `c4a04ad9…`.
+- **A sampler defect, found by the check:** the first run's `p9_scale` shifted with `>>>`, which sign-extends in
+  Cyrius, so 300,310 of its draws came out as NaN inputs. MPFR skips NaN rows, which left erf at about 850,000
+  seeded arguments, short of §3.4's 10⁶. Every shift is now `>>`, and the tables above are the corrected run.
+  `p9_erf.sh` reproduced them from the sources.
+
+**Cost** (`p9_erf.bcyr`, `p9_erf_c/cbench.c`): ns per call, pinned, four runs, 10⁶ calls per row over 4,096 seeded
+inputs.
+
+| Inputs | Cyrius port | CORE-MATH, hardware FMA | CORE-MATH, FMA emulated (C) | glibc |
+|---|---|---|---|---|
+| erf, [10⁻⁴, 1/16) | 555–560 | 5.7–6.1 | 114.6–116.0 | 21.6–22.6 |
+| erf, [1/16, 5.9) | 604–610 | 10.5–10.9 | 91.9–94.3 | 29.1–30.2 |
+| erf, the accurate path alone | 1,263–1,268 | — | — | — |
+| erfc, (−5.8, 0) | 508–511 | 12.4–12.6 | 82.0–84.2 | 27.3–28.0 |
+| erfc, [0, 2.88] | 667–675 | 15.8–16.3 | 108.0–110.1 | 34.4–37.4 |
+| erfc, [2.9, 25.8] (asymptotic) | 2,259–2,279 | 37.3–37.6 | 413.9–425.8 | 72.8–75.6 |
+| erfc, the accurate path alone | 4,746–4,798 | — | — | — |
+
+- **The emulated fma is most of the cost.** In C it takes CORE-MATH from 6–38 ns to 82–426 ns, 6.5–20×. The Cyrius port
+  then costs 4.8–6.6× the emulated C.
+- **Against glibc,** the port costs 18–31×, inside the sibling ratios for the correctly rounded primitives (the plan's
+  §3.7: 12–62×).
+- **A scalar fma would remove the emulation.** Hardware fma (x86_64 FMA3, aarch64 `fmadd`) rounds once, so it gives
+  the emulation's bits, and an exact software fallback keeps every target's bits the same. It is requested at step 10
+  (ledger L12).
+
+**What it means for M2 part b:**
+- **erf and erfc are correctly rounded in Cyrius,** inside 9e's slot. D3 = C holds without the ≤ 1 ulp fallback.
+- The port moves into `src/special.cyr` as it is. `p9_coremath_tables.py` moves to `scripts/golden/`, and its tables
+  are regenerated, never edited. The exact fma and the tiny-path rounding join `src/crmath.cyr`.
+- 9d-4's `normal_cdf` can now be prototyped on the correctly rounded erfc, and 9d-2's Temme option can use it.

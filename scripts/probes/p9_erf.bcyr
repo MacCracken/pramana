@@ -1,0 +1,82 @@
+# p9_erf.bcyr — probe P9, erf and erfc: the cost of the FMA-free CORE-MATH port (port plan §5 step 9e, §3.7).
+#
+# ns per call on 4,096 seeded arguments per region, cycled 250 times: erf's fast path near 0 and over [1/16, 6), its
+# accurate path alone, and erfc's four regimes (x < 0, [0, 2.88], the asymptotic fast path, the accurate path). The
+# same regions are timed in C by p9_erf_c/cbench.c (CORE-MATH with and without FMA, and glibc).
+#   CYRIUS_ALLOW_ABSOLUTE_INCLUDES=1 cyrius bench scripts/probes/p9_erf.bcyr
+
+include "scripts/probes/p9_erf_impl.cyr"
+
+var g_rng = 0x2545F4914F6CDD1D;
+var g_xs = 0;
+
+fn p9_unit(): f64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    var top = (x * 0x2545F4914F6CDD1D) >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+fn fill(lo: f64, hi: f64): i64 {
+    var i = 0;
+    while (i < 4096) {
+        var w: f64 = hi - lo;
+        var u: f64 = p9_unit();
+        var x: f64 = lo + w * u;
+        store64(g_xs + i * 8, x);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# `which`: 0 erf, 1 erf's accurate path, 2 erfc, 3 erfc's accurate path.
+fn row(name: cstring, which): i64 {
+    var s: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var k = 0;
+    while (k < 250) {
+        var i = 0;
+        while (i < 4096) {
+            var x: f64 = load64(g_xs + i * 8);
+            var r: f64 = 0.0;
+            if (which == 0) { r = p9_cr_erf(x); }
+            if (which == 1) { r = p9_cr_erf_acc(x); }
+            if (which == 2) { r = p9_cr_erfc(x); }
+            if (which == 3) { r = p9_cr_erfc_acc(x); }
+            s = s + r;
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+    bench_batch_stop(b, 1024000);
+    bench_report(b);
+    if (s != s) { println("nan"); }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_xs = alloc(4096 * 8);
+    fill(0.0001, 0.0625);
+    row("erf,  x in [1e-4, 1/16)", 0);
+    fill(0.0625, 5.9);
+    row("erf,  x in [1/16, 5.9)", 0);
+    row("erf,  the accurate path alone, [1/16, 5.9)", 1);
+    fill(-5.8, 0.0);
+    row("erfc, x in (-5.8, 0)", 2);
+    fill(0.0, 2.88);
+    row("erfc, x in [0, 2.88]", 2);
+    fill(2.9, 25.8);
+    row("erfc, x in [2.9, 25.8] (asymptotic)", 2);
+    row("erfc, the accurate path alone, [2.9, 25.8]", 3);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

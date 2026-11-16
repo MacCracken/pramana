@@ -1,0 +1,301 @@
+# p9_erf.cyr — probe P9, erf and erfc: verification rows (port plan §5 step 9e, §3.4).
+#
+# Prints `name/set x result` rows (bit patterns) for scripts/port-baseline/check.c (MPFR at 1,024 bits) and for the
+# C oracle (build/p9/stage1: CORE-MATH's own build with hardware FMA):
+# - CORE-MATH's worst cases, both signs (build/p9/erf_wc.bits, erfc_wc.bits: one input per line);
+# - over 10^6 seeded arguments per function, weighted to every branch point, the subnormal range and the tails;
+# - 10^5 per function through the accurate path alone (`erf_acc`, `erfc_acc`), which the C build has no entry for.
+#   bash scripts/probes/p9_erf.sh
+
+include "scripts/probes/p9_erf_impl.cyr"
+
+var g_rng = 0x9E3779B97F4A7C15;
+var g_out = 0;
+
+fn p9_word(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+fn p9_unit(): f64 {
+    var top = p9_word() >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# Uniform in [lo, hi).
+fn p9_range(lo: f64, hi: f64): f64 {
+    var w: f64 = hi - lo;
+    var u: f64 = p9_unit();
+    var r: f64 = lo + w * u;
+    return r;
+}
+
+# 2^u·(1 + f) with u a random integer in [elo, ehi] (2^-1074 granularity below 2^-1022), and a random sign when sg.
+# Every shift in this file is `>>`, the logical one: `>>>` sign-extends, which once turned half of these draws into
+# NaNs.
+fn p9_scale(elo, ehi, sg): f64 {
+    var span = ehi - elo + 1;
+    var e = elo + (p9_word() >> 1) % span;
+    var m = p9_word() >> 12;
+    var x: f64 = 0.0;
+    if (e >= 0 - 1022) {
+        var bits = ((e + 1023) << 52) | m;
+        x = p9e_bits(bits);
+    } else {
+        var sh = 0 - 1022 - e;
+        var sub = (m | 0x10000000000000) >> sh;
+        if (sub == 0) { sub = 1; }
+        x = p9e_bits(sub);
+    }
+    if (sg == 1 && (p9_word() & 1) == 1) { x = -x; }
+    return x;
+}
+
+# Any finite double.
+fn p9_anybits(): f64 {
+    var b = p9_word();
+    if (((b >> 52) & 0x7FF) == 0x7FF) { b = b & 0xBFFFFFFFFFFFFFFF; }
+    var x: f64 = p9e_bits(b);
+    return x;
+}
+
+fn p9_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+fn p9_hexval(c): i64 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    return c - 87;
+}
+
+fn p9_flush(): i64 {
+    print(load64(g_out), load64(g_out + 8));
+    store64(g_out + 8, 0);
+    return 0;
+}
+
+fn p9_row(name: cstring, set: cstring, x: f64, r: f64): i64 {
+    str_builder_add_cstr(g_out, name);
+    str_builder_putc(g_out, 47);
+    str_builder_add_cstr(g_out, set);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, x);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, r);
+    str_builder_putc(g_out, 10);
+    if (load64(g_out + 8) > 1048576) { p9_flush(); }
+    return 0;
+}
+
+fn p9_erf_row(set: cstring, x: f64): i64 {
+    var r: f64 = p9_cr_erf(x);
+    p9_row("erf", set, x, r);
+    return 0;
+}
+
+fn p9_erfc_row(set: cstring, x: f64): i64 {
+    var r: f64 = p9_cr_erfc(x);
+    p9_row("erfc", set, x, r);
+    return 0;
+}
+
+# One worst-case list: each input and its negation.
+fn p9_worst(path: cstring, which): i64 {
+    var cap = 8388608;
+    var buf = alloc(cap);
+    var n = file_read_all(path, buf, cap);
+    if (n <= 0) {
+        print(path, strlen(path));
+        println(": cannot read");
+        return 1;
+    }
+    var i = 0;
+    var w = 0;
+    var digits = 0;
+    while (i < n) {
+        var c = load8(buf + i);
+        if (c == 10) {
+            if (digits > 0) {
+                var x: f64 = p9e_bits(w);
+                var nx: f64 = -x;
+                if (which == 0) {
+                    p9_erf_row("wc", x);
+                    p9_erf_row("wc", nx);
+                } else {
+                    p9_erfc_row("wc", x);
+                    p9_erfc_row("wc", nx);
+                }
+            }
+            w = 0;
+            digits = 0;
+        } else {
+            w = (w << 4) | p9_hexval(c);
+            digits = digits + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# x ± k ulps, for k in 0 … 3, around a branch point.
+fn p9_around(name, x: f64): i64 {
+    var b = load64(&x);
+    var k = 0 - 3;
+    while (k <= 3) {
+        var y: f64 = p9e_bits(b + k);
+        if (name == 0) { p9_erf_row("edges", y); } else { p9_erfc_row("edges", y); }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    if (p9_worst("build/p9/erf_wc.bits", 0) != 0) { return 1; }
+    if (p9_worst("build/p9/erfc_wc.bits", 1) != 0) { return 1; }
+    var i = 0;
+    # erf: 1,050,000 seeded arguments.
+    while (i < 400000) {
+        p9_erf_row("main", p9_range(-6.0, 6.0));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 300000) {
+        p9_erf_row("scales", p9_scale(0 - 1074, 3, 1));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        p9_erf_row("tiny", p9_scale(0 - 61, 0 - 4, 1));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        p9_erf_row("bits", p9_anybits());
+        i = i + 1;
+    }
+    # every interval edge i/16 and i/8, the clamp, 2^-61, 1/16 and 1/8, 6 ulps around each, both signs, then
+    # random points near them
+    var k = 1;
+    while (k < 96) {
+        var e16: f64 = f64_from(k);
+        var e16b: f64 = e16 / 16.0;
+        p9_around(0, e16b);
+        var ne16: f64 = -e16b;
+        p9_around(0, ne16);
+        k = k + 1;
+    }
+    var clamp: f64 = 0x4017AFB48DC96626;
+    p9_around(0, clamp);
+    var t61: f64 = 0x3C20000000000000;
+    p9_around(0, t61);
+    i = 0;
+    while (i < 148000) {
+        var kk = 1 + (p9_word() >> 1) % 94;
+        var c16: f64 = f64_from(kk);
+        var base: f64 = c16 / 16.0;
+        var off: f64 = p9_range(-0.000001, 0.000001);
+        var y: f64 = base + off;
+        p9_erf_row("edges", y);
+        i = i + 1;
+    }
+    # erfc: 1,050,000 seeded arguments.
+    i = 0;
+    while (i < 400000) {
+        p9_erfc_row("main", p9_range(-6.0, 28.0));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 200000) {
+        p9_erfc_row("scales", p9_scale(0 - 1074, 4, 1));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 150000) {
+        p9_erfc_row("tail", p9_range(25.0, 27.3));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        p9_erfc_row("neg", p9_range(-5.9, 0.0));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        p9_erfc_row("bits", p9_anybits());
+        i = i + 1;
+    }
+    var th1: f64 = _P9E_D_THRESHOLD1;
+    p9_around(1, th1);
+    var mid: f64 = 0x3FFB59FFB450828C;
+    p9_around(1, mid);
+    var top: f64 = 0x4039DB1BB14E15CA;
+    p9_around(1, top);
+    var half: f64 = 0x3FDE861FBB24C00A;
+    p9_around(1, half);
+    var lo54: f64 = 0xBC9C5BF891B4EF6A;
+    p9_around(1, lo54);
+    var hi55: f64 = 0x3C8C5BF891B4EF6A;
+    p9_around(1, hi55);
+    var big: f64 = 0x403B39DC41E48BFD;
+    p9_around(1, big);
+    var neg: f64 = 0xC017744F8F74E94B;
+    p9_around(1, neg);
+    i = 0;
+    while (i < 199944) {
+        var pick = (p9_word() >> 1) % 4;
+        var b2: f64 = th1;
+        if (pick == 1) { b2 = mid; }
+        if (pick == 2) { b2 = top; }
+        if (pick == 3) { b2 = half; }
+        var o2: f64 = p9_range(-0.001, 0.001);
+        var y2: f64 = b2 + o2;
+        p9_erfc_row("edges", y2);
+        i = i + 1;
+    }
+    # The accurate paths alone, 10^5 each, inside the domains their callers give them: erf's for 2^-61 ≤ |x| ≤
+    # 0x1.7afb48dc96626p+2, erfc's for −0x1.7744f8f74e94bp+2 < x < 0x1.b39dc41e48bfdp+4 (beyond them the C2 table
+    # index runs past its end, as it would in C; cr_erf and cr_erfc never call them there).
+    var erfmax: f64 = 0x4017AFB48DC96626;
+    var erfcmin: f64 = 0xC017744F8F74E94B;
+    var erfcmax: f64 = 0x403B39DC41E48BFD;
+    i = 0;
+    while (i < 100000) {
+        var xa: f64 = p9_range(-5.9, 5.9);
+        if ((i & 1) == 1) { xa = p9_scale(0 - 61, 2, 1); }
+        var axa: f64 = f64_abs(xa);
+        if (axa <= erfmax) {
+            var ra: f64 = p9_cr_erf_acc(xa);
+            p9_row("erf_acc", "acc", xa, ra);
+            i = i + 1;
+        }
+    }
+    i = 0;
+    while (i < 100000) {
+        var xc: f64 = p9_range(-5.8, 27.2);
+        if ((i & 1) == 1) { xc = p9_scale(0 - 53, 4, 1); }
+        if (xc > erfcmin && xc < erfcmax) {
+            var rc: f64 = p9_cr_erfc_acc(xc);
+            p9_row("erfc_acc", "acc", xc, rc);
+            i = i + 1;
+        }
+    }
+    p9_flush();
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

@@ -24,9 +24,10 @@
 > (P2, P3, P4) and the D7 amendment it led to (the RNG is generic) are committed as `4a051bf`. Part 9c (P7, P8) is
 > committed as `155dce0`. After it, the maintainer amended D5 (serde_json's text, byte for byte) and accepted ADR 007
 > row 16. Parts 9d-1 and 9d-2, P9's `ln_gamma` and `gamma_inc` prototypes, are committed (`998b64b`, `d424b90`,
-> `2f572be`). Part 9d-3, `beta_inc`, is done but not committed. The maintainer took each recommendation and chose
-> option C for D3. Nothing has been ported. The
-> one artifact so far is the accuracy-baseline tool, `scripts/port-baseline/`, which produced §3.2.
+> `2f572be`), and so is part 9d-3, `beta_inc` (`121e182`). Part 9e, the FMA-free CORE-MATH erf/erfc port, is done
+> but not committed: it is correctly rounded, so D3 = C holds without the fallback. The maintainer took each
+> recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
+> tool, `scripts/port-baseline/`, which produced §3.2.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -77,7 +78,7 @@ Each row gives the decision and the alternatives not chosen.
 |---|---|---|---|
 | D1 | ✅ **The freeze point.** 1.3.0 is already tagged (`284eb18`, and so published by `release.yml`), without the `oracle` hooks the generator needs: the 14 `pub(crate)` functions of `math.rs`, the private samplers and quantiles, and `MultivariateNormal`'s private factorization | Land the read-only `oracle` feature on main after the tag, as unreleased tooling (as impetus did). It moves into `rust-old/` with the crate and is never published. `tests/oracle.rs` proves it read-only | Publish 1.3.1 with the hooks (no value to crates.io users). Or port without hooks: every `math.rs` row would then be reachable only through public pdf/cdf calls, losing per-function parity |
 | D2 | ✅ **Correctly rounded primitives.** pramana needs exp, ln, ln_1p, exp_m1, pow, sin, cos, tan, atan and log2. kimiya's `src/mathx.cyr` has exp, expm1, ln, log10, pow, sin, cos, sincos, atan2 and acos, with `cr_verify.py` and `mpfr_ref.py`. **No sibling has a public log1p, tan or log2.** ushma 2.0.0 has a triple-double log1p kernel inside its ln (`ushma/src/mathx.cyr:819`), which is a starting point | Vendor kimiya's two-phase primitives (L1). By the two crates' own benchmarks they are faster than the impetus-derived crmath the ganita issue measures (§1.3): exp 39 against 110 ns, pow about 135 against 757 ns, atan2 111 ns against 1.41 µs. Compute atan(x) as the correctly rounded atan2(x, 1), which is the same value. Build correctly rounded log1p, tan and log2 with kimiya's method, verified on ≥ 1M MPFR arguments each. Join the open ganita correctly-rounded-tier issue as a consumer, adding the three new functions | ganita's private fdlibm `_gn_log1p` / `_gn_expm1` (≤ 0.87 ulp) and `ganita_f64_tan` (≤ 1 ulp): not correctly rounded, so not "better than glibc" |
-| D3 | ✅ **How accurate the special functions are** (§3). Correctly rounded primitives alone leave Rust's special-function errors in place: up to 1.2×10⁶ ulp in `ln_gamma`, 1,590 ulp in `normal_cdf` tails, and 583 ulp in `beta_inc` | **Decided 2026-11-15: option C.** M2 part a ports `math.rs` in Rust's operation order over the correctly rounded primitives (0 ulp against `*.cr.tsv`), which proves the transcription. M2 part b replaces the five weak spots in §3.4 with the T1 algorithms. **erf and erfc are correctly rounded**: a port of CORE-MATH's binary64 erf and erfc without FMA (§3.4). The other replacements are each gated against reference rows (`*.ref.tsv`) at the bounds **fixed on 2026-11-15** (§3.4): `normal_cdf` ≤ 1 ulp, `ln_gamma` ≤ 2, `gamma_inc` ≤ 4, `beta_inc` ≤ 8, each over a stated domain. ADR 0009 accepts all of them as "more accurate than Rust". Downstream rows are remapped once, before M3 uses them. **Fallback (decided 2026-11-15):** if the erf/erfc port does not verify within its time slot, ship erf/erfc at ≤ 1 ulp (option B's algorithm) and keep the port as a 2.x item. | A, T0 only (every distribution and hypothesis row would be remapped twice for later fixes). B, the same without correctly rounded erf/erfc (≤ 1 ulp). D, T1 without part a (a T1 defect could not be told apart from a transcription defect) |
+| D3 | ✅ **How accurate the special functions are** (§3). Correctly rounded primitives alone leave Rust's special-function errors in place: up to 1.2×10⁶ ulp in `ln_gamma`, 1,590 ulp in `normal_cdf` tails, and 583 ulp in `beta_inc` | **Decided 2026-11-15: option C.** M2 part a ports `math.rs` in Rust's operation order over the correctly rounded primitives (0 ulp against `*.cr.tsv`), which proves the transcription. M2 part b replaces the five weak spots in §3.4 with the T1 algorithms. **erf and erfc are correctly rounded**: a port of CORE-MATH's binary64 erf and erfc without FMA (§3.4). The other replacements are each gated against reference rows (`*.ref.tsv`) at the bounds **fixed on 2026-11-15** (§3.4): `normal_cdf` ≤ 1 ulp, `ln_gamma` ≤ 2, `gamma_inc` ≤ 4, `beta_inc` ≤ 8, each over a stated domain. ADR 0009 accepts all of them as "more accurate than Rust". Downstream rows are remapped once, before M3 uses them. **Fallback (decided 2026-11-15):** if the erf/erfc port does not verify within its time slot, ship erf/erfc at ≤ 1 ulp (option B's algorithm) and keep the port as a 2.x item. **Not needed:** the port verified inside its slot (§5 step 9e, 2026-11-15). | A, T0 only (every distribution and hypothesis row would be remapped twice for later fixes). B, the same without correctly rounded erf/erfc (≤ 1 ulp). D, T1 without part a (a T1 defect could not be told apart from a transcription defect) |
 | D4 | ✅ **Numerical upgrades outside the special functions:** compensated summation in `sum` / `mean`, and polynomial regression on a centered, scaled Vandermonde matrix with Householder QR | Not in 2.0: in those chains Rust's operation order is the definition (as pravash). Measure them against NIST StRD in M4/M5 (class R, §3.6) and file the failures as 2.1 candidates, with numbers | Change them in 2.0: that alters every descriptive and regression row, a scope kimiya's mid-port overflow audit showed is costly (1.7 days, about 30 ADR rows) |
 | D5 | ✅ **JSON.** Rust serializes 38 types and validates 20 on deserialize, with 32 round-trip tests; CLAUDE.md requires serde on every type. tanmatra dropped serde and kimiya marked it n/a. pravash wrote hand codecs over bayan's value tree (1,947 lines). The `#derive` has **no validation hook**, no `Vec<Vec<f64>>`, `u64` or data-variant support, and four open defects | Carry JSON for all 38 types with hand codecs (pravash's `src/json.cyr` as template). Every document serde_json writes from 1.3.0 decodes to the same bits, and every Cyrius document round-trips. Every decoder goes through the validating constructor, as Rust's `try_from` does. **Amended 2026-11-15, after P7 (§5 step 9c):** pramana writes serde_json's text byte for byte, with the serde form of impetus's `fmtf.cyr`, vendored once with D12's Debug form on the same digit core, so JSON text compares class A (P7: 596 of 596 documents). A stand-in pre-pass covers bayan's integer and string gaps (ledger L11); with it, 1,460 of 1,495 serde_json documents get serde_json's verdict, and every value read has its bits. The other 35, which serde_json accepts only because it skips a member unchecked, are ADR 007 row 16 | Text identity not required, with bayan's Grisu2 digits (D5 as first decided): P7 found the text different from serde_json's on 30 of 596 documents, and on 9,714 of 280,562 doubles. `#derive` (it cannot validate). Or dropping JSON (it breaks a CLAUDE.md principle) |
 | D6 | ✅ **Errors.** Rust's five `PramanaError` variants carry message strings | `PMN_ERR_*` codes, append-only, with no detail strings (as every sibling), plus `PMN_ERR_OUT_OF_MEMORY` and `PMN_ERR_DESERIALIZE`. `pmn_err_name(code)` gives the text. A 1.3.0 error document decodes to its code, and the message is dropped (ADR 0007) | A thread-local "last error detail" string: no sibling precedent |
@@ -188,7 +189,7 @@ What it adds to §1.2:
 |---|---|---|
 | No erf, erfc, gamma, lgamma, beta or incomplete functions. They are in neither ganita's scope nor its "Out of scope" list | `src/math_advanced.cyr`, `docs/development/roadmap.md` | `src/special.cyr` is pramana's own. Asking ganita to take it over is a scope request, not a gap report (L8) |
 | The correctly-rounded-tier issue is open with **four consumers**: impetus, kimiya, pravash, ushma. Its speed table measures the impetus-derived crmath: exp 110 ns, pow 757 ns, atan2 1.41 µs | `docs/development/issues/2026-11-09-correctly-rounded-exp-sin-cos-hypot.md` | pramana joins as the fifth consumer, asking for log1p, tan and log2 too (L1). It vendors kimiya's faster two-phase versions (D2) |
-| **No fused multiply-add** anywhere in ganita (nor a scalar one in the stdlib) | `grep fma src/` | the CORE-MATH erf/erfc port must be FMA-free (§3.4) |
+| **No fused multiply-add** anywhere in ganita (nor a scalar one in the stdlib) | `grep fma src/` | the CORE-MATH erf/erfc port must be FMA-free (§3.4). Done in 9e with an exact emulation, at 6.5–20× CORE-MATH's cost in C; a scalar fma is requested (§10, L12) |
 | `ganita_mat_cholesky_solve` allocates n words per call. **No issue is filed for it**, though its siblings `mat_lu_solve` and `mat_inv` have open issues | `docs/development/issues/2026-11-11-mat-{lu-solve,inv}-allocates-per-call.md` | pramana files the third issue of that family (L4) |
 | `ganita_mat_eigen_sym` stops at an absolute 1e-12, an open issue | `2026-10-31-eigen-sym-absolute-stop.md` | PCA transcribes hisab 1.4.0's Jacobi (L6) |
 | Householder QR / least squares break near DBL_MAX (open) | `2026-10-31-qr-householder-overflow-near-dbl-max.md` | not used: polynomial regression transcribes 1.4.0's MGS (L5) |
@@ -310,8 +311,10 @@ There are three tiers:
 - **Source:** CORE-MATH's binary64 erf and erfc (MIT license, compatible with GPL-3.0-only; keep the notice).
 - **No FMA:** the code assumes fused multiply-add, which Cyrius lacks (no scalar FMA in the stdlib or ganita, §1.3).
   - Where an fma only builds a double-double product, an exact Dekker product (Veltkamp split) replaces it.
-  - Where its single rounding matters, use an exact software fma (integer arithmetic, as musl's `fma.c`).
-  - Probe P9 records which call sites are which.
+  - Where its single rounding matters, use an exact software fma. P9 used Dekker's product and Boldo and Melquiond's
+    round-to-odd sum (kimiya's `_km_rn3`) in place of musl's integer `fma.c`.
+  - Probe P9 records which call sites are which: 2 Dekker products, 57 exact fmas, and one fma on erf's tiny path
+    whose product can be subnormal, rounded once on the subnormal grid instead (`port-parity.md` §6.7).
 - **Verification as kimiya's primitives:**
   - CORE-MATH's own worst cases;
   - ≥ 1M seeded MPFR arguments per function, plus about 100k forced through its accurate path;
@@ -319,6 +322,9 @@ There are three tiers:
 - **Time slot and fallback:** the port has a fixed slot inside P9. If it does not verify in time, erf and erfc ship at
   **≤ 1 ulp** (decided 2026-11-15): erfc's tail exp(−x²−0.5625)·exp(…) becomes one correctly rounded exp of a
   double-double argument. The CORE-MATH port then moves to 2.x, and ADR 0009 records the bound actually shipped.
+- **Done in P9 (§5 step 9e, 2026-11-15):** the port gives CORE-MATH's own bits on every worst case and on every
+  seeded argument, and the same bits on three targets. MPFR finds all 2,768,518 non-NaN rows correctly rounded, so
+  the fallback is not needed.
 
 **The T1 bounds are fixed** (the maintainer, 2026-11-15). They are commitments, not outcomes of P9. A row that misses
 its bound is a defect in the new algorithm, and the algorithm is reworked. A bound is never loosened. Only an ADR 0009
@@ -348,8 +354,8 @@ Rules for every row:
 |---|---|---|---|---|
 | exp, ln, pow, sin, cos, atan | ≤ 0.51 ulp; 0–0.15% misrounded; host-glibc dependent | **0.5 ulp, 0% misrounded, identical on 3 targets** | same | kimiya's two-phase primitives (D2) |
 | ln_1p, exp_m1, tan, log2 | ≤ 0.75 ulp; up to 1.19% misrounded | **0.5 ulp, 0%** | same | kimiya's expm1; new log1p, tan, log2 (D2) |
-| erf | 0.82 max, 3.1% not CR | ≈ Rust: \|x\| < 0.84375 is a pure polynomial (same bits); above, only rows where glibc's exp misrounds change | **0.5 ulp, correctly rounded** (D3 = C) | the FMA-free CORE-MATH port above |
-| erfc | **2.49** max, 30.6% not CR | ≈ Rust | **0.5 ulp, correctly rounded** (D3 = C) | as erf |
+| erf | 0.82 max, 3.1% not CR | ≈ Rust: \|x\| < 0.84375 is a pure polynomial (same bits); above, only rows where glibc's exp misrounds change | **0.5 ulp, correctly rounded** (D3 = C) | the FMA-free CORE-MATH port above. **P9 port (§5 step 9e): correctly rounded on all 1,281,250 rows, CORE-MATH's worst cases included** |
+| erfc | **2.49** max, 30.6% not CR | ≈ Rust | **0.5 ulp, correctly rounded** (D3 = C) | as erf. **P9 port: correctly rounded on all 1,487,268 rows** |
 | normal_cdf, normal_sf | 29 ulp in [−5, 5]; **1,590** in the tails | ≈ Rust | **≤ 1 ulp** | carry z/√2 as a double-double, then take the correctly rounded erfc of the high part plus a first-order correction for the low part: erfc(h + l) ≈ erfc(h) − l·(2/√π)e^(−h²). The ×½ is exact |
 | ln_gamma, x > 0 | 4.85–8.2 ulp at large and small x; 65 mean / 1.2×10⁶ max on [0.5, 10]; **4.3×10¹³** beside 1 and 2 | ≈ Rust (every term is Rust's) | **≤ 2 ulp** on x > 0, including beside 1 and 2 | rational/series forms of lnΓ(1 + ε) and lnΓ(2 + ε) around the roots (fdlibm's `e_lgamma_r` layout), with double-double logarithms and products and one rounding. **P9 prototype (§5 step 9d-1): ≤ 1.31 ulp, mean 0.26, on 450,000 rows** (Rust: 4.3×10¹³ beside the roots) |
 | ln_gamma, x < 0 | 6.9×10⁴ max | ≈ Rust | ≤ 2 ulp of max(\|lnΓ\|, 1) (mixed; see the bounds above) | reflection with sin(πx) reduced exactly (x − round(x) first), subtracted in double-double. **P9 prototype: ≤ 1.40 ulp of max(\|lnΓ\|, 1)** on 123,655 rows (Rust: 1,583) |
@@ -404,7 +410,9 @@ uncertainty must be at most a tenth of the bound.
 pramana's distributions call one to four primitives per pdf/cdf/draw, so expect §9's transcendental-bound benches to
 sit at the upper end of the sibling ratios. The T1 double-double work is measured in P9; it is applied only inside
 the five functions of §3.4. The FMA-free erf/erfc port pays for each exact product with a Veltkamp split
-(about 17 flops in place of one fma), or for a software fma; P9 records its cost.
+(about 17 flops in place of one fma), or for a software fma. P9 measured it (§5 step 9e): 508–675 ns a call on erf
+and erfc's main ranges and 2.3 µs on erfc's asymptotic range, 18–31× glibc. In C the emulation alone takes
+CORE-MATH from 6–38 ns to 82–426 ns, so a scalar fma (§10, L12) would remove most of it.
 
 ---
 
@@ -898,8 +906,21 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
          complement by the far side's slow continued fraction, and Stirling's series in plain double.
        - **The same bits** on three targets.
        - **Cost:** 7.5–71 µs, against T0's 0.75–4.2 µs, which is 10–17×.
-     - **9d-4:** `normal_cdf`, after 9e.
-   - **9e:** the CORE-MATH erf/erfc port.
+     - **9d-4:** `normal_cdf`, next, on 9e's erfc.
+   - **9e ✅ (2026-11-15): the CORE-MATH erf/erfc port, without FMA** (`port-parity.md` §6.7).
+     - **The port:** CORE-MATH's binary64 `erf.c` and `erfc.c`, function for function, with every table generated
+       from the sources (`p9_coremath_tables.py`: 17 tables, 3,929 words). Of the 59 fma sites, 2 are Dekker products
+       and 57 exact fmas (Dekker's product, then a round-to-odd three-term sum). The last fma of erf's tiny path can
+       have a subnormal product, so it is rounded once on the subnormal grid instead.
+     - **Stage 1, in C:** the emulation matches hardware fma on 10⁸ triples, and CORE-MATH built with it matches
+       CORE-MATH with hardware FMA on all 369,190 worst cases (both signs) and 4×10⁷ arguments.
+     - **Stage 2, the Cyrius port:** CORE-MATH's own bits on 2,568,534 rows (the worst cases, and 1,049,344 seeded
+       erf and 1,150,000 seeded erfc arguments). MPFR at 1,024 bits finds every row correctly rounded: 2,768,518,
+       with 100,000 through each accurate path alone.
+     - **The same bits** on x86_64, PE and aarch64.
+     - **Cost:** 508–675 ns on the main ranges and 2.3 µs on erfc's asymptotic range, against glibc's 22–76 ns. Most
+       of it is the emulated fma, so a scalar fma is requested (§10, L12).
+     - **Inside the slot,** so D3 = C stands without the fallback.
 
    The probes as planned:
    1. **Integers.** 10⁶ xorshift64 draws and their f64 mapping against Rust (class A); `PmnU128` against Rust's u128
@@ -1150,6 +1171,7 @@ the probe numbers. Where an issue is already open, pramana adds itself as a cons
 | L9 | a hoosh client library (tool calling) | hoosh | `src/ai.cyr` |
 | L10 | `#derive(Debug)` and a shortest-float printer (pravash's L16); serde_json's f64 text (P7: bayan's Grisu2 differs on 9,714 of 280,562 doubles) | cyrius; bayan (ushma's open issue 2026-11-11, `bayan_f64_to_json_serde`; pramana adds its numbers) | `src/fmtf.cyr`: impetus's digit core with its serde_json form and pravash's Debug form (D5, D12) |
 | L11 | the JSON value tree refuses an integer at or above 2^63, reads `-0` as +0, and accepts a raw control byte in a string (P7: 135 of 1,495 serde_json documents read differently) | bayan (open issues 2026-11-09 i64-max from impetus, 2026-11-11 `-0` from pravash, 2026-11-11 raw control bytes from ushma; pramana adds its numbers) | `src/json.cyr`'s pre-pass |
+| L12 | no scalar fma (§1.3). The FMA-free erf/erfc (P9, 9e) emulates 57 fma sites exactly, and the emulation is 6.5–20× CORE-MATH's cost in C | cyrius (**new issue**: `f64_fma`, hardware where the target has it, exact software otherwise, so the bits are the same everywhere) | `src/crmath.cyr`'s exact fma (Dekker's product and a round-to-odd sum) |
 
 Also filed at step 10, with no stand-in (a rule in §8.3 covers each meanwhile):
 - **cyrius:** a closure's captured f64 is an untyped word in arithmetic, though it binds `T = f64` as a generic
@@ -1170,8 +1192,8 @@ Also filed at step 10, with no stand-in (a rule in §8.3 covers each meanwhile):
    M2 part b is bounded to the five functions of §3.4, at the bounds and domains fixed there. Everything else goes to
    D4 or 2.1. Because the bounds are fixed, a miss costs time, not accuracy: more double-double evaluation where a
    prototype falls short. P9 exists to find those places before M2 part b starts.
-   The CORE-MATH erf/erfc port (D3 = C) is the largest single item. It has a fixed slot in P9; if it misses,
-   erf/erfc ship at ≤ 1 ulp and the port moves to 2.x.
+   The CORE-MATH erf/erfc port (D3 = C) was the largest single item. It verified inside its fixed slot in P9
+   (§5 step 9e), so the ≤ 1 ulp fallback is not needed.
 2. **The recording toolchain moving.** pravash's `--check` broke when stable moved to 1.100, through a generated
    `Debug` escape table (Unicode 18), not float math. Pin `rust-old/rust-toolchain.toml` to `1.100.0` exactly, record
    rustc in every header, and gate step 5 on two identical builds.
