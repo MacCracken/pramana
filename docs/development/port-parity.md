@@ -1600,3 +1600,130 @@ where pramana claims scratch, a Rust function allocates a `Vec` and drops it.
 | a 256-byte claim and its release (a slot hit) | 18–19 ns | 8.5–8.7 ns (a 256-byte `Vec`) |
 | a claim, a bump allocator, 4 allocations, the release | 66 ns | — |
 | nine nested 256-byte claims, the ninth an overflow block | 262–267 ns | — |
+
+### 7.9 Part d3a: the JSON read core, values (2026-11-15)
+
+Part d3 is split in two, both verified against serde_json:
+- **d3a:** the read core for values;
+- **d3b:** serde's struct rules, the two enum forms, and ADR 007 row 16's mapped rows (they arise only with struct
+  members).
+
+**The read core** (`src/json.cyr`) reads a document in three steps:
+- **The pre-pass** (`_pmn_json_lift`, ledger L11) is probe P7's, with the same rules:
+  - a negative integer becomes a float;
+  - an integer in 2^63 … 2^64 − 1 becomes the negative integer with its bits;
+  - a larger integer becomes a float;
+  - a raw control byte in a string refuses the document.
+
+  UTF-8 is deliberately not checked there. serde_json validates a string it reads (`parse_str`), and skips one it
+  ignores without checking (`ignore_str`, which still refuses control bytes). So the readers check their own strings.
+- **The tree.** bayan parses the rewritten text with `bayan_json_v_parse_ctx_a` into a bump allocator over a pool
+  claim. The claim starts at 24 bytes per byte of text plus 4 KiB, and doubles while the allocator refuses. Part d3a
+  added a refusal count to `_pmn_bump_allocator` for this. One of bayan's out-of-memory paths (`str_new_a`) sets no
+  error message, so a message can't tell an exhausted arena from a parse error, and the count can.
+- **The readers:** f64, u64 (and usize), bool, String, an array's length and elements, Vec<f64>, Vec<u64>, and a
+  matrix's shape (rows, the first row's length, a ragged flag) and its row-major fill. Any refusal is
+  `DESERIALIZE`; a caller's null or short buffer is `INVALID_PARAMETER`.
+
+`_pmn_json_decode(text, n, decoder, ctx)` opens the document, calls the type's decoder on the root, and closes it on
+every path.
+
+**The arena's size.** Measured on bayan's trees:
+
+| Document | Tree bytes per text byte |
+|---|---|
+| `[]`, `[[]]`, and 127 levels of nesting | 88 |
+| `[[],[],…]` and `[{},{},…]`, 10⁵ elements | 64 |
+| `[[0],[0],…]` | 54–55 |
+| `[{"a":0},…]` | 32 |
+| an object of 10⁵ distinct short keys | 24–25 |
+| `[0,0,…]` and `["",…]` | 20–23 |
+| `[1.5,…]`, `[true,…]`, `[null,…]` | 8–11 |
+
+Every array or object costs 176 bytes even when empty (its cell, a vec header and 16 slots), so 88 is the bound. 24
+covers the numeric documents pramana's types are made of in one claim. The rest double once or twice.
+
+**The pool, refined.** A JSON arena is up to 88 times its text, and a pool slot keeps its buffer for the process's
+lifetime. So a claim over 1 MiB now takes no slot: it is a freelist block of its own, freed on release. No slot holds
+more than 2 MiB (`tests/pool.tcyr`: 26 checks).
+
+**A guard for a stdlib abort (ledger L13).** `vec_push_a` ends the process ("vec: capacity overflow") one element
+past `VEC_CAP_MAX` (2^28), although it returns −1 when the allocator refuses. bayan pushes every array element through
+it, so an array of 2^28 + 1 elements, 512 MiB of text, would end the consumer's process. Lowered to 64, the cap shows
+it: bayan exits on a 131-byte document of 65 elements. `_pmn_json_open` refuses, unread, any document longer than
+2·`VEC_CAP_MAX` − 1 bytes, which can't hold such an array, as `OUT_OF_MEMORY`. pramana's numbers were added to the
+open cyrius vec issue.
+
+**The golden rows.** The new `json` module (`scripts/golden/src/m_json.rs`) records `serde_json::from_slice::<T>`
+with `float_roundtrip`, the value as tokens or `E:Deserialize`, on 3,886 documents:
+
+| Reader | Rows | Refused |
+|---|---|---|
+| `f64` | 1,827 | 65 |
+| `u64` | 319 | 106 |
+| `usize` | 119 | 106 |
+| `bool` | 53 | 48 |
+| `String` | 584 | 67 |
+| `Vec<f64>` | 360 | 103 |
+| `Vec<u64>` | 228 | 115 |
+| `Vec<String>` | 231 | 97 |
+| `Vec<Vec<f64>>` | 165 | 55 |
+
+The documents are:
+- the other JSON types and the syntax faults, for every reader;
+- every number form, well-formed and not, including integers at 2^53, i64 and u64, `-0`, the f64 range edges and
+  subnormals, and exponents past 2^64;
+- 600 doubles in serde_json's text, 400 in Rust's `{:e}` and `{:.25e}`, and 400 random decimals;
+- 120 exact midpoints between adjacent doubles, each also just below and just above. Their decimals run to 774
+  significant digits, and the exact ones are ties, to even;
+- every string escape, surrogate pairs and lone surrogates, raw control bytes, invalid UTF-8 (overlong, encoded
+  surrogates, past U+10FFFF, truncated), and 500 seeded strings, raw and escaped;
+- each form as a vector element, seeded vectors, and matrices, ragged ones included, nested 3 to 200 deep.
+
+**The independent check.** `validate.py` models serde_json's reading from its source, without the oracle: the strict
+grammar, the integer and float split (`-0` is the float −0.0), the conversions as Rust's `as f64`, surrogate pairing,
+UTF-8 by Python's strict decoder, and every float by Python's correctly rounded `float`. All 3,886 rows agree.
+serde_json with `float_roundtrip` is correctly rounded on every midpoint.
+
+**The result.** All 3,886 rows match on x86_64 ELF, PE and aarch64, warning-free. The replay is now four modules,
+64,719 rows ok. bayan's float parse is correctly rounded on every midpoint and every long digit string.
+
+**Mutation checks:**
+- **no `-0` rewrite:** 48 rows fail: 8 each of `f64`, `u64` and `usize`, 14 `Vec<f64>`, 9 `Vec<u64>` and 1
+  `Vec<Vec<f64>>`;
+- **no UTF-8 check on a read string:** 9 `String` rows and 18 `Vec<String>` rows fail;
+- **a signed integer-to-f64 conversion:** 3 `f64`, 6 `Vec<f64>` and 1 `Vec<Vec<f64>>` rows fail;
+- **the arena starting at 1 byte per byte, plus 8:** every row still passes, so the doubling alone carries every
+  document;
+- **that, with the doubling removed:** 141 `f64` rows, 158 `u64` rows and more fail;
+- **2^64 + 1 in the pre-pass's decimal complement:** 61 rows fail, 49 of them `Vec<u64>`;
+- **one bit of a golden f64, and one byte of a golden string:** `validate.py` and `--check` each catch both.
+
+**Tests.** `tests/json.tcyr`, 77 checks:
+- each pre-pass rule;
+- a document's claims on every path (open, close twice, each refusal);
+- the size guard at a lowered cap (65 elements refused, 63 read);
+- the arena past its first claim (20,000 empty arrays, 64 times the text);
+- each reader's edges and caller errors;
+- the decode wrapper's error paths;
+- a soak of 10⁴ decodes that leaves the bump heap unchanged and nothing claimed.
+
+**Cost** (`tests/json.bcyr` against the Rust twin's `json` rows, byte-identical documents, whose lengths and FNV-1a
+hashes both sides print; pinned, three interleaved rounds):
+
+| Document | Cyrius | serde_json | Ratio |
+|---|---|---|---|
+| Vec<f64>, 100 values in [−10⁶, 10⁶), 1,880 bytes | 66.4–67.1 µs | 3.91–3.98 µs | 17× |
+| Vec<Vec<f64>>, 10 × 10 in [0, 1), 1,954 bytes | 74.4–74.6 µs | 5.01 µs | 15× |
+| Vec<u64>, 100 words, 2,047 bytes | 69.5–71.8 µs | 3.21–3.25 µs | 22× |
+| String, 130 bytes with escapes | 2.83–2.85 µs | 391–398 ns | 7.2× |
+| f64, `1.5` | 390–392 ns | 21.5–23.2 ns | 18× |
+
+On the 100-word document, the pre-pass takes about a third and bayan's parse most of the rest. The readers take
+2.2 µs and a claim 20 ns. Rewriting the pre-pass took it from 27 to 23 µs, about 10% of a decode:
+- one bound check instead of one a byte;
+- inline digit tests;
+- a decimal subtraction in place of a division loop for the integers at or above 2⁶³.
+
+Most of what remains is Cyrius's code generation, which keeps every local in memory, at about 11 ns a byte. No hot
+path decodes JSON, and the pre-pass goes when bayan's L11 fixes land. This is recorded as a finding.

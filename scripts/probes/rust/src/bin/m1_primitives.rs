@@ -1,4 +1,4 @@
-//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr and tests/pool.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
+//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr, tests/pool.bcyr and tests/json.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
 //! arguments, regions and loop: 4,096 values per row, cycled 250 times, ns per call. Run pinned, interleaved with
 //! `cyrius bench tests/crmath.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m1_primitives
@@ -130,7 +130,47 @@ fn pool() {
     println!("  a 256-byte Vec, allocated and dropped: {:.1} ns", t0.elapsed().as_nanos() as f64 / 1_000_000.0);
 }
 
+// tests/json.bcyr's counterpart: serde_json::from_slice on byte-identical documents (each side prints the length and
+// FNV-1a hash), 10^4 decodes per row. Build with `--features roundtrip` (float_roundtrip, as the golden rows).
+fn json_row<T>(name: &str, doc: &[u8], f: impl Fn(&[u8]) -> serde_json::Result<T>) {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in doc {
+        h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+    }
+    println!("  {name}: {} bytes, fnv 0x{h:x}", doc.len());
+    let t0 = Instant::now();
+    for _ in 0..10_000 {
+        black_box(f(black_box(doc)).expect("a document Rust wrote"));
+    }
+    println!("  {name}: {:.1} ns", t0.elapsed().as_nanos() as f64 / 10_000.0);
+}
+
+fn json() {
+    let mut r = Rng(0x2545F4914F6CDD1D);
+    let xs: Vec<f64> = (0..100).map(|_| 2_000_000.0 * r.unit() - 1_000_000.0).collect();
+    let doc = serde_json::to_vec(&xs).unwrap();
+    json_row("Vec<f64>, 100 values in [-1e6, 1e6)", &doc, |d: &[u8]| serde_json::from_slice::<Vec<f64>>(d));
+    let m: Vec<Vec<f64>> = (0..10).map(|_| (0..10).map(|_| r.unit()).collect()).collect();
+    let doc = serde_json::to_vec(&m).unwrap();
+    json_row("Vec<Vec<f64>>, 10 x 10 in [0, 1)", &doc, |d: &[u8]| serde_json::from_slice::<Vec<Vec<f64>>>(d));
+    let ws: Vec<u64> = (0..100)
+        .map(|_| {
+            r.unit();
+            r.0.wrapping_mul(0x2545F4914F6CDD1D)
+        })
+        .collect();
+    let doc = serde_json::to_vec(&ws).unwrap();
+    json_row("Vec<u64>, 100 words", &doc, |d: &[u8]| serde_json::from_slice::<Vec<u64>>(d));
+    let doc = format!("\"{}\"", "abc\\n\\u00e9\\\"xyz".repeat(8)).into_bytes();
+    json_row("String, 8 x abc\\n\\u00e9\\\"xyz", &doc, |d: &[u8]| serde_json::from_slice::<String>(d));
+    json_row("f64, 1.5", b"1.5", |d: &[u8]| serde_json::from_slice::<f64>(d));
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("json") {
+        json();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("pool") {
         pool();
         return;

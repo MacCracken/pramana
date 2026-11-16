@@ -9,9 +9,12 @@
 #   bump heap and keep every outgrown buffer. A slot grows only while it is too small, so no slot exceeds twice the
 #   largest claim, however the claims race.
 # - **Past the eighth** concurrent claim, the claim is a freelist block of its own, freed on release (kimiya takes it
-#   from the bump heap).
-# - **The bump allocator** turns a claim into a stdlib Allocator (bayan's `_a` calls take one), with its vtable and
-#   state in the caller's storage: `allocator_new` would take 40 bytes of the bump heap per use.
+#   from the bump heap). So is any claim over 1 MiB: a slot keeps its buffer for the process's lifetime, and a JSON
+#   document's arena is up to 88 times the text (part d3), so a slot never holds more than 2 MiB.
+# - **The bump allocator** turns a claim into a stdlib Allocator (bayan's `_a` calls take one), with its vtable
+#   (_PMN_BUMP_ALLOCATOR_SIZE bytes) and state (_PMN_BUMP_STATE_SIZE) in the caller's storage: `allocator_new` would
+#   take 40 bytes of the bump heap per use. It counts the allocations it refused, so a caller can tell an exhausted
+#   claim from a failure of its own.
 # Probe P4 drove every convention in loops of 10^3 … 10^6 and found the bump heap, the freelist and the process's
 # mapped size unchanged (port-parity §6.2). The pool's own buffers are the one thing kept: at most eight, each at its
 # high-water mark. tests/pool.tcyr checks the claims, the growth, the overflow and the allocator, and
@@ -20,6 +23,9 @@
 
 const _PMN_POOL_SLOTS = 8;
 const _PMN_POOL_OVERFLOW = -2;
+const _PMN_POOL_SLOT_MAX = 1048576;
+const _PMN_BUMP_ALLOCATOR_SIZE = 40;
+const _PMN_BUMP_STATE_SIZE = 32;
 
 var _pmn_pool_busy: i64[_PMN_POOL_SLOTS];
 var _pmn_pool_ptr: i64[_PMN_POOL_SLOTS];
@@ -31,13 +37,14 @@ var _pmn_pool_cap: i64[_PMN_POOL_SLOTS];
 fn _pmn_scratch_take(bytes): (i64, i64) {
     if (bytes <= 0) { return (0, 0 - 1); }
     var i = 0;
+    if (bytes > _PMN_POOL_SLOT_MAX) { i = _PMN_POOL_SLOTS; }   # past the cap: straight to a block of its own
     while (i < _PMN_POOL_SLOTS) {
         if (load64(&_pmn_pool_busy + 8 * i) == 0 && load64(&_pmn_pool_cap + 8 * i) >= bytes) {
             if (atomic_cas(&_pmn_pool_busy + 8 * i, 0, 1) == 1) { return (load64(&_pmn_pool_ptr + 8 * i), i); }
         }
         i = i + 1;
     }
-    i = 0;
+    if (bytes <= _PMN_POOL_SLOT_MAX) { i = 0; }
     while (i < _PMN_POOL_SLOTS) {
         if (load64(&_pmn_pool_busy + 8 * i) == 0) {
             if (atomic_cas(&_pmn_pool_busy + 8 * i, 0, 1) == 1) {
@@ -110,15 +117,19 @@ fn _pmn_scratch_bytes(): i64 {
 }
 
 # ── a bump allocator over a claim ──────────────────────────────────────────────────────────────────
-# State (24 bytes, the caller's): the next free byte, the end, the start. Allocations are 8-byte aligned; an
-# allocation that doesn't fit returns 0, and the claim stays as it was (the caller retries with a bigger claim).
+# State (_PMN_BUMP_STATE_SIZE bytes, the caller's): the next free byte, the end, the start, and the count of refused
+# allocations. Allocations are 8-byte aligned; an allocation that doesn't fit returns 0 and is counted, and the claim
+# stays as it was (the caller retries with a bigger claim).
 
 #must_use
 fn _pmn_bump_alloc(st, size): i64 {
     if (size < 0) { return 0; }
     var cur = load64(st);
     var n = (size + 7) & (0 - 8);
-    if (n > load64(st + 8) - cur) { return 0; }
+    if (n > load64(st + 8) - cur) {
+        store64(st + 24, load64(st + 24) + 1);
+        return 0;
+    }
     store64(st, cur + n);
     return cur;
 }
@@ -144,12 +155,14 @@ fn _pmn_bump_reset(st): i64 {
     return 0;
 }
 
-# Makes `a` (40 bytes, the caller's) an Allocator that bump-allocates in [buf, buf + cap), with its state at `st` (24
-# bytes, the caller's). Returns a. Nothing is allocated, and nothing needs releasing but the claim itself.
+# Makes `a` (_PMN_BUMP_ALLOCATOR_SIZE bytes, the caller's) an Allocator that bump-allocates in [buf, buf + cap), with
+# its state at `st` (_PMN_BUMP_STATE_SIZE bytes, the caller's). Returns a. Nothing is allocated, and nothing needs
+# releasing but the claim itself.
 fn _pmn_bump_allocator(a, st, buf, cap): i64 {
     store64(st, buf);
     store64(st + 8, buf + cap);
     store64(st + 16, buf);
+    store64(st + 24, 0);
     store64(a, &_pmn_bump_alloc);
     store64(a + 8, &_pmn_bump_realloc);
     store64(a + 16, &_pmn_bump_free);
@@ -162,4 +175,10 @@ fn _pmn_bump_allocator(a, st, buf, cap): i64 {
 #must_use
 fn _pmn_bump_used(st): i64 {
     return load64(st) - load64(st + 16);
+}
+
+# The allocations the bump allocator at `st` has refused since it was made.
+#must_use
+fn _pmn_bump_refused(st): i64 {
+    return load64(st + 24);
 }

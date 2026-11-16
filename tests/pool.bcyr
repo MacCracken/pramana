@@ -23,8 +23,8 @@ fn main(): i64 {
     bench_batch_start(b2);
     for (var j = 0; j < 1000000; j = j + 1) {
         var q, sq = _pmn_scratch_take(256);
-        var al[40];
-        var st[24];
+        var al[_PMN_BUMP_ALLOCATOR_SIZE];
+        var st[_PMN_BUMP_STATE_SIZE];
         _pmn_bump_allocator(&al, &st, q, 256);
         for (var k = 0; k < 4; k = k + 1) {
             var y = alloc_via(&al, 32);

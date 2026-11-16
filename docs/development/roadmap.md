@@ -59,7 +59,7 @@ Rust 1.3.0 is the final Rust release; the Cyrius port ships as 2.0.0. Plan of re
 [pramana-port-plan.md](pramana-port-plan.md). Every decision in its §0.2 was taken on 2026-11-15; M0's steps are done, and M1 is in progress.
 
 - [ ] M0: oracle hooks on Rust 1.3.0, `cyrius port`, the repairs, `cyrius.cyml`, the semantics probe, the golden generator with MPFR's correctly rounded rows, the proven constants, the parity harness, the cross-target baselines (steps 0–8 done 2026-11-15); the probes (9a–9e done 2026-11-15), the upstream requests and the ledger (step 10 done 2026-11-15; the gate passes)
-- [ ] M1 foundation (parts a–c, d1 and d2 done 2026-11-15: the error codes; every primitive correctly rounded, kimiya's vendored and log1p, tan and log2 new; the Rust f64 surface, so the whole golden corpus is gated; serde_json's f64 text; the work-table pool; next the JSON read core, d3) · M2 special functions (T0 parity, then T1 accuracy) · M3 distributions
+- [ ] M1 foundation (parts a–c, d1, d2 and d3a done 2026-11-15: the error codes; every primitive correctly rounded, kimiya's vendored and log1p, tan and log2 new; the Rust f64 surface, so the whole golden corpus is gated; serde_json's f64 text; the work-table pool; the JSON read core for values; next serde's struct rules, d3b) · M2 special functions (T0 parity, then T1 accuracy) · M3 distributions
 - [ ] M4 descriptive + hypothesis · M5 regression, time series, Bayesian · M6 Markov + Monte Carlo
 - [ ] M7 soorat shapes + `ai` · M8 release 2.0.0
 

@@ -1,0 +1,254 @@
+# json.tcyr — the JSON read core (M1 part d3a; port plan D5, §8.3 and §8.5).
+#
+# tests/parity.tcyr replays serde_json's own verdicts on every reader (tests/golden/json.tsv). These tests name what
+# the read core does on its own: the pre-pass's rewrites, the document's claims on every path, the arena's growth past
+# its first claim, the readers' caller-error codes, and a soak that leaves the heap where it found it.
+
+include "tests/lib.cyr"
+
+var g_buf = 0;
+var g_doc = 0;
+
+# Copies the C string s into g_buf; its length.
+fn text(s: cstring): i64 {
+    var n = strlen(s);
+    memcpy(g_buf, s, n);
+    return n;
+}
+
+# 1 when the pre-pass turns `src` into `want`.
+fn lifts_to(src: cstring, want: cstring): i64 {
+    var n = text(src);
+    var out[128];
+    var m = _pmn_json_lift(g_buf, n, &out, 128);
+    if (m != strlen(want)) { return 0; }
+    if (memeq(&out, want, m) != 1) { return 0; }
+    return 1;
+}
+
+# Opens the C string s as g_doc; the error code.
+fn open(s: cstring): i64 {
+    _pmn_json_close(g_doc);
+    var n = text(s);
+    return _pmn_json_open(g_doc, g_buf, n);
+}
+
+# A decoder for _pmn_json_decode: the sum of a Vec<f64> into ctx, or the reader's error.
+fn dec_sum(root, ctx): i64 {
+    var n = _pmn_json_arr_len(root);
+    if (n < 0) { return PMN_ERR_DESERIALIZE; }
+    var vals[64];
+    if (n > 8) { return PMN_ERR_INVALID_SAMPLE; }
+    var e = _pmn_json_vec_f64(root, &vals, 8);
+    if (e != PMN_ERR_NONE) { return e; }
+    var s: f64 = 0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(&vals + i * 8);
+        s = s + x;
+    }
+    store64(ctx, s);
+    return PMN_ERR_NONE;
+}
+
+fn main() {
+    alloc_init();
+    g_buf = alloc(1048576);
+    g_doc = alloc(_PMN_JSON_DOC_SIZE);
+    memset(g_doc, 0, _PMN_JSON_DOC_SIZE);
+    store64(g_doc + 16, 0 - 1);
+    var w[8];
+    var sv[16];
+
+    test_group("the pre-pass rewrites numbers as serde_json reads them");
+    assert(lifts_to("-0", "-0.0") == 1, "-0 becomes -0.0");
+    assert(lifts_to("[-1,-25]", "[-1.0,-25.0]") == 1, "a negative integer becomes a float");
+    assert(lifts_to("9223372036854775807", "9223372036854775807") == 1, "i64::MAX stays");
+    assert(lifts_to("9223372036854775808", "-9223372036854775808") == 1, "2^63 becomes its bits as an i64");
+    assert(lifts_to("18446744073709551615", "-1") == 1, "u64::MAX becomes -1");
+    assert(lifts_to("18446744073709551616", "18446744073709551616.0") == 1, "2^64 becomes a float");
+    assert(lifts_to("[1.5,-2e3,01,-]", "[1.5,-2e3,01,-]") == 1, "a float, and what isn't an integer, stay");
+    assert(lifts_to("{\"-1\":\"a\\\"-1\"}", "{\"-1\":\"a\\\"-1\"}") == 1, "nothing inside a string changes");
+    var ctl = text("\"ab\"");
+    store8(g_buf + 2, 1);
+    var o1[40];
+    assert_eq(_pmn_json_lift(g_buf, ctl, &o1, 2 * ctl + 32), 0 - 1, "a raw control byte in a string refuses");
+    var big = text("[1,2,3,4,5,6,7,8,9]");
+    assert_eq(_pmn_json_lift(g_buf, big, &o1, 16), 0 - 2, "a destination too small is -2, not an overrun");
+
+    test_group("a document: its claims on every path");
+    assert_eq(open("[1, 2]"), PMN_ERR_NONE, "[1, 2] opens");
+    assert_eq(_pmn_json_arr_len(_pmn_json_root(g_doc)), 2, "its root is a two-element array");
+    assert_eq(_pmn_scratch_claimed(), 1, "an open document holds one claim, its arena");
+    _pmn_json_close(g_doc);
+    assert_eq(_pmn_scratch_claimed(), 0, "closing releases it");
+    _pmn_json_close(g_doc);
+    assert_eq(_pmn_scratch_claimed(), 0, "closing twice is harmless");
+    assert_eq(open("[1, 2"), PMN_ERR_DESERIALIZE, "a syntax fault refuses");
+    assert_eq(_pmn_scratch_claimed(), 0, "and holds nothing");
+    var cn = text("\"a b\"");
+    store8(g_buf + 2, 10);
+    assert_eq(_pmn_json_open(g_doc, g_buf, cn), PMN_ERR_DESERIALIZE, "a raw newline in a string refuses");
+    assert_eq(_pmn_scratch_claimed(), 0, "and holds nothing");
+    assert_eq(_pmn_json_open(g_doc, g_buf, 0), PMN_ERR_DESERIALIZE, "an empty document refuses");
+    assert_eq(_pmn_json_open(g_doc, 0, 5), PMN_ERR_INVALID_PARAMETER, "a null text is the caller's error");
+    assert_eq(_pmn_json_open(0, g_buf, 5), PMN_ERR_INVALID_PARAMETER, "so is a null document");
+    assert_eq(_pmn_json_open(g_doc, g_buf, 2 * VEC_CAP_MAX), PMN_ERR_OUT_OF_MEMORY,
+        "a document long enough to overflow bayan's arrays is refused unread (ledger L13)");
+    assert_eq(_pmn_scratch_claimed(), 0, "nothing claimed by any refusal");
+
+    test_group("the size guard keeps bayan's arrays under VEC_CAP_MAX (ledger L13)");
+    # vec_push_a ends the process ("vec: capacity overflow") one element past VEC_CAP_MAX, and bayan pushes every array
+    # element through it. Lowered to 64, the guard must refuse a document that could hold 65 elements, unread.
+    var cap_saved = VEC_CAP_MAX;
+    VEC_CAP_MAX = 64;
+    var zn = 0;
+    store8(g_buf, 91);
+    zn = 1;
+    for (var z = 0; z < 65; z = z + 1) {
+        if (z > 0) {
+            store8(g_buf + zn, 44);
+            zn = zn + 1;
+        }
+        store8(g_buf + zn, 48);
+        zn = zn + 1;
+    }
+    store8(g_buf + zn, 93);
+    zn = zn + 1;
+    assert_eq(_pmn_json_open(g_doc, g_buf, zn), PMN_ERR_OUT_OF_MEMORY, "65 elements: refused, not aborted");
+    store8(g_buf + 126, 93);
+    assert_eq(_pmn_json_open(g_doc, g_buf, 127), PMN_ERR_NONE, "127 bytes, 63 elements: read");
+    assert_eq(_pmn_json_arr_len(_pmn_json_root(g_doc)), 63, "all 63");
+    _pmn_json_close(g_doc);
+    VEC_CAP_MAX = cap_saved;
+
+    test_group("the arena doubles past its first claim");
+    var n = 0;
+    store8(g_buf, 91);
+    n = 1;
+    for (var k = 0; k < 20000; k = k + 1) {
+        if (k > 0) {
+            store8(g_buf + n, 44);
+            n = n + 1;
+        }
+        store8(g_buf + n, 91);
+        store8(g_buf + n + 1, 93);
+        n = n + 2;
+    }
+    store8(g_buf + n, 93);
+    n = n + 1;
+    assert_eq(_pmn_json_open(g_doc, g_buf, n), PMN_ERR_NONE, "20,000 empty arrays: 64 times the text, past 24");
+    assert_eq(_pmn_json_arr_len(_pmn_json_root(g_doc)), 20000, "all 20,000 read");
+    assert_eq(_pmn_scratch_claimed(), 0, "a claim over 1 MiB holds no slot");
+    _pmn_json_close(g_doc);
+
+    test_group("f64: any number, refusing one past its range");
+    assert_eq(open("1.5"), PMN_ERR_NONE, "1.5 opens");
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), &w), PMN_ERR_NONE, "1.5 reads");
+    assert_eq(load64(&w), 0x3FF8000000000000, "as 1.5");
+    open("-0");
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), &w), PMN_ERR_NONE, "-0 reads");
+    assert_eq(load64(&w), 0x8000000000000000, "as -0.0, as serde_json reads it");
+    open("18446744073709551615");
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), &w), PMN_ERR_NONE, "u64::MAX reads");
+    assert_eq(load64(&w), 0x43F0000000000000, "rounded to 2^64, unsigned");
+    open("1e400");
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), &w), PMN_ERR_DESERIALIZE, "1e400 is out of range");
+    open("null");
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), &w), PMN_ERR_DESERIALIZE, "null is no f64");
+    open("\"1\"");
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), &w), PMN_ERR_DESERIALIZE, "nor is a string");
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), 0), PMN_ERR_INVALID_PARAMETER, "a null out is the caller's");
+    assert_eq(_pmn_json_f64(0, &w), PMN_ERR_DESERIALIZE, "a missing node refuses");
+
+    test_group("u64: an integer from 0 to 2^64 - 1");
+    open("18446744073709551615");
+    assert_eq(_pmn_json_u64(_pmn_json_root(g_doc), &w), PMN_ERR_NONE, "u64::MAX reads");
+    assert_eq(load64(&w), 0 - 1, "as all ones");
+    open("-1");
+    assert_eq(_pmn_json_u64(_pmn_json_root(g_doc), &w), PMN_ERR_DESERIALIZE, "-1 refuses");
+    open("-0");
+    assert_eq(_pmn_json_u64(_pmn_json_root(g_doc), &w), PMN_ERR_DESERIALIZE, "-0 refuses, a float to serde_json");
+    open("1.0");
+    assert_eq(_pmn_json_u64(_pmn_json_root(g_doc), &w), PMN_ERR_DESERIALIZE, "1.0 refuses");
+    open("18446744073709551616");
+    assert_eq(_pmn_json_u64(_pmn_json_root(g_doc), &w), PMN_ERR_DESERIALIZE, "2^64 refuses");
+
+    test_group("bool and String");
+    open("true");
+    assert(_pmn_json_bool(_pmn_json_root(g_doc), &w) == PMN_ERR_NONE && load64(&w) == 1, "true is 1");
+    open("1");
+    assert_eq(_pmn_json_bool(_pmn_json_root(g_doc), &w), PMN_ERR_DESERIALIZE, "1 is no bool");
+    open("\"\\u00e9\\u0000\"");
+    assert_eq(_pmn_json_str(_pmn_json_root(g_doc), &sv), PMN_ERR_NONE, "escapes decode");
+    var sp = load64(&sv);
+    assert(load64(&sv + 8) == 3 && load8(sp) == 0xC3 && load8(sp + 1) == 0xA9 && load8(sp + 2) == 0,
+        "to UTF-8, a NUL kept");
+    var bn = text("\"a?b\"");
+    store8(g_buf + 2, 0xFF);
+    _pmn_json_close(g_doc);
+    _pmn_json_open(g_doc, g_buf, bn);
+    assert_eq(_pmn_json_str(_pmn_json_root(g_doc), &sv), PMN_ERR_DESERIALIZE, "invalid UTF-8 refuses when read");
+    var on = text("\"??\"");
+    store8(g_buf + 1, 0xC0);
+    store8(g_buf + 2, 0xAF);
+    _pmn_json_close(g_doc);
+    _pmn_json_open(g_doc, g_buf, on);
+    assert_eq(_pmn_json_str(_pmn_json_root(g_doc), &sv), PMN_ERR_DESERIALIZE, "so does an overlong form");
+
+    test_group("vectors and matrices");
+    var vb[64];
+    open("[1, -0, 2.5]");
+    assert_eq(_pmn_json_vec_f64(_pmn_json_root(g_doc), &vb, 8), PMN_ERR_NONE, "a Vec<f64> reads");
+    assert(load64(&vb + 8) == 0x8000000000000000 && load64(&vb + 16) == 0x4004000000000000, "-0 and 2.5");
+    assert_eq(_pmn_json_vec_f64(_pmn_json_root(g_doc), &vb, 2), PMN_ERR_INVALID_PARAMETER, "a short buffer refuses");
+    open("[1, \"x\"]");
+    assert_eq(_pmn_json_vec_f64(_pmn_json_root(g_doc), &vb, 8), PMN_ERR_DESERIALIZE, "a string element refuses");
+    open("[3, 18446744073709551615]");
+    assert_eq(_pmn_json_vec_u64(_pmn_json_root(g_doc), &vb, 8), PMN_ERR_NONE, "a Vec<u64> reads");
+    assert(load64(&vb) == 3 && load64(&vb + 8) == 0 - 1, "3 and u64::MAX");
+    var sh[24];
+    open("[[1, 2], [3]]");
+    assert_eq(_pmn_json_mat_shape(_pmn_json_root(g_doc), &sh), PMN_ERR_NONE, "a ragged matrix reads");
+    assert(load64(&sh) == 2 && load64(&sh + 8) == 2 && load64(&sh + 16) == 1, "2 rows, 2 columns first, ragged");
+    assert_eq(_pmn_json_mat_f64(_pmn_json_root(g_doc), &vb, 2, 2), PMN_ERR_INVALID_PARAMETER,
+        "filling it as 2 x 2 refuses");
+    open("[[1, 2], [3, 4]]");
+    assert_eq(_pmn_json_mat_shape(_pmn_json_root(g_doc), &sh), PMN_ERR_NONE, "a square one reads");
+    assert(load64(&sh + 16) == 0, "and is not ragged");
+    assert_eq(_pmn_json_mat_f64(_pmn_json_root(g_doc), &vb, 2, 2), PMN_ERR_NONE, "and fills");
+    assert(load64(&vb + 16) == 0x4008000000000000, "row-major: element (1, 0) is 3");
+    open("[[1, null]]");
+    assert_eq(_pmn_json_mat_shape(_pmn_json_root(g_doc), &sh), PMN_ERR_DESERIALIZE, "a null element refuses");
+    _pmn_json_close(g_doc);
+
+    test_group("decode closes on every path");
+    var sum[8];
+    var sn = text("[1.5, 2.5]");
+    assert_eq(_pmn_json_decode(g_buf, sn, &dec_sum, &sum), PMN_ERR_NONE, "a decoder runs");
+    assert_eq(load64(&sum), 0x4010000000000000, "1.5 + 2.5 = 4");
+    var ln = text("[1,2,3,4,5,6,7,8,9]");
+    assert_eq(_pmn_json_decode(g_buf, ln, &dec_sum, &sum), PMN_ERR_INVALID_SAMPLE, "its own error comes back");
+    var fn2 = text("[1, true]");
+    assert_eq(_pmn_json_decode(g_buf, fn2, &dec_sum, &sum), PMN_ERR_DESERIALIZE, "as does a reader's");
+    var bad = text("[1,");
+    assert_eq(_pmn_json_decode(g_buf, bad, &dec_sum, &sum), PMN_ERR_DESERIALIZE, "as does the parse's");
+    assert_eq(_pmn_json_decode(g_buf, sn, 0, &sum), PMN_ERR_INVALID_PARAMETER, "a null decoder is the caller's");
+    assert_eq(_pmn_scratch_claimed(), 0, "nothing claimed after any of them");
+
+    test_group("a soak leaves the heap where it found it");
+    var before = alloc_used();
+    for (var i = 0; i < 10000; i = i + 1) {
+        var t = text("[0.1, -0, 18446744073709551615, 1e-3]");
+        if (i % 3 == 0) { t = text("[0.1, x]"); }
+        _pmn_json_decode(g_buf, t, &dec_sum, &sum);
+    }
+    assert_eq(alloc_used() - before, 0, "10^4 decodes: 0 bytes of bump heap");
+    assert_eq(_pmn_scratch_claimed(), 0, "and nothing left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+# Any failure at all is exit 1: a wait status is 8 bits, so a raw count of 256 would read as success.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

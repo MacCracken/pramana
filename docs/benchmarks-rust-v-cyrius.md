@@ -126,3 +126,31 @@ pushes a word and drops it. Three rounds, interleaved, pinned to core 5, at a lo
 **A win inside the part.** The first release was kimiya's, a full fence then a plain store: 35–36 ns a claim, half of
 it the fence (`mfence` alone measured 18 ns). The stdlib's compare-and-swap already orders as acquire-release on both
 arches, so the release is now a CAS 1 → 0: 18–19 ns, with the same three rounds before and after.
+
+## M1 part d3a: the JSON read core (2026-11-15)
+
+**Bodies.** `tests/json.bcyr` decodes each document 10⁴ times through `_pmn_json_decode`: the pre-pass, a pool claim,
+bayan's parse, the reader, and the release. The twin's `json` rows call `serde_json::from_slice` with
+`float_roundtrip`, built with `--features roundtrip`. Both sides build the documents from the same xorshift (Cyrius
+through `fmtf.cyr`, Rust through serde_json) and print each one's length and FNV-1a hash, and all five are identical.
+Three rounds, interleaved, pinned to core 5, at a load average of 2.3–3.1.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| Vec<f64>, 100 values in [−10⁶, 10⁶), 1,880 bytes | 3.91–3.98 µs | 66.4–67.1 µs | 17× |
+| Vec<Vec<f64>>, 10 × 10 in [0, 1), 1,954 bytes | 5.01 µs | 74.4–74.6 µs | 15× |
+| Vec<u64>, 100 words, 2,047 bytes | 3.21–3.25 µs | 69.5–71.8 µs | 22× |
+| String, 130 bytes with escapes | 391–398 ns | 2.83–2.85 µs | 7.2× |
+| f64, `1.5` | 21.5–23.2 ns | 390–392 ns | 18× |
+
+**Where it goes**, on the 100-word document: the pre-pass about a third, bayan's parse most of the rest, the readers
+2.2 µs, and a pool claim 20 ns.
+
+**A win inside the part.** The pre-pass was rewritten from 27 to 23 µs on that document, which cut each decode by
+about 10% (Vec<f64> 74–76 → 66–67 µs):
+- one bound check instead of one a byte;
+- inline digit tests;
+- a decimal subtraction in place of a division loop for integers at or above 2⁶³.
+
+**Finding.** About 11 ns a byte remain in the pre-pass, from code generation that keeps every local in memory. No hot
+path decodes JSON, and the pre-pass is a stand-in (ledger L11) that goes when bayan reads these numbers itself.

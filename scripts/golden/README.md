@@ -56,6 +56,17 @@ files. This README records what is specific to pramana.
   and seeded bit patterns. pramana's JSON writes this text byte for byte (port plan D5). serde_json is a dependency
   here, pinned to `rust-old/Cargo.lock`'s version. `validate.py` rebuilds every row from Python's own shortest
   digits (`repr`, ties to even as serde_json's zmij), and 62 of the inputs are exact ties.
+- **`json.tsv`** (M1 part d3a, `src/m_json.rs`): `serde_json::from_slice::<T>` for each value type 1.3.0's
+  serialized types are made of (`f64`, `u64`, `usize`, `bool`, `String`, `Vec<f64>`, `Vec<u64>`, `Vec<String>`,
+  `Vec<Vec<f64>>`), with `float_roundtrip` on, on 3,886 documents:
+  - the other JSON types and the syntax faults;
+  - every number and string form;
+  - seeded floats, including 120 exact midpoints between adjacent doubles;
+  - seeded strings, vectors and matrices.
+
+  The input is the document's bytes (`s:`, which need not be UTF-8), and the output the value's tokens or
+  `E:Deserialize`, serde_json's refusal. `validate.py` re-reads every document with its own model of serde_json's
+  reading, written from serde_json's source.
 - **The constants come from the source, and the tables are proven** (`src/consts.rs`, `src/p_constants.rs`).
   - **Why from the source:** pramana's constants are private, so no API exposes them. The generator reads every
     `const` item in the library code, function-local tables included, through Rust's own literal parser, and proves
@@ -83,6 +94,8 @@ files. This README records what is specific to pramana.
 |---|---|---|---|---|
 | `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
+| `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
+| `json` | M1 d3a | 3,886 | `src/m_json.rs` | — |
 
 ## Format 1
 
@@ -109,7 +122,8 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
   - `e:<Enum>.<Variant>`: an enum variant;
   - `s:<percent-encoded UTF-8>`: a string (every byte outside printable ASCII, and `%`, as `%XX`);
   - `n:`: `None`;
-  - `E:<Variant>`: `Err(PramanaError::<Variant>)`, with the payload not compared;
+  - `E:<Variant>`: `Err(PramanaError::<Variant>)`, with the payload not compared. `E:Deserialize` is serde_json's own
+    refusal, which pramana reports as `PMN_ERR_DESERIALIZE` (port plan D6);
   - `v:<len>`: a sequence, whose element tokens follow.
 - **Classes** (port plan §6):
   - **A** exact (NaN matches any NaN);
@@ -129,6 +143,9 @@ Standard library plus ctypes. It never runs the Rust oracle:
   square-and-multiply `powi`, Rust's `fract`, and the saturating `as usize`;
 - it recomputes every glibc class-C row by calling the same glibc function through ctypes;
 - it proves every `cbrt` row correctly rounded with MPFR;
+- it rebuilds every `fmt` row from Python's shortest digits, and reads every `json` document with a model of
+  serde_json 1.0.154's reading (its strict grammar, `-0` as a float, Rust's `as f64`, surrogate pairing, UTF-8 by
+  Python's strict decoder, every float by Python's correctly rounded `float`);
 - it computes the correctly rounded value of every class-C row with MPFR, and writes (`--write-cr`) or checks the
   rows where glibc's differs.
 

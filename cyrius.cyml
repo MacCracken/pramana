@@ -46,4 +46,5 @@ modules = [
     "src/mathx.cyr",
     "src/fmtf.cyr",
     "src/pool.cyr",
+    "src/json.cyr",
 ]

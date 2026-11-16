@@ -49,6 +49,8 @@ pub enum Tok {
     E(&'static str, String),
     /// `s:<percent-encoded UTF-8>`.
     S(String),
+    /// `s:<percent-encoded bytes>`: raw bytes, such as a JSON document that need not be UTF-8.
+    SB(Vec<u8>),
     /// `n:` — `Option::None`.
     None,
     /// `E:<Variant>` — `Err(PramanaError::<Variant>)`. The payload is not compared.
@@ -74,6 +76,16 @@ pub fn s(x: impl Into<String>) -> Tok {
     Tok::S(x.into())
 }
 
+/// `s:` for raw bytes, percent-encoded as [`s`] is.
+pub fn sb(x: &[u8]) -> Tok {
+    Tok::SB(x.to_vec())
+}
+
+/// `E:Deserialize`: serde_json's refusal, which pramana reports as `PMN_ERR_DESERIALIZE` (port plan D6).
+pub fn deser() -> Tok {
+    Tok::Err("Deserialize".to_string())
+}
+
 /// `e:<Enum>.<Variant>`, the variant named by its `Debug` text.
 #[allow(dead_code)] // first used by M1's enums
 pub fn e(name: &'static str, v: impl std::fmt::Debug) -> Tok {
@@ -94,9 +106,9 @@ pub fn err(x: &pramana::PramanaError) -> Tok {
 }
 
 /// Percent-encode every byte that is not printable ASCII, plus `%`.
-fn pct(x: &str) -> String {
+fn pct(x: &[u8]) -> String {
     let mut out = String::with_capacity(x.len());
-    for &byte in x.as_bytes() {
+    for &byte in x {
         if (0x21..=0x7e).contains(&byte) && byte != b'%' {
             out.push(char::from(byte));
         } else {
@@ -112,7 +124,8 @@ impl Tok {
             Self::F(x) => format!("f:{:016x}", x.to_bits()),
             Self::I(x) => format!("i:{x}"),
             Self::E(name, v) => format!("e:{name}.{v}"),
-            Self::S(x) => format!("s:{}", pct(x)),
+            Self::S(x) => format!("s:{}", pct(x.as_bytes())),
+            Self::SB(x) => format!("s:{}", pct(x)),
             Self::None => "n:".to_string(),
             Self::Err(v) => format!("E:{v}"),
             Self::V(n) => format!("v:{n}"),
@@ -125,6 +138,13 @@ impl Tok {
             Self::I(x) => format!("{x}"),
             Self::E(name, v) => format!("{name}::{v}"),
             Self::S(x) => format!("{x:?}"),
+            Self::SB(x) => format!(
+                "b\"{}\"",
+                x.iter()
+                    .flat_map(|&b| std::ascii::escape_default(b))
+                    .map(char::from)
+                    .collect::<String>()
+            ),
             Self::None => "None".to_string(),
             Self::Err(v) => format!("Err({v})"),
             Self::V(n) => format!("[{n}]"),

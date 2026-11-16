@@ -32,7 +32,8 @@
 > (`f08f233`) and part b3, a new correctly rounded tan (`3257918`). Part b4, a new correctly rounded log2, is done
 > (`0c3f469`), so every class-C math row is at 0 ulp and the primitives are verified on 11.6M MPFR rows; and part
 > c, the Rust f64 surface (`d13fb61`), so the whole golden corpus is gated. Part d1, serde_json's f64 text, is
-> committed (`d34db7c`), and part d2, the work-table pool, is done but not committed. The maintainer took each
+> committed (`d34db7c`), and so is part d2, the work-table pool (`c302838`). Part d3a, the JSON read core's value
+> readers, is done but not committed. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1079,7 +1080,11 @@ Every milestone, and every part of a large one, ends with pravash's gates:
 - **d1:** `src/fmtf.cyr`, serde_json's f64 text, vendored from impetus, with the golden `fmt` module ✅;
 - **d2:** `src/pool.cyr`, the work-table pool and a bump allocator over a claim, tested on one thread and on four
   racing ones; moved forward from part f, because the JSON reader's value tree needs it ✅;
-- **d3:** the JSON read core: bayan's tree, probe P7's pre-pass (ledger L11), serde's struct rules;
+- **d3a:** `src/json.cyr`'s read core for values: probe P7's pre-pass (ledger L11), bayan's tree in a pool arena,
+  and the readers for f64, u64, usize, bool, String, Vec<f64>, Vec<u64>, Vec<String> and Vec<Vec<f64>>, against
+  serde_json's own verdicts on 3,886 documents (the golden `json` module) ✅;
+- **d3b:** serde's struct rules (an unknown member skipped, a known one twice refused, a missing one refused, the
+  sequence form), the unit and newtype-variant enums, and the mapped rows of ADR 007 row 16;
 - **d4:** the JSON write core and the error codec;
 - **e:** the RNG with its `SimpleRng` codec, combinatorics with `PmnU128`, and the bridges;
 - **f:** M1's gate.
@@ -1153,8 +1158,9 @@ which keeps every consumer's compile free of it.
 | a closure capturing an f64 (tests, examples) | copy the capture into a typed local before arithmetic: `var kf: f64 = k;` (P3) |
 | `rng: &mut impl Rng` | `rng: *R`, with `<R: PmnRng>` on the fn or method: `fn sample<R: PmnRng>(self, rng: *R): f64` in `PmnDistribution` (D7, amended after P2) |
 | `&mut dyn Rng` (Gibbs' conditionals) | the address of a stack `PmnRngRef { o: dyn PmnRng }`, formed by a non-generic helper (P3) |
-| serde | `src/json.cyr` hand codecs; decode calls the validating constructor (D5). Before bayan parses, a pre-pass (P7's `p7_lift`, ledger L11) refuses a raw control byte in a string and rewrites integers: a negative one becomes a float, so `-0` stays −0.0; one in 2^63 … 2^64 − 1 becomes the negative integer with its bits; a larger one becomes a float. Then serde's struct rules: skip an unknown member, refuse a known one twice or missing, read the sequence form. Writing gives serde_json's compact text byte for byte: f64s through `src/fmtf.cyr`'s serde_json form, strings through `str_builder_add_json_str` (D5, ADR 007 row 7) |
+| serde | `src/json.cyr` hand codecs; decode calls the validating constructor (D5). Before bayan parses, a pre-pass (P7's `p7_lift`, ledger L11) refuses a raw control byte in a string and rewrites integers: a negative one becomes a float, so `-0` stays −0.0; one in 2^63 … 2^64 − 1 becomes the negative integer with its bits; a larger one becomes a float. A document longer than 2·`VEC_CAP_MAX` − 1 bytes is refused unread as `OUT_OF_MEMORY`, because bayan's arrays would otherwise abort the process past `VEC_CAP_MAX` elements (ledger L13). Then serde's struct rules: skip an unknown member, refuse a known one twice or missing, read the sequence form. Writing gives serde_json's compact text byte for byte: f64s through `src/fmtf.cyr`'s serde_json form, strings through `str_builder_add_json_str` (D5, ADR 007 row 7) |
 | a u64 or usize field | a JSON integer only (a float, even `1.0` or `-0`, refuses); the pre-pass's negative integers are its values at or above 2^63 (P7) |
+| a String field | a JSON string whose decoded bytes are UTF-8, checked when it is read: serde_json validates a string it reads and skips one it ignores, so the pre-pass checks only raw control bytes (part d3a) |
 | an f64 field | any JSON number, refusing one that parses to ±∞ (serde_json's "number out of range"); `null` refuses, so a document holding NaN can't be read back, in Rust or here (P7) |
 | `HashMap<String, Vec<f64>>` (`ai`) | `map_new_str`, with keys sorted before iteration |
 
@@ -1178,13 +1184,16 @@ Probe 4 settles this, under D11:
   claimed and released by compare-and-swap. The parity harness fails if a slot stays claimed. Unlike kimiya's, a slot
   grows on the freelist and frees the buffer it outgrew, and a claim past the eighth slot is a freelist block freed on
   release (kimiya takes both from the bump heap). P4 measured both paths flat. A slot grows only while it is too small,
-  so none exceeds twice the largest claim, however the claims race (`tests/pool_threads.tcyr`; port-parity §7.8).
+  so none exceeds twice the largest claim, however the claims race (`tests/pool_threads.tcyr`; port-parity §7.8). A
+  claim over 1 MiB takes no slot: it is a freelist block of its own (part d3a), so a slot never holds more than
+  2 MiB.
 - **P4's soaks** (port-parity §6.2) left the bump heap, the freelist and the mapped size unchanged under every
   convention above. Two costs remain: an owned buffer over 4 KB maps and unmaps on each new/drop (the freelist's open
   large-block issue), and the pool holds its buffers for the process's lifetime.
 - **JSON** decoding allocates the decoded object, which the caller drops. The value tree goes into a bump allocator
-  over a pool claim (`_pmn_bump_allocator`), released when the document is decoded (P7). How an exhausted claim is
-  retried is settled with the read core (part d3).
+  over a pool claim (`_pmn_bump_allocator`), released when the document is decoded (P7, part d3a). The claim starts
+  at 24 bytes per byte of text and doubles while the allocator refuses (it counts its refusals). A tree is at most 88
+  times its text, so the doubling ends by 128 times.
 - **Never `alloc_reset`**: it would wipe the consumer's heap.
 - **Every buffer parameter** is checked for null and for aliasing (the gaps kimiya's 2.0.1 review found).
 
@@ -1242,6 +1251,7 @@ shape:
 | L10 | open | `src/fmtf.cyr`: impetus's digit core with its serde_json form and pravash's Debug form, and pravash's `debug(sb, alternate)` builders (D5, D12) | no `#derive(Debug)` and no shortest printer in the stdlib; bayan's Grisu2 differs from serde_json's text on 9,714 of 280,562 doubles | `cyrius:docs/development/issues/2026-11-13-derive-debug-and-shortest-float-digits.md`; `bayan:docs/development/issues/2026-11-11-no-serde-compatible-shortest-f64-printer.md` (pramana's numbers added to both) | the stdlib printer, `bayan_f64_to_json_serde`, `#derive(Debug)` | the JSON text rows and the `Debug` rows (class A) |
 | L11 | open | `src/json.cyr`'s pre-pass (P7) | the tree refuses an integer at or above 2⁶³, reads `-0` as +0 and accepts a raw control byte in a string: 135 of 1,495 serde_json documents read differently | `bayan:docs/development/issues/2026-11-09-json-integer-above-i64-max-refuses-the-document.md`; `bayan:docs/development/issues/2026-11-11-json-integer-negative-zero-loses-its-sign.md`; `bayan:docs/development/issues/2026-11-11-json-strings-accept-raw-control-bytes-and-invalid-utf8.md` (pramana's numbers added to each) | bayan's u64 node, signed zero and strict strings | the JSON decode rows (class A) |
 | L12 | open | `src/crmath.cyr`'s exact fma: Dekker's product, a round-to-odd sum, and the tiny-path rounding (§5 step 9e) | no scalar fma (§1.3). The vector `f64v_fmadd` rounds twice on x86_64 and once on aarch64. The emulation costs 6.5–20× CORE-MATH's own in C | `cyrius:docs/development/issues/2026-11-15-no-scalar-fma.md` (with a repro) | `f64_fma`: hardware where the target has it, exact software elsewhere, the same bits everywhere | the erf, erfc and `normal_cdf` rows; their bits must not change |
+| L13 | open | `src/json.cyr`'s document-size guard: `_pmn_json_open` refuses a document longer than 2·`VEC_CAP_MAX` − 1 bytes as `OUT_OF_MEMORY`, unread (M1 part d3a) | `vec_push_a` ends the process ("vec: capacity overflow") one element past `VEC_CAP_MAX` (2^28), though it returns −1 when the allocator refuses; bayan pushes every array element through it, so a document with an array of 2^28 + 1 elements (512 MiB of text) would end the consumer's process. Shown at a lowered cap: 65 elements against 64 | `cyrius:docs/development/issues/2026-11-11-vec-keeps-outgrown-buffer-and-aborts.md` (pramana's second section, 2026-11-15) | `vec_push_a` returning −1 past `VEC_CAP_MAX` | the `json` rows, and `tests/json.tcyr`'s guard group |
 
 **Also filed at step 10, with no stand-in** (a rule in §8.3 covers each meanwhile):
 - **cyrius:** a closure's captured f64 is an untyped word in arithmetic, though it binds `T = f64` as a generic

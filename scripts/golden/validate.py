@@ -418,6 +418,226 @@ def check_fmt(rows):
     return failures, ok
 
 
+# ── json: serde_json 1.0.154's reading, modelled from its source (de.rs, read.rs) ──
+
+
+class SerdeRefusal(Exception):
+    pass
+
+
+JSON_WS = b" \t\n\r"
+U64_MAX = (1 << 64) - 1
+
+
+class SerdeModel:
+    """serde_json's from_slice for one document: the strict RFC 8259 grammar, whitespace = space, tab, LF, CR, and
+    serde's rules for each value type (`float_roundtrip`: every float correctly rounded)."""
+
+    def __init__(self, doc: bytes):
+        self.b, self.i = doc, 0
+
+    def peek(self):
+        return self.b[self.i] if self.i < len(self.b) else None
+
+    def ws(self):
+        while self.i < len(self.b) and self.b[self.i] in JSON_WS:
+            self.i += 1
+
+    def expect(self, lit: bytes):
+        if self.b[self.i:self.i + len(lit)] != lit:
+            raise SerdeRefusal("expected " + lit.decode())
+        self.i += len(lit)
+
+    def end(self):
+        self.ws()
+        if self.i != len(self.b):
+            raise SerdeRefusal("trailing characters")
+
+    def number(self):
+        """('u', int), ('i', int) or ('f', float) as serde_json's ParserNumber, or a refusal."""
+        st = self.i
+        neg = self.peek() == 0x2D
+        if neg:
+            self.i += 1
+        c = self.peek()
+        if c == 0x30:
+            self.i += 1
+            if self.peek() is not None and 0x30 <= self.peek() <= 0x39:
+                raise SerdeRefusal("leading zero")
+        elif c is not None and 0x31 <= c <= 0x39:
+            while self.peek() is not None and 0x30 <= self.peek() <= 0x39:
+                self.i += 1
+        else:
+            raise SerdeRefusal("invalid number")
+        is_float = False
+        if self.peek() == 0x2E:
+            is_float = True
+            self.i += 1
+            if not (self.peek() is not None and 0x30 <= self.peek() <= 0x39):
+                raise SerdeRefusal("no digit after the point")
+            while self.peek() is not None and 0x30 <= self.peek() <= 0x39:
+                self.i += 1
+        if self.peek() in (0x65, 0x45):
+            is_float = True
+            self.i += 1
+            if self.peek() in (0x2B, 0x2D):
+                self.i += 1
+            if not (self.peek() is not None and 0x30 <= self.peek() <= 0x39):
+                raise SerdeRefusal("no exponent digit")
+            while self.peek() is not None and 0x30 <= self.peek() <= 0x39:
+                self.i += 1
+        text = self.b[st:self.i].decode("ascii")
+        if not is_float:
+            mag = int(text.lstrip("-"))
+            if not neg and mag <= U64_MAX:
+                return ("u", mag)
+            if neg and mag == 0:
+                return ("f", -0.0)                   # parse_integer: -0 is the float -0.0
+            if neg and mag <= 1 << 63:
+                return ("i", -mag)
+            try:
+                return ("f", float(-mag if neg else mag))
+            except OverflowError:
+                raise SerdeRefusal("number out of range")
+        x = float(text)
+        if math.isinf(x):
+            raise SerdeRefusal("number out of range")
+        return ("f", x)
+
+    def string(self) -> bytes:
+        """parse_str with validation: escapes decoded, surrogates paired, control bytes refused, UTF-8 checked."""
+        if self.peek() != 0x22:
+            raise SerdeRefusal("expected a string")
+        self.i += 1
+        out = bytearray()
+        while True:
+            c = self.peek()
+            if c is None:
+                raise SerdeRefusal("EOF in a string")
+            self.i += 1
+            if c == 0x22:
+                break
+            if c < 0x20:
+                raise SerdeRefusal("control character in a string")
+            if c != 0x5C:
+                out.append(c)
+                continue
+            e = self.peek()
+            if e is None:
+                raise SerdeRefusal("EOF in an escape")
+            self.i += 1
+            simple = {0x22: 0x22, 0x5C: 0x5C, 0x2F: 0x2F, 0x62: 8, 0x66: 12, 0x6E: 10, 0x72: 13, 0x74: 9}
+            if e in simple:
+                out.append(simple[e])
+                continue
+            if e != 0x75:
+                raise SerdeRefusal("invalid escape")
+            cp = self.hex4()
+            if 0xDC00 <= cp <= 0xDFFF:
+                raise SerdeRefusal("lone trailing surrogate")
+            if 0xD800 <= cp <= 0xDBFF:
+                if self.b[self.i:self.i + 2] != b"\\u":
+                    raise SerdeRefusal("lone leading surrogate")
+                self.i += 2
+                lo = self.hex4()
+                if not 0xDC00 <= lo <= 0xDFFF:
+                    raise SerdeRefusal("lone leading surrogate")
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+            out += chr(cp).encode("utf-8")
+        try:
+            out.decode("utf-8")
+        except UnicodeDecodeError:
+            raise SerdeRefusal("invalid UTF-8")
+        return bytes(out)
+
+    def hex4(self) -> int:
+        h = self.b[self.i:self.i + 4]
+        if len(h) < 4 or any(chr(x) not in "0123456789abcdefABCDEF" for x in h):
+            raise SerdeRefusal("invalid hex escape")
+        self.i += 4
+        return int(h, 16)
+
+    def value(self, ty: str):
+        """The tokens serde's Deserialize for `ty` reads at the cursor."""
+        self.ws()
+        c = self.peek()
+        if ty in ("f64", "u64", "usize"):
+            if c is None or not (c == 0x2D or 0x30 <= c <= 0x39):
+                raise SerdeRefusal("invalid type")
+            kind, v = self.number()
+            if ty == "f64":
+                return [float(v)]                    # u64 and i64 convert as Rust's `as f64`: correctly rounded
+            if kind != "u":
+                raise SerdeRefusal("invalid type or value")
+            return [v - (1 << 64) if v >= 1 << 63 else v]
+        if ty == "bool":
+            if c == 0x74:
+                self.expect(b"true")
+                return [1]
+            if c == 0x66:
+                self.expect(b"false")
+                return [0]
+            raise SerdeRefusal("invalid type")
+        if ty == "String":
+            return ["s:" + pct_bytes(self.string())]
+        if ty.startswith("Vec<") and ty.endswith(">"):
+            inner = ty[4:-1]
+            if c != 0x5B:
+                raise SerdeRefusal("invalid type")
+            self.i += 1
+            elems = []
+            self.ws()
+            if self.peek() == 0x5D:
+                self.i += 1
+                return [f"v:0"]
+            while True:
+                elems.append(self.value(inner))
+                self.ws()
+                c = self.peek()
+                if c == 0x2C:
+                    self.i += 1
+                    self.ws()
+                    if self.peek() == 0x5D:
+                        raise SerdeRefusal("trailing comma")
+                    continue
+                if c == 0x5D:
+                    self.i += 1
+                    break
+                raise SerdeRefusal("expected , or ]")
+            return [f"v:{len(elems)}"] + [t for e in elems for t in e]
+        raise ValueError(f"no model for {ty}")
+
+
+def pct_bytes(x: bytes) -> str:
+    return "".join(chr(c) if 0x21 <= c <= 0x7E and c != 0x25 else f"%{c:02X}" for c in x)
+
+
+def serde_read(ty: str, doc: bytes):
+    """serde_json::from_slice::<ty>(doc) as golden tokens: the value's, or ["E:Deserialize"]."""
+    m = SerdeModel(doc)
+    try:
+        toks = m.value(ty)
+        m.end()
+        return toks
+    except SerdeRefusal:
+        return ["E:Deserialize"]
+
+
+def check_json(rows):
+    failures, by_fn = [], {}
+    for fn, _cls, ins, outs, _raw in rows:
+        ty = fn[len("json::"):] if fn.startswith("json::") else None
+        doc = urllib.parse.unquote_to_bytes(ins[0][len("s:"):])
+        want = serde_read(ty, doc)
+        stat = by_fn.setdefault(fn, [0, 0])
+        ok = len(want) == len(outs) and all(
+            same(g, w) if isinstance(w, float) else g == w for g, w in zip(outs, want))
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"json: {fn}({doc[:80]!r}) recorded {outs[:6]}, modelled {want[:6]}")
+    return failures, by_fn
+
+
 def check_math(rows):
     failures, by_fn = [], {}
     for fn, cls, ins, outs, _raw in rows:
@@ -492,6 +712,12 @@ def main(argv):
             f, ok = check_fmt(rows)
             failures.extend(f)
             print(f"  f64::to_json {ok:6d} ok" + (f", {len(f)} FAILED" if f else ""))
+        if module == "json":
+            f, by_fn = check_json(rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:20s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
         if module == "math":
             f, by_fn = check_math(rows)
             failures.extend(f)

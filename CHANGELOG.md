@@ -315,6 +315,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** a claim and its release take 18–19 ns, where Rust allocates and drops a 256-byte `Vec` in 8.5–8.7 ns
     (`tests/pool.bcyr` and its Rust twin).
 
+- **M1 part d3a: the JSON read core for values** (`src/json.cyr`; port plan D5 and §8.3; ledger L7, L11 and L13;
+  results in `docs/development/port-parity.md` §7.9):
+  - **the pre-pass**, probe P7's stand-in for bayan's three gaps (integers at or above 2⁶³, `-0`, raw control bytes in
+    strings);
+  - **the tree** in a bump allocator over a pool claim. The claim starts at 24 bytes per byte of text and doubles while
+    the allocator refuses, since a tree can reach 88 times its text. `_pmn_json_decode` closes the document on every
+    path;
+  - **the readers** for f64, u64 and usize, bool, String (UTF-8 checked when read, as serde_json does), Vec<f64>,
+    Vec<u64>, Vec<String> and Vec<Vec<f64>> (with its shape, ragged or not);
+  - **a size guard** (ledger L13): `vec_push_a` ends the process one element past `VEC_CAP_MAX`, and bayan pushes
+    every array element through it, so a document that could hold such an array (2·`VEC_CAP_MAX` bytes, 512 MiB by
+    default) is refused unread as `OUT_OF_MEMORY`. pramana's numbers were added to the open cyrius vec issue;
+  - **a golden `json` module:** serde_json's reading of 3,886 documents with `float_roundtrip`. They cover every
+    number and string form, 120 exact float midpoints with their neighbours, and seeded floats, strings, vectors and
+    matrices. `validate.py` re-reads every one with its own model of serde_json, written from serde_json's source. All
+    3,886 match on x86_64, PE and aarch64. Seven mutation checks each fail their rows, or show the arena's doubling
+    carries every document from a 1× start;
+  - **tests:** `tests/json.tcyr` has 77 checks;
+  - **the pool:** a claim over 1 MiB now takes no slot, so no slot holds more than 2 MiB. The bump allocator counts
+    its refusals, so the reader can tell an exhausted arena from a parse error;
+  - **cost:** 7–22× serde_json per document (`tests/json.bcyr` and its Rust twin, on byte-identical documents). For
+    example, a Vec of 100 f64s takes 66–67 µs against 3.9–4.0 µs. The pre-pass's rewrite cut each decode by about
+    10%. The rest is recorded as a finding.
+
 ### Performance
 
 - **The pool's release** is a compare-and-swap rather than kimiya's full fence and plain store: a claim and its release

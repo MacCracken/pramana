@@ -31,6 +31,7 @@ mod glibc;
 mod grids;
 mod m_constants;
 mod m_fmt;
+mod m_json;
 mod m_math;
 mod p_constants;
 mod t_constants;
@@ -43,7 +44,12 @@ use std::process::ExitCode;
 
 /// Every golden emitter, in file-name order.
 fn golden_modules(constants: &[consts::Const]) -> Vec<tsv::Module> {
-    vec![m_constants::emit(constants), m_fmt::emit(), m_math::emit()]
+    vec![
+        m_constants::emit(constants),
+        m_fmt::emit(),
+        m_json::emit(),
+        m_math::emit(),
+    ]
 }
 
 /// One generated file: its path from the repo root, its contents, and a summary.

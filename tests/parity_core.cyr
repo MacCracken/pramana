@@ -192,6 +192,46 @@ fn _par_in_cstr(k): i64 {
     return out;
 }
 
+# Input token k, an `s:` token, as raw bytes with its `%XX` escapes decoded, NUL bytes and invalid UTF-8 kept (a JSON
+# document): the pointer, with the length at lenp. The buffer is reused by the next call. 0 if the token is no `s:`
+# token or an escape is malformed.
+var _par_bytes_buf = 0;
+var _par_bytes_cap = 0;
+fn _par_in_bytes(k, lenp): i64 {
+    var at = k * 8;
+    if (k >= _par_in_n || load64(_par_in_k + at) != 115) { return 0; }
+    var p = load64(_par_in_v + at);
+    var len = load64(_par_in_l + at);
+    if (len + 1 > _par_bytes_cap) {
+        _par_bytes_cap = 2 * len + 64;
+        _par_bytes_buf = alloc(_par_bytes_cap);
+        if (_par_bytes_buf == 0) {
+            _par_bytes_cap = 0;
+            return 0;
+        }
+    }
+    var out = _par_bytes_buf;
+    var n = 0;
+    var j = 0;
+    while (j < len) {
+        var c = load8(p + j);
+        if (c == 37) {
+            if (j + 2 >= len) { return 0; }
+            var hi = _par_hex_upper(load8(p + j + 1));
+            var lo = _par_hex_upper(load8(p + j + 2));
+            if (hi < 0 || lo < 0) { return 0; }
+            c = hi * 16 + lo;
+            j = j + 3;
+        } else {
+            j = j + 1;
+        }
+        store8(out + n, c);
+        n = n + 1;
+    }
+    store64(lenp, n);
+    return out;
+}
+
 # Appends an f64 result word to the got list.
 fn _par_got_f(bits) {
     if (_par_got_n >= _PAR_MAX) { return 0; }

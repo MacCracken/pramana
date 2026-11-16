@@ -113,6 +113,112 @@ fn _par_fmt(fp, fl): i64 {
     return 1;
 }
 
+# `json::<T>` rows (input `s:<document>`): serde_json 1.0.154's reading of the document as T (M1 part d3a), through
+# src/json.cyr's pre-pass, document arena and readers. A refusal anywhere is `E:Deserialize`. Each value is read
+# whole before any token is appended, so a refusal never leaves a partial list behind.
+var _par_json_doc = 0;
+var _par_json_buf = 0;
+var _PAR_JSON_CAP = 65536;
+
+fn _par_json_vec_f64(v): i64 {
+    var n = _pmn_json_arr_len(v);
+    if (n < 0) { return PMN_ERR_DESERIALIZE; }
+    if (n > _PAR_JSON_CAP) { return 0 - 1; }
+    var e = _pmn_json_vec_f64(v, _par_json_buf, _PAR_JSON_CAP);
+    if (e != PMN_ERR_NONE) { return e; }
+    _par_got_seq(n);
+    for (var k = 0; k < n; k = k + 1) { _par_got_f(load64(_par_json_buf + k * 8)); }
+    return PMN_ERR_NONE;
+}
+
+fn _par_json_value(fp, fl, root): i64 {
+    var w[16];
+    if (_par_eq(fp, fl, "json::f64") == 1) {
+        var e = _pmn_json_f64(root, &w);
+        if (e == PMN_ERR_NONE) { _par_got_f(load64(&w)); }
+        return e;
+    }
+    if (_par_eq(fp, fl, "json::u64") == 1 || _par_eq(fp, fl, "json::usize") == 1) {
+        var e2 = _pmn_json_u64(root, &w);
+        if (e2 == PMN_ERR_NONE) { _par_got_i(load64(&w)); }
+        return e2;
+    }
+    if (_par_eq(fp, fl, "json::bool") == 1) {
+        var e3 = _pmn_json_bool(root, &w);
+        if (e3 == PMN_ERR_NONE) { _par_got_i(load64(&w)); }
+        return e3;
+    }
+    if (_par_eq(fp, fl, "json::String") == 1) {
+        var e4 = _pmn_json_str(root, &w);
+        if (e4 == PMN_ERR_NONE) { _par_got_text(load64(&w), load64(&w + 8)); }
+        return e4;
+    }
+    if (_par_eq(fp, fl, "json::Vec<f64>") == 1) { return _par_json_vec_f64(root); }
+    if (_par_eq(fp, fl, "json::Vec<u64>") == 1) {
+        var n = _pmn_json_arr_len(root);
+        if (n < 0) { return PMN_ERR_DESERIALIZE; }
+        if (n > _PAR_JSON_CAP) { return 0 - 1; }
+        var e5 = _pmn_json_vec_u64(root, _par_json_buf, _PAR_JSON_CAP);
+        if (e5 != PMN_ERR_NONE) { return e5; }
+        _par_got_seq(n);
+        for (var k = 0; k < n; k = k + 1) { _par_got_i(load64(_par_json_buf + k * 8)); }
+        return PMN_ERR_NONE;
+    }
+    if (_par_eq(fp, fl, "json::Vec<String>") == 1) {
+        var ns = _pmn_json_arr_len(root);
+        if (ns < 0) { return PMN_ERR_DESERIALIZE; }
+        for (var a = 0; a < ns; a = a + 1) {
+            var e6 = _pmn_json_str(_pmn_json_arr_get(root, a), &w);
+            if (e6 != PMN_ERR_NONE) { return e6; }
+        }
+        _par_got_seq(ns);
+        for (var b = 0; b < ns; b = b + 1) {
+            var e7 = _pmn_json_str(_pmn_json_arr_get(root, b), &w);
+            if (e7 != PMN_ERR_NONE) { return e7; }
+            _par_got_text(load64(&w), load64(&w + 8));
+        }
+        return PMN_ERR_NONE;
+    }
+    if (_par_eq(fp, fl, "json::Vec<Vec<f64>>") == 1) {
+        var sh[24];
+        var e8 = _pmn_json_mat_shape(root, &sh);
+        if (e8 != PMN_ERR_NONE) { return e8; }
+        var r = load64(&sh);
+        _par_got_seq(r);
+        for (var i = 0; i < r; i = i + 1) {
+            var e9 = _par_json_vec_f64(_pmn_json_arr_get(root, i));
+            if (e9 != PMN_ERR_NONE) { return 0 - 1; }   # the shape read every element: a defect
+        }
+        return PMN_ERR_NONE;
+    }
+    return 0 - 2;
+}
+
+fn _par_json(fp, fl): i64 {
+    if (_par_in_n != 1) { return 0 - 1; }
+    if (_par_json_doc == 0) {
+        _par_json_doc = alloc(_PMN_JSON_DOC_SIZE);
+        _par_json_buf = alloc(_PAR_JSON_CAP * 8);
+        if (_par_json_doc == 0 || _par_json_buf == 0) { return 0 - 1; }
+    }
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var e = _pmn_json_open(_par_json_doc, doc, n);
+    var r = 1;
+    if (e == PMN_ERR_NONE) {
+        e = _par_json_value(fp, fl, _pmn_json_root(_par_json_doc));
+        if (e == 0 - 2) { r = 0; }
+        if (e == 0 - 1) { r = 0 - 1; }
+    }
+    _pmn_json_close(_par_json_doc);
+    if (r == 1 && e != PMN_ERR_NONE) {
+        _par_got_n = 0;
+        _par_got_err(e);
+    }
+    return r;
+}
+
 # `f64::*` and `u64::*` rows: the Rust std reference values (port plan §8.1), every one through src/mathx.cyr, the
 # names the rest of the port calls (M1 part c):
 # - the exact builtins sqrt, abs and floor;
@@ -167,6 +273,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "constants") == 1) { return _par_constants(fp, fl); }
     if (_par_eq(mp, ml, "fmt") == 1) { return _par_fmt(fp, fl); }
+    if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
     return 0;
 }

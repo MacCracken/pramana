@@ -27,6 +27,15 @@ fn main() {
     assert_eq(load64(p3 + 1048576 - 8), 42, "the whole claim is writable");
     _pmn_scratch_give(p3, s3);
 
+    test_group("a claim over 1 MiB is a block of its own");
+    var held1 = _pmn_scratch_bytes();
+    var p6, s6 = _pmn_scratch_take(2 * 1048576);
+    assert(p6 != 0 && s6 == _PMN_POOL_OVERFLOW, "a 2 MiB claim takes no slot");
+    store64(p6 + 2 * 1048576 - 8, 43);
+    assert_eq(load64(p6 + 2 * 1048576 - 8), 43, "the whole claim is writable");
+    assert_eq(_pmn_scratch_bytes(), held1, "the slots hold what they held");
+    _pmn_scratch_give(p6, s6);
+
     test_group("past eight concurrent claims, a freelist block of its own");
     var ps[72];
     var ss[72];
@@ -55,8 +64,8 @@ fn main() {
 
     test_group("the bump allocator over a claim");
     var p5, s5 = _pmn_scratch_take(64);
-    var al[40];
-    var st[24];
+    var al[_PMN_BUMP_ALLOCATOR_SIZE];
+    var st[_PMN_BUMP_STATE_SIZE];
     _pmn_bump_allocator(&al, &st, p5, 64);
     var x1 = alloc_via(&al, 10);
     assert(x1 == p5, "the first allocation is the claim's start");
@@ -66,8 +75,10 @@ fn main() {
     store64(x2, 77);
     var x3 = realloc_via(&al, x2, 8, 16);
     assert(x3 == p5 + 24 && load64(x3) == 77, "realloc copies the old bytes");
+    assert_eq(_pmn_bump_refused(&st), 0, "nothing refused yet");
     var x4 = alloc_via(&al, 64);
     assert(x4 == 0, "an allocation past the claim returns 0");
+    assert_eq(_pmn_bump_refused(&st), 1, "and is counted");
     reset_via(&al);
     assert_eq(_pmn_bump_used(&st), 0, "reset rewinds");
     _pmn_scratch_give(p5, s5);
@@ -76,8 +87,8 @@ fn main() {
     var before = alloc_used();
     for (var i = 0; i < 10000; i = i + 1) {
         var q, sq = _pmn_scratch_take(512 + (i % 7) * 64);
-        var al2[40];
-        var st2[24];
+        var al2[_PMN_BUMP_ALLOCATOR_SIZE];
+        var st2[_PMN_BUMP_STATE_SIZE];
         _pmn_bump_allocator(&al2, &st2, q, 512);
         var y = alloc_via(&al2, 100);
         if (y != 0) { store64(y, i); }
