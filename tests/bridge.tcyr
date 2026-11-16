@@ -1,0 +1,187 @@
+# bridge.tcyr — the eleven bridges (M1 part e3).
+#
+# tests/parity.tcyr replays 1.3.0's results on 5,553 rows (tests/golden/bridge.tsv), class B and C. These tests carry
+# 1.3.0's own unit tests over, and pin what the replay's class B cannot see: the sign of a zero from Rust's sums,
+# which start at −0.0 (the harness counts ±0 as 0 ulp apart). They also cover the caller's buffer errors, and the
+# fits' scratch, which must leave nothing claimed.
+
+include "tests/lib.cyr"
+
+# 1 when |x − want| < tol.
+fn near(x: f64, want: f64, tol: f64): i64 {
+    var d: f64 = f64_abs(x - want);
+    if (d < tol) { return 1; }
+    return 0;
+}
+
+fn bits(x: f64): i64 {
+    return load64(&x);
+}
+
+fn main() {
+    alloc_init();
+    var out[40];
+    var tol: f64 = 0.01;
+
+    test_group("badal and ushma (1.3.0's tests)");
+    var hw: f64 = pmn_ensemble_spread_to_confidence(10.0, 1.96);
+    assert(near(hw, 19.6, tol) == 1, "confidence_95");
+    var w: f64 = pmn_observation_error_to_likelihood(0.0, 1.0);
+    var tol3: f64 = 0.001;
+    assert(near(w, 0.3989, tol3) == 1, "likelihood_at_mean: 1/sqrt(2 pi)");
+    var w0: f64 = pmn_observation_error_to_likelihood(1.0, 0.0);
+    assert(w0 == 0.0, "likelihood_zero_std");
+    assert_eq(pmn_uncertainty_to_gaussian(300.0, 2.0, &out), PMN_ERR_NONE, "uncertainty_gaussian");
+    var m0: f64 = load64(&out);
+    var s0: f64 = load64(&out + 8);
+    var want_s: f64 = 2.0 / 1.96;
+    assert(m0 == 300.0 && near(s0, want_s, tol) == 1, "the mean passes, sigma = 2 / 1.96");
+    var sn: f64 = pmn_sensor_noise_to_std_dev(0.000001, 1000.0);
+    assert(near(sn, 0.0316, tol3) == 1, "sensor_noise: sqrt(1e-6 x 1000)");
+    var sz: f64 = pmn_sensor_noise_to_std_dev(0.0, 1000.0);
+    assert(sz == 0.0, "sensor_noise_zero");
+
+    test_group("kimiya (1.3.0's tests)");
+    var ys[32];
+    store64(&ys, 0x4024000000000000);
+    store64(&ys + 8, 0x4028000000000000);
+    store64(&ys + 16, 0x4026000000000000);
+    store64(&ys + 24, 0x402A000000000000);
+    assert_eq(pmn_yields_to_mean_variance(&ys, 4, &out), PMN_ERR_NONE, "yields_basic");
+    var ym: f64 = load64(&out);
+    var yv: f64 = load64(&out + 8);
+    assert(near(ym, 11.5, tol) == 1 && yv > 0.0, "mean 11.5, a positive variance");
+    assert(pmn_yields_to_mean_variance(0, 0, &out) == PMN_ERR_NONE && load64(&out) == 0 && load64(&out + 8) == 0,
+        "yields_empty: (0, 0)");
+    var t0: f64 = pmn_replicates_to_t_statistic(10.0, 1.0, 30, 10.0, 1.0, 30);
+    var t1: f64 = pmn_replicates_to_t_statistic(10.0, 1.0, 30, 12.0, 1.0, 30);
+    assert(near(t0, 0.0, tol) == 1, "t_statistic_equal_means");
+    assert(f64_abs(t1) > 1.0, "t_statistic_different_means");
+
+    test_group("bodh (1.3.0's tests)");
+    var al: f64 = pmn_item_variances_to_alpha(3, 0.1, 10.0);
+    assert(near(al, 1.485, tol3) == 1, "alpha_high_reliability: 1.5 x 0.99");
+    var a1: f64 = pmn_item_variances_to_alpha(1, 1.0, 2.0);
+    assert(a1 == 0.0, "alpha_single_item");
+    var dp: f64 = pmn_z_rates_to_d_prime(1.28, -1.28);
+    assert(near(dp, 2.56, tol) == 1, "d_prime_from_z");
+    var ta[40];
+    var tb[40];
+    for (var i = 0; i < 5; i = i + 1) {
+        var v: f64 = f64_from(i + 1);
+        var v2: f64 = 2.0 * v;
+        store64(&ta + i * 8, v);
+        store64(&tb + i * 8, v2);
+    }
+    assert_eq(pmn_trait_scores_to_correlation(&ta, 5, &tb, 5, &out), PMN_ERR_NONE, "trait_correlation_basic");
+    var ma: f64 = load64(&out);
+    var mb: f64 = load64(&out + 8);
+    var cv: f64 = load64(&out + 16);
+    assert(ma == 3.0 && mb == 6.0 && cv > 0.0, "means 3 and 6, a positive covariance");
+    assert(pmn_trait_scores_to_correlation(0, 0, 0, 0, &out) == PMN_ERR_NONE && load64(&out) == 0,
+        "trait_correlation_empty");
+    assert(pmn_trait_scores_to_correlation(&ta, 5, &tb, 4, &out) == PMN_ERR_NONE && load64(&out + 16) == 0,
+        "different lengths: all zero");
+
+    test_group("the fits (1.3.0's tests)");
+    var rec[256];
+    # learning_power_law_fit: T = 10 * N^-0.3 for N = 1 … 10.
+    var mexp: f64 = -0.3;
+    for (var q = 0; q < 10; q = q + 1) {
+        var nq: f64 = f64_from(q + 1);
+        var pq: f64 = _pmn_powf(nq, mexp);
+        var tq: f64 = 10.0 * pq;
+        store64(&rec + q * 16, q + 1);
+        store64(&rec + q * 16 + 8, tq);
+    }
+    assert_eq(pmn_learning_trials_to_power_law(&rec, 10, &out), PMN_ERR_NONE, "learning_power_law_fit");
+    var la: f64 = load64(&out);
+    var lb: f64 = load64(&out + 8);
+    var tol5: f64 = 0.5;
+    var tol05: f64 = 0.05;
+    assert(near(la, 10.0, tol5) == 1 && near(lb, 0.3, tol05) == 1, "a = 10, b = 0.3");
+    # hick_params_fit: RT = 0.2 + 0.1 log2(n) at n = 2, 4, 8.
+    store64(&rec, 2);
+    store64(&rec + 8, 0x3FD3333333333334);
+    store64(&rec + 16, 4);
+    store64(&rec + 24, 0x3FD999999999999A);
+    store64(&rec + 32, 8);
+    store64(&rec + 40, 0x3FE0000000000000);
+    assert_eq(pmn_response_times_to_hick_params(&rec, 3, &out), PMN_ERR_NONE, "hick_params_fit");
+    var h1: f64 = load64(&out);
+    var h2: f64 = load64(&out + 8);
+    assert(near(h1, 0.2, tol) == 1 && near(h2, 0.1, tol) == 1, "a = 0.2, b = 0.1");
+    # T = 10 * N^-1 on the valid points; (0, 5) and (3, -1) are skipped.
+    store64(&rec, 0);
+    store64(&rec + 8, 0x4014000000000000);
+    store64(&rec + 16, 1);
+    store64(&rec + 24, 0x4024000000000000);
+    store64(&rec + 32, 2);
+    store64(&rec + 40, 0x4014000000000000);
+    store64(&rec + 48, 3);
+    store64(&rec + 56, 0xBFF0000000000000);
+    store64(&rec + 64, 4);
+    store64(&rec + 72, 0x4004000000000000);
+    assert_eq(pmn_learning_trials_to_power_law(&rec, 5, &out), PMN_ERR_NONE, "power_law_skipped_points");
+    var pa: f64 = load64(&out);
+    var pb: f64 = load64(&out + 8);
+    var tiny: f64 = 0.000000001;
+    assert(near(pa, 10.0, tiny) == 1 && near(pb, 1.0, tiny) == 1, "a = 10, b = 1: the skipped points don't bias it");
+    store64(&rec, 0);
+    store64(&rec + 8, 0x3FF0000000000000);
+    store64(&rec + 16, 2);
+    store64(&rec + 24, 0x4008000000000000);
+    assert_eq(pmn_learning_trials_to_power_law(&rec, 2, &out), PMN_ERR_NONE, "one usable point");
+    assert(load64(&out) == 0 && load64(&out + 8) == 0, "fits no line: (0, 0)");
+    # RT = 200 + 150 log2(n) on the valid points.
+    store64(&rec, 0);
+    store64(&rec + 8, 0x408F380000000000);
+    store64(&rec + 16, 1);
+    store64(&rec + 24, 0x4069000000000000);
+    store64(&rec + 32, 2);
+    store64(&rec + 40, 0x4075E00000000000);
+    store64(&rec + 48, 4);
+    store64(&rec + 56, 0x407F400000000000);
+    store64(&rec + 64, 8);
+    store64(&rec + 72, 0x7FF8000000000000);
+    assert_eq(pmn_response_times_to_hick_params(&rec, 5, &out), PMN_ERR_NONE, "hick_skipped_points");
+    var ha: f64 = load64(&out);
+    var hb: f64 = load64(&out + 8);
+    assert(near(ha, 200.0, tiny) == 1 && near(hb, 150.0, tiny) == 1, "a = 200, b = 150");
+    assert_eq(_pmn_scratch_claimed(), 0, "the fits give their scratch back");
+
+    test_group("Rust's sums start at -0.0 (class B can't see it)");
+    var nzv[8];
+    store64(&nzv, 0x8000000000000000);
+    assert_eq(pmn_yields_to_mean_variance(&nzv, 1, &out), PMN_ERR_NONE, "one yield of -0.0");
+    assert_eq(load64(&out), 0x8000000000000000, "its mean is -0.0, as Rust's: -0.0 + -0.0");
+    assert_eq(pmn_trait_scores_to_correlation(&nzv, 1, &nzv, 1, &out), PMN_ERR_NONE, "one score of -0.0 each");
+    assert(load64(&out) == 0x8000000000000000 && load64(&out + 8) == 0x8000000000000000, "both means are -0.0");
+
+    test_group("the caller's errors");
+    assert_eq(pmn_yields_to_mean_variance(&ys, 4, 0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(pmn_yields_to_mean_variance(0, 4, &out), PMN_ERR_INVALID_PARAMETER, "a null slice with a count");
+    assert_eq(pmn_trait_scores_to_correlation(&ta, 0 - 1, &tb, 5, &out), PMN_ERR_INVALID_PARAMETER,
+        "a negative count");
+    assert_eq(pmn_uncertainty_to_gaussian(1.0, 1.0, 0), PMN_ERR_INVALID_PARAMETER, "a null tuple");
+    assert_eq(pmn_learning_trials_to_power_law(0, 3, &out), PMN_ERR_INVALID_PARAMETER, "null records");
+    assert_eq(pmn_response_times_to_hick_params(&rec, 5, 0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(pmn_yields_to_mean_variance(&ys, 4, &ys), PMN_ERR_NONE, "out may alias the input: it is written last");
+    var am: f64 = load64(&ys);
+    assert(near(am, 11.5, tol) == 1, "and holds the mean");
+
+    test_group("a soak of the fits leaves the heap where it found it");
+    var before = alloc_used();
+    for (var r = 0; r < 10000; r = r + 1) {
+        if (pmn_response_times_to_hick_params(&rec, 5, &out) != PMN_ERR_NONE) { println("fit failed"); }
+    }
+    assert_eq(alloc_used() - before, 0, "10^4 fits: 0 bytes of bump heap");
+    assert_eq(_pmn_scratch_claimed(), 0, "and nothing left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+# Any failure at all is exit 1: a wait status is 8 bits, so a raw count of 256 would read as success.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

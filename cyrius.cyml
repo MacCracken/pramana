@@ -49,4 +49,5 @@ modules = [
     "src/json.cyr",
     "src/rng.cyr",
     "src/combinatorics.cyr",
+    "src/bridge.cyr",
 ]

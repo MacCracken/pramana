@@ -1092,6 +1092,159 @@ def check_combinatorics(rows):
     return failures, by_fn, crs
 
 
+# ── bridge: 1.3.0's eleven bridges in Rust's operation order ──
+
+FLOOR = 1e-15
+
+
+def br_sum(xs):
+    """Rust's `Iterator::sum` for f64: from −0.0."""
+    s = -0.0
+    for x in xs:
+        s += x
+    return s
+
+
+def br_sqrt(x):
+    return math.nan if x < 0.0 else math.sqrt(x)
+
+
+def br_fit_line(points):
+    """1.3.0's private fit_line: (slope, intercept), or None. Its folds start at +0.0."""
+    if len(points) < 2:
+        return None
+    sx = sy = 0.0
+    for x, y in points:
+        sx += x
+        sy += y
+    n = float(len(points))
+    mx, my = sx / n, sy / n
+    sxx = sxy = 0.0
+    for x, y in points:
+        dx = x - mx
+        sxx += dx * dx
+        sxy += dx * (y - my)
+    if not (sxx > FLOOR and math.isfinite(sxx)):
+        return None
+    slope = sxy / sxx
+    return slope, my - slope * mx
+
+
+def bridge_model(fn, toks, exp, ln, log2):
+    """The output values of one bridge row, from its input tokens, with the given exp, ln and log2."""
+    it = iter(toks)
+
+    def vec():
+        return [next(it) for _ in range(int(next(it)[len("v:"):]))]
+
+    def recs():
+        n = int(next(it)[len("v:"):])
+        return [(next(it) % (1 << 64), next(it)) for _ in range(n)]
+
+    name = fn[len("bridge::"):]
+    if name == "ensemble_spread_to_confidence":
+        a, b = next(it), next(it)
+        return [abs(a) * b]
+    if name == "observation_error_to_likelihood":
+        r, sd = next(it), next(it)
+        if sd <= 0.0:
+            return [0.0]
+        z = r / sd
+        return [exp((-0.5 * z) * z) / (sd * math.sqrt(math.tau))]
+    if name == "uncertainty_to_gaussian":
+        mv, u = next(it), next(it)
+        return [mv, abs(u) / 1.96]
+    if name == "sensor_noise_to_std_dev":
+        a, b = next(it), next(it)
+        return [0.0 if a <= 0.0 or b <= 0.0 else br_sqrt(a * b)]
+    if name == "z_rates_to_d_prime":
+        a, b = next(it), next(it)
+        return [a - b]
+    if name == "item_variances_to_alpha":
+        k, si, t = next(it) % (1 << 64), next(it), next(it)
+        if k < 2 or t < FLOOR:
+            return [0.0]
+        kf = float(k)
+        return [(kf / (kf - 1.0)) * (1.0 - si / t)]
+    if name == "replicates_to_t_statistic":
+        ma, sa, na, mb, sb, nb = next(it), next(it), next(it) % (1 << 64), next(it), next(it), next(it) % (1 << 64)
+        if na == 0 or nb == 0:
+            return [0.0]
+        se = br_sqrt(sa * sa / float(na) + sb * sb / float(nb))
+        if se < FLOOR:
+            return [0.0]
+        return [(ma - mb) / se]
+    if name == "yields_to_mean_variance":
+        v = vec()
+        if not v:
+            return [0.0, 0.0]
+        n = float(len(v))
+        mean = br_sum(v) / n
+        var = br_sum((y - mean) * (y - mean) for y in v) / (n - 1.0) if len(v) > 1 else 0.0
+        return [mean, var]
+    if name == "trait_scores_to_correlation":
+        a, b = vec(), vec()
+        if not a or len(a) != len(b):
+            return [0.0] * 5
+        n = float(len(a))
+        ma, mb = br_sum(a) / n, br_sum(b) / n
+        cov = va = vb = 0.0
+        for x, y in zip(a, b):
+            da, db = x - ma, y - mb
+            cov += da * db
+            va += da * da
+            vb += db * db
+        if n > 1.0:
+            d = n - 1.0
+            return [ma, mb, cov / d, va / d, vb / d]
+        return [ma, mb, 0.0, 0.0, 0.0]
+    if name == "learning_trials_to_power_law":
+        pts = [(ln(float(t)), ln(x)) for t, x in recs() if t > 0 and x > 0.0 and math.isfinite(x)]
+        fit = br_fit_line(pts)
+        return [0.0, 0.0] if fit is None else [exp(fit[1]), -fit[0]]
+    if name == "response_times_to_hick_params":
+        pts = [(log2(float(c)), x) for c, x in recs() if c > 0 and math.isfinite(x)]
+        fit = br_fit_line(pts)
+        return [0.0, 0.0] if fit is None else [fit[1], fit[0]]
+    raise ValueError(f"no bridge model for {fn}")
+
+
+def check_bridge(rows):
+    failures, by_fn, crs = [], {}, []
+    cr_exp = lambda x: mpfr_ref.cr("exp", x)
+    cr_log = lambda x: mpfr_ref.cr("log", x)
+    cr_log2 = lambda x: mpfr_ref.cr("log2", x)
+    for fn, cls, ins, outs, raw in rows:
+        want = bridge_model(fn, ins, _libm.exp, _libm.log, _libm.log2)
+        ok = len(outs) == len(want) and all(same(g, w) for g, w in zip(outs, want))
+        stat = by_fn.setdefault(fn, [0, 0])
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"bridge: {fn}({raw[:80]}) recorded {outs}, modelled {want}")
+        if cls == "C":
+            cr = bridge_model(fn, ins, cr_exp, cr_log, cr_log2)
+            if not all(same(g, w) for g, w in zip(outs, cr)):
+                toks = " ".join(f"f:{bits(x):016x}" for x in cr)
+                crs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {outs!r} through glibc; {cr!r} with every exp, ln and log2 "
+                           f"correctly rounded")
+    return failures, by_fn, crs
+
+
+def cr_file(gdir, module, provenance, crs, write_cr, failures):
+    """Writes (--write-cr) or checks a module's correctly rounded rows."""
+    text = render_cr(module, provenance, crs)
+    cr_path = gdir / f"{module}.cr.tsv"
+    if write_cr:
+        cr_path.write_text(text, encoding="utf-8")
+        print(f"  wrote {cr_path.name}: {len(crs)} rows")
+    elif not cr_path.exists():
+        failures.append(f"{cr_path.name} missing (run with --write-cr)")
+    elif cr_path.read_text(encoding="utf-8") != text:
+        failures.append(f"{cr_path.name} differs from what MPFR gives")
+    else:
+        print(f"  {cr_path.name}: {len(crs)} rows, as MPFR gives")
+
+
 def check_math(rows):
     failures, by_fn = [], {}
     for fn, cls, ins, outs, _raw in rows:
@@ -1189,17 +1342,14 @@ def main(argv):
             for fn in sorted(by_fn):
                 ok, bad = by_fn[fn]
                 print(f"  {fn:32s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
-            text = render_cr(module, provenance, crs)
-            cr_path = gdir / f"{module}.cr.tsv"
-            if write_cr:
-                cr_path.write_text(text, encoding="utf-8")
-                print(f"  wrote {cr_path.name}: {len(crs)} rows")
-            elif not cr_path.exists():
-                failures.append(f"{cr_path.name} missing (run with --write-cr)")
-            elif cr_path.read_text(encoding="utf-8") != text:
-                failures.append(f"{cr_path.name} differs from what MPFR gives")
-            else:
-                print(f"  {cr_path.name}: {len(crs)} rows, as MPFR gives")
+            cr_file(gdir, module, provenance, crs, write_cr, failures)
+        if module == "bridge":
+            f, by_fn, crs = check_bridge(rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:42s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
+            cr_file(gdir, module, provenance, crs, write_cr, failures)
         if module == "rng":
             f, by_fn = check_rng(rows)
             failures.extend(f)
@@ -1213,17 +1363,7 @@ def main(argv):
                 ok, bad = by_fn[fn]
                 print(f"  {fn:18s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
             crs = cr_rows(rows)
-            text = render_cr(module, provenance, crs)
-            cr_path = gdir / f"{module}.cr.tsv"
-            if write_cr:
-                cr_path.write_text(text, encoding="utf-8")
-                print(f"  wrote {cr_path.name}: {len(crs)} rows")
-            elif not cr_path.exists():
-                failures.append(f"{cr_path.name} missing (run with --write-cr)")
-            elif cr_path.read_text(encoding="utf-8") != text:
-                failures.append(f"{cr_path.name} differs from what MPFR gives")
-            else:
-                print(f"  {cr_path.name}: {len(crs)} rows, as MPFR gives")
+            cr_file(gdir, module, provenance, crs, write_cr, failures)
             per = {}
             for r in crs:
                 per[r.split("\t", 1)[0]] = per.get(r.split("\t", 1)[0], 0) + 1

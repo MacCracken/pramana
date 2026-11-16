@@ -407,6 +407,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **tests:** `tests/combinatorics.tcyr` has 40 checks, among them 20,000 seeded fast-path divisions checked by
     multiplying back.
 
+- **M1 part e3: the bridges** (`src/bridge.cyr`; results in `docs/development/port-parity.md` §7.14):
+  - **the functions:** 1.3.0's eleven conversions for badal, kimiya, ushma and bodh, in Rust's operation order. Sums
+    start at −0.0 as Rust's do, counts convert unsigned, and the fits keep their points in a pool claim;
+  - **two conventions** (port plan §8.3): a returned tuple fills the caller's `out` array, with a code for the
+    caller's own errors, and a slice of pairs is 16-byte records;
+  - **a golden `bridge` module:** 5,553 rows of special-value grids, the 1e-15 floors and their neighbours, empty and
+    NaN-bearing slices, the fits' skipped records, and seeds. 1,073 are class C. `validate.py` models all eleven
+    through glibc and MPFR, and `bridge.cr.tsv` has 0 rows. Every output matches at 0 ulp on x86_64, PE and aarch64;
+  - **tests:** `tests/bridge.tcyr` has 44 checks, all 19 of 1.3.0's tests among them, and the −0.0 sums, which class B's tolerance can't see;
+  - **cost:** 4–8.5× 1.3.0 (`tests/bridge.bcyr` and its twin, the same outputs).
+
 ### Performance
 
 - **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),

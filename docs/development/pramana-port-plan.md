@@ -35,7 +35,7 @@
 > committed (`d34db7c`), and so is part d2, the work-table pool (`c302838`), and part d3a, the JSON read core's
 > value readers (`c61f76b`), part d3b, serde's struct rules and the two enum forms (`18c4e70`), and part d4, the JSON
 > write core and the error codec (`daf9084`), and part e1, the RNG and its codec (`5d80e5a`). Part e2, combinatorics with
-> `PmnU128`, is done but not committed. The maintainer took each
+> `PmnU128`, is committed (`a49d23d`), and part e3, the bridges, is done but not committed. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1096,7 +1096,8 @@ Every milestone, and every part of a large one, ends with pravash's gates:
   1.3.0's own streams (40 seeds × 256 draws, and 10⁶-draw digests from six seeds) and 190 serde_json codec rows ✅;
 - **e2:** `src/combinatorics.cyr`: `factorial`, `permutations` and `combinations` into a `PmnU128` (D10), and
   `stirling_approx`, against 1.3.0 on 2,405 rows (probe P1's grid, seeded pairs, Stirling's overflow edge) ✅;
-- **e3:** `src/bridge.cyr`: the 11 bridge functions;
+- **e3:** `src/bridge.cyr`: the 11 bridge functions, against 1.3.0 on 5,553 rows (special-value grids, the 1e-15
+  floors and their neighbours, empty and NaN-bearing slices, the two fits' skipped records) ✅;
 - **f:** M1's gate.
 
 **Order:** M0 → M1 → M2 → … → M8.
@@ -1163,6 +1164,8 @@ which keeps every consumer's compile free of it.
 | `Vec<f64>` returns | `(out, cap)` plus a count returned, or an owned result with `_drop` (D11) |
 | `Vec<Vec<f64>>` (covariance, transition and emission matrices) | flat row-major f64 arrays with dimensions |
 | `Option<f64>` (`select_pair`) | an out-pointer plus 1/0 |
+| a returned tuple (`(f64, f64)`, the bridges' 5-tuple) | the caller's `out` array, its elements in order; the function returns a code, nonzero only for the caller's own errors (part e3) |
+| `&[(u32, f64)]`, `&[(usize, f64)]` | n records of 16 bytes, the integer word then the f64, and the count (part e3) |
 | `Result<u128>` (`factorial`, `permutations`, `combinations`) | a code, with the value in a caller's `PmnU128 { lo, hi }`, written only on success (D10, part e2) |
 | `Result<T, PramanaError>` | value-form `Result` with a `PMN_ERR_*` code; never through `callptr` |
 | `impl Fn…` | function pointer plus context word (D7); a parameter declared `f: *fn(f64): f64` takes `&fn` or a closure (P3) |

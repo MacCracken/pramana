@@ -29,6 +29,7 @@
 mod consts;
 mod glibc;
 mod grids;
+mod m_bridge;
 mod m_combinatorics;
 mod m_constants;
 mod m_fmt;
@@ -47,6 +48,7 @@ use std::process::ExitCode;
 /// Every golden emitter, in file-name order.
 fn golden_modules(constants: &[consts::Const]) -> Vec<tsv::Module> {
     vec![
+        m_bridge::emit(),
         m_combinatorics::emit(),
         m_constants::emit(constants),
         m_fmt::emit(),

@@ -224,3 +224,24 @@ divides at every step, so C(60, 30) took 28.5 µs (215× Rust). A 32-bit-limb fa
 covers every divisor `combinations` makes in practice, took it to 1.14 µs. Old and new were measured in the same
 pinned run while the box was loaded, and gave the same words. The remaining gap is the multiply: eight 32-bit partial
 products against Rust's two machine multiplies.
+
+## M1 part e3: the bridges (2026-11-15)
+
+**Bodies.** `tests/bridge.bcyr` against the twin's `bridge` rows, on the same inputs:
+- 4,096 (residual, σ) pairs from mathx.bcyr's xorshift, cycled 250 times;
+- 100 yields and 100 score pairs from the same stream, 10⁵ calls;
+- 20 records for each fit, 10⁵ calls.
+
+Both print the outputs' bits, and all five agree. Three rounds, interleaved, pinned to core 5, at a load average of
+1.3.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `observation_error_to_likelihood` | 7.0–7.1 ns | 60 ns | 8.5× |
+| `yields_to_mean_variance`, 100 yields | 134.4–135.4 ns | 575–578 ns | 4.3× |
+| `trait_scores_to_correlation`, 100 pairs | 190.9–192.2 ns | 1.23 µs | 6.4× |
+| `learning_trials_to_power_law`, 20 trials | 362.7–365.2 ns | 2.76–2.82 µs | 7.6× |
+| `response_times_to_hick_params`, 20 records | 209.8–218.3 ns | 838–844 ns | 4.0× |
+
+The likelihood pays the correctly rounded exp (46 ns, part b1), and the power law 40 correctly rounded logarithms.
+The slice rows are within the sibling ports' median band (4.4–7.7×, port plan §9).

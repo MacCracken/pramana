@@ -75,6 +75,11 @@ files. This README records what is specific to pramana.
     value's tokens in and serde_json's text out. `PramanaError`'s variants are written with an empty message, as
     pramana writes a code (ADR 007 row 8, amended). `validate.py` re-writes each with its own model of serde_json's
     writing: the escape table, the f64 text model it checks `fmt.tsv` with, and the struct and enum forms.
+- **`bridge.tsv`** (M1 part e3, `src/m_bridge.rs`): the eleven bridges on special-value grids, the 1e-15 floors and
+  their neighbours, empty, single, mismatched and NaN-bearing slices, the fits' skipped records, and seeds. Class B,
+  except the likelihood and the two fits (class C). A slice of pairs is `v:n` then each pair's `i:` and `f:` tokens;
+  a tuple is its elements in order. `validate.py` models all eleven in Rust's operation order, through glibc and
+  MPFR.
 - **`combinatorics.tsv`** (M1 part e2, `src/m_combinatorics.rs`): `factorial`, `permutations` and `combinations` on
   probe P1's grid (n from 0 to 40, the u128 edge 130–133, 2³², 2⁶³, u64::MAX, each against an r grid, and 200 seeded
   pairs), and `stirling_approx` (class C) on 315 n. A u128 result is two `i:` tokens, its low word then its high
@@ -117,6 +122,7 @@ files. This README records what is specific to pramana.
 | `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
 | `json` | M1 d3a–d4, e1 | 6,399 | `src/m_json.rs` | `json.map.tsv`, 30 rows (ADR 007 row 16) |
 | `rng` | M1 e1 | 46 | `src/m_rng.rs` | — |
+| `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
 
 ## Format 1

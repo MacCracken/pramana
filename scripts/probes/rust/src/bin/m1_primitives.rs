@@ -1,4 +1,4 @@
-//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr, tests/pool.bcyr, tests/json.bcyr, tests/rng.bcyr and tests/combinatorics.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
+//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr, tests/pool.bcyr, tests/json.bcyr, tests/rng.bcyr, tests/combinatorics.bcyr and tests/bridge.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
 //! arguments, regions and loop: 4,096 values per row, cycled 250 times, ns per call. Run pinned, interleaved with
 //! `cyrius bench tests/crmath.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m1_primitives
@@ -256,7 +256,65 @@ fn comb() {
     println!("  stirling_approx(100): {:.1} ns", t0.elapsed().as_nanos() as f64 / 100_000.0);
 }
 
+// tests/bridge.bcyr's counterpart: 1.3.0's bridges on the same inputs.
+fn bridge() {
+    use pramana::bridge as br;
+    let mut r = Rng(0x2545F4914F6CDD1D);
+    let mut pairs = Vec::with_capacity(4096);
+    for _ in 0..4096 {
+        let u = r.unit();
+        let v = r.unit();
+        pairs.push((6.0 * u - 3.0, 1.5 * v + 0.5));
+    }
+    let mut ys = Vec::with_capacity(100);
+    let mut zs = Vec::with_capacity(100);
+    for _ in 0..100 {
+        let a = r.unit();
+        let b = r.unit();
+        let y = 10.0 + a;
+        ys.push(y);
+        zs.push(2.0 * y + b);
+    }
+    let lt: Vec<(u32, f64)> = (0..20u32).map(|k| (k + 1, 50.0 / (1.0 + 0.1 * f64::from(k + 1)))).collect();
+    let hk: Vec<(usize, f64)> = (0..20u32)
+        .map(|k| (1usize << (k % 8), 0.2 + 0.15 * f64::from(k % 8) + 0.001 * f64::from(k + 1)))
+        .collect();
+    let mut sum = 0.0;
+    let t0 = Instant::now();
+    for _ in 0..250 {
+        for &(a, b) in &pairs {
+            sum += br::observation_error_to_likelihood(black_box(a), black_box(b));
+        }
+    }
+    let ns = t0.elapsed().as_nanos() as f64 / 1_024_000.0;
+    println!("  observation_error_to_likelihood, the sum: {:x} 0", sum.to_bits());
+    println!("  observation_error_to_likelihood: {ns:.1} ns");
+    fn timed<T>(name: &str, f: impl Fn() -> T) -> T {
+        let t0 = Instant::now();
+        let mut x = f();
+        for _ in 0..100_000 {
+            x = black_box(f());
+        }
+        println!("  {name}: {:.1} ns", t0.elapsed().as_nanos() as f64 / 100_000.0);
+        x
+    }
+    let (m, v) = timed("yields_to_mean_variance, 100 yields", || br::yields_to_mean_variance(black_box(&ys)));
+    println!("  yields_to_mean_variance: {:x} {:x}", m.to_bits(), v.to_bits());
+    let (_, _, c, _, vb) = timed("trait_scores_to_correlation, 100 pairs", || {
+        br::trait_scores_to_correlation(black_box(&ys), black_box(&zs))
+    });
+    println!("  trait_scores_to_correlation, cov and var b: {:x} {:x}", c.to_bits(), vb.to_bits());
+    let (a, b) = timed("learning_trials_to_power_law, 20 trials", || br::learning_trials_to_power_law(black_box(&lt)));
+    println!("  learning_trials_to_power_law: {:x} {:x}", a.to_bits(), b.to_bits());
+    let (a, b) = timed("response_times_to_hick_params, 20 records", || br::response_times_to_hick_params(black_box(&hk)));
+    println!("  response_times_to_hick_params: {:x} {:x}", a.to_bits(), b.to_bits());
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("bridge") {
+        bridge();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("comb") {
         comb();
         return;

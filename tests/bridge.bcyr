@@ -1,0 +1,126 @@
+# bridge.bcyr — the bridges (M1 part e3): ns per call.
+#
+# The Rust twin (scripts/probes/rust/src/bin/m1_primitives.rs, its `bridge` rows) calls 1.3.0's functions on the same
+# inputs: 4,096 (residual, σ) pairs from mathx.bcyr's xorshift, 100 yields and 100 score pairs from the same stream,
+# and 20 records for each fit built from + and ×. Each side prints the outputs' bits. The record is
+# docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+var g_rng = 0x2545F4914F6CDD1D;
+
+fn next(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+fn unit(): f64 {
+    var top = next() >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+fn show(name: cstring, a, b): i64 {
+    print("  ", 2);
+    print(name, strlen(name));
+    print(": ", 2);
+    fmt_hex(a);
+    print(" ", 1);
+    fmt_hex(b);
+    println("");
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var rs = alloc(4096 * 8);
+    var ss = alloc(4096 * 8);
+    for (var i = 0; i < 4096; i = i + 1) {
+        var u: f64 = unit();
+        var v: f64 = unit();
+        var r: f64 = 6.0 * u - 3.0;
+        var s: f64 = 1.5 * v + 0.5;
+        store64(rs + i * 8, r);
+        store64(ss + i * 8, s);
+    }
+    var ys = alloc(800);
+    var zs = alloc(800);
+    for (var j = 0; j < 100; j = j + 1) {
+        var a: f64 = unit();
+        var b: f64 = unit();
+        var y: f64 = 10.0 + a;
+        var z: f64 = 2.0 * y + b;
+        store64(ys + j * 8, y);
+        store64(zs + j * 8, z);
+    }
+    var lt = alloc(20 * 16);
+    var hk = alloc(20 * 16);
+    for (var k = 0; k < 20; k = k + 1) {
+        var kf: f64 = f64_from(k + 1);
+        var t: f64 = 50.0 / (1.0 + 0.1 * kf);
+        store64(lt + k * 16, k + 1);
+        store64(lt + k * 16 + 8, t);
+        var e = k % 8;
+        var ef: f64 = f64_from(e);
+        var rt: f64 = 0.2 + 0.15 * ef + 0.001 * kf;
+        store64(hk + k * 16, 1 << e);
+        store64(hk + k * 16 + 8, rt);
+    }
+    var out[40];
+    var sum: f64 = 0.0;
+    var b1 = bench_new("observation_error_to_likelihood");
+    bench_batch_start(b1);
+    for (var c = 0; c < 250; c = c + 1) {
+        for (var m = 0; m < 4096; m = m + 1) {
+            var r2: f64 = load64(rs + m * 8);
+            var s2: f64 = load64(ss + m * 8);
+            var l: f64 = pmn_observation_error_to_likelihood(r2, s2);
+            sum = sum + l;
+        }
+    }
+    bench_batch_stop(b1, 1024000);
+    var sb: f64 = sum;
+    show("observation_error_to_likelihood, the sum", load64(&sb), 0);
+    bench_report(b1);
+    var b2 = bench_new("yields_to_mean_variance, 100 yields");
+    bench_batch_start(b2);
+    for (var q = 0; q < 100000; q = q + 1) {
+        if (pmn_yields_to_mean_variance(ys, 100, &out) != PMN_ERR_NONE) { println("failed"); }
+    }
+    bench_batch_stop(b2, 100000);
+    show("yields_to_mean_variance", load64(&out), load64(&out + 8));
+    bench_report(b2);
+    var b3 = bench_new("trait_scores_to_correlation, 100 pairs");
+    bench_batch_start(b3);
+    for (var q2 = 0; q2 < 100000; q2 = q2 + 1) {
+        if (pmn_trait_scores_to_correlation(ys, 100, zs, 100, &out) != PMN_ERR_NONE) { println("failed"); }
+    }
+    bench_batch_stop(b3, 100000);
+    show("trait_scores_to_correlation, cov and var b", load64(&out + 16), load64(&out + 32));
+    bench_report(b3);
+    var b4 = bench_new("learning_trials_to_power_law, 20 trials");
+    bench_batch_start(b4);
+    for (var q3 = 0; q3 < 100000; q3 = q3 + 1) {
+        if (pmn_learning_trials_to_power_law(lt, 20, &out) != PMN_ERR_NONE) { println("failed"); }
+    }
+    bench_batch_stop(b4, 100000);
+    show("learning_trials_to_power_law", load64(&out), load64(&out + 8));
+    bench_report(b4);
+    var b5 = bench_new("response_times_to_hick_params, 20 records");
+    bench_batch_start(b5);
+    for (var q4 = 0; q4 < 100000; q4 = q4 + 1) {
+        if (pmn_response_times_to_hick_params(hk, 20, &out) != PMN_ERR_NONE) { println("failed"); }
+    }
+    bench_batch_stop(b5, 100000);
+    show("response_times_to_hick_params", load64(&out), load64(&out + 8));
+    bench_report(b5);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

@@ -548,6 +548,108 @@ fn _par_rng(fp, fl): i64 {
     return 0;
 }
 
+# `bridge` rows (M1 part e3): src/bridge.cyr. A slice is `v:n` and its values, read into a buffer; a slice of pairs
+# is `v:n` then each pair's integer and f64, read into 16-byte records; a tuple's elements come back in order.
+var _par_br_a = 0;
+var _par_br_b = 0;
+var _PAR_BR_CAP = 4096;
+
+# The `v:n` slice at token k into buf (n words, or n records when `pairs`): n, with the next token index at *next.
+fn _par_br_read(k, buf, pairs, next): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + k * 8) != 118) { return 0 - 1; }
+    var n = _par_in(k);
+    var per = 1;
+    if (pairs == 1) { per = 2; }
+    if (n < 0 || n > _PAR_BR_CAP || k + 1 + n * per > _par_in_n) { return 0 - 1; }
+    for (var i = 0; i < n * per; i = i + 1) { store64(buf + i * 8, _par_in(k + 1 + i)); }
+    store64(next, k + 1 + n * per);
+    return n;
+}
+
+fn _par_bridge(fp, fl): i64 {
+    if (_par_br_a == 0) {
+        _par_br_a = alloc(_PAR_BR_CAP * 16);
+        _par_br_b = alloc(_PAR_BR_CAP * 16);
+    }
+    var out[40];
+    var x: f64 = _par_in(0);
+    var y: f64 = _par_in(1);
+    if (_par_eq(fp, fl, "bridge::ensemble_spread_to_confidence") == 1) {
+        var r0: f64 = pmn_ensemble_spread_to_confidence(x, y);
+        _par_got_f(r0);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "bridge::observation_error_to_likelihood") == 1) {
+        var r1: f64 = pmn_observation_error_to_likelihood(x, y);
+        _par_got_f(r1);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "bridge::sensor_noise_to_std_dev") == 1) {
+        var r2: f64 = pmn_sensor_noise_to_std_dev(x, y);
+        _par_got_f(r2);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "bridge::z_rates_to_d_prime") == 1) {
+        var r3: f64 = pmn_z_rates_to_d_prime(x, y);
+        _par_got_f(r3);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "bridge::uncertainty_to_gaussian") == 1) {
+        if (pmn_uncertainty_to_gaussian(x, y, &out) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_f(load64(&out));
+        _par_got_f(load64(&out + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "bridge::item_variances_to_alpha") == 1) {
+        var s: f64 = _par_in(1);
+        var t: f64 = _par_in(2);
+        var r4: f64 = pmn_item_variances_to_alpha(_par_in(0), s, t);
+        _par_got_f(r4);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "bridge::replicates_to_t_statistic") == 1) {
+        if (_par_in_n != 6) { return 0 - 1; }
+        var sa: f64 = _par_in(1);
+        var mb: f64 = _par_in(3);
+        var sb: f64 = _par_in(4);
+        var r5: f64 = pmn_replicates_to_t_statistic(x, sa, _par_in(2), mb, sb, _par_in(5));
+        _par_got_f(r5);
+        return 1;
+    }
+    var next = 0;
+    if (_par_eq(fp, fl, "bridge::yields_to_mean_variance") == 1) {
+        var n = _par_br_read(0, _par_br_a, 0, &next);
+        if (n < 0 || pmn_yields_to_mean_variance(_par_br_a, n, &out) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_f(load64(&out));
+        _par_got_f(load64(&out + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "bridge::trait_scores_to_correlation") == 1) {
+        var na = _par_br_read(0, _par_br_a, 0, &next);
+        if (na < 0) { return 0 - 1; }
+        var nb = _par_br_read(next, _par_br_b, 0, &next);
+        if (nb < 0 || pmn_trait_scores_to_correlation(_par_br_a, na, _par_br_b, nb, &out) != PMN_ERR_NONE) {
+            return 0 - 1;
+        }
+        for (var k = 0; k < 5; k = k + 1) { _par_got_f(load64(&out + k * 8)); }
+        return 1;
+    }
+    var e = 0 - 1;
+    var nr = _par_br_read(0, _par_br_a, 1, &next);
+    if (nr < 0) { return 0 - 1; }
+    if (_par_eq(fp, fl, "bridge::learning_trials_to_power_law") == 1) {
+        e = pmn_learning_trials_to_power_law(_par_br_a, nr, &out);
+    } elif (_par_eq(fp, fl, "bridge::response_times_to_hick_params") == 1) {
+        e = pmn_response_times_to_hick_params(_par_br_a, nr, &out);
+    } else {
+        return 0;
+    }
+    if (e != PMN_ERR_NONE) { return 0 - 1; }
+    _par_got_f(load64(&out));
+    _par_got_f(load64(&out + 8));
+    return 1;
+}
+
 # `combinatorics` rows (M1 part e2): src/combinatorics.cyr. A u128 is two tokens, its low word then its high word.
 fn _par_combinatorics(fp, fl): i64 {
     var x: PmnU128;
@@ -629,6 +731,7 @@ fn _par_math(fp, fl): i64 {
 
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
+    if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
     if (_par_eq(mp, ml, "combinatorics") == 1) { return _par_combinatorics(fp, fl); }
     if (_par_eq(mp, ml, "constants") == 1) { return _par_constants(fp, fl); }
     if (_par_eq(mp, ml, "fmt") == 1) { return _par_fmt(fp, fl); }
@@ -722,6 +825,9 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "f64::tan") == 1) { return 0; }
     if (_par_eq(fp, fl, "f64::log2") == 1) { return 0; }
     if (_par_eq(fp, fl, "combinatorics::stirling_approx") == 1) { return 0; }   # powf, correctly rounded (part e2)
+    if (_par_eq(fp, fl, "bridge::observation_error_to_likelihood") == 1) { return 0; }   # exp (part e3)
+    if (_par_eq(fp, fl, "bridge::learning_trials_to_power_law") == 1) { return 0; }      # ln and exp
+    if (_par_eq(fp, fl, "bridge::response_times_to_hick_params") == 1) { return 0; }     # log2
     return 0 - 1;
 }
 

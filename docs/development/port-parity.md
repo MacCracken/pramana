@@ -2027,3 +2027,72 @@ pinned, three interleaved rounds, run once the 1-minute load had fallen to 2.0):
 Rust's u128 multiply is two machine multiplies; pramana's is eight 32-bit partial products and their carries (P1's
 form), about 28 ns each. Stirling's cost is the correctly rounded powf. None of these sits on a hot path in 1.3.0,
 whose only other caller is a test.
+
+### 7.14 Part e3: the bridges (2026-11-15)
+
+**The module** (`src/bridge.cyr`) is 1.3.0's eleven conversions, each in Rust's operation order:
+- **badal:** `ensemble_spread_to_confidence` and `observation_error_to_likelihood`;
+- **kimiya:** `yields_to_mean_variance` and `replicates_to_t_statistic`;
+- **ushma:** `uncertainty_to_gaussian` and `sensor_noise_to_std_dev`;
+- **bodh:** `item_variances_to_alpha`, `z_rates_to_d_prime`, `trait_scores_to_correlation`,
+  `learning_trials_to_power_law` and `response_times_to_hick_params`, the last two on 1.3.0's private line fit.
+
+Two §8.3 conventions are set here:
+- **A returned tuple** fills the caller's `out` array in order, and the function returns a code, nonzero only for the
+  caller's own errors (1.3.0's cannot fail). `out` is written last, so it may alias an input.
+- **A slice of pairs** (`&[(u32, f64)]`, `&[(usize, f64)]`) is n records of 16 bytes: the integer word, then the
+  f64.
+
+The details that decide bits:
+- **Sums:** f64 sums start at −0.0, as Rust's `Iterator::sum` does; the accumulators 1.3.0 wrote as `0.0` start at
+  +0.0.
+- **Conversions:** counts convert as Rust's `as f64` does, unsigned.
+- **Literals:** 1e-15 is written positionally, as Cyrius has no exponent form, and the golden rows pin it at and
+  beside the threshold.
+- **The fits** keep their points in a pool claim, given back on every path.
+
+**The golden rows.** A new `bridge` module, 5,553 rows:
+- **The five two-argument functions** get 661 rows each: a 19 × 19 grid of special values (±0, ±1, the f64
+  extremes, NaN, ±∞, and 1e-15 with its neighbours) and 300 seeded pairs.
+- **`item_variances_to_alpha`**, 854 rows: counts from 0 to u64::MAX, the floor at and beside 1e-15, and seeds.
+- **`replicates_to_t_statistic`**, 552 rows: the same counts, 60 standard errors straddling 1e-15, and seeds.
+- **The slice functions:** empty, single, constant, mismatched and NaN-bearing slices, slices near 10⁸ (where the
+  variance cancels), and seeds.
+- **The fits**, 206 rows each: records with zero, negative and non-finite entries, an exact power law (T = 60 / N),
+  an exact Hick line (n = 2^k), equal abscissae (no line), the u32 and u64 extremes, and seeds.
+
+The inputs use no transcendental, as the golden README requires. Rows are class B, except the likelihood (exp) and
+the two fits (ln, exp, log2), which are class C. `validate.py` models all eleven in Rust's order, the recorded rows
+through glibc by ctypes and the correctly rounded ones through MPFR. All 5,553 agree. `bridge.cr.tsv` has 0 rows:
+glibc's exp, ln and log2 are correctly rounded on every input here.
+
+**The result.** Every output of all 5,553 rows matches at 0 ulp, on x86_64 ELF, PE and aarch64, warning-free. The
+replay is seven modules, 75,206 rows ok and 106 accepted.
+
+**Mutation checks:**
+- **the 1e-15 floor one ulp higher:** 54 rows fail (50 in `item_variances_to_alpha`, 4 in
+  `replicates_to_t_statistic`);
+- **a signed count conversion:** 12 `replicates_to_t_statistic` rows fail;
+- **the power-law fit keeping non-positive times:** 178 of its 206 rows fail;
+- **Rust's sums started at +0.0:** the replay passes. The harness counts ±0 as 0 ulp apart, and class B tolerates
+  it. `tests/bridge.tcyr` pins the rule bit for bit instead, and fails 2 checks under the same mutation.
+
+**Tests.** `tests/bridge.tcyr`, 44 checks:
+- all 19 of 1.3.0's unit tests carried over, the fits' skipped-points cases among them;
+- the −0.0 means;
+- the caller's errors (null and negative inputs), and `out` aliasing an input;
+- a soak of 10⁴ fits that leaves the bump heap unchanged and nothing claimed.
+
+**Cost** (`tests/bridge.bcyr` against the twin's `bridge` rows; both print their outputs' bits, which agree;
+pinned, three interleaved rounds, at a load average of 1.3):
+
+| Call | Cyrius | Rust | Ratio |
+|---|---|---|---|
+| `observation_error_to_likelihood` | 60 ns | 7.0–7.1 ns | 8.5× |
+| `yields_to_mean_variance`, 100 yields | 575–578 ns | 134.4–135.4 ns | 4.3× |
+| `trait_scores_to_correlation`, 100 pairs | 1.23 µs | 190.9–192.2 ns | 6.4× |
+| `learning_trials_to_power_law`, 20 trials | 2.76–2.82 µs | 362.7–365.2 ns | 7.6× |
+| `response_times_to_hick_params`, 20 records | 838–844 ns | 209.8–218.3 ns | 4.0× |
+
+The likelihood's cost is the correctly rounded exp, and the power law's its 40 correctly rounded logarithms. The
+rest is the per-element call and memory traffic of Cyrius's code generation.
