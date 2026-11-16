@@ -5559,7 +5559,8 @@ fn _pmn_bump_refused(st): i64 {
 
 # json.cyr — JSON as serde_json 1.0.154 reads it: the read core (port plan D5, §8.3 and §8.5; ADR 007 rows 7 and 16).
 #
-# M1 part d3a. A type's decoder reads a document the way 1.3.0's serde derive and its `try_from` validation did:
+# M1 parts d3a and d3b. A type's decoder reads a document the way 1.3.0's serde derive and its `try_from` validation
+# did:
 # 1. **The pre-pass** (`_pmn_json_lift`) rewrites the text so that bayan's tree reads every number as serde_json does,
 #    and refuses a raw control byte in a string, as serde_json does anywhere (probe P7, port-parity §6.3).
 # 2. **The tree.** bayan parses the rewritten text into an arena: a bump allocator over a work-table pool claim (part
@@ -5572,7 +5573,12 @@ fn _pmn_bump_refused(st): i64 {
 #    - a bool: `true` or `false`;
 #    - a String: a JSON string whose bytes are UTF-8 (serde_json validates a string it reads, not one it skips);
 #    - a Vec: a JSON array of the element's form; a Vec<Vec<f64>> may be ragged, which its type then judges;
-#    - `null` is none of them (1.3.0 has no Option field).
+#    - `null` is none of them (1.3.0 has no Option field);
+#    - a struct: serde derive's rules (`_pmn_json_struct`);
+#    - an enum: externally tagged, a unit variant (`_pmn_json_unit_variant`) or a newtype variant
+#      (`_pmn_json_newtype_variant`), the only two forms 1.3.0's enums take.
+# A decoder reads every field before it judges any: serde reports a malformed field before the type's `try_from`
+# sees a value, so a document with both faults is PMN_ERR_DESERIALIZE, not the constructor's code.
 #
 # Every serde_json refusal is PMN_ERR_DESERIALIZE (D6). Memory that can't be had is PMN_ERR_OUT_OF_MEMORY, and a
 # caller's own bad argument (a null buffer, one too small) is PMN_ERR_INVALID_PARAMETER.
@@ -6019,5 +6025,105 @@ fn _pmn_json_mat_f64(v, out, rows, cols): i64 {
         if (e != PMN_ERR_NONE) { return e; }
         i = i + 1;
     }
+    return PMN_ERR_NONE;
+}
+
+# The index of the decoded key `key` (a Str) among the C strings names[0, n), or −1. Bytes compare exactly, as serde's
+# derived identifiers do.
+#must_use
+fn _pmn_json_name_index(key, names, n): i64 {
+    if (key == 0) { return 0 - 1; }
+    var p = str_data(key);
+    var len = str_len(key);
+    var j = 0;
+    while (j < n) {
+        var name = load64(names + j * 8);
+        if (strlen(name) == len && memeq(p, name, len) == 1) { return j; }
+        j = j + 1;
+    }
+    return 0 - 1;
+}
+
+# A struct, by serde derive's rules: slots[0, nf) get the nodes of the fields named names[0, nf) (C strings, in
+# declaration order).
+# - **The map form,** a JSON object: each member whose key is a field's name fills that field's slot; an unknown
+#   member is skipped, unread; a field named twice refuses, and so does one never named. Every key must be UTF-8:
+#   serde_json parses a struct's keys as strings, the unknown ones too.
+# - **The sequence form,** a JSON array of exactly nf values, in field order.
+# Anything else refuses. The fields' values are the caller's to read.
+#must_use
+fn _pmn_json_struct(v, names, nf, slots): i64 {
+    if (names == 0 || slots == 0 || nf <= 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var i = 0;
+    while (i < nf) {
+        store64(slots + i * 8, 0);
+        i = i + 1;
+    }
+    if (v == 0) { return PMN_ERR_DESERIALIZE; }
+    var t = bayan_json_v_tag(v);
+    if (t == JTAG_ARR) {
+        if (bayan_json_v_arr_len(v) != nf) { return PMN_ERR_DESERIALIZE; }
+        i = 0;
+        while (i < nf) {
+            store64(slots + i * 8, bayan_json_v_arr_get(v, i));
+            i = i + 1;
+        }
+        return PMN_ERR_NONE;
+    }
+    if (t != JTAG_OBJ) { return PMN_ERR_DESERIALIZE; }
+    var m = bayan_json_v_obj_len(v);
+    var k = 0;
+    while (k < m) {
+        var key = bayan_json_v_obj_key(v, k);
+        if (key == 0 || _pmn_json_utf8(str_data(key), str_len(key)) == 0) { return PMN_ERR_DESERIALIZE; }
+        var j = _pmn_json_name_index(key, names, nf);
+        if (j >= 0) {
+            if (load64(slots + j * 8) != 0) { return PMN_ERR_DESERIALIZE; }   # bayan refuses it first, today
+            store64(slots + j * 8, bayan_json_v_obj_val(v, k));
+        }
+        k = k + 1;
+    }
+    i = 0;
+    while (i < nf) {
+        if (load64(slots + i * 8) == 0) { return PMN_ERR_DESERIALIZE; }
+        i = i + 1;
+    }
+    return PMN_ERR_NONE;
+}
+
+# An enum's unit variant, externally tagged: the string "Name", or the one-member object {"Name": null}. out gets the
+# variant's index among names[0, n). A variant index, another case, or a second member refuses.
+#must_use
+fn _pmn_json_unit_variant(v, names, n, out): i64 {
+    if (names == 0 || out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (v == 0) { return PMN_ERR_DESERIALIZE; }
+    var t = bayan_json_v_tag(v);
+    var key = 0;
+    if (t == JTAG_STR) {
+        key = bayan_json_v_str(v);
+    } elif (t == JTAG_OBJ) {
+        if (bayan_json_v_obj_len(v) != 1) { return PMN_ERR_DESERIALIZE; }
+        if (bayan_json_v_tag(bayan_json_v_obj_val(v, 0)) != JTAG_NULL) { return PMN_ERR_DESERIALIZE; }
+        key = bayan_json_v_obj_key(v, 0);
+    } else {
+        return PMN_ERR_DESERIALIZE;
+    }
+    var j = _pmn_json_name_index(key, names, n);
+    if (j < 0) { return PMN_ERR_DESERIALIZE; }
+    store64(out, j);
+    return PMN_ERR_NONE;
+}
+
+# An enum's newtype variant, externally tagged: the one-member object {"Name": value}. out gets the variant's index
+# among names[0, n), then the value's node, for the caller to read (16 bytes). The bare string "Name" refuses: serde
+# reads it as a unit variant.
+#must_use
+fn _pmn_json_newtype_variant(v, names, n, out): i64 {
+    if (names == 0 || out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (v == 0 || bayan_json_v_tag(v) != JTAG_OBJ || bayan_json_v_obj_len(v) != 1) { return PMN_ERR_DESERIALIZE; }
+    var j = _pmn_json_name_index(bayan_json_v_obj_key(v, 0), names, n);
+    if (j < 0) { return PMN_ERR_DESERIALIZE; }
+    store64(out, j);
+    store64(out + 8, bayan_json_v_obj_val(v, 0));
     return PMN_ERR_NONE;
 }

@@ -17,7 +17,7 @@ cargo run --release --locked                  # write
 cargo run --release --locked -- --check       # verify; exit 1 on any difference
 cd ../..
 python3 -I -B scripts/golden/validate.py .              # independent re-check, and the .cr.tsv files
-python3 -I -B scripts/golden/validate.py . --write-cr   # rewrite the .cr.tsv files
+python3 -I -B scripts/golden/validate.py . --write-cr   # rewrite the .cr.tsv and .map.tsv files
 python3 -I -B scripts/golden/mpfr_ref.py                # MPFR binding self-checks
 python3 -I -B scripts/golden/probe_tables.py .          # compile src/constants.cyr; every value against its row
 (cd scripts/golden && GOLDEN_NUDGE='math::fdlibm::RB3' cargo run --release --locked)   # mutation hook: never writes
@@ -56,17 +56,21 @@ files. This README records what is specific to pramana.
   and seeded bit patterns. pramana's JSON writes this text byte for byte (port plan D5). serde_json is a dependency
   here, pinned to `rust-old/Cargo.lock`'s version. `validate.py` rebuilds every row from Python's own shortest
   digits (`repr`, ties to even as serde_json's zmij), and 62 of the inputs are exact ties.
-- **`json.tsv`** (M1 part d3a, `src/m_json.rs`): `serde_json::from_slice::<T>` for each value type 1.3.0's
-  serialized types are made of (`f64`, `u64`, `usize`, `bool`, `String`, `Vec<f64>`, `Vec<u64>`, `Vec<String>`,
-  `Vec<Vec<f64>>`), with `float_roundtrip` on, on 3,886 documents:
-  - the other JSON types and the syntax faults;
-  - every number and string form;
-  - seeded floats, including 120 exact midpoints between adjacent doubles;
-  - seeded strings, vectors and matrices.
+- **`json.tsv`** (M1 parts d3a and d3b, `src/m_json.rs`): `serde_json::from_slice::<T>`, with `float_roundtrip`
+  on, on 4,725 documents. T is one of:
+  - each value type 1.3.0's serialized types are made of (`f64`, `u64`, `usize`, `bool`, `String`, `Vec<f64>`,
+    `Vec<u64>`, `Vec<String>`, `Vec<Vec<f64>>`);
+  - two test structs, `Pair` and `Shapes` (serde derive, with `serde` pinned to `rust-old/Cargo.lock`'s version), for
+    derive's struct rules;
+  - 1.3.0's two enums, `Kernel` (unit variants) and `PramanaError` (newtype variants).
 
   The input is the document's bytes (`s:`, which need not be UTF-8), and the output the value's tokens or
   `E:Deserialize`, serde_json's refusal. `validate.py` re-reads every document with its own model of serde_json's
   reading, written from serde_json's source.
+- **`json.map.tsv`** (ADR 007 row 16), written by `validate.py --write-cr`. These are the rows serde_json reads only
+  by skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
+  surrogate. `validate.py` finds them with its own model of bayan's three whole-document refusals. They map to
+  `E:Deserialize` and pass as accepted (ADR 7).
 - **The constants come from the source, and the tables are proven** (`src/consts.rs`, `src/p_constants.rs`).
   - **Why from the source:** pramana's constants are private, so no API exposes them. The generator reads every
     `const` item in the library code, function-local tables included, through Rust's own literal parser, and proves
@@ -95,7 +99,7 @@ files. This README records what is specific to pramana.
 | `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
 | `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
-| `json` | M1 d3a | 3,886 | `src/m_json.rs` | — |
+| `json` | M1 d3a, d3b | 4,725 | `src/m_json.rs` | `json.map.tsv`, 20 rows (ADR 007 row 16) |
 
 ## Format 1
 

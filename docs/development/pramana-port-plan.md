@@ -32,8 +32,9 @@
 > (`f08f233`) and part b3, a new correctly rounded tan (`3257918`). Part b4, a new correctly rounded log2, is done
 > (`0c3f469`), so every class-C math row is at 0 ulp and the primitives are verified on 11.6M MPFR rows; and part
 > c, the Rust f64 surface (`d13fb61`), so the whole golden corpus is gated. Part d1, serde_json's f64 text, is
-> committed (`d34db7c`), and so is part d2, the work-table pool (`c302838`). Part d3a, the JSON read core's value
-> readers, is done but not committed. The maintainer took each
+> committed (`d34db7c`), and so is part d2, the work-table pool (`c302838`), and part d3a, the JSON read core's
+> value readers (`c61f76b`). Part d3b, serde's struct rules and the two enum forms, is done but not committed. The
+> maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1083,8 +1084,10 @@ Every milestone, and every part of a large one, ends with pravash's gates:
 - **d3a:** `src/json.cyr`'s read core for values: probe P7's pre-pass (ledger L11), bayan's tree in a pool arena,
   and the readers for f64, u64, usize, bool, String, Vec<f64>, Vec<u64>, Vec<String> and Vec<Vec<f64>>, against
   serde_json's own verdicts on 3,886 documents (the golden `json` module) ✅;
-- **d3b:** serde's struct rules (an unknown member skipped, a known one twice refused, a missing one refused, the
-  sequence form), the unit and newtype-variant enums, and the mapped rows of ADR 007 row 16;
+- **d3b:** serde's struct rules (an unknown member skipped, a known one twice refused, a missing one refused, every
+  key's UTF-8 checked, the sequence form), the unit and newtype-variant enums, against serde_json on two test
+  structs and 1.3.0's `Kernel` and `PramanaError` (839 more golden rows), and ADR 007 row 16's 20 mapped rows,
+  found by `validate.py`'s model of bayan ✅;
 - **d4:** the JSON write core and the error codec;
 - **e:** the RNG with its `SimpleRng` codec, combinatorics with `PmnU128`, and the bridges;
 - **f:** M1's gate.

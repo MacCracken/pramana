@@ -61,6 +61,7 @@ name = "pramana-golden"
 version = "0.0.0"
 dependencies = [
  "pramana",
+ "serde",
  "serde_json",
 ]
 

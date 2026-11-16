@@ -1727,3 +1727,97 @@ On the 100-word document, the pre-pass takes about a third and bayan's parse mos
 
 Most of what remains is Cyrius's code generation, which keeps every local in memory, at about 11 ns a byte. No hot
 path decodes JSON, and the pre-pass goes when bayan's L11 fixes land. This is recorded as a finding.
+
+### 7.10 Part d3b: serde's struct rules and the two enum forms (2026-11-15)
+
+**The readers** (`src/json.cyr`):
+- **`_pmn_json_struct(v, names, nf, slots)`** is serde derive's rules:
+  - the map form: each member named by a field fills its slot, and an unknown member is skipped unread;
+  - a field named twice refuses, and so does one never named;
+  - every key must be UTF-8, because serde_json parses a struct's keys as strings, the unknown ones too;
+  - the sequence form takes exactly nf values, in field order.
+- **`_pmn_json_unit_variant`:** an externally tagged unit variant, as `"Name"` or `{"Name": null}` with exactly one
+  member.
+- **`_pmn_json_newtype_variant`:** `{"Name": value}` with exactly one member. The bare string refuses, because serde
+  reads it as a unit variant.
+
+These are serde_json 1.0.154's own rules, read from its source: `deserialize_struct`, `MapAccess`, `SeqAccess` and
+`end_seq`, `deserialize_enum` and `VariantAccess`. A type's decoder reads every field before it judges any, because
+serde reports a malformed field before `try_from` sees a value.
+
+**Unreachable today, kept:** a field named twice. bayan refuses a duplicate key in the whole document before the
+struct reader sees it, and the verdict is the same either way. The check is there for when bayan's opt-in for unread
+members lands.
+
+**The golden rows.** The `json` module gains 839 rows, for 4,725 in all:
+
+| Function | Rows | Refused | Mapped (ADR 7) |
+|---|---|---|---|
+| `json::Pair` (`Normal`'s fields: `mean`, `std_dev`) | 353 | 78 | 10 |
+| `json::Shapes` (one field of every kind 1.3.0's types hold) | 310 | 154 | 10 |
+| `json::Kernel` (1.3.0's unit-variant enum) | 74 | 61 | 0 |
+| `json::PramanaError` (1.3.0's newtype-variant enum) | 102 | 80 | 0 |
+
+The two structs are test types in the generator (serde derive, `serde` =1.0.229 as `rust-old/Cargo.lock` has it).
+serde's struct rules are derive's for every struct, so the codecs that M3 onward port meet the same rules. Their
+documents are P7's variants of a base value:
+- each field missing, named twice, `null`, and set to every form of its kind;
+- unknown members of every kind: nested, holding a duplicate key, nested to 100 and to 128–130 levels, holding a lone
+  surrogate or a control byte or invalid UTF-8 or a bad escape, and numbers out of range;
+- a duplicate unknown key, plain and escaped;
+- a key that is not UTF-8, an escaped known key, another case, a trailing space;
+- the sequence form exact, short, long, empty and with a trailing comma;
+- the syntax faults, and seeded values, plain and pretty.
+
+The enums get every variant in both forms, the wrong form, other cases, extra members, malformed objects, and every
+string form as `PramanaError`'s payload.
+
+**The mapped rows** (`tests/golden/json.map.tsv`, ADR 007 row 16). `validate.py` models bayan's three whole-document
+refusals, taken from its source:
+- a duplicate key in any object, compared decoded;
+- nesting past 128 levels, counting the top-level container;
+- a lone surrogate escape, high or low.
+
+A row maps to `E:Deserialize` when serde_json reads it and that model refuses it. There are 20, ten per struct, all
+in unknown members:
+- a duplicate key nested inside, plain and escaped;
+- nesting to 128, 129 and 130 levels inside the struct's own object;
+- a lone high surrogate, a lone low one, and a lone surrogate in a nested key;
+- the struct's own unknown key twice, plain and escaped.
+
+These are the same three causes P7 found in 35 of its 1,495 documents. `--write-cr` writes the file beside the
+`.cr.tsv` files, and a run without it checks it.
+
+**The independent check.** `validate.py`'s serde model now also has serde's ignore path (`ignore_value` and
+`ignore_str`: syntax only, no UTF-8 or surrogate checks, no depth limit), derive's struct rules and the two enum
+forms. All 4,725 rows agree, and the mapped file is exactly what the bayan model gives.
+
+**The result.** All 4,725 rows pass on x86_64 ELF, PE and aarch64, warning-free: 4,705 match, and the 20 mapped rows
+are accepted (ADR 7). The replay is four modules, 65,538 rows ok and 96 accepted (76 by ADR 9, 20 by ADR 7).
+
+**Mutation checks:**
+- **no UTF-8 check on keys:** 1 `Pair` row and 1 `Shapes` row fail (the non-UTF-8 unknown key);
+- **an unknown member refused, not skipped:** 7 `Pair` rows and 7 `Shapes` rows fail;
+- **a long sequence read:** 1 `Pair` row and 1 `Shapes` row fail;
+- **a unit variant's map form holding anything:** 3 `Kernel` rows and 1 `Shapes` row fail;
+- **a newtype variant with a second member read:** 1 `PramanaError` row fails;
+- **`json.map.tsv` removed:** its 20 rows fail;
+- **one mapped row dropped:** `validate.py` reports the file differs from the model, and the replay fails that row.
+
+**Tests.** `tests/json.tcyr` gains 27 checks, for 104:
+- the map form in any order with an unknown member skipped, and the sequence form;
+- short and long sequences, a missing field, an escaped key;
+- a field named twice (bayan refuses it first) and a key that is not UTF-8;
+- the caller's errors;
+- both variant forms, exact names, a unit's `null`, one member only, no index form;
+- the newtype's payload node, and its bare name refused.
+
+**Cost** (`tests/json.bcyr` against the twin, byte-identical documents; pinned, three interleaved rounds):
+
+| Document | Cyrius | serde_json | Ratio |
+|---|---|---|---|
+| a `Normal`: the struct rules, two f64s, `Normal::new`'s checks (27 bytes) | 1.65–1.68 µs | 79.1–80.9 ns | 21× |
+| a `Kernel`: a unit variant (14 bytes) | 518–523 ns | 34.5–35.4 ns | 15× |
+
+A small document pays mostly fixed costs: the pre-pass's two claims, an arena of 24 bytes per byte of text plus
+4 KiB, bayan's 176 bytes per container, and the call chain. This is recorded with part d3a's finding.

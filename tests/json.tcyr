@@ -221,6 +221,77 @@ fn main() {
     assert_eq(_pmn_json_mat_shape(_pmn_json_root(g_doc), &sh), PMN_ERR_DESERIALIZE, "a null element refuses");
     _pmn_json_close(g_doc);
 
+    test_group("serde's struct rules");
+    var nm[16];
+    store64(&nm, "mean");
+    store64(&nm + 8, "std_dev");
+    var sl[16];
+    open("{\"std_dev\": 2, \"zz\": [1, {\"a\": null}], \"mean\": 1}");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 2, &sl), PMN_ERR_NONE,
+        "the map form, in any order, with an unknown member skipped");
+    assert(_pmn_json_f64(load64(&sl), &w) == PMN_ERR_NONE && load64(&w) == 0x3FF0000000000000, "mean = 1");
+    assert(_pmn_json_f64(load64(&sl + 8), &w) == PMN_ERR_NONE && load64(&w) == 0x4000000000000000, "std_dev = 2");
+    open("[1, 2]");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 2, &sl), PMN_ERR_NONE, "the sequence form");
+    assert(_pmn_json_f64(load64(&sl + 8), &w) == PMN_ERR_NONE && load64(&w) == 0x4000000000000000, "in field order");
+    open("[1]");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 2, &sl), PMN_ERR_DESERIALIZE, "a short sequence refuses");
+    open("[1, 2, 3]");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 2, &sl), PMN_ERR_DESERIALIZE, "so does a long one");
+    open("{\"mean\": 1}");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 2, &sl), PMN_ERR_DESERIALIZE, "a missing field refuses");
+    assert_eq(load64(&sl + 8), 0, "and its slot is empty");
+    open("{\"me\\u0061n\": 1, \"std_dev\": 2}");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 2, &sl), PMN_ERR_NONE, "a key matches once decoded");
+    assert_eq(open("{\"mean\": 1, \"mean\": 1, \"std_dev\": 2}"), PMN_ERR_DESERIALIZE,
+        "a field named twice refuses: bayan refuses the duplicate key first");
+    var kn = text("{\"z?\": 1, \"mean\": 1, \"std_dev\": 2}");
+    store8(g_buf + 3, 0xFF);
+    _pmn_json_close(g_doc);
+    assert_eq(_pmn_json_open(g_doc, g_buf, kn), PMN_ERR_NONE, "bayan reads a key that is not UTF-8");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 2, &sl), PMN_ERR_DESERIALIZE,
+        "the struct refuses it, unknown or not, as serde_json parses every key");
+    open("1");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 2, &sl), PMN_ERR_DESERIALIZE, "a number is no struct");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), 0, 2, &sl), PMN_ERR_INVALID_PARAMETER,
+        "null names: the caller's");
+    assert_eq(_pmn_json_struct(_pmn_json_root(g_doc), &nm, 0, &sl), PMN_ERR_INVALID_PARAMETER, "so are no fields");
+
+    test_group("enums: a unit variant and a newtype variant");
+    var kv[32];
+    store64(&kv, "Gaussian");
+    store64(&kv + 8, "Epanechnikov");
+    store64(&kv + 16, "Uniform");
+    store64(&kv + 24, "Triangular");
+    open("\"Uniform\"");
+    assert(_pmn_json_unit_variant(_pmn_json_root(g_doc), &kv, 4, &w) == PMN_ERR_NONE && load64(&w) == 2,
+        "\"Uniform\" is variant 2");
+    open("{\"Triangular\": null}");
+    assert(_pmn_json_unit_variant(_pmn_json_root(g_doc), &kv, 4, &w) == PMN_ERR_NONE && load64(&w) == 3,
+        "{\"Triangular\": null} is variant 3");
+    open("\"uniform\"");
+    assert_eq(_pmn_json_unit_variant(_pmn_json_root(g_doc), &kv, 4, &w), PMN_ERR_DESERIALIZE, "names are exact");
+    open("{\"Uniform\": 0}");
+    assert_eq(_pmn_json_unit_variant(_pmn_json_root(g_doc), &kv, 4, &w), PMN_ERR_DESERIALIZE, "a unit holds null");
+    open("{\"Uniform\": null, \"Gaussian\": null}");
+    assert_eq(_pmn_json_unit_variant(_pmn_json_root(g_doc), &kv, 4, &w), PMN_ERR_DESERIALIZE, "one member only");
+    open("2");
+    assert_eq(_pmn_json_unit_variant(_pmn_json_root(g_doc), &kv, 4, &w), PMN_ERR_DESERIALIZE, "no index form");
+    var ev[16];
+    store64(&ev, "InvalidParameter");
+    store64(&ev + 8, "InvalidSample");
+    open("{\"InvalidSample\": \"m\"}");
+    assert_eq(_pmn_json_newtype_variant(_pmn_json_root(g_doc), &ev, 2, &sv), PMN_ERR_NONE, "a newtype variant");
+    assert_eq(load64(&sv), 1, "is variant 1");
+    var pw[16];
+    assert(_pmn_json_str(load64(&sv + 8), &pw) == PMN_ERR_NONE && load64(&pw + 8) == 1, "its value is the node");
+    open("\"InvalidSample\"");
+    assert_eq(_pmn_json_newtype_variant(_pmn_json_root(g_doc), &ev, 2, &sv), PMN_ERR_DESERIALIZE,
+        "the bare name refuses: it is a unit variant to serde");
+    open("{\"Nope\": \"m\"}");
+    assert_eq(_pmn_json_newtype_variant(_pmn_json_root(g_doc), &ev, 2, &sv), PMN_ERR_DESERIALIZE, "unknown refuses");
+    _pmn_json_close(g_doc);
+
     test_group("decode closes on every path");
     var sum[8];
     var sn = text("[1.5, 2.5]");

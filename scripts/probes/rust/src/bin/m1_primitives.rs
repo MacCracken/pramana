@@ -164,6 +164,14 @@ fn json() {
     let doc = format!("\"{}\"", "abc\\n\\u00e9\\\"xyz".repeat(8)).into_bytes();
     json_row("String, 8 x abc\\n\\u00e9\\\"xyz", &doc, |d: &[u8]| serde_json::from_slice::<String>(d));
     json_row("f64, 1.5", b"1.5", |d: &[u8]| serde_json::from_slice::<f64>(d));
+    let doc = serde_json::to_vec(&pramana::distribution::Normal::new(0.5, 2.25).unwrap()).unwrap();
+    json_row("Normal, its two fields and checks", &doc, |d: &[u8]| {
+        serde_json::from_slice::<pramana::distribution::Normal>(d)
+    });
+    let doc = serde_json::to_vec(&pramana::descriptive::Kernel::Epanechnikov).unwrap();
+    json_row("Kernel, a unit variant", &doc, |d: &[u8]| {
+        serde_json::from_slice::<pramana::descriptive::Kernel>(d)
+    });
 }
 
 fn main() {

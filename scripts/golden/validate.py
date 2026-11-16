@@ -455,6 +455,26 @@ class SerdeModel:
 
     def number(self):
         """('u', int), ('i', int) or ('f', float) as serde_json's ParserNumber, or a refusal."""
+        text, neg, is_float = self.number_text()
+        if not is_float:
+            mag = int(text.lstrip("-"))
+            if not neg and mag <= U64_MAX:
+                return ("u", mag)
+            if neg and mag == 0:
+                return ("f", -0.0)                   # parse_integer: -0 is the float -0.0
+            if neg and mag <= 1 << 63:
+                return ("i", -mag)
+            try:
+                return ("f", float(-mag if neg else mag))
+            except OverflowError:
+                raise SerdeRefusal("number out of range")
+        x = float(text)
+        if math.isinf(x):
+            raise SerdeRefusal("number out of range")
+        return ("f", x)
+
+    def number_text(self):
+        """The strict number grammar alone (ignore_integer's too): (text, negative, has a fraction or exponent)."""
         st = self.i
         neg = self.peek() == 0x2D
         if neg:
@@ -486,23 +506,7 @@ class SerdeModel:
                 raise SerdeRefusal("no exponent digit")
             while self.peek() is not None and 0x30 <= self.peek() <= 0x39:
                 self.i += 1
-        text = self.b[st:self.i].decode("ascii")
-        if not is_float:
-            mag = int(text.lstrip("-"))
-            if not neg and mag <= U64_MAX:
-                return ("u", mag)
-            if neg and mag == 0:
-                return ("f", -0.0)                   # parse_integer: -0 is the float -0.0
-            if neg and mag <= 1 << 63:
-                return ("i", -mag)
-            try:
-                return ("f", float(-mag if neg else mag))
-            except OverflowError:
-                raise SerdeRefusal("number out of range")
-        x = float(text)
-        if math.isinf(x):
-            raise SerdeRefusal("number out of range")
-        return ("f", x)
+        return self.b[st:self.i].decode("ascii"), neg, is_float
 
     def string(self) -> bytes:
         """parse_str with validation: escapes decoded, surrogates paired, control bytes refused, UTF-8 checked."""
@@ -550,6 +554,173 @@ class SerdeModel:
             raise SerdeRefusal("invalid UTF-8")
         return bytes(out)
 
+    def ignore_str(self):
+        """ignore_str, after the opening quote: control bytes and malformed escapes refuse; nothing else is checked
+        (no UTF-8, no surrogate pairing)."""
+        while True:
+            c = self.peek()
+            if c is None:
+                raise SerdeRefusal("EOF in a string")
+            self.i += 1
+            if c == 0x22:
+                return
+            if c < 0x20:
+                raise SerdeRefusal("control character in a string")
+            if c == 0x5C:
+                e = self.peek()
+                if e is None:
+                    raise SerdeRefusal("EOF in an escape")
+                self.i += 1
+                if e == 0x75:
+                    self.hex4()
+                elif e not in b'"\\/bfnrt':
+                    raise SerdeRefusal("invalid escape")
+
+    def ignore_value(self):
+        """ignore_value: any JSON value, checked for syntax only, nested without a depth limit."""
+        self.ws()
+        c = self.peek()
+        if c == 0x6E:
+            self.expect(b"null")
+        elif c == 0x74:
+            self.expect(b"true")
+        elif c == 0x66:
+            self.expect(b"false")
+        elif c is not None and (c == 0x2D or 0x30 <= c <= 0x39):
+            self.number_text()
+        elif c == 0x22:
+            self.i += 1
+            self.ignore_str()
+        elif c in (0x5B, 0x7B):
+            close = 0x5D if c == 0x5B else 0x7D
+            self.i += 1
+            self.ws()
+            if self.peek() == close:
+                self.i += 1
+                return
+            while True:
+                if c == 0x7B:
+                    self.ws()
+                    if self.peek() != 0x22:
+                        raise SerdeRefusal("key must be a string")
+                    self.i += 1
+                    self.ignore_str()
+                    self.ws()
+                    if self.peek() != 0x3A:
+                        raise SerdeRefusal("expected a colon")
+                    self.i += 1
+                self.ignore_value()
+                self.ws()
+                d = self.peek()
+                if d == close:
+                    self.i += 1
+                    return
+                if d != 0x2C:
+                    raise SerdeRefusal("expected , or a close")
+                self.i += 1
+        else:
+            raise SerdeRefusal("expected a value")
+
+    def struct(self, fields):
+        """serde derive's visit_map and visit_seq through deserialize_struct."""
+        self.ws()
+        c = self.peek()
+        if c == 0x5B:
+            self.i += 1
+            parts = []
+            for k, (_name, ty) in enumerate(fields):
+                self.ws()
+                c = self.peek()
+                if c is None or c == 0x5D:
+                    raise SerdeRefusal("invalid length")
+                if k > 0:
+                    if c != 0x2C:
+                        raise SerdeRefusal("expected , or ]")
+                    self.i += 1
+                    self.ws()
+                    if self.peek() == 0x5D:
+                        raise SerdeRefusal("trailing comma")
+                parts.append(self.value(ty))
+            self.ws()
+            if self.peek() != 0x5D:
+                raise SerdeRefusal("trailing characters in the sequence")
+            self.i += 1
+            return [t for part in parts for t in part]
+        if c != 0x7B:
+            raise SerdeRefusal("invalid type")
+        self.i += 1
+        got, first = {}, True
+        names = {name.encode(): (name, ty) for name, ty in fields}
+        while True:
+            self.ws()
+            c = self.peek()
+            if c is None:
+                raise SerdeRefusal("EOF in an object")
+            if c == 0x7D and first:
+                self.i += 1
+                break
+            if not first:
+                if c == 0x7D:
+                    self.i += 1
+                    break
+                if c != 0x2C:
+                    raise SerdeRefusal("expected , or }")
+                self.i += 1
+                self.ws()
+                c = self.peek()
+            if c != 0x22:
+                raise SerdeRefusal("key must be a string (or a trailing comma)")
+            first = False
+            key = self.string()                      # a struct's keys are parsed, the unknown ones too
+            self.ws()
+            if self.peek() != 0x3A:
+                raise SerdeRefusal("expected a colon")
+            self.i += 1
+            if key in names:
+                if key in got:
+                    raise SerdeRefusal("duplicate field")
+                got[key] = self.value(names[key][1])
+            else:
+                self.ignore_value()
+        for name, _ty in fields:
+            if name.encode() not in got:
+                raise SerdeRefusal("missing field")
+        return [t for name, _ty in fields for t in got[name.encode()]]
+
+    def enum(self, enum_name, variants, payload):
+        """An externally tagged enum: unit variants (payload None) or newtype variants holding `payload`."""
+        self.ws()
+        c = self.peek()
+        if c == 0x22:
+            name = self.string()
+            if payload is not None or name.decode("utf-8") not in variants:
+                raise SerdeRefusal("unknown variant, or a unit variant for a newtype")
+            return [f"e:{enum_name}.{name.decode()}"]
+        if c != 0x7B:
+            raise SerdeRefusal("expected an enum")
+        self.i += 1
+        self.ws()
+        if self.peek() != 0x22:
+            raise SerdeRefusal("expected the variant")
+        name = self.string()
+        if name.decode("utf-8") not in variants:
+            raise SerdeRefusal("unknown variant")
+        self.ws()
+        if self.peek() != 0x3A:
+            raise SerdeRefusal("expected a colon")
+        self.i += 1
+        if payload is None:
+            self.ws()
+            self.expect(b"null")
+            toks = []
+        else:
+            toks = self.value(payload)
+        self.ws()
+        if self.peek() != 0x7D:
+            raise SerdeRefusal("expected }")
+        self.i += 1
+        return [f"e:{enum_name}.{name.decode()}"] + toks
+
     def hex4(self) -> int:
         h = self.b[self.i:self.i + 4]
         if len(h) < 4 or any(chr(x) not in "0123456789abcdefABCDEF" for x in h):
@@ -580,6 +751,10 @@ class SerdeModel:
             raise SerdeRefusal("invalid type")
         if ty == "String":
             return ["s:" + pct_bytes(self.string())]
+        if ty in JSON_STRUCTS:
+            return self.struct(JSON_STRUCTS[ty])
+        if ty in JSON_ENUMS:
+            return self.enum(ty, *JSON_ENUMS[ty])
         if ty.startswith("Vec<") and ty.endswith(">"):
             inner = ty[4:-1]
             if c != 0x5B:
@@ -608,6 +783,105 @@ class SerdeModel:
         raise ValueError(f"no model for {ty}")
 
 
+# The generator's test structs and 1.3.0's two enums (scripts/golden/src/m_json.rs).
+JSON_STRUCTS = {
+    "Pair": [("mean", "f64"), ("std_dev", "f64")],
+    "Shapes": [("x", "f64"), ("n", "u64"), ("k", "usize"), ("flag", "bool"), ("name", "String"), ("xs", "Vec<f64>"),
+               ("ns", "Vec<u64>"), ("labels", "Vec<String>"), ("m", "Vec<Vec<f64>>"), ("kernel", "Kernel")],
+}
+JSON_ENUMS = {
+    "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
+    "PramanaError": (["InvalidParameter", "InvalidSample", "ConvergenceFailure", "DimensionMismatch",
+                      "ComputationError"], "String"),
+}
+
+
+class BayanRefusal(Exception):
+    pass
+
+
+def bayan_refusal(doc: bytes):
+    """Why bayan 1.11.1 refuses a whole document that serde_json reads: a duplicate key in any object (keys compared
+    decoded), nesting past 128 levels, or a lone surrogate escape in any string; None when there is none of these.
+    Only meaningful on a document serde_json accepted, which is well formed."""
+    b, n = doc, len(doc)
+    pos = [0]
+
+    def ws():
+        while pos[0] < n and b[pos[0]] in JSON_WS:
+            pos[0] += 1
+
+    def hexval(at):
+        return int(b[at:at + 4], 16)
+
+    def string() -> bytes:
+        pos[0] += 1
+        out = bytearray()
+        while True:
+            c = b[pos[0]]
+            pos[0] += 1
+            if c == 0x22:
+                return bytes(out)
+            if c != 0x5C:
+                out.append(c)
+                continue
+            e = b[pos[0]]
+            pos[0] += 1
+            if e != 0x75:
+                out.append({0x62: 8, 0x66: 12, 0x6E: 10, 0x72: 13, 0x74: 9}.get(e, e))
+                continue
+            cp = hexval(pos[0])
+            pos[0] += 4
+            if 0xDC00 <= cp <= 0xDFFF:
+                raise BayanRefusal("a lone low surrogate")
+            if 0xD800 <= cp <= 0xDBFF:
+                if b[pos[0]:pos[0] + 2] != b"\\u" or not 0xDC00 <= hexval(pos[0] + 2) <= 0xDFFF:
+                    raise BayanRefusal("a lone high surrogate")
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (hexval(pos[0] + 2) - 0xDC00)
+                pos[0] += 6
+            out += chr(cp).encode("utf-8", "surrogatepass")
+
+    def value(depth):
+        ws()
+        c = b[pos[0]]
+        if c in (0x5B, 0x7B):
+            if depth + 1 > 128:
+                raise BayanRefusal("nesting past 128 levels")
+            close = 0x5D if c == 0x5B else 0x7D
+            pos[0] += 1
+            keys = set()
+            ws()
+            if b[pos[0]] == close:
+                pos[0] += 1
+                return
+            while True:
+                if c == 0x7B:
+                    ws()
+                    key = string()
+                    if key in keys:
+                        raise BayanRefusal("a duplicate key")
+                    keys.add(key)
+                    ws()
+                    pos[0] += 1                      # the colon
+                value(depth + 1)
+                ws()
+                d = b[pos[0]]
+                pos[0] += 1
+                if d == close:
+                    return
+        elif c == 0x22:
+            string()
+        else:
+            while pos[0] < n and b[pos[0]] not in b",]} \t\n\r":
+                pos[0] += 1
+
+    try:
+        value(0)
+    except BayanRefusal as r:
+        return str(r)
+    return None
+
+
 def pct_bytes(x: bytes) -> str:
     return "".join(chr(c) if 0x21 <= c <= 0x7E and c != 0x25 else f"%{c:02X}" for c in x)
 
@@ -624,8 +898,10 @@ def serde_read(ty: str, doc: bytes):
 
 
 def check_json(rows):
-    failures, by_fn = [], {}
-    for fn, _cls, ins, outs, _raw in rows:
+    """The failures, the per-function counts, and the mapped rows: those serde_json reads only by skipping a member
+    unchecked, which bayan refuses whole (ADR 007 row 16)."""
+    failures, by_fn, mapped = [], {}, []
+    for fn, _cls, ins, outs, raw in rows:
         ty = fn[len("json::"):] if fn.startswith("json::") else None
         doc = urllib.parse.unquote_to_bytes(ins[0][len("s:"):])
         want = serde_read(ty, doc)
@@ -635,7 +911,26 @@ def check_json(rows):
         stat[0 if ok else 1] += 1
         if not ok:
             failures.append(f"json: {fn}({doc[:80]!r}) recorded {outs[:6]}, modelled {want[:6]}")
-    return failures, by_fn
+        if want != ["E:Deserialize"]:
+            why = bayan_refusal(doc)
+            if why is not None:
+                mapped.append(f"{fn}\t{raw}\tE:Deserialize\tserde_json reads it, skipping a member unchecked; bayan "
+                              f"refuses the whole document: {why} (ADR 007 row 16)")
+    return failures, by_fn, mapped
+
+
+def render_map(module, provenance, rows):
+    """The mapped rows (ADR 007), in the correction format tests/parity_core.cyr reads, keyed by the golden row's fn
+    and inputs byte for byte."""
+    head = [
+        f"# pramana mapped rows (ADR 007), format 1: {module}",
+        f"# recorded: {provenance}. Mapped by ADR 007 row 16. Generated by scripts/golden/validate.py; do not edit.",
+        "# regenerate: python3 -I -B scripts/golden/validate.py . --write-cr",
+        "# columns: fn<TAB>inputs<TAB>outputs<TAB>note (fn, inputs: the golden row's, byte for byte; outputs: pramana's, "
+        "under the ADR)",
+        f"# rows: {len(rows)}",
+    ]
+    return "\n".join(head + rows) + "\n"
 
 
 def check_math(rows):
@@ -692,7 +987,7 @@ def main(argv):
     failures = []
 
     names = sorted(p.name for p in gdir.glob("*.tsv")
-                   if not p.name.endswith(".cr.tsv") and not p.name.endswith(".ref.tsv"))
+                   if not p.name.endswith((".cr.tsv", ".ref.tsv", ".map.tsv")))
     listed = [l for l in (gdir / "modules.txt").read_text(encoding="utf-8").splitlines() if not l.startswith("#")]
     if sorted(f"{m}.tsv" for m in listed) != names:
         failures.append(f"modules.txt lists {listed}, the directory has {names}")
@@ -713,11 +1008,22 @@ def main(argv):
             failures.extend(f)
             print(f"  f64::to_json {ok:6d} ok" + (f", {len(f)} FAILED" if f else ""))
         if module == "json":
-            f, by_fn = check_json(rows)
+            f, by_fn, mapped = check_json(rows)
             failures.extend(f)
             for fn in sorted(by_fn):
                 ok, bad = by_fn[fn]
                 print(f"  {fn:20s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
+            text = render_map(module, provenance, mapped)
+            map_path = gdir / f"{module}.map.tsv"
+            if write_cr:
+                map_path.write_text(text, encoding="utf-8")
+                print(f"  wrote {map_path.name}: {len(mapped)} rows")
+            elif not map_path.exists():
+                failures.append(f"{map_path.name} missing (run with --write-cr)")
+            elif map_path.read_text(encoding="utf-8") != text:
+                failures.append(f"{map_path.name} differs from what the bayan model gives")
+            else:
+                print(f"  {map_path.name}: {len(mapped)} rows, as the bayan model gives")
         if module == "math":
             f, by_fn = check_math(rows)
             failures.extend(f)

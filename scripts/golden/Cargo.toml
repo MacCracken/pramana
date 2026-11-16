@@ -18,6 +18,8 @@ pramana = { path = "../../rust-old", default-features = false, features = ["orac
 # json.tsv: serde_json's reading of each value type, with `float_roundtrip` (a correctly rounded parse), as probe P7
 # found a Rust consumer needs; it changes no writing.
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+# json.tsv's test structs (part d3b): serde derive's struct rules, at the version rust-old/Cargo.lock has.
+serde = { version = "=1.0.229", features = ["derive"] }
 
 [[bin]]
 name = "golden"

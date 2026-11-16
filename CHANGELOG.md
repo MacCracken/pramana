@@ -339,6 +339,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     example, a Vec of 100 f64s takes 66–67 µs against 3.9–4.0 µs. The pre-pass's rewrite cut each decode by about
     10%. The rest is recorded as a finding.
 
+- **M1 part d3b: serde's struct rules and the two enum forms** (`src/json.cyr`; port plan D5 and §8.3; ADR 007 row
+  16; results in `docs/development/port-parity.md` §7.10):
+  - **`_pmn_json_struct`:** serde derive's rules. An unknown member is skipped unread; a field named twice or never
+    refuses; every key must be UTF-8, as serde_json parses each one; the sequence form takes exactly the field count;
+  - **`_pmn_json_unit_variant` and `_pmn_json_newtype_variant`:** the externally tagged forms of 1.3.0's two enums.
+    A unit variant is `"Name"` or `{"Name": null}`, and a newtype is `{"Name": value}`;
+  - **839 more golden rows** (4,725 in all): serde_json's reading of two derive test structs (`Normal`'s fields, and
+    one field of every kind 1.3.0's types hold) and of 1.3.0's `Kernel` and `PramanaError`. They cover every field
+    missing, named twice and set to each form of its kind, unknown members of every kind, the sequence form at every
+    length, both enum forms, and seeded values;
+  - **the mapped rows** (`tests/golden/json.map.tsv`, ADR 007 row 16): 20 documents serde_json reads only by
+    skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
+    surrogate. `validate.py` finds them with its own model of bayan, beside its serde model, which now also follows
+    serde's ignore path. All 4,725 rows pass on x86_64, PE and aarch64, 20 of them accepted under ADR 7;
+  - **checks:** seven mutation checks each fail their rows; `tests/json.tcyr` grows to 104 checks;
+  - **cost:** a `Normal` document decodes in 1.65–1.68 µs against serde_json's 79–81 ns (21×), and a `Kernel` in
+    518–523 ns against 35 ns (15×).
+
 ### Performance
 
 - **The pool's release** is a compare-and-swap rather than kimiya's full fence and plain store: a claim and its release

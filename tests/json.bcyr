@@ -1,4 +1,4 @@
-# json.bcyr — the JSON read core (M1 part d3a): a whole decode per document, µs or ns per document.
+# json.bcyr — the JSON read core (M1 parts d3a and d3b): a whole decode per document, µs or ns per document.
 #
 # Each row decodes one document 10^4 times through _pmn_json_decode (the pre-pass, a pool claim, bayan's parse, the
 # reader, the release). The documents are built from mathx.bcyr's xorshift with src/fmtf.cyr, which writes
@@ -83,6 +83,34 @@ fn dec_f64(root, ctx): i64 {
     return _pmn_json_f64(root, g_out);
 }
 
+# What M3's Normal decoder will do: serde's struct rules, both fields read, then Normal::new's checks (a finite mean;
+# a finite, positive std_dev).
+fn dec_normal(root, ctx): i64 {
+    var names[16];
+    store64(&names, "mean");
+    store64(&names + 8, "std_dev");
+    var sl[16];
+    var e = _pmn_json_struct(root, &names, 2, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    e = _pmn_json_f64(load64(&sl), g_out);
+    if (e != PMN_ERR_NONE) { return e; }
+    e = _pmn_json_f64(load64(&sl + 8), g_out + 8);
+    if (e != PMN_ERR_NONE) { return e; }
+    var mean: f64 = load64(g_out);
+    var sd: f64 = load64(g_out + 8);
+    if (_pmn_is_finite(mean) == 0 || _pmn_is_finite(sd) == 0 || (sd > 0.0) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return PMN_ERR_NONE;
+}
+
+fn dec_kernel(root, ctx): i64 {
+    var kn[32];
+    store64(&kn, "Gaussian");
+    store64(&kn + 8, "Epanechnikov");
+    store64(&kn + 16, "Uniform");
+    store64(&kn + 24, "Triangular");
+    return _pmn_json_unit_variant(root, &kn, 4, g_out);
+}
+
 fn row(name: cstring, sb, fp): i64 {
     var p = load64(sb);
     var n = load64(sb + 8);
@@ -150,6 +178,12 @@ fn main(): i64 {
     store64(sb + 8, 0);
     str_builder_add_cstr(sb, "1.5");
     row("f64, 1.5", sb, &dec_f64);
+    store64(sb + 8, 0);
+    str_builder_add_cstr(sb, "{\"mean\":0.5,\"std_dev\":2.25}");
+    row("Normal, its two fields and checks", sb, &dec_normal);
+    store64(sb + 8, 0);
+    str_builder_add_cstr(sb, "\"Epanechnikov\"");
+    row("Kernel, a unit variant", sb, &dec_kernel);
     return 0;
 }
 

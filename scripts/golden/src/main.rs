@@ -16,8 +16,8 @@
 //! provenance (pramana, hisab, rustc, or the glibc platform: `glibc.rs`). The transcendental rows are glibc's bits,
 //! and the inline code is rustc's, so a corpus can only be checked where it was made.
 //!
-//! The correctly rounded rows (`*.cr.tsv`) and the reference rows (`*.ref.tsv`) are `validate.py`'s outputs, from
-//! MPFR; this program leaves them alone.
+//! The correctly rounded rows (`*.cr.tsv`), the reference rows (`*.ref.tsv`) and the mapped rows (`*.map.tsv`, ADR
+//! 007) are `validate.py`'s outputs, from MPFR and its own models; this program leaves them alone.
 //!
 //! Adapted from pravash's `scripts/oracle/` (same format, same rules), which took it from impetus, kimiya and
 //! tanmatra. Modules are added at the start of their milestone: `constants` and `math` (M0); …
@@ -124,7 +124,8 @@ fn recorded_provenance(text: &str) -> Option<String> {
     )
 }
 
-/// The generator's own `.tsv` names in `dir`, sorted. The `*.cr.tsv` and `*.ref.tsv` files are validate.py's.
+/// The generator's own `.tsv` names in `dir`, sorted. The `*.cr.tsv`, `*.ref.tsv` and `*.map.tsv` files are
+/// validate.py's.
 fn tsv_names(dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -132,7 +133,9 @@ fn tsv_names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = entries
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".tsv") && !n.ends_with(".cr.tsv") && !n.ends_with(".ref.tsv"))
+        .filter(|n| {
+            n.ends_with(".tsv") && !n.ends_with(".cr.tsv") && !n.ends_with(".ref.tsv") && !n.ends_with(".map.tsv")
+        })
         .collect();
     names.sort();
     names

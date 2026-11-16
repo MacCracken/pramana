@@ -154,3 +154,20 @@ about 10% (Vec<f64> 74–76 → 66–67 µs):
 
 **Finding.** About 11 ns a byte remain in the pre-pass, from code generation that keeps every local in memory. No hot
 path decodes JSON, and the pre-pass is a stand-in (ledger L11) that goes when bayan reads these numbers itself.
+
+## M1 part d3b: struct rules and enums (2026-11-15)
+
+**Bodies.** `tests/json.bcyr`'s two new rows decode as M3's codecs will:
+- **`Normal`:** `_pmn_json_struct`, both f64s, then `Normal::new`'s checks. The twin decodes 1.3.0's real `Normal`,
+  whose `try_from` makes the same checks.
+- **`Kernel`:** `_pmn_json_unit_variant` against `serde_json::from_slice::<Kernel>`.
+
+The documents are byte-identical. Three rounds, interleaved, pinned to core 5, at a load average of 2.5–3.8.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| Normal, its two fields and checks, 27 bytes | 79.1–80.9 ns | 1.65–1.68 µs | 21× |
+| Kernel, a unit variant, 14 bytes | 34.5–35.4 ns | 518–523 ns | 15× |
+
+The rounds also re-ran part d3a's rows, within 3% of their record (Vec<f64> 64.9–65.1 µs, the string 2.75 µs). Small
+documents pay mostly the fixed costs of the pre-pass, the claims and bayan's containers. This is part d3a's finding.
