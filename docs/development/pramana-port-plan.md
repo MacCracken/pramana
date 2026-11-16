@@ -29,10 +29,11 @@
 > `normal_cdf` prototype on it, within 0.5 ulp (`26f04f2`), and step 10, the upstream requests and the ledger
 > (`aa5df35`): **M0 is complete.** **M1 is complete:** its parts are committed, a and b1 (`1f718c6`), b2
 > (`f08f233`), b3 (`3257918`), b4 (`0c3f469`), c (`d13fb61`), d1 (`d34db7c`), d2 (`c302838`), d3a (`c61f76b`), d3b
-> (`18c4e70`), d4 (`daf9084`), e1 (`5d80e5a`), e2 (`a49d23d`) and e3 (`74eea07`), and part f, its gate, is done but
-> not committed. The foundation is ported: the error codes, every primitive correctly rounded, the Rust f64 surface,
+> (`18c4e70`), d4 (`daf9084`), e1 (`5d80e5a`), e2 (`a49d23d`), e3 (`74eea07`) and f, its gate (`d6c5a50`). The
+> foundation is ported: the error codes, every primitive correctly rounded, the Rust f64 surface,
 > the JSON core, the work-table pool, the RNG, combinatorics and the bridges, gated by 75,266 golden rows on three
-> targets. The maintainer took each recommendation and chose option C for D3. M2, the special functions, is next.
+> targets. The maintainer took each recommendation and chose option C for D3. **M2, the special functions, is in
+> progress** (its parts are in §7): part a1, fdlibm's erf and erfc and Φ and 1 − Φ at T0, is done and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1098,6 +1099,24 @@ Every milestone, and every part of a large one, ends with pravash's gates:
   allocation soak (`tests/soak.tcyr`: bump heap, freelist arena and mapped size unchanged after 10⁴ rounds of every
   allocating path), and an audit of `src/` against the library rules.
 
+**M2's parts** (set at its start, 2026-11-15), all in `src/special.cyr` and the golden `special` module (its rows
+named by Rust's path, `math::<fn>`; `math.tsv` is the std f64 operations). Part a is T0: `math.rs` in Rust's
+operation order on the correctly rounded primitives, at 0 ulp against `special.cr.tsv`. Part b is T1, gated against
+`special.ref.tsv` at ADR 009's bounds:
+- **a1:** fdlibm's `erf` and `erfc`, and `normal_cdf` and `normal_sf` on erfc, against 1.3.0 on 28,290 rows (every
+  branch point with its neighbours, both signs, seeded sweeps of each branch), 10 of them corrected for exp ✅;
+- **a2:** `ln_gamma` (Lanczos g = 7, n = 9, with reflection), `stirling_error`, `bd0`, `ln_gamma_kernel`, `ln_beta`;
+- **a3:** `gamma_inc`: the series, the Lentz continued fraction, the Wilson–Hilferty branch, `iteration_budget`, and
+  the regularized lower and upper wrappers;
+- **a4:** `beta_inc`, `beta_cf` and `regularized_incomplete_beta`;
+- **b1:** erf and erfc correctly rounded: P9's FMA-free CORE-MATH port (§5 step 9e) replaces fdlibm;
+- **b2:** `normal_cdf` and `normal_sf` ≤ 1 ulp, P9's prototype on b1 (step 9d-4);
+- **b3:** `ln_gamma` ≤ 2 ulp (step 9d-1);
+- **b4:** `gamma_inc` ≤ 4 ulp (step 9d-2);
+- **b5:** `beta_inc` ≤ 8 ulp (step 9d-3);
+- **c:** M2's gate: §3.2's sets re-measured on the T1 functions and recorded in `port-parity.md`, the rows that T1
+  moves remapped once, before M3 records any row against them.
+
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream
   row is generated against it (D3).
@@ -1175,6 +1194,8 @@ which keeps every consumer's compile free of it.
 | a String field | a JSON string whose decoded bytes are UTF-8, checked when it is read: serde_json validates a string it reads and skips one it ignores, so the pre-pass checks only raw control bytes (part d3a) |
 | an f64 field | any JSON number, refusing one that parses to ±∞ (serde_json's "number out of range"); `null` refuses, so a document holding NaN can't be read back, in Rust or here (P7) |
 | `HashMap<String, Vec<f64>>` (`ai`) | `map_new_str`, with keys sorted before iteration |
+| a nested Horner polynomial, `c0 + s * (c1 + s * (…))` | the steps written out innermost first, `p = C3 + s * p;`, one rounding per + and × as in Rust: a three-argument step helper stays a call, because `#inline` declines more than two parameters, and costs 18–38 ns a function (M2 part a1) |
+| `x.to_bits() >> 32` (fdlibm's high word), the low-word mask | `load64(&x) >> 32`, logical as Rust's u64 shift; `load64(&x) & 0xFFFFFFFF00000000` stored back through `store64` (M2 part a1) |
 
 ### 8.4 Names
 

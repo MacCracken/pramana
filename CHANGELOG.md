@@ -431,6 +431,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     now `#must_use`, and the three test sites that ignored one now assert it;
   - **M1's result:** eight golden modules, 75,266 rows ok and 106 accepted, on x86_64, PE and aarch64, warning-free.
 
+- **M2 part a1: erf, erfc, Φ and 1 − Φ, T0** (`src/special.cyr`; port plan D3 = C, ADR 009; results in
+  `docs/development/port-parity.md` §8.1):
+  - **the functions:** 1.3.0's fdlibm `erf` and `erfc`, and `normal_cdf` and `normal_sf` on erfc, in Rust's
+    operation order on the correctly rounded exp, with the generated fdlibm coefficients. They are crate-private in
+    1.3.0, so they are `_pmn_` here and outside the surface check;
+  - **a golden `special` module:** 28,290 rows through the `oracle` hooks, named `math::<fn>`: every high word fdlibm
+    branches on, with its neighbours and 24 seeded low words at and below it, both signs; seeded sweeps of each
+    branch; tiny and wide sweeps; and k/32 and k/16 grids. `validate.py` transcribes the four functions and re-derives
+    every row through glibc's exp. `special.cr.tsv` holds the 10 rows that move by 1 ulp when exp is correctly
+    rounded (erfc near 10⁻⁶⁴ and 10⁻¹³⁸, and Φ and 1 − Φ there). Every row matches at 0 ulp on x86_64, PE and aarch64;
+  - **mutation checks:** all eleven non-equivalent mutants fail rows. Each operation-order change fails 838–4,176,
+    and each moved branch point 2–48. The first grid missed a moved RA/RB boundary, so seeded low words were added
+    at every branch point;
+  - **tests:** `tests/special.tcyr` has 25 checks, all six of 1.3.0's erf and Φ tests among them, and what a class-C
+    replay can't see: erf(−0) = −0, a NaN's payload kept, and erf's odd symmetry bit for bit;
+  - **cost:** 7–7.5× 1.3.0 in the tails, which call the correctly rounded exp twice; 10.6–13× in the small
+    rationals, which is the compiler's f64 code (`tests/special.bcyr` and its twin `m2_special.rs`, the same sums).
+    The Horner steps are written out, because `#inline` declines a three-argument step: that took 18–38 ns off
+    every row. pramana's numbers were added to cyrius's open `#inline` issue.
+
 ### Performance
 
 - **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),

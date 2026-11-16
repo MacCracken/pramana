@@ -51,4 +51,5 @@ modules = [
     "src/rng.cyr",
     "src/combinatorics.cyr",
     "src/bridge.cyr",
+    "src/special.cyr",
 ]

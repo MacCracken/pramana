@@ -1,0 +1,229 @@
+# special.cyr — the special functions (port of Rust 1.3.0's src/math.rs; port plan D3, §3.4, ADR 009; M2).
+#
+# M2 lands in two tiers (D3 = C):
+# - **T0, part a:** math.rs in Rust's operation order, on the correctly rounded primitives. Its rows match 1.3.0's bits
+#   wherever glibc rounds correctly, and the `*.cr.tsv` model elsewhere, at 0 ulp: that proves the transcription.
+# - **T1, part b:** the five replacements of §3.4 (erf and erfc correctly rounded; normal_cdf, ln_gamma, gamma_inc,
+#   beta_inc to ADR 009's bounds), gated against MPFR's reference rows.
+#
+# Part a1 (this file so far): fdlibm's erf and erfc (FreeBSD msun s_erf.c, via the Rust libm crate, as 1.3.0 carries
+# it), and Φ and 1 − Φ on erfc. The coefficients are src/constants.cyr's, generated from rust-old/src and proven
+# against the oracle (M0 step 6). The only primitive is exp, correctly rounded (src/crmath.cyr), so a row differs from
+# 1.3.0 only where glibc's exp misrounds. 1.3.0's math.rs is crate-private, so these names are too (`_pmn_`).
+#
+# UPSTREAM(L8): ganita:docs/development/issues/2026-11-15-special-functions-scope-request.md
+#   replace with ganita's special functions if it takes them on; parity: every special row, and every *.ref.tsv row
+#
+# ====================================================
+# Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+#
+# Developed at SunPro, a Sun Microsystems, Inc. business.
+# Permission to use, copy, modify, and distribute this
+# software is freely granted, provided that this notice
+# is preserved.
+# ====================================================
+
+# Each polynomial is Rust's nested Horner form `c0 + s * (c1 + s * (…))`, evaluated innermost first, one rounding per
+# + and ×, as Rust's (no contraction to fma on either side).
+
+# Rust's `high_word`: the upper 32 bits of x's pattern.
+#must_use
+#pure
+fn _pmn_sp_high_word(x: f64): i64 {
+    return (load64(&x) >> 32) & 0xFFFFFFFF;
+}
+
+# fdlibm's erf/erfc kernel on |x| < 0.84375: r / s for z = x², the PP and QQ rationals.
+#must_use
+fn _pmn_sp_erf_small(z: f64): f64 {
+    var r: f64 = _PMN_MATH_FDLIBM_PP4;
+    r = _PMN_MATH_FDLIBM_PP3 + z * r;
+    r = _PMN_MATH_FDLIBM_PP2 + z * r;
+    r = _PMN_MATH_FDLIBM_PP1 + z * r;
+    r = _PMN_MATH_FDLIBM_PP0 + z * r;
+    var s: f64 = _PMN_MATH_FDLIBM_QQ5;
+    s = _PMN_MATH_FDLIBM_QQ4 + z * s;
+    s = _PMN_MATH_FDLIBM_QQ3 + z * s;
+    s = _PMN_MATH_FDLIBM_QQ2 + z * s;
+    s = _PMN_MATH_FDLIBM_QQ1 + z * s;
+    s = 1.0 + z * s;
+    return r / s;
+}
+
+# Rust's `erfc_mid`: erfc(|x|) for 0.84375 ≤ |x| < 1.25, 1 − erx − P/Q at s = |x| − 1.
+#must_use
+fn _pmn_sp_erfc_mid(x: f64): f64 {
+    var ax: f64 = f64_abs(x);
+    var s: f64 = ax - 1.0;
+    var p: f64 = _PMN_MATH_FDLIBM_PA6;
+    p = _PMN_MATH_FDLIBM_PA5 + s * p;
+    p = _PMN_MATH_FDLIBM_PA4 + s * p;
+    p = _PMN_MATH_FDLIBM_PA3 + s * p;
+    p = _PMN_MATH_FDLIBM_PA2 + s * p;
+    p = _PMN_MATH_FDLIBM_PA1 + s * p;
+    p = _PMN_MATH_FDLIBM_PA0 + s * p;
+    var q: f64 = _PMN_MATH_FDLIBM_QA6;
+    q = _PMN_MATH_FDLIBM_QA5 + s * q;
+    q = _PMN_MATH_FDLIBM_QA4 + s * q;
+    q = _PMN_MATH_FDLIBM_QA3 + s * q;
+    q = _PMN_MATH_FDLIBM_QA2 + s * q;
+    q = _PMN_MATH_FDLIBM_QA1 + s * q;
+    q = 1.0 + s * q;
+    var erx: f64 = _PMN_MATH_FDLIBM_ERX;
+    var a: f64 = 1.0 - erx;
+    var pq: f64 = p / q;
+    return a - pq;
+}
+
+# Rust's `erfc_tail`: erfc(|x|) for 0.84375 ≤ |x| < 28, given ix, the high word of |x|. Above 1.25 it is
+# exp(−z² − 0.5625) · exp((z − x)(z + x) + R/S) / x, with z = x's upper 32 bits so −z·z is exact.
+#must_use
+fn _pmn_sp_erfc_tail(ix, x0: f64): f64 {
+    if (ix < 0x3FF40000) { return _pmn_sp_erfc_mid(x0); }
+    var x: f64 = f64_abs(x0);
+    var xx: f64 = x * x;
+    var s: f64 = 1.0 / xx;
+    var r: f64 = 0.0;
+    var bs: f64 = 0.0;
+    if (ix < 0x4006DB6D) {
+        r = _PMN_MATH_FDLIBM_RA7;
+        r = _PMN_MATH_FDLIBM_RA6 + s * r;
+        r = _PMN_MATH_FDLIBM_RA5 + s * r;
+        r = _PMN_MATH_FDLIBM_RA4 + s * r;
+        r = _PMN_MATH_FDLIBM_RA3 + s * r;
+        r = _PMN_MATH_FDLIBM_RA2 + s * r;
+        r = _PMN_MATH_FDLIBM_RA1 + s * r;
+        r = _PMN_MATH_FDLIBM_RA0 + s * r;
+        bs = _PMN_MATH_FDLIBM_SA8;
+        bs = _PMN_MATH_FDLIBM_SA7 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SA6 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SA5 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SA4 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SA3 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SA2 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SA1 + s * bs;
+        bs = 1.0 + s * bs;
+    } else {
+        r = _PMN_MATH_FDLIBM_RB6;
+        r = _PMN_MATH_FDLIBM_RB5 + s * r;
+        r = _PMN_MATH_FDLIBM_RB4 + s * r;
+        r = _PMN_MATH_FDLIBM_RB3 + s * r;
+        r = _PMN_MATH_FDLIBM_RB2 + s * r;
+        r = _PMN_MATH_FDLIBM_RB1 + s * r;
+        r = _PMN_MATH_FDLIBM_RB0 + s * r;
+        bs = _PMN_MATH_FDLIBM_SB7;
+        bs = _PMN_MATH_FDLIBM_SB6 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SB5 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SB4 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SB3 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SB2 + s * bs;
+        bs = _PMN_MATH_FDLIBM_SB1 + s * bs;
+        bs = 1.0 + s * bs;
+    }
+    var zb = load64(&x) & 0xFFFFFFFF00000000;
+    var z: f64 = 0.0;
+    store64(&z, zb);
+    var nz: f64 = -z;
+    var a1: f64 = nz * z;
+    var a2: f64 = a1 - 0.5625;
+    var e1: f64 = _pmn_exp(a2);
+    var zmx: f64 = z - x;
+    var zpx: f64 = z + x;
+    var b1: f64 = zmx * zpx;
+    var rs: f64 = r / bs;
+    var b2: f64 = b1 + rs;
+    var e2: f64 = _pmn_exp(b2);
+    var pe: f64 = e1 * e2;
+    return pe / x;
+}
+
+# Rust's `erf` (fdlibm), operation for operation: ±1 at ±∞, NaN for NaN.
+#must_use
+fn _pmn_erf(x: f64): f64 {
+    var bits = load64(&x);
+    var negative = (bits >> 63) & 1;
+    var ix = _pmn_sp_high_word(x) & 0x7FFFFFFF;
+    if (ix >= 0x7FF00000) {
+        if (x != x) { return x; }
+        if (negative == 1) { return -1.0; }
+        return 1.0;
+    }
+    if (ix < 0x3FEB0000) {
+        if (ix < 0x3E300000) {
+            var efx8: f64 = _PMN_MATH_FDLIBM_EFX8;
+            var a: f64 = 8.0 * x;
+            var b: f64 = efx8 * x;
+            var c: f64 = a + b;
+            return 0.125 * c;
+        }
+        var z: f64 = x * x;
+        var q: f64 = _pmn_sp_erf_small(z);
+        var xq: f64 = x * q;
+        return x + xq;
+    }
+    var y: f64 = 0.0;
+    if (ix < 0x40180000) {
+        var t: f64 = _pmn_sp_erfc_tail(ix, x);
+        y = 1.0 - t;
+    } else {
+        var mp: f64 = _PMN_F64_MIN_POSITIVE;
+        y = 1.0 - mp;
+    }
+    if (negative == 1) { return -y; }
+    return y;
+}
+
+# Rust's `erfc` (fdlibm), computed directly so the tail keeps its relative precision: 0 at +∞, 2 at −∞.
+#must_use
+fn _pmn_erfc(x: f64): f64 {
+    var bits = load64(&x);
+    var negative = (bits >> 63) & 1;
+    var ix = _pmn_sp_high_word(x) & 0x7FFFFFFF;
+    if (ix >= 0x7FF00000) {
+        if (x != x) { return x; }
+        if (negative == 1) { return 2.0; }
+        return 0.0;
+    }
+    if (ix < 0x3FEB0000) {
+        if (ix < 0x3C700000) { return 1.0 - x; }
+        var z: f64 = x * x;
+        var y: f64 = _pmn_sp_erf_small(z);
+        var xy: f64 = x * y;
+        if (negative == 1 || ix < 0x3FD00000) {
+            var t1: f64 = x + xy;
+            return 1.0 - t1;
+        }
+        var t2: f64 = x - 0.5;
+        var t3: f64 = t2 + xy;
+        return 0.5 - t3;
+    }
+    if (ix < 0x403C0000) {
+        var tail: f64 = _pmn_sp_erfc_tail(ix, x);
+        if (negative == 1) { return 2.0 - tail; }
+        return tail;
+    }
+    if (negative == 1) {
+        var mp: f64 = _PMN_F64_MIN_POSITIVE;
+        return 2.0 - mp;
+    }
+    return 0.0;
+}
+
+# Rust's `normal_cdf`: Φ(z) = 0.5 · erfc(−z / √2), accurate in both tails.
+#must_use
+fn _pmn_normal_cdf(z: f64): f64 {
+    var nz: f64 = -z;
+    var s2: f64 = _PMN_F64_SQRT_2;
+    var a: f64 = nz / s2;
+    var e: f64 = _pmn_erfc(a);
+    return 0.5 * e;
+}
+
+# Rust's `normal_sf`: 1 − Φ(z) = 0.5 · erfc(z / √2), accurate in the upper tail.
+#must_use
+fn _pmn_normal_sf(z: f64): f64 {
+    var s2: f64 = _PMN_F64_SQRT_2;
+    var a: f64 = z / s2;
+    var e: f64 = _pmn_erfc(a);
+    return 0.5 * e;
+}

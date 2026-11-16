@@ -92,6 +92,12 @@ files. This README records what is specific to pramana.
 - **`rng.tsv`** (M1 part e1, `src/m_rng.rs`): 1.3.0's `SimpleRng`: the first 256 draws from 40 seeds, and 10⁶-draw
   FNV-1a digests from six. `validate.py` re-draws each with its own xorshift. `json.tsv` gains SimpleRng's codec
   rows in the same part.
+- **`special.tsv`** (M2, `src/m_special.rs`): 1.3.0's `src/math.rs` through the `oracle` hooks, its rows named by
+  Rust's path, `math::<fn>`. Part a1 records `erf` and `erfc` at every high word fdlibm branches on, with the five
+  doubles either side and 24 seeded low words in the high word at and below it, both signs, then seeded sweeps of
+  each branch, tiny and wide sweeps and k/32 on [−30, 30]; and `normal_cdf` and `normal_sf` on that grid times √2,
+  k/16 on [−40, 40] and seeds. All class C. `validate.py` transcribes each function and re-derives every row through
+  glibc's exp; `special.cr.tsv` holds the rows that move when exp is correctly rounded.
 - **`json.map.tsv`** (ADR 007 row 16), written by `validate.py --write-cr`. These are the rows serde_json reads only
   by skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
   surrogate. `validate.py` finds them with its own model of bayan's three whole-document refusals. They map to
@@ -117,7 +123,8 @@ files. This README records what is specific to pramana.
   regenerated. It is never patched in a `.tsv`.
 - **Modules arrive with their milestone.** Each one starts by adding its golden emitter (`src/m_<module>.rs`, with
   the grid from the port plan §7) and registering it in `src/main.rs`. Its `validate.py` rules come in the same part.
-  The special-function rows (`special.tsv`) and their MPFR reference rows (`special.ref.tsv`) arrive with M2.
+  The special-function rows (`special.tsv`) arrive with M2 part a, and their MPFR reference rows (`special.ref.tsv`)
+  with part b.
 
 | Module | Milestone | Golden rows | Golden emitter | Generated Cyrius / correctly rounded rows |
 |---|---|---|---|---|
@@ -129,6 +136,7 @@ files. This README records what is specific to pramana.
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `debug` | M1 f | 60 | `src/m_debug.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
+| `special` | M2 a1 | 28,290 | `src/m_special.rs` | `special.cr.tsv`, 10 rows (exp misrounded in erfc's deep tail, and in Φ and 1 − Φ there) |
 
 ## Format 1
 

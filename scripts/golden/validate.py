@@ -15,6 +15,8 @@ Standard library plus ctypes: glibc's libm, and MPFR through `mpfr_ref.py`. It n
   beside the generator's, with Python's float parser for the literals.
 - **`fmt`:** every row's text is rebuilt from Python's own shortest digits (`repr`: the shortest that read back, the
   closest, ties to the even digit, as serde_json's zmij), put into serde_json's form.
+- **`special`** (M2): 1.3.0's math.rs transcribed, every row re-derived with glibc's exp, and `special.cr.tsv` the
+  rows whose value changes when exp is correctly rounded.
 - **`math.cr.tsv`:** for every class-C row whose recorded value isn't correctly rounded, the correctly rounded value.
   This is the expectation the port's correctly rounded functions are gated against at 0 ulp (ADR 009). `--write-cr`
   writes it, and a plain run checks that the committed file is exactly what it would write.
@@ -1230,6 +1232,107 @@ def check_bridge(rows):
     return failures, by_fn, crs
 
 
+# ── special: 1.3.0's math.rs, transcribed (M2) ──
+
+
+def sp_horner(cs, s):
+    """c0 + s·(c1 + s·(… + s·cn)): Rust's nested form, innermost first."""
+    acc = cs[-1]
+    for c in reversed(cs[:-1]):
+        acc = c + s * acc
+    return acc
+
+
+def sp_erfc_tail(C, exp, ix, x):
+    """1.3.0's erfc_tail (with erfc_mid inlined): erfc(|x|) for 0.84375 ≤ |x| < 28, ix the high word of |x|."""
+    if ix < 0x3FF4_0000:
+        s = abs(x) - 1.0
+        p = sp_horner([C[f"PA{k}"] for k in range(7)], s)
+        q = sp_horner([1.0] + [C[f"QA{k}"] for k in range(1, 7)], s)
+        return 1.0 - C["ERX"] - p / q
+    x = abs(x)
+    s = 1.0 / (x * x)
+    if ix < 0x4006_DB6D:
+        r = sp_horner([C[f"RA{k}"] for k in range(8)], s)
+        big_s = sp_horner([1.0] + [C[f"SA{k}"] for k in range(1, 9)], s)
+    else:
+        r = sp_horner([C[f"RB{k}"] for k in range(7)], s)
+        big_s = sp_horner([1.0] + [C[f"SB{k}"] for k in range(1, 8)], s)
+    z = from_bits(bits(x) & 0xFFFF_FFFF_0000_0000)
+    return exp(-z * z - 0.5625) * exp((z - x) * (z + x) + r / big_s) / x
+
+
+def sp_small(C, z):
+    """r / s on |x| < 0.84375, z = x²."""
+    r = sp_horner([C[f"PP{k}"] for k in range(5)], z)
+    s = sp_horner([1.0] + [C[f"QQ{k}"] for k in range(1, 6)], z)
+    return r / s
+
+
+def sp_erf(C, exp, x):
+    hx = bits(x) >> 32
+    negative, ix = hx >> 31 != 0, hx & 0x7FFF_FFFF
+    if ix >= 0x7FF0_0000:
+        return x if math.isnan(x) else (-1.0 if negative else 1.0)
+    if ix < 0x3FEB_0000:
+        if ix < 0x3E30_0000:
+            return 0.125 * (8.0 * x + C["EFX8"] * x)
+        return x + x * sp_small(C, x * x)
+    y = 1.0 - sp_erfc_tail(C, exp, ix, x) if ix < 0x4018_0000 else 1.0 - sys.float_info.min
+    return -y if negative else y
+
+
+def sp_erfc(C, exp, x):
+    hx = bits(x) >> 32
+    negative, ix = hx >> 31 != 0, hx & 0x7FFF_FFFF
+    if ix >= 0x7FF0_0000:
+        return x if math.isnan(x) else (2.0 if negative else 0.0)
+    if ix < 0x3FEB_0000:
+        if ix < 0x3C70_0000:
+            return 1.0 - x
+        y = sp_small(C, x * x)
+        if negative or ix < 0x3FD0_0000:
+            return 1.0 - (x + x * y)
+        return 0.5 - (x - 0.5 + x * y)
+    if ix < 0x403C_0000:
+        tail = sp_erfc_tail(C, exp, ix, x)
+        return 2.0 - tail if negative else tail
+    return 2.0 - sys.float_info.min if negative else 0.0
+
+
+SPECIAL = {
+    "math::erf": lambda C, exp, x: sp_erf(C, exp, x),
+    "math::erfc": lambda C, exp, x: sp_erfc(C, exp, x),
+    "math::normal_cdf": lambda C, exp, z: 0.5 * sp_erfc(C, exp, -z / math.sqrt(2.0)),
+    "math::normal_sf": lambda C, exp, z: 0.5 * sp_erfc(C, exp, z / math.sqrt(2.0)),
+}
+
+
+def check_special(root, rows):
+    """Every row re-derived with glibc's exp; the rows whose value changes with exp correctly rounded go to
+    special.cr.tsv. The fdlibm coefficients are python_constants' own reading of rust-old/src."""
+    C = {k[len("math::fdlibm::"):]: v for k, v in python_constants(root).items() if k.startswith("math::fdlibm::")}
+    cr_exp = lambda x: mpfr_ref.cr("exp", x)
+    failures, by_fn, crs = [], {}, []
+    for fn, cls, ins, outs, raw in rows:
+        model = SPECIAL.get(fn)
+        if model is None or len(ins) != 1 or len(outs) != 1:
+            failures.append(f"special: no model for {fn}({raw[:60]})")
+            continue
+        want = model(C, _libm.exp, ins[0])
+        ok = same(outs[0], want)
+        stat = by_fn.setdefault(fn, [0, 0])
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"special: {fn}({ins[0]!r}) recorded {outs[0]!r}, modelled {want!r}")
+        cr = model(C, cr_exp, ins[0])
+        if not same(outs[0], cr):
+            ulps = abs(ordered(bits(outs[0])) - ordered(bits(cr)))
+            crs.append(f"{fn}\t{raw}\tf:{bits(cr):016x}\t1.3.0 {outs[0]!r} through glibc's exp; {cr!r} with exp "
+                       f"correctly rounded, {ulps} ulp apart")
+    return failures, by_fn, crs
+
+
 def cr_file(gdir, module, provenance, crs, write_cr, failures):
     """Writes (--write-cr) or checks a module's correctly rounded rows."""
     text = render_cr(module, provenance, crs)
@@ -1388,6 +1491,13 @@ def main(argv):
             for fn in sorted(by_fn):
                 ok, bad = by_fn[fn]
                 print(f"  {fn:42s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
+            cr_file(gdir, module, provenance, crs, write_cr, failures)
+        if module == "special":
+            f, by_fn, crs = check_special(root, rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
             cr_file(gdir, module, provenance, crs, write_cr, failures)
         if module == "rng":
             f, by_fn = check_rng(rows)

@@ -1,0 +1,174 @@
+# special.tcyr — the special functions of src/special.cyr (M2).
+#
+# tests/parity.tcyr replays 1.3.0's results on tests/golden/special.tsv at 0 ulp, against special.cr.tsv where exp
+# is corrected. These tests carry 1.3.0's own unit tests over (math.rs), and pin what a class-C replay does not
+# check bit for bit: the sign of a zero, a NaN's payload, and erf's odd symmetry.
+
+include "tests/lib.cyr"
+
+fn bits(x: f64): i64 {
+    return load64(&x);
+}
+
+fn of_bits(b): f64 {
+    var x: f64 = 0.0;
+    store64(&x, b);
+    return x;
+}
+
+# 1.3.0's assert_rel: |actual − expected| / |expected| ≤ tol, or |actual| ≤ tol when expected is 0.
+fn rel_ok(actual: f64, expected: f64, tol: f64): i64 {
+    var err: f64 = 0.0;
+    if (expected == 0.0) {
+        err = f64_abs(actual);
+    } else {
+        var d: f64 = actual - expected;
+        var q: f64 = d / expected;
+        err = f64_abs(q);
+    }
+    if (err <= tol) { return 1; }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var t7: f64 = 0.0000001;
+
+    test_group("erf_known_values, erfc_known_values (1.3.0's tests)");
+    var e0: f64 = _pmn_erf(0.0);
+    var e10: f64 = _pmn_erf(10.0);
+    var em10: f64 = _pmn_erf(-10.0);
+    assert(f64_abs(e0) < t7, "erf(0) = 0");
+    assert(f64_abs(e10 - 1.0) < t7, "erf(10) = 1");
+    assert(f64_abs(em10 + 1.0) < t7, "erf(-10) = -1");
+    var c0: f64 = _pmn_erfc(0.0);
+    var c10: f64 = _pmn_erfc(10.0);
+    var cm10: f64 = _pmn_erfc(-10.0);
+    assert(f64_abs(c0 - 1.0) < t7, "erfc(0) = 1");
+    assert(f64_abs(c10) < t7, "erfc(10) = 0");
+    assert(f64_abs(cm10 - 2.0) < t7, "erfc(-10) = 2");
+
+    test_group("erf_erfc_sum_to_one (1.3.0's test)");
+    var t15: f64 = 0.000000000000001;
+    var sum_ok = 1;
+    for (var k = 0 - 4; k <= 6; k = k + 1) {
+        var kf: f64 = f64_from(k);
+        var x: f64 = kf * 0.5;
+        var a: f64 = _pmn_erf(x);
+        var b: f64 = _pmn_erfc(x);
+        var s: f64 = a + b;
+        var d: f64 = s - 1.0;
+        if (f64_abs(d) >= t15) { sum_ok = 0; }
+    }
+    assert(sum_ok == 1, "erf(x) + erfc(x) = 1 within 1e-15, x = -2 … 3 by halves");
+
+    test_group("erf_reference_values (1.3.0's test, glibc's values)");
+    var t416: f64 = 0.0000000000000004;
+    var xs[40];
+    var es[40];
+    var ecs[40];
+    store64(&xs, 0.1);
+    store64(&es, 0.1124629160182849);
+    store64(&ecs, 0.887537083981715);
+    store64(&xs + 8, 0.5);
+    store64(&es + 8, 0.5204998778130465);
+    store64(&ecs + 8, 0.4795001221869535);
+    store64(&xs + 16, 1.0);
+    store64(&es + 16, 0.8427007929497149);
+    store64(&ecs + 16, 0.15729920705028513);
+    store64(&xs + 24, 3.0);
+    store64(&es + 24, 0.9999779095030014);
+    store64(&ecs + 24, 0.00002209049699858544);
+    store64(&xs + 32, 5.0);
+    store64(&es + 32, 0.9999999999984626);
+    store64(&ecs + 32, 0.000000000001537459794428035);
+    var ref_ok = 1;
+    for (var i = 0; i < 5; i = i + 1) {
+        var xi: f64 = load64(&xs + i * 8);
+        var ei: f64 = load64(&es + i * 8);
+        var eci: f64 = load64(&ecs + i * 8);
+        var nxi: f64 = -xi;
+        var nei: f64 = -ei;
+        var g1: f64 = _pmn_erf(xi);
+        var g2: f64 = _pmn_erfc(xi);
+        var g3: f64 = _pmn_erf(nxi);
+        if (rel_ok(g1, ei, t416) == 0 || rel_ok(g2, eci, t416) == 0 || rel_ok(g3, nei, t416) == 0) { ref_ok = 0; }
+    }
+    assert(ref_ok == 1, "erf, erfc and erf(-x) at 0.1, 0.5, 1, 3, 5 within 4e-16");
+    var t14: f64 = 0.00000000000001;
+    var c10w: f64 = of_bits(0x36A7D8A7F2A8A2D0);
+    assert(rel_ok(c10, c10w, t14) == 1, "erfc(10) = 2.088487583762545e-45");
+    var cm1: f64 = _pmn_erfc(-1.0);
+    assert(rel_ok(cm1, 1.8427007929497148, t416) == 1, "erfc(-1) = 1.8427007929497148");
+
+    test_group("erf_special_values (1.3.0's test)");
+    var nan: f64 = of_bits(0x7FF8000000000000);
+    var inf: f64 = of_bits(0x7FF0000000000000);
+    var ninf: f64 = -inf;
+    var en: f64 = _pmn_erf(nan);
+    var cn: f64 = _pmn_erfc(nan);
+    assert(_pmn_is_nan(en) == 1 && _pmn_is_nan(cn) == 1, "erf(NaN) and erfc(NaN) are NaN");
+    var ei1: f64 = _pmn_erf(inf);
+    var ei2: f64 = _pmn_erf(ninf);
+    var ci1: f64 = _pmn_erfc(inf);
+    var ci2: f64 = _pmn_erfc(ninf);
+    assert(ei1 == 1.0 && ei2 == -1.0, "erf(±inf) = ±1");
+    assert(bits(ci1) == 0 && ci2 == 2.0, "erfc(+inf) = +0, erfc(-inf) = 2");
+    var c30: f64 = _pmn_erfc(30.0);
+    assert(bits(c30) == 0, "erfc(30) = +0");
+    var tiny: f64 = of_bits(0x01A56E1FC2F8F359);
+    var etiny: f64 = _pmn_erf(tiny);
+    var two: f64 = tiny * 2.0;
+    var pi: f64 = _PMN_F64_PI;
+    var rpi: f64 = f64_sqrt(pi);
+    var wtiny: f64 = two / rpi;
+    assert(rel_ok(etiny, wtiny, t15) == 1, "erf(1e-300) = 2x/sqrt(pi), no underflow");
+
+    test_group("normal_cdf_tails (1.3.0's test, glibc's values)");
+    var p6: f64 = _pmn_normal_cdf(-6.0);
+    var p1: f64 = _pmn_normal_cdf(-1.0);
+    var q6: f64 = _pmn_normal_sf(6.0);
+    var p0: f64 = _pmn_normal_cdf(0.0);
+    assert(rel_ok(p6, 0.0000000009865876450377014, t14) == 1, "Phi(-6) = 9.865876450377014e-10");
+    assert(rel_ok(p1, 0.15865525393145707, t15) == 1, "Phi(-1) = 0.15865525393145707");
+    assert(rel_ok(q6, 0.0000000009865876450377014, t14) == 1, "1 - Phi(6) = 9.865876450377014e-10");
+    var t16: f64 = 0.0000000000000001;
+    assert(f64_abs(p0 - 0.5) < t16, "Phi(0) = 0.5");
+
+    test_group("what a class-C replay does not pin: zeros, payloads, symmetry");
+    var nz: f64 = -0.0;
+    var enz: f64 = _pmn_erf(nz);
+    var epz: f64 = _pmn_erf(0.0);
+    assert(bits(enz) == bits(nz) && bits(epz) == 0, "erf(-0) = -0, erf(+0) = +0 (fdlibm's tiny branch keeps the sign)");
+    var cnz: f64 = _pmn_erfc(nz);
+    assert(cnz == 1.0, "erfc(-0) = 1");
+    var payload: f64 = of_bits(0x7FF8000000ABCDEF);
+    var ep: f64 = _pmn_erf(payload);
+    var cp: f64 = _pmn_erfc(payload);
+    var kept = bits(ep) == 0x7FF8000000ABCDEF && bits(cp) == 0x7FF8000000ABCDEF;
+    assert(kept, "a NaN is returned as it came, payload kept");
+    var odd = 1;
+    var x0: f64 = 0.0000000000000000001;
+    for (var j = 0; j < 400; j = j + 1) {
+        var nx0: f64 = -x0;
+        var u: f64 = _pmn_erf(x0);
+        var v: f64 = _pmn_erf(nx0);
+        var nv: f64 = -v;
+        if (bits(u) != bits(nv)) { odd = 0; }
+        x0 = x0 * 1.13;
+    }
+    assert(odd == 1, "erf(-x) = -erf(x) bit for bit, x from 1e-19 to 170");
+    var cmax: f64 = _pmn_erfc(-40.0);
+    var mp: f64 = _PMN_F64_MIN_POSITIVE;
+    var want_cmax: f64 = 2.0 - mp;
+    assert(bits(cmax) == bits(want_cmax) && cmax == 2.0, "erfc(-40) is 2 - MIN_POSITIVE, which rounds to 2");
+    var pt: f64 = _pmn_normal_cdf(-40.0);
+    var st: f64 = _pmn_normal_sf(40.0);
+    assert(bits(pt) == 0 && bits(st) == 0, "Phi(-40) and 1 - Phi(40) underflow to +0");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

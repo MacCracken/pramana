@@ -245,3 +245,35 @@ Both print the outputs' bits, and all five agree. Three rounds, interleaved, pin
 
 The likelihood pays the correctly rounded exp (46 ns, part b1), and the power law 40 correctly rounded logarithms.
 The slice rows are within the sibling ports' median band (4.4–7.7×, port plan §9).
+
+## M2 part a1: erf, erfc, Φ and 1 − Φ, T0 (2026-11-15)
+
+**Bodies.** `tests/special.bcyr` against its twin, `scripts/probes/rust/src/bin/m2_special.rs`, which calls 1.3.0's
+functions through the `oracle` hooks, on glibc's exp. Both use the same xorshift, regions and loop: 4,096 arguments a
+row, cycled 250 times. Each prints its rows' sums as bits, and all ten agree (no argument here is one where glibc's
+exp misrounds). Three rounds, interleaved, pinned to core 5, at a load average of 2.6–2.9 on 16 cores.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| the loop alone, x → x | 1.0–1.2 ns | 4–8 ns | — |
+| `erf`, \|x\| < 0.84375 | 3.6–3.7 ns | 47–48 ns | 13× |
+| `erf`, 0.84375 ≤ x < 1.25 | 5.2–5.3 ns | 55–56 ns | 10.6× |
+| `erf`, 1.25 ≤ x < 6 | 21.3–21.4 ns | 159–161 ns | 7.5× |
+| `erfc`, 0.25 ≤ x < 0.84375 | 4.2 ns | 50 ns | 11.9× |
+| `erfc`, 1.25 ≤ x < 2.857 | 21.0 ns | 157 ns | 7.5× |
+| `erfc`, 2.857 ≤ x < 27 | 21.2–21.3 ns | 154–155 ns | 7.3× |
+| `normal_cdf`, z in [−10, 10) | 19.4–19.5 ns | 145–146 ns | 7.5× |
+| `normal_cdf`, z in [−38, −1.2) | 23.1–23.2 ns | 161–162 ns | 7.0× |
+| `normal_sf`, z in [0, 38) | 22.6–22.8 ns | 158–159 ns | 7.0× |
+
+**Where the time goes:**
+- **The tails** (|x| ≥ 1.25, and Φ beyond |z| ≈ 1.77) call exp twice. The correctly rounded exp is 46–49 ns (part
+  b1), so about 95 ns of each row's 155 is exp, against glibc's few. They sit at 7–7.5×, beside the bridges' exp row
+  (8.5×).
+- **The small rationals** have no exp. They are 10 or 12 Horner steps and a division: about 40 ns of f64 code against
+  Rust's 2.5, once the loop is taken off. That is the compiler's f64 code, a finding outside the port.
+- **Horner steps are written out.** As a three-argument helper, `c + s · acc`, each step is a call: `#inline` declines
+  functions of more than two parameters. Written out, the small rational fell from 65–66 to 47–48 ns, the mid branch
+  from 85–87 to 55–56, and the tails from 184–196 to 151–157. The bits are the same (all 28,290 golden rows at 0 ulp
+  in both forms). The numbers were added to cyrius's open `#inline` issue
+  (`2026-11-11-inline-refuses-small-numeric-helpers.md`).

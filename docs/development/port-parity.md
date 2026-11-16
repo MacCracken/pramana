@@ -2158,3 +2158,84 @@ slots claimed.
 **M1's result.** Eight golden modules: 75,266 rows ok and 106 accepted (76 under ADR 9, 30 under ADR 7). They pass
 on x86_64 ELF, PE (wine) and aarch64 (qemu), warning-free, with identical digests. There are eleven test files and
 nine bench files with their Rust twins. The ledger has 14 rows, all open, with 11 notes in `src/`.
+
+## 8. M2: the special functions
+
+M2 ports 1.3.0's `src/math.rs` into `src/special.cyr` (D3 = C). Part a is T0: Rust's algorithms in Rust's operation
+order on the correctly rounded primitives, at 0 ulp against the `special.cr.tsv` model. Part b is T1: the five
+replacements of plan §3.4, gated against `special.ref.tsv` at ADR 009's bounds. The parts are listed in plan §7.
+
+The golden module is `special`. Its rows keep Rust's names, `math::<fn>`, because `math.tsv` already holds the std
+f64 operations. The functions are crate-private in 1.3.0, recorded through the `oracle` hooks, and private here
+(`_pmn_`), so the surface check doesn't list them.
+
+### 8.1 Part a1: erf, erfc, Φ and 1 − Φ, T0 (2026-11-15)
+
+**The module.** fdlibm's erf and erfc (FreeBSD's `s_erf.c`, as 1.3.0 carries it through the Rust libm crate), and
+`normal_cdf` = ½·erfc(−z/√2) and `normal_sf` = ½·erfc(z/√2):
+- **The branches** read the high word as Rust's `high_word` does: `load64(&x) >> 32`, a logical shift.
+- **The tail** builds z by clearing x's low 32 bits through `store64`, so −z·z is exact. It calls the correctly
+  rounded exp twice, in Rust's order: exp(−z·z − 0.5625) · exp((z − x)(z + x) + R/S) / x.
+- **The coefficients** are `src/constants.cyr`'s generated `_PMN_MATH_FDLIBM_*`, proven against the oracle in M0
+  step 6.
+- **Every polynomial** is Rust's nested Horner form, written out step by step (plan §8.3).
+
+The file carries ledger row L8's note, the scope request that would hand these functions to ganita.
+
+**The golden rows.** A new `special` module, 28,290 rows, all class C (each function calls exp):
+- **`erf` and `erfc`,** 6,246 rows each:
+  - every high word fdlibm branches on (2^-56, 2^-28, 1/4, 0.84375, 1.25, 1/0.35, 6 and 28), with the five doubles
+    on either side and 24 seeded low words in the high word at and below it, both signs;
+  - 200 seeded arguments in each branch's interval, both signs;
+  - tiny (to 10^-320) and wide (to 10^300) log-uniform sweeps;
+  - k/32 on [−30, 30];
+  - the specials.
+- **`normal_cdf` and `normal_sf`,** 7,899 rows each: the erf grid times √2, so that z/√2 lands on or beside each
+  branch point; k/16 on [−40, 40], where Φ underflows below −38.4; and 400 seeded arguments.
+
+The inputs use no transcendental (the golden README's rule). The first grid, with only the five doubles at each
+branch point, missed one mutant: the RA/RB boundary moved by a single high word. The seeded low words are the fix.
+
+**The model.** `validate.py` transcribes the four functions in Python, reads the fdlibm coefficients with its own
+extractor from `rust-old/src`, and re-derives every row through glibc's exp (ctypes). All 28,290 agree. Then it
+re-derives each row with MPFR's exp: 10 rows move, each by 1 ulp, and go into `special.cr.tsv`. They are erfc near
+6.1·10⁻⁶⁴ and 1.4·10⁻¹³⁸, and Φ and 1 − Φ at the same points.
+
+**The result.** Every row matches at 0 ulp: 28,280 against 1.3.0's own bits and the 10 against `special.cr.tsv`.
+This holds on x86_64 ELF, PE (wine) and aarch64 (qemu), warning-free. The replay is nine modules: 103,546 rows ok,
+and 116 accepted (86 under ADR 9, 30 under ADR 7). The digests are identical on all three targets, except the
+native-builtin shadows on aarch64, as by design (§5).
+
+**Mutation checks** (the whole corpus replayed with each change; the unmutated run passes):
+
+| Mutant | Rows failed |
+|---|---|
+| erfc_mid's `(1 − erx) − P/Q` as `1 − (erx + P/Q)` | 838 |
+| z not masked to its high word | 3,664 |
+| the tail's `(e1 · e2) / x` as `e1 · (e2 / x)` | 2,180 |
+| QQ1 in QQ2's place | 4,176 |
+| 1 − Φ by multiplying with 1/√2 rather than dividing by √2 | 2,710 |
+| the RA/RB boundary one high word up | 7 |
+| erfc_mid's end one high word up | 46 |
+| erf's saturation at 0x40170000 | 48 |
+| erfc's saturation at 0x403B0000 | 44 |
+| erfc's 1/4 split at 0x3FD10000 | 6 |
+| erf's tiny branch at 0x3E200000 | 2 |
+
+Three mutants were equivalent, and no replay could catch them:
+- **erfc's 2^-56 branch at 2^-57:** below 2^-54, 1 − x and the small rational both round to 1.
+- **½·e as e·½:** multiplication commutes.
+- **−(z/√2) for (−z)/√2:** negation is exact.
+
+**Tests.** `tests/special.tcyr` has 25 checks:
+- all six of 1.3.0's erf and Φ tests (known values, erf + erfc = 1, glibc's reference values, the specials, the
+  tiny path, Φ's tails);
+- what a class-C replay doesn't pin bit for bit: erf(−0) = −0, a NaN returned with its payload, erf(−x) = −erf(x)
+  over 400 arguments from 10⁻¹⁹ to 170, erfc(−40) = 2 − MIN_POSITIVE, and Φ(−40) = +0.
+
+**Cost** (`tests/special.bcyr` against `m2_special.rs`; the record is `docs/benchmarks-rust-v-cyrius.md`):
+- **the tails:** 7–7.5× Rust, mostly the two correctly rounded exps;
+- **the small rationals:** 10.6–13× Rust, the compiler's f64 code.
+
+Writing the Horner steps out, rather than calling a three-argument helper that `#inline` declines, took 18–38 ns
+off every row.
