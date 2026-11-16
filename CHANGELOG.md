@@ -254,6 +254,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **fixed on the way:** the accurate path's Dekker product overflowed past 2⁹⁹⁶ (NaN, with its sign differing
     between x86 and ARM). It now scales s and t by 2⁻⁵¹² first;
   - **cost:** 51–96 ns a call, 9.4–13.9× glibc.
+- **M1 part b3: a correctly rounded tan** (`src/crmath_ext.cyr`, `_pmn_cr_tan`; port plan D2; ledger L1; results in
+  `docs/development/port-parity.md` §7.4). New, on kimiya's sin and cos:
+  - **the fast path:** one reduction, the fast evaluations of sin|x| and cos|x|, each renormalised exactly, and a
+    double-double quotient with a bound composed from theirs;
+  - **the accurate path:** both in triple-double, a triple-double division, rounded once;
+  - **accuracy:** `tan` is at 0 ulp on all 2,010 golden rows, including the 7 where glibc misrounds. It is correctly
+    rounded on 1,300,000 MPFR rows on three targets, 200,000 of them through the accurate path alone, including
+    ±4 ulps of k·π/2 and Payne–Hanek arguments;
+  - **fixed on the way:** the first version divided kimiya's unnormalised fast pair as if normalised. Its bound was
+    then wrong, and the golden rows caught 1,803 misrounded rows before MPFR ran;
+  - **cost:** 188–190 ns a call, 17.4× glibc, about one sin plus one cos.
 
 ### Changed
 

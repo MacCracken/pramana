@@ -28,8 +28,9 @@
 > committed (`ea7f1a0`): it is correctly rounded, so D3 = C holds without the fallback. So is part 9d-4, the
 > `normal_cdf` prototype on it, within 0.5 ulp (`26f04f2`), and step 10, the upstream requests and the ledger
 > (`aa5df35`): **M0 is complete.** **M1** is in progress: part a (the error codes) and part b1 (kimiya's correctly
-> rounded primitives, vendored) are committed (`1f718c6`); part b2 (a new correctly rounded log1p) is done but not
-> committed. The primitives are verified on 9.0M MPFR rows. The maintainer took each
+> rounded primitives, vendored) are committed (`1f718c6`), and so is part b2, a new correctly rounded log1p
+> (`f08f233`). Part b3, a new correctly rounded tan, is done but not committed. The primitives are verified on 10.3M
+> MPFR rows. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1069,7 +1070,8 @@ Every milestone, and every part of a large one, ends with pravash's gates:
 - **b1:** `src/crmath_data.cyr` and `src/crmath.cyr`, kimiya's correctly rounded exp, expm1, ln, pow, sin, cos and
   atan2 vendored by `scripts/vendor_crmath.py`, verified by `scripts/crverify/` on ≥ 1M MPFR rows each ✅;
 - **b2:** a correctly rounded log1p, new, in `src/crmath_ext.cyr`, on kimiya's ln cores ✅;
-- **b3, b4:** correctly rounded tan and log2, new, one part each, verified the same way;
+- **b3:** a correctly rounded tan, new, on kimiya's sin and cos ✅;
+- **b4:** a correctly rounded log2, new, verified the same way;
 - **c:** `src/mathx.cyr`, the Rust-semantics helpers;
 - **d:** the JSON core, `src/fmtf.cyr` and the `SimpleRng` codec;
 - **e:** the RNG, combinatorics with `PmnU128`, and the bridges;

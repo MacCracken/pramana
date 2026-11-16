@@ -50,3 +50,15 @@ The same bodies, two rows added. Three rounds, interleaved, pinned to core 5, at
 then a TwoSum and a division before ln's core. Inlining the fast path, as kimiya inlines ln's core (about 14 ns there),
 is the first thing to measure if `ln_1p` ever matters. Rust 1.3.0 calls it at 13 sites, in the special functions'
 kernels and four densities.
+
+## M1 part b3: tan (2026-11-15)
+
+The same bodies, one row added. Three rounds, interleaved, pinned to core 5, at a load average of 2.1–3.2.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `tan`, x ∈ [−10, 10) | 10.8–10.9 ns | 188–190 ns | 17.4× |
+
+**Finding.** `tan` costs about one `sin` plus one `cos` (95–96 and 88 ns in the same rounds). It evaluates both on
+one reduction, then divides in double-double. kimiya's joint sin-and-cos evaluation shares the table lookups and is
+the candidate to measure if `tan` ever matters; Rust 1.3.0 calls it once, in the Cauchy sampler.

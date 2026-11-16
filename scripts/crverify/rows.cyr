@@ -172,6 +172,18 @@ fn cv_log1p_acc(set: cstring, x: f64): i64 {
     return 0;
 }
 
+fn cv_tan(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_cr_tan(x);
+    cv_row1("tan", set, x, r);
+    return 0;
+}
+
+fn cv_tan_acc(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_cr_tan_acc(x);
+    cv_row1("tan", set, x, r);
+    return 0;
+}
+
 fn cv_atan(set: cstring, x: f64): i64 {
     var r: f64 = _pmn_km_cr_atan2(x, 1.0);
     cv_row1("atan", set, x, r);
@@ -402,9 +414,60 @@ fn rows_log1p(): i64 {
     return 0;
 }
 
+# tan (M1 part b3): 1,100,000 through the whole function, and 200,000 through the accurate path alone.
+fn rows_tan(): i64 {
+    var i = 0;
+    while (i < 300000) { cv_tan("small", cv_range(-10.0, 10.0)); i = i + 1; }
+    i = 0;
+    while (i < 100000) { cv_tan("mid", cv_range(-1000000.0, 1000000.0)); i = i + 1; }
+    i = 0;
+    while (i < 200000) { cv_tan("big", cv_scale(20, 1023, 1)); i = i + 1; }
+    i = 0;
+    while (i < 150000) { cv_tan("tiny", cv_scale(0 - 1074, 0 - 1, 1)); i = i + 1; }
+    # ±4 ulps of k·π/2: odd k, where tan is huge, and even k, where it is near 0
+    var pio2: f64 = 1.5707963267948966;
+    i = 0;
+    while (i < 200000) {
+        var k = (cv_word() >> 1) % 200001 - 100000;
+        if (k == 0) { k = 1; }
+        var kf: f64 = f64_from(k);
+        var x: f64 = kf * pio2;
+        cv_tan("halfpi", cv_near(x, 4));
+        i = i + 1;
+    }
+    var k27: f64 = 0x3E40000000000000;           # 2^-27, the switch to x
+    var w: f64 = 0x3EB0000000000000;             # 2^-20
+    i = 0;
+    while (i < 50000) {
+        var j: f64 = cv_range(-1.0, 1.0);
+        var d: f64 = j * w;
+        var o: f64 = 1.0 + d;
+        var xe: f64 = k27 * o;
+        if ((cv_word() & 1) == 1) { xe = -xe; }
+        cv_tan("edges", xe);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) { cv_tan("bits", cv_anybits()); i = i + 1; }
+    i = 0;
+    while (i < 50000) {
+        cv_tan_acc("acc_small", cv_range(-10.0, 10.0));
+        var k2 = (cv_word() >> 1) % 200001 - 100000;
+        if (k2 == 0) { k2 = 1; }
+        var k2f: f64 = f64_from(k2);
+        var x2: f64 = k2f * pio2;
+        cv_tan_acc("acc_halfpi", cv_near(x2, 4));
+        cv_tan_acc("acc_big", cv_scale(20, 1023, 1));
+        cv_tan_acc("acc_bits", cv_anybits());
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn main(): i64 {
     alloc_init();
     g_out = str_builder_new();
+    rows_tan();
     rows_log1p();
     rows_exp();
     rows_ln();

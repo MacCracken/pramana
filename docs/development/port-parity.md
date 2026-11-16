@@ -1360,3 +1360,49 @@ and (1, 1000).
 The general path costs about 40 ns more than ln (54–55 ns). It makes a separate fast-path call with a two-value
 return, and does a TwoSum and a division; kimiya inlines ln's core for the same reason. That is a finding for later,
 not a change now.
+
+### 7.4 Part b3: a correctly rounded tan (2026-11-15)
+
+**What it is.** `_pmn_cr_tan` in `src/crmath_ext.cyr`, on kimiya's sin and cos. Reducing |x| = k·π/2 + r makes
+sin|x| and cos|x| its ±sin r and ±cos r for quadrants k and k + 1, and tan x = sgn(x)·sin|x|/cos|x|.
+- **|x| < 2⁻²⁷:** x itself (tan x − x < |x|³/3, below half an ulp).
+- **The fast path:** one reduction (Cody–Waite below 2²⁰, Payne–Hanek above, as kimiya's sin). kimiya's fast
+  evaluation then runs twice, giving S and C with their absolute bounds, and each is renormalised exactly. S/C is
+  a double-double quotient, with the bound (e_S + |q|·e_C)/(|c_h| − |c_l| − e_C), widened by 2⁻⁴⁰, plus 2⁻⁹⁸·|q|
+  for the division. Next to a multiple of π/2, the reduction's 2⁻¹¹⁹·|k| is large against the small one of sin r
+  and cos r, so the test fails and the accurate path takes over.
+- **The accurate path:** kimiya's accurate reduction and evaluation give sin|x| and cos|x| together in
+  triple-double (below 2⁻¹³⁸ relative at worst), then `_pmn_km_td_div` (below 2⁻¹⁵¹), rounded once. No double is
+  within 2⁻⁶¹ of a multiple of π/2, so |tan x| < 2⁶³.
+
+**A defect the golden rows found first.** kimiya's fast evaluation returns hi + lo with hi only a partial sum, and
+lo up to 2⁻²⁷ of the value. The first double-double division assumed a normalised pair, so its dropped term was ulps,
+not 2⁻¹⁰⁶. The fast path passed its test with wrong values on 1,803 of 2,010 rows: tan(1) was 7 ulp off. An exact
+Fast2Sum on each pair before dividing fixed it. That bound must hold for the result to be correctly rounded, and the
+MPFR rows below check it.
+
+**The golden rows.** `tan` is dispatched to it with its bound at 0: all 2,010 rows at 0 ulp, the 7 where glibc
+misrounds included. The digest is the same on x86_64 ELF, PE and aarch64.
+
+**Against MPFR** (`scripts/crverify/`, now 10,300,000 rows):
+
+| Set | Rows | Max ulp | Not CR |
+|---|---|---|---|
+| (−10, 10) | 300,000 | 0.5 | 0 |
+| (−10⁶, 10⁶) | 100,000 | 0.5 | 0 |
+| 2²⁰ … 2¹⁰²³, both signs (Payne–Hanek) | 200,000 | 0.5 | 0 |
+| \|x\| from 2⁻¹⁰⁷⁴ to ½ | 150,000 | 0.5 | 0 |
+| ±4 ulps of k·π/2 for 0 < \|k\| ≤ 10⁵ (tan huge for odd k, near 0 for even) | 200,000 | 0.5 | 0 |
+| within 2⁻²⁰ of ±2⁻²⁷, the switch | 50,000 | 0.17 | 0 |
+| any bits (±∞ gives NaN, checked) | 100,000 | 0.5 | 0 |
+| the accurate path alone: (−10, 10), ±4 ulps of k·π/2, 2²⁰ … 2¹⁰²³, any bits | 200,000 | 0.5 | 0 |
+
+The rows are byte-identical on the three targets, sha256 `99ae1269…`. The fast path declines on 278, 261 and 292 of
+2,000,000 arguments in (−10, 10), (1.5, 1.64) (next to π/2) and (10⁶, 10⁷): about 1.4·10⁻⁴, near kimiya's sin and cos
+(0.7–0.9·10⁻⁴).
+
+**Cost** (`tests/crmath.bcyr` and its Rust twin, pinned, three interleaved rounds): `tan`, x ∈ [−10, 10), takes
+188–190 ns against Rust's 10.8–10.9 ns, 17.4×. That is about one sin plus one cos (95–96 and 88 ns in the same
+rounds): two evaluations of the shared reduction, then the division. kimiya's joint sin-and-cos evaluation, which
+shares the table lookups, is the candidate to measure if `tan` ever matters; Rust 1.3.0 calls it once, in the Cauchy
+sampler.

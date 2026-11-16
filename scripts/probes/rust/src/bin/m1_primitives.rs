@@ -57,4 +57,6 @@ fn main() {
     row("ln_1p, x in [-0.5, 1)", &xs, &ys, |x, _| x.ln_1p());
     r.fill(&mut xs, -0.0009765625, 0.0009765625);
     row("ln_1p, x in [-1/1024, 1/1024)", &xs, &ys, |x, _| x.ln_1p());
+    r.fill(&mut xs, -10.0, 10.0);
+    row("tan, x in [-10, 10)", &xs, &ys, |x, _| x.tan());
 }

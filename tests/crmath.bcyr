@@ -35,7 +35,7 @@ fn fill(buf, lo: f64, hi: f64): i64 {
     return 0;
 }
 
-# `which`: 0 exp, 1 ln, 2 exp_m1, 3 powf, 4 sin, 5 cos, 6 atan, 7 ln_1p.
+# `which`: 0 exp, 1 ln, 2 exp_m1, 3 powf, 4 sin, 5 cos, 6 atan, 7 ln_1p, 8 tan.
 fn row(name: cstring, which): i64 {
     var s: f64 = 0.0;
     var b = bench_new(name);
@@ -57,6 +57,7 @@ fn row(name: cstring, which): i64 {
             if (which == 5) { r = _pmn_km_cr_cos(x); }
             if (which == 6) { r = _pmn_km_cr_atan2(x, 1.0); }
             if (which == 7) { r = _pmn_cr_log1p(x); }
+            if (which == 8) { r = _pmn_cr_tan(x); }
             s = s + r;
             i = i + 1;
         }
@@ -89,6 +90,8 @@ fn main(): i64 {
     row("ln_1p, x in [-0.5, 1)", 7);
     fill(g_xs, -0.0009765625, 0.0009765625);
     row("ln_1p, x in [-1/1024, 1/1024)", 7);
+    fill(g_xs, -10.0, 10.0);
+    row("tan, x in [-10, 10)", 8);
     return 0;
 }
 

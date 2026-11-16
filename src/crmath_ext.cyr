@@ -183,3 +183,129 @@ fn _pmn_cr_log1p(x: f64): f64 {
     var a: f64 = _pmn_cr_log1p_acc(x);
     return a;
 }
+
+# ── tan (M1 part b3) ──────────────────────────────────────────────────────────────────────────────
+#
+# tan x = sgn(x)·tan|x|, and tan|x| = sin|x| / cos|x| on kimiya's sin and cos: |x| = k·π/2 + r with |r| ≤ π/4 + 2^-30,
+# so sin|x| and cos|x| are its ±sin r and ±cos r for quadrants k and k + 1 (kimiya's src/crmath.cyr analysis).
+# - |x| < 2^-27: tan x rounds to x (0 < |tan x| − |x| < |x|³/3·(1 + x²) < 2^-54·|x|, below the distance from x to the
+#   midpoint above it; subnormals and ±0 included). tan is transcendental at every algebraic x ≠ 0, so nothing
+#   else is exact or a tie. NaN gives that NaN, ±∞ the quiet NaN. No double is within 2^-61 of a multiple of π/2
+#   (Lefèvre and Muller), so |cos x| > 2^-62 and |tan x| < 2^63: never infinite.
+# - Fast path: one reduction (Cody–Waite below 2^20, Payne–Hanek above, as kimiya's sin), then kimiya's fast
+#   evaluation twice, S = sh + sl for sin|x| and C = ch + cl for cos|x|, each with its absolute bound (es, ec), and
+#   each renormalised by an exact Fast2Sum (the evaluation's hi is only a partial sum). Then T = S/C as a
+#   double-double: qh = RN(sh/ch), and ql from the exact remainder sh − qh·ch (TwoProduct, Sterbenz)
+#   corrected by sl and qh·cl, over ch. The bound: |S/C − s/c| ≤ (es + |s/c|·ec)/|C|, with |C| ≥ |ch| − |cl| − ec
+#   and |s/c| ≤ |qh|·(1 + 2^-50), widened by 2^-40; the double-double division adds below 2^-102·|q| (the remainder's
+#   three roundings, ql's own, and the dropped ql·cl/ch), taken as 2^-98·|qh|. Relative to tan, the bound is about
+#   2^-66 when r is not small. Near a multiple of π/2 the reduction's absolute error (2^-119·|k|) is large against
+#   the small one of sin r or cos r, the test fails, and the accurate path takes it.
+# - Accurate path: kimiya's accurate reduction and evaluation give sin|x| and cos|x| together in triple-double
+#   (below 2^-148 relative when |r| ≥ 2^-10, 2^-138 at worst, from the reduction), divided in triple-double (below
+#   2^-151) and rounded once: below 2^-137 relative, 20 bits past the hardest case expected over 2^64 arguments,
+#   about 2^-(53 + 64), as kimiya argues for sin and cos outside Lefèvre and Muller's tables.
+
+# The special values, and |x| < 2^-27: (result, 1), or (0, 0) for a finite |x| ≥ 2^-27.
+#must_use
+fn _pmn_tan_special(x: f64): (f64, i64) {
+    var ax = load64(&x) & 0x7FFFFFFFFFFFFFFF;
+    if (ax < 0x3E40000000000000) { return (x, 1); }    # |x| < 2^-27
+    if (ax >= 0x7FF0000000000000) {
+        if (ax > 0x7FF0000000000000) { return (x, 1); }
+        var nan: f64 = _pmn_km_nan();                   # the same quiet NaN on every target
+        return (nan, 1);
+    }
+    return (0.0, 0);
+}
+
+# tan(x) by the fast path: (RN(tan x), 1), or (0, 0) when the rounding test fails.
+#must_use
+fn _pmn_cr_tan_fast(x: f64): (f64, i64) {
+    var sv, sp = _pmn_tan_special(x);
+    if (sp == 1) { return (sv, 1); }
+    var ux = load64(&x);
+    var ax = ux & 0x7FFFFFFFFFFFFFFF;
+    var k = 0;
+    var rh: f64 = 0.0;
+    var rl: f64 = 0.0;
+    var dr: f64 = 0.0;
+    if (ax >= 0x4130000000000000) {                     # |x| ≥ 2^20: Payne–Hanek, whose r is good to 2^-233
+        var rb: f64[3];
+        k = _pmn_km_ph_reduce(ax, &rb);
+        rh = rb[0];
+        rl = rb[1];
+    } else {                                            # kimiya's Cody–Waite reduction, as _pmn_km_cr_sin's
+        var a: f64 = ax;
+        var inv: f64 = _PMN_KM_CR_SC_INVPIO2;
+        var p1: f64 = _PMN_KM_CR_SC_P1;
+        var p2: f64 = _PMN_KM_CR_SC_P2;
+        var p3: f64 = _PMN_KM_CR_SC_P3;
+        var tt: f64 = (a * inv) + 6755399441055744.0;
+        var kd: f64 = tt - 6755399441055744.0;
+        k = load64(&tt) - 0x4338000000000000;
+        var d1: f64 = a - (kd * p1);
+        var q2: f64 = kd * p2;
+        var nq2: f64 = -q2;
+        var s: f64 = d1 + nq2;
+        var bb: f64 = s - d1;
+        var e: f64 = (d1 - (s - bb)) + (nq2 - bb);
+        var w: f64 = e - (kd * p3);
+        rh = s + w;
+        rl = w - (rh - s);
+        var k119: f64 = 0x3880000000000000;             # 2^-119
+        dr = kd * k119;
+    }
+    var sh0, sl0, es = _pmn_km_sc_eval(k & 3, rh, rl, dr);
+    var ch0, cl0, ec = _pmn_km_sc_eval((k + 1) & 3, rh, rl, dr);
+    # The evaluation's hi is a partial sum (lo carries up to 2^-27 of the value), so renormalise both, exactly,
+    # before dividing: the division's bound needs |cl| ≤ 2^-53·|ch|.
+    var sh, sl = _pmn_km_fast_two_sum(sh0, sl0);
+    var ch, cl = _pmn_km_fast_two_sum(ch0, cl0);
+    var qh: f64 = sh / ch;
+    var p, pe = _pmn_km_two_prod(qh, ch);
+    var rem: f64 = (((sh - p) - pe) + sl) - (qh * cl);
+    var ql: f64 = rem / ch;
+    var ach: f64 = f64_abs(ch);
+    var acl: f64 = f64_abs(cl);
+    var den: f64 = ach - (acl + ec);
+    if (den <= 0.0) { return (0.0, 0); }
+    var aq: f64 = f64_abs(qh);
+    var num: f64 = es + (aq * ec);
+    var e1: f64 = num / den;
+    var w40: f64 = 0x3FF0000000001000;                  # 1 + 2^-40
+    var k98: f64 = 0x39D0000000000000;                  # 2^-98
+    var err: f64 = (e1 * w40) + (aq * k98);
+    var u: f64 = qh + (ql - err);
+    var v: f64 = qh + (ql + err);
+    if (u != v) { return (0.0, 0); }
+    if (ux < 0) { u = -u; }
+    return (u, 1);
+}
+
+# tan(x), correctly rounded, by the accurate path alone (also the fast path's fallback).
+#must_use
+fn _pmn_cr_tan_acc(x: f64): f64 {
+    var sv, sp = _pmn_tan_special(x);
+    if (sp == 1) { return sv; }
+    var ux = load64(&x);
+    var ax = ux & 0x7FFFFFFFFFFFFFFF;
+    var rb: f64[3];
+    var k = _pmn_km_sc_reduce_acc(ax, &rb);
+    var ob: f64[6];
+    _pmn_km_sc_acc_td(k & 3, rb[0], rb[1], rb[2], 1, &ob);   # sin|x| at ob[0..2], cos|x| at ob[3..5]
+    var qb: f64[3];
+    _pmn_km_td_div(ob[0], ob[1], ob[2], ob[3], ob[4], ob[5], &qb);
+    var r: f64 = _pmn_km_rn3(qb[0], qb[1], qb[2]);
+    if (ux < 0) { r = -r; }
+    return r;
+}
+
+# tan(x), correctly rounded. tan(±0) = ±0 (as every |x| < 2^-27: x), NaN for NaN and ±∞. Mirrors `f64::tan`.
+#must_use
+fn _pmn_cr_tan(x: f64): f64 {
+    var r, ok = _pmn_cr_tan_fast(x);
+    if (ok == 1) { return r; }
+    var a: f64 = _pmn_cr_tan_acc(x);
+    return a;
+}
