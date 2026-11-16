@@ -416,6 +416,11 @@ fn _par_json_write(fp, fl): i64 {
             if (e == PMN_ERR_NONE) { e = _par_jw(load64(&codes + g * 8)); }
         }
         if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+    } elif (_par_eq(fp, fl, "json::write::SimpleRng") == 1) {
+        var g: PmnSimpleRng;
+        if (PmnSimpleRng_new(&g, _par_in(0)) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 1;
+        e = g.to_json(sb);
     } elif (_par_eq(fp, fl, "json::write::PramanaError") == 1) {
         var en[40];
         store64(&en, "InvalidParameter");
@@ -458,6 +463,21 @@ fn _par_json_err_code(): i64 {
     return 1;
 }
 
+# json::SimpleRng rows: PmnSimpleRng_from_json, the state it holds.
+fn _par_json_simple_rng(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var g: PmnSimpleRng;
+    var e = PmnSimpleRng_from_json(&g, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_i(g.state);
+    return 1;
+}
+
 fn _par_json_value(fp, fl, root): i64 {
     if (_par_eq(fp, fl, "json::Pair") == 1) { return _par_json_pair(root); }
     if (_par_eq(fp, fl, "json::Shapes") == 1) { return _par_json_shapes(root); }
@@ -471,6 +491,7 @@ fn _par_json_value(fp, fl, root): i64 {
 fn _par_json(fp, fl): i64 {
     if (fl > 13 && memeq(fp, "json::write::", 13) == 1) { return _par_json_write(fp, fl); }
     if (_par_eq(fp, fl, "json::PramanaError::code") == 1) { return _par_json_err_code(); }
+    if (_par_eq(fp, fl, "json::SimpleRng") == 1) { return _par_json_simple_rng(); }
     if (_par_in_n != 1) { return 0 - 1; }
     if (_par_json_doc == 0) {
         _par_json_doc = alloc(_PMN_JSON_DOC_SIZE);
@@ -493,6 +514,38 @@ fn _par_json(fp, fl): i64 {
         _par_got_err(e);
     }
     return r;
+}
+
+# `rng` rows (M1 part e1): 1.3.0's SimpleRng through src/rng.cyr. Each draw goes through a bounded generic, as every
+# pramana API that takes Rust's `&mut impl Rng` does (D7, amended).
+fn _par_draw<R: PmnRng>(g: *R): f64 {
+    var r: f64 = g.next_f64();
+    return r;
+}
+
+fn _par_rng(fp, fl): i64 {
+    if (_par_in_n != 2) { return 0 - 1; }
+    var g: PmnSimpleRng;
+    if (PmnSimpleRng_new(&g, _par_in(0)) != PMN_ERR_NONE) { return 0 - 1; }
+    var n = _par_in(1);
+    if (_par_eq(fp, fl, "SimpleRng::next_f64") == 1) {
+        _par_got_seq(n);
+        for (var k = 0; k < n; k = k + 1) {
+            var x: f64 = _par_draw(&g);
+            _par_got_f(x);
+        }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "SimpleRng::digest") == 1) {
+        var h = 0xCBF29CE484222325;
+        for (var j = 0; j < n; j = j + 1) {
+            var y: f64 = _par_draw(&g);
+            h = (h ^ load64(&y)) * 0x100000001B3;
+        }
+        _par_got_i(h);
+        return 1;
+    }
+    return 0;
 }
 
 # `f64::*` and `u64::*` rows: the Rust std reference values (port plan §8.1), every one through src/mathx.cyr, the
@@ -551,6 +604,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "fmt") == 1) { return _par_fmt(fp, fl); }
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
+    if (_par_eq(mp, ml, "rng") == 1) { return _par_rng(fp, fl); }
     return 0;
 }
 

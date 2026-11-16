@@ -378,6 +378,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** writing 100 f64s takes 291 µs against serde_json's 1.9 µs, fmtf's exact printer (ledger L10). A `Normal`
     takes 1.2 µs (19×), a string 0.7 µs (22×), an error code 0.22 µs (13×).
 
+- **M1 part e1: the RNG and its codec** (`src/rng.cyr`; port plan D7 as amended, ADR 007 row 6; results in
+  `docs/development/port-parity.md` §7.12):
+  - **the trait and the generator:** `PmnRng`, Rust's `Rng`, which a consumer implements to bring their own
+    generator, and `PmnSimpleRng`, 1.3.0's xorshift64. `PmnSimpleRng_new(out, seed)` maps a seed of 0 to 1;
+  - **its JSON codec:** `g.to_json(sb)` and `PmnSimpleRng_from_json(out, buf, len)`. A saved state of 0 reads as 1,
+    as 1.3.0's repr does;
+  - **a golden `rng` module:** 40 seeds × 256 draws, and 10⁶-draw digests from six seeds, re-drawn independently by
+    `validate.py`. There are also 190 serde_json codec rows, 10 of them ADR 007 row 16 mappings. All match on x86_64,
+    PE and aarch64, drawn through a bounded generic as pramana's APIs draw;
+  - **tests:** `tests/rng.tcyr` has 26 checks, among them a consumer's own generator through the trait, and a
+    stream saved and resumed bit for bit;
+  - **cost:** 7 ns a draw direct and 10 ns through the generic, against 1.7 ns for Rust's inlined draw
+    (`tests/rng.bcyr` and its twin, the same stream).
+
 ### Performance
 
 - **The pool's release** is a compare-and-swap rather than kimiya's full fence and plain store: a claim and its release

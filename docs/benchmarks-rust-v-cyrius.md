@@ -190,3 +190,17 @@ The same rounds re-ran the read rows within 6% of their record (Vec<f64> 62.0–
 
 **Finding.** Writing f64s costs what part d1 measured for `fmtf.cyr`'s exact printer, about 2.9 µs a value here,
 which the printer ledger L10 asks for would replace. The other rows are call overhead around the stdlib writers.
+
+## M1 part e1: the RNG (2026-11-15)
+
+**Bodies.** `tests/rng.bcyr` draws 10⁶ times from `PmnSimpleRng` seeded 42, first by a direct method call, then
+through a bounded generic `<R: PmnRng>`. The twin's `rng` rows draw the same stream from 1.3.0's `SimpleRng`. Both
+print the 10⁶th draw, `0x3fe327c85d8ff932`. Three rounds, interleaved, pinned to core 5, at a load average of 1.7.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `next_f64`, a direct call | 1.71–1.84 ns | 7 ns | 4× |
+| `next_f64`, through a bounded generic | 1.70–1.72 ns | 10 ns | 6× |
+
+Rust inlines the draw in both forms. Cyrius calls it, and the generic adds a call (P2's 2–3 ns). Sampling-heavy code
+draws in loops, so this is the cost to watch in M3's samplers and M6's MCMC.

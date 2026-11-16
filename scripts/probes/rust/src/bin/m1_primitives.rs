@@ -1,4 +1,4 @@
-//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr, tests/pool.bcyr and tests/json.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
+//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr, tests/pool.bcyr, tests/json.bcyr and tests/rng.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
 //! arguments, regions and loop: 4,096 values per row, cycled 250 times, ns per call. Run pinned, interleaved with
 //! `cyrius bench tests/crmath.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m1_primitives
@@ -197,7 +197,40 @@ fn write_row(name: &str, f: impl Fn(&mut Vec<u8>) -> serde_json::Result<()>) {
     println!("  {name}: {ns:.1} ns");
 }
 
+// tests/rng.bcyr's counterpart: SimpleRng's draws from seed 42, direct and through a generic `R: Rng`.
+fn draw<R: pramana::Rng>(r: &mut R) -> f64 {
+    r.next_f64()
+}
+
+fn rng() {
+    use pramana::Rng as _;
+    let mut g = pramana::SimpleRng::new(42);
+    let mut s = 0.0;
+    let mut last = 0.0;
+    let t0 = Instant::now();
+    for _ in 0..1_000_000 {
+        last = black_box(&mut g).next_f64();
+        s += last;
+    }
+    let ns = t0.elapsed().as_nanos() as f64 / 1_000_000.0;
+    println!("  the 10^6th draw: 0x{:x}", last.to_bits());
+    println!("  next_f64, a direct call: {ns:.2} ns");
+    let mut g = pramana::SimpleRng::new(42);
+    let t0 = Instant::now();
+    for _ in 0..1_000_000 {
+        last = draw(black_box(&mut g));
+        s += last;
+    }
+    let ns = t0.elapsed().as_nanos() as f64 / 1_000_000.0;
+    println!("  next_f64, through <R: Rng>: {ns:.2} ns");
+    black_box(s);
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("rng") {
+        rng();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("json") {
         json();
         return;

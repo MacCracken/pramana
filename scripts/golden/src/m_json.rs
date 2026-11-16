@@ -7,7 +7,8 @@
 //! - the two enum forms (d3b), on 1.3.0's own enums: `Kernel` (unit variants) and `PramanaError` (newtype variants
 //!   holding a String);
 //! - the error codec's reading (d4, `json::PramanaError::code`): the variant alone, the message dropped (ADR 007
-//!   row 8).
+//!   row 8);
+//! - 1.3.0's `SimpleRng` (e1), read through its repr and `new`, so a state of 0 reads as 1.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -41,7 +42,7 @@
 
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
-use pramana::PramanaError;
+use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
 use serde::{Deserialize, Serialize};
 
@@ -587,7 +588,38 @@ pub fn emit() -> Module {
     structs(&mut m, &mut g, &numbers, &strings);
     enums(&mut m, &strings);
     writes(&mut m, &mut g);
+    simple_rng(&mut m, &mut g);
     m
+}
+
+// ── e1: SimpleRng's codec ──
+
+/// The state a SimpleRng holds, read through its serde form (the field is private).
+#[allow(clippy::cast_possible_wrap)]
+fn rng_state(r: &SimpleRng) -> Tok {
+    i(serde_json::to_value(r).expect("a SimpleRng")["state"].as_u64().expect("a u64 state") as i64)
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn simple_rng(m: &mut Module, g: &mut Rng) {
+    let ints = bytes(&[
+        "0", "1", "-1", "-0", "1.0", "1e3", "9223372036854775807", "9223372036854775808", "18446744073709551615",
+        "18446744073709551616", "\"1\"", "true", "[]", "[1]",
+    ]);
+    let base = serde_json::to_value(SimpleRng::new(42)).expect("a SimpleRng");
+    let mut docs = struct_docs(&base, &["state"], &[ints]);
+    let mut seeds: Vec<u64> = vec![0, 1, 1 << 63, u64::MAX];
+    seeds.extend((0..60).map(|k| g.word() >> (k % 64)));
+    for &w in &seeds {
+        docs.push(format!("{{\"state\":{w}}}").into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::SimpleRng", d, serde_json::from_slice::<SimpleRng>(d), |r| vec![rng_state(r)]);
+    }
+    for &w in &seeds {
+        let r = SimpleRng::new(w);
+        m.row("json::write::SimpleRng", Class::A, &[i(w as i64)], &[text(&r)]);
+    }
 }
 
 // ── d3b: serde derive's struct rules and the two enum forms ──

@@ -75,6 +75,9 @@ files. This README records what is specific to pramana.
     value's tokens in and serde_json's text out. `PramanaError`'s variants are written with an empty message, as
     pramana writes a code (ADR 007 row 8, amended). `validate.py` re-writes each with its own model of serde_json's
     writing: the escape table, the f64 text model it checks `fmt.tsv` with, and the struct and enum forms.
+- **`rng.tsv`** (M1 part e1, `src/m_rng.rs`): 1.3.0's `SimpleRng`: the first 256 draws from 40 seeds, and 10⁶-draw
+  FNV-1a digests from six. `validate.py` re-draws each with its own xorshift. `json.tsv` gains SimpleRng's codec
+  rows in the same part.
 - **`json.map.tsv`** (ADR 007 row 16), written by `validate.py --write-cr`. These are the rows serde_json reads only
   by skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
   surrogate. `validate.py` finds them with its own model of bayan's three whole-document refusals. They map to
@@ -107,7 +110,8 @@ files. This README records what is specific to pramana.
 | `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
 | `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
-| `json` | M1 d3a, d3b, d4 | 6,209 | `src/m_json.rs` | `json.map.tsv`, 20 rows (ADR 007 row 16) |
+| `json` | M1 d3a–d4, e1 | 6,399 | `src/m_json.rs` | `json.map.tsv`, 30 rows (ADR 007 row 16) |
+| `rng` | M1 e1 | 46 | `src/m_rng.rs` | — |
 
 ## Format 1
 

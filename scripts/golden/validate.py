@@ -751,6 +751,9 @@ class SerdeModel:
             raise SerdeRefusal("invalid type")
         if ty == "String":
             return ["s:" + pct_bytes(self.string())]
+        if ty == "SimpleRng":
+            state = self.struct([("state", "u64")])[0]   # SimpleRngRepr, then SimpleRng::new: 0 becomes 1
+            return [1 if state == 0 else state]
         if ty in JSON_STRUCTS:
             return self.struct(JSON_STRUCTS[ty])
         if ty in JSON_ENUMS:
@@ -911,6 +914,9 @@ def serde_write(ty: str, toks) -> bytes:
         return b"true" if next(toks) else b"false"
     if ty == "String":
         return serde_escape(urllib.parse.unquote_to_bytes(next(toks)[len("s:"):]))
+    if ty == "SimpleRng":
+        seed = next(toks) % (1 << 64)
+        return b'{"state":' + str(seed if seed != 0 else 1).encode() + b"}"
     if ty in JSON_STRUCTS:
         return b"{" + b",".join(b'"' + name.encode() + b'":' + serde_write(t, toks)
                                 for name, t in JSON_STRUCTS[ty]) + b"}"
@@ -980,6 +986,43 @@ def render_map(module, provenance, rows):
         f"# rows: {len(rows)}",
     ]
     return "\n".join(head + rows) + "\n"
+
+
+# ── rng: 1.3.0's SimpleRng, xorshift64 (13, 7, 17), modelled in Python ──
+
+MASK64 = (1 << 64) - 1
+
+
+def xorshift_draws(seed, n):
+    """The bits of SimpleRng::new(seed)'s first n draws: each step, then (x >> 11) / 2^53."""
+    x = seed or 1
+    for _ in range(n):
+        x ^= (x << 13) & MASK64
+        x ^= x >> 7
+        x ^= (x << 17) & MASK64
+        yield bits((x >> 11) / 9007199254740992.0)
+
+
+def check_rng(rows):
+    failures, by_fn = [], {}
+    for fn, _cls, ins, outs, _raw in rows:
+        seed, n = ins[0] % (1 << 64), ins[1]
+        if fn == "SimpleRng::next_f64":
+            want = [f"v:{n}"] + [from_bits(b) for b in xorshift_draws(seed, n)]
+        elif fn == "SimpleRng::digest":
+            h = 0xCBF29CE484222325
+            for b in xorshift_draws(seed, n):
+                h = ((h ^ b) * 0x100000001B3) & MASK64
+            want = [h - (1 << 64) if h >= 1 << 63 else h]
+        else:
+            failures.append(f"rng: no rule for {fn}")
+            continue
+        ok = len(outs) == len(want) and all(same(g, w) if isinstance(w, float) else g == w for g, w in zip(outs, want))
+        stat = by_fn.setdefault(fn, [0, 0])
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"rng: {fn}({seed}, {n}) differs from the model")
+    return failures, by_fn
 
 
 def check_math(rows):
@@ -1073,6 +1116,12 @@ def main(argv):
                 failures.append(f"{map_path.name} differs from what the bayan model gives")
             else:
                 print(f"  {map_path.name}: {len(mapped)} rows, as the bayan model gives")
+        if module == "rng":
+            f, by_fn = check_rng(rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
         if module == "math":
             f, by_fn = check_math(rows)
             failures.extend(f)

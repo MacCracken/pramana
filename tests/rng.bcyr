@@ -1,0 +1,46 @@
+# rng.bcyr — 1.3.0's SimpleRng (M1 part e1): ns per draw, 10^6 draws per row, from seed 42.
+#
+# Two call forms: a direct method call, and a call through a bounded generic `<R: PmnRng>`, the form every pramana
+# API that took Rust's `&mut impl Rng` uses (D7, amended). The Rust twin (scripts/probes/rust/src/bin/m1_primitives.rs,
+# its `rng` rows) draws the same stream both ways; each side prints the 10^6th draw's bits. The record is
+# docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+fn draw<R: PmnRng>(g: *R): f64 {
+    var r: f64 = g.next_f64();
+    return r;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var g: PmnSimpleRng;
+    PmnSimpleRng_new(&g, 42);
+    var s: f64 = 0.0;
+    var last: f64 = 0.0;
+    var b = bench_new("next_f64, a direct call");
+    bench_batch_start(b);
+    for (var i = 0; i < 1000000; i = i + 1) {
+        last = g.next_f64();
+        s = s + last;
+    }
+    bench_batch_stop(b, 1000000);
+    print("  the 10^6th draw: ", 19);
+    fmt_hex(load64(&last));
+    println("");
+    bench_report(b);
+    PmnSimpleRng_new(&g, 42);
+    var b2 = bench_new("next_f64, through <R: PmnRng>");
+    bench_batch_start(b2);
+    for (var j = 0; j < 1000000; j = j + 1) {
+        last = draw(&g);
+        s = s + last;
+    }
+    bench_batch_stop(b2, 1000000);
+    bench_report(b2);
+    if (s != s) { println("sink"); }
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

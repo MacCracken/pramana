@@ -33,8 +33,9 @@
 > (`0c3f469`), so every class-C math row is at 0 ulp and the primitives are verified on 11.6M MPFR rows; and part
 > c, the Rust f64 surface (`d13fb61`), so the whole golden corpus is gated. Part d1, serde_json's f64 text, is
 > committed (`d34db7c`), and so is part d2, the work-table pool (`c302838`), and part d3a, the JSON read core's
-> value readers (`c61f76b`), and part d3b, serde's struct rules and the two enum forms (`18c4e70`). Part d4, the JSON
-> write core and the error codec, is done but not committed. The maintainer took each
+> value readers (`c61f76b`), part d3b, serde's struct rules and the two enum forms (`18c4e70`), and part d4, the JSON
+> write core and the error codec (`daf9084`). Part e1, the RNG and its codec, is done but not committed. The
+> maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1091,7 +1092,11 @@ Every milestone, and every part of a large one, ends with pravash's gates:
 - **d4:** the JSON write core (serde_json's compact text for every shape, byte for byte against 1,382 serde_json
   writes) and the error codec, `pmn_err_to_json` and `pmn_err_from_json` (ADR 007 row 8, amended: an empty message
   written, the Cyrius-only codes refused) ✅;
-- **e:** the RNG with its `SimpleRng` codec, combinatorics with `PmnU128`, and the bridges;
+- **e1:** `src/rng.cyr`: the `PmnRng` trait, `PmnSimpleRng` and its JSON codec (a zero state reads as 1), against
+  1.3.0's own streams (40 seeds × 256 draws, and 10⁶-draw digests from six seeds) and 190 serde_json codec rows ✅;
+- **e2:** `src/combinatorics.cyr`: `factorial`, `permutations` and `combinations` with `PmnU128` (D10), and
+  `stirling_approx`;
+- **e3:** `src/bridge.cyr`: the 11 bridge functions;
 - **f:** M1's gate.
 
 **Order:** M0 → M1 → M2 → … → M8.

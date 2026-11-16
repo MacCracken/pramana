@@ -1,0 +1,80 @@
+# rng.cyr — random numbers (port of Rust 1.3.0's src/rng.rs; port plan D7 as amended, ADR 007 row 6; M1 part e1).
+#
+# `PmnRng` is Rust's `Rng` trait: one method, `next_f64`, a uniform f64 in [0, 1). A consumer brings its own
+# generator by implementing it. Every pramana API that took Rust's `&mut impl Rng` is generic over `R: PmnRng` and
+# takes `rng: *R`, so a draw is a static call, as Rust's monomorphized one is (probe P2: a `dyn` costs about 3 ns more
+# on a 12 ns draw). `dyn PmnRng` is kept for Gibbs' conditionals alone, which Rust gives `&mut dyn Rng` (M6).
+#
+# `PmnSimpleRng` is 1.3.0's `SimpleRng`: xorshift64 (13, 7, 17) on one word, mapped to [0, 1) by its top 53 bits.
+# It is integer code, so its streams are class A on every target (`>>` is the logical shift Rust's u64 shift is). It
+# is for reproducible simulations and tests, not cryptographically secure.
+#
+# JSON: `{"state":N}`, as serde derived it. Reading goes through `SimpleRngRepr` and `SimpleRng::new`, so a state of
+# 0, xorshift's one fixed point, becomes 1 (port plan D5).
+
+trait PmnRng {
+    fn next_f64(self): f64;
+}
+
+struct PmnSimpleRng {
+    state;
+}
+
+# Rust's `SimpleRng::new(seed)`: fills out (caller storage, D11). A seed of 0 becomes 1, so the stream never sticks
+# at 0.0. PMN_ERR_INVALID_PARAMETER for a null out; Rust's `new` cannot fail.
+fn PmnSimpleRng_new(out: *PmnSimpleRng, seed): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var s = seed;
+    if (s == 0) { s = 1; }
+    out.state = s;
+    return PMN_ERR_NONE;
+}
+
+impl PmnRng for PmnSimpleRng {
+    # The next f64 in [0, 1): one xorshift64 step, then (x >> 11) / 2^53, which is exact.
+    fn next_f64(self): f64 {
+        var x = self.state;
+        x = x ^ (x << 13);
+        x = x ^ (x >> 7);
+        x = x ^ (x << 17);
+        self.state = x;
+        var a: f64 = f64_from(x >> 11);
+        var d: f64 = 9007199254740992.0;
+        return a / d;
+    }
+}
+
+impl PmnSimpleRng {
+    # Appends serde_json's text for the generator, `{"state":N}`: PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't
+    # grow.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_w_key(sb, "state", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.state); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder for PmnSimpleRng_from_json: SimpleRngRepr's one u64 field, by serde's struct rules, then
+# `SimpleRng::new` (serde's `from`, which cannot fail).
+fn _pmn_simple_rng_from_root(root, out): i64 {
+    var names[8];
+    store64(&names, "state");
+    var sl[8];
+    var e = _pmn_json_struct(root, &names, 1, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var w[8];
+    e = _pmn_json_u64(load64(&sl), &w);
+    if (e != PMN_ERR_NONE) { return e; }
+    return PmnSimpleRng_new(out, load64(&w));
+}
+
+# Reads a SimpleRng document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any
+# document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY. A state of 0 reads as 1, as in 1.3.0.
+#must_use
+fn PmnSimpleRng_from_json(out: *PmnSimpleRng, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_simple_rng_from_root, out);
+}

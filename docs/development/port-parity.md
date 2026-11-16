@@ -1899,3 +1899,57 @@ the shared box's load had fallen below 2.5):
 
 The vector's cost is `fmtf.cyr`'s exact digit search, about 2.9 µs a value (part d1's finding, ledger L10). The rest
 is the call chain: a reservation, then the stdlib writer byte by byte. No hot path writes JSON.
+
+### 7.12 Part e1: the RNG and its codec (2026-11-15)
+
+Part e is split in three, its modules being independent:
+- **e1:** the RNG;
+- **e2:** combinatorics with `PmnU128`;
+- **e3:** the bridges.
+
+Part f is M1's gate.
+
+**The module** (`src/rng.cyr`) follows D7 as amended after probe P2:
+- **`trait PmnRng { fn next_f64(self): f64; }`** is Rust's `Rng`. A consumer brings its own generator by implementing
+  it, and a pramana API takes `rng: *R` with `<R: PmnRng>`, so a draw is a static call.
+- **`PmnSimpleRng { state }`** is 1.3.0's xorshift64 (13, 7, 17), mapped to [0, 1) by `(x >> 11) / 2^53`, which is
+  exact. `PmnSimpleRng_new(out, seed)` fills caller storage (D11) and maps a seed of 0 to 1.
+- **Its JSON codec:** `g.to_json(sb)` writes `{"state":N}`. `PmnSimpleRng_from_json(out, buf, len)` reads through
+  derive's struct rules on the repr's one u64 field, then `new`, so a saved state of 0 reads as 1, as 1.3.0's
+  `#[serde(from)]` does.
+
+**The golden rows:**
+- **A new `rng` module**, 46 rows:
+  - `SimpleRng::next_f64`: the first 256 draws from 40 seeds: 0, 1, 2, 42, 12345, 2⁶³, u64::MAX, two well-known
+    constants, and 31 seeded words;
+  - `SimpleRng::digest`: 10⁶ draws from six seeds, folded into an FNV-1a digest of their bits (the plan's "10⁶ RNG
+    words").
+
+  `validate.py` re-draws every stream with its own xorshift in Python.
+- **`json::SimpleRng`**, 126 rows: derive's variants of a saved state, every integer form in the field (`0`, `-0`,
+  2⁶³, u64::MAX, 2⁶⁴, floats, strings), and 64 saved states. The serde model reads the repr, then maps 0 to 1. Its
+  unknown members add ten ADR 007 row 16 rows, the same four causes as the test structs' (`json.map.tsv`: 30 rows).
+- **`json::write::SimpleRng`**, 64 rows: serde_json's text for `SimpleRng::new(seed)`.
+
+**The result.** All pass on x86_64 ELF, PE and aarch64, warning-free. The replay draws through a bounded generic
+`<R: PmnRng>`, the form pramana's APIs use. It is now five modules, 67,248 rows ok and 106 accepted (76 by ADR 9, 30
+by ADR 7).
+
+**Tests.** `tests/rng.tcyr`, 26 checks:
+- the zero seed, determinism over 10⁴ draws, and the range [0, 1);
+- a consumer's own generator (`Eighths`, implementing `PmnRng`) drawn through a generic API;
+- the generic giving the same draws as direct calls;
+- the codec: `new(0)` writing `{"state":1}`, u64::MAX in full, a saved 0 reading as 1, the sequence form, and the
+  refusals (a negative or float state, a missing field, a null out);
+- a stream saved after 1,000 draws and restored, whose next 1,000 draws match bit for bit;
+- a soak of 10⁴ saves and restores that leaves the bump heap unchanged.
+
+**Cost** (`tests/rng.bcyr` against the twin's `rng` rows, the same stream, whose 10⁶th draw both sides print:
+`0x3fe327c85d8ff932`; pinned, three interleaved rounds):
+
+| Draw | Cyrius | Rust | Ratio |
+|---|---|---|---|
+| direct | 7 ns | 1.71–1.84 ns | 4× |
+| through a bounded generic | 10 ns | 1.70–1.72 ns | 6× |
+
+Rust inlines the draw either way; Cyrius makes a call, and the generic a second one (P2 measured the same 2–3 ns).
