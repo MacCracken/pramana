@@ -1,4 +1,4 @@
-//! M1 part b: the Rust twin of tests/crmath.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
+//! M1 parts b and c: the Rust twin of tests/crmath.bcyr and tests/mathx.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
 //! arguments, regions and loop: 4,096 values per row, cycled 250 times, ns per call. Run pinned, interleaved with
 //! `cyrius bench tests/crmath.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m1_primitives
@@ -36,7 +36,60 @@ fn row(name: &str, xs: &[f64], ys: &[f64], f: impl Fn(f64, f64) -> f64) {
     println!("  {name}: {ns:.1} ns");
 }
 
+// tests/mathx.bcyr's rows: the same seed, regions and order.
+fn mathx() {
+    let mut r = Rng(0x2545F4914F6CDD1D);
+    let mut xs = vec![0.0; 4096];
+    let mut ys = vec![0.0; 4096];
+    let mut ws = vec![0u64; 4096];
+    r.fill(&mut xs, -10.0, 10.0);
+    r.fill(&mut ys, -10.0, 10.0);
+    for w in ws.iter_mut() {
+        r.unit();
+        *w = r.0.wrapping_mul(0x2545F4914F6CDD1D);
+    }
+    row("max, x and y in [-10, 10)", &xs, &ys, |x, y| x.max(y));
+    row("clamp, x in [-10, 10) to [-1, 2]", &xs, &ys, |x, _| x.clamp(-1.0, 2.0));
+    r.fill(&mut xs, -1000000.0, 1000000.0);
+    row("fract, x in [-1e6, 1e6)", &xs, &ys, |x, _| x.fract());
+    r.fill(&mut xs, 0.9, 1.1);
+    row("powi(25), x in [0.9, 1.1)", &xs, &ys, |x, _| x.powi(25));
+    let mut s = 0.0;
+    let t0 = Instant::now();
+    for _ in 0..250 {
+        for w in ws.iter() {
+            s += black_box(*w) as f64;
+        }
+    }
+    black_box(s);
+    println!("  u64 as f64, any word: {:.1} ns", t0.elapsed().as_nanos() as f64 / 1_024_000.0);
+    r.fill(&mut xs, -1000.0, 100000000000000000000.0);
+    let mut n = 0usize;
+    let t1 = Instant::now();
+    for _ in 0..250 {
+        for x in xs.iter() {
+            n = n.wrapping_add(black_box(*x) as usize);
+        }
+    }
+    black_box(n);
+    println!("  as usize, x in [-1e3, 1e20): {:.1} ns", t1.elapsed().as_nanos() as f64 / 1_024_000.0);
+    r.fill(&mut xs, -10.0, 10.0);
+    let mut c = 0i64;
+    let t2 = Instant::now();
+    for _ in 0..250 {
+        for i in 0..4096 {
+            c += black_box(xs[i]).total_cmp(&black_box(ys[i])) as i64;
+        }
+    }
+    black_box(c);
+    println!("  total_cmp, x and y in [-10, 10): {:.1} ns", t2.elapsed().as_nanos() as f64 / 1_024_000.0);
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("mathx") {
+        mathx();
+        return;
+    }
     let mut r = Rng(0x2545F4914F6CDD1D);
     let mut xs = vec![0.0; 4096];
     let mut ys = vec![0.0; 4096];

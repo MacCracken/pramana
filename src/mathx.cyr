@@ -1,0 +1,240 @@
+# mathx.cyr — pramana's f64 surface: Rust std semantics on top of the Cyrius builtins (port plan §8.1; ADR 009).
+#
+# Every std f64 operation pramana 1.3.0's code calls, as rustc 1.100.0 compiles it on x86_64, pinned by
+# tests/golden/math.tsv (port-parity §1 found where the stdlib differs):
+# - min / max / clamp ignore a NaN operand as Rust does (the stdlib's f64_min / f64_max ignore one only as the first
+#   operand), and equal operands, +0 and −0 included, give the second (maxsd / minsd);
+# - fract is x − trunc(x) (the stdlib's f64_fract is floor-based: f64_fract(−2.75) = 0.25, Rust's −0.75);
+# - the predicates and total_cmp have no public stdlib counterpart;
+# - `u64 as f64` rounds the unsigned value (f64_from reads its word as signed), and `f64 as usize` saturates (f64_to
+#   doesn't);
+# - powi is LLVM's and compiler-rt's square-and-multiply, the set bits multiplied in low to high.
+# The transcendentals are the correctly rounded functions (ADR 009): kimiya's in src/crmath.cyr, pramana's own log1p,
+# tan and log2 in src/crmath_ext.cyr (both ledger L1, with their own notes), cbrt ganita's, which already is. Every
+# other module calls them through the names here, so a conversion to ganita's tier changes only this file.
+# UPSTREAM(L2): cyrius:docs/development/issues/2026-11-11-f64-min-max-drop-nan-only-as-first-operand.md
+#   replace each helper with the stdlib's minNum / maxNum, predicates, trunc-based fract, unsigned conversion and
+#   saturating casts once they ship; parity: the class A f64::min, max, clamp, fract, is_nan, is_finite, as_usize and
+#   u64::as_f64 rows of tests/golden/math.tsv.
+
+# 1 when x is NaN. Mirrors `f64::is_nan`.
+#must_use
+#pure
+fn _pmn_is_nan(x: f64): i64 {
+    if (x != x) { return 1; }
+    return 0;
+}
+
+# 1 when x is neither infinite nor NaN (x − x is 0 only then). Mirrors `f64::is_finite`.
+#must_use
+#pure
+fn _pmn_is_finite(x: f64): i64 {
+    var d: f64 = x - x;
+    if (d == 0.0) { return 1; }
+    return 0;
+}
+
+# The smaller of x and y, ignoring a NaN operand (NaN only when both are). Equal operands, +0 and −0 included, give
+# y. Mirrors `f64::min`.
+#must_use
+#pure
+fn _pmn_min(x: f64, y: f64): f64 {
+    if (x != x) { return y; }
+    if (y != y) { return x; }
+    if (x < y) { return x; }
+    return y;
+}
+
+# The larger of x and y, ignoring a NaN operand (NaN only when both are). Equal operands, +0 and −0 included, give
+# y. Mirrors `f64::max`.
+#must_use
+#pure
+fn _pmn_max(x: f64, y: f64): f64 {
+    if (x != x) { return y; }
+    if (y != y) { return x; }
+    if (x > y) { return x; }
+    return y;
+}
+
+# x restricted to [lo, hi]: lo when x < lo, hi when x > hi, else x (a NaN x stays NaN). Rust panics when lo > hi or
+# a bound is NaN; every caller passes valid bounds, and this never aborts. Mirrors `f64::clamp`.
+#must_use
+#pure
+fn _pmn_clamp(x: f64, lo: f64, hi: f64): f64 {
+    var r: f64 = x;
+    if (r < lo) { r = lo; }
+    if (r > hi) { r = hi; }
+    return r;
+}
+
+# x − trunc(x), the fractional part with x's sign: fract(−2.75) = −0.75, fract(±∞) = NaN. Never f64_fract, which is
+# floor-based. Mirrors `f64::fract`.
+#must_use
+#pure
+fn _pmn_fract(x: f64): f64 {
+    var t: f64 = f64_trunc(x);
+    var r: f64 = x - t;
+    return r;
+}
+
+# Rust's total order: −1, 0 or 1 as x is below, equal to or above y, comparing the sign-folded bits (−NaN < −∞ < … <
+# −0 < +0 < … < +∞ < +NaN). Mirrors `f64::total_cmp`.
+#must_use
+#pure
+fn _pmn_total_cmp(x: f64, y: f64): i64 {
+    var a = load64(&x);
+    var b = load64(&y);
+    a = a ^ ((a >>> 63) >> 1);
+    b = b ^ ((b >>> 63) >> 1);
+    if (a < b) { return 0 - 1; }
+    if (a > b) { return 1; }
+    return 0;
+}
+
+# A u64 word as the nearest f64 (ties to even). Below 2^63 the signed conversion is that. At or above, the word
+# halved with a sticky bit (the dropped bit ORed in) converts to the same rounding at half the value, and doubling
+# is exact. Mirrors `n as f64` for a u64.
+#must_use
+#pure
+fn _pmn_u64_to_f64(n): f64 {
+    if (n >= 0) {
+        var r: f64 = f64_from(n);
+        return r;
+    }
+    var h = (n >> 1) | (n & 1);
+    var f: f64 = f64_from(h);
+    var r2: f64 = f + f;
+    return r2;
+}
+
+# `x as usize` on a 64-bit target: toward zero, saturating at 0 and u64::MAX, NaN → 0. The result is the 64-bit
+# word, so a value at or above 2^63 reads negative as an i64.
+#must_use
+#pure
+fn _pmn_sat_usize(x: f64): i64 {
+    if (x != x) { return 0; }
+    if (x <= 0.0) { return 0; }
+    if (x >= 18446744073709551616.0) { return 0 - 1; }
+    if (x >= 9223372036854775808.0) {
+        var hi: f64 = x - 9223372036854775808.0;    # exact: both are multiples of 2^11
+        return f64_to(hi) | 0x8000000000000000;
+    }
+    return f64_to(x);
+}
+
+# x^n by square-and-multiply, the set bits of |n| multiplied in low to high from 1, then 1/r for n < 0: LLVM's
+# expansion of a literal `x.powi(n)` and compiler-rt's __powidf2 alike (1·y is exact, so the start costs nothing).
+# x²⁵ = (x · x⁸) · x¹⁶. Mirrors `f64::powi`.
+#must_use
+#pure
+fn _pmn_powi(x: f64, n): f64 {
+    var base: f64 = x;
+    var p = n;
+    var recip = 0;
+    if (n < 0) {
+        recip = 1;
+        p = 0 - n;
+    }
+    var mul: f64 = 1.0;
+    while (1) {
+        if ((p & 1) != 0) { mul = mul * base; }
+        p = p >> 1;
+        if (p == 0) { break; }
+        base = base * base;
+    }
+    if (recip == 1) {
+        var r: f64 = 1.0 / mul;
+        return r;
+    }
+    return mul;
+}
+
+# ── the transcendentals, correctly rounded ────────────────────────────────────────────────────────
+
+# e^x. Mirrors `f64::exp`.
+#must_use
+#pure
+fn _pmn_exp(x: f64): f64 {
+    var r: f64 = _pmn_km_cr_exp(x);
+    return r;
+}
+
+# ln x. Mirrors `f64::ln`.
+#must_use
+#pure
+fn _pmn_ln(x: f64): f64 {
+    var r: f64 = _pmn_km_cr_ln(x);
+    return r;
+}
+
+# e^x − 1. Mirrors `f64::exp_m1`.
+#must_use
+#pure
+fn _pmn_exp_m1(x: f64): f64 {
+    var r: f64 = _pmn_km_cr_expm1(x);
+    return r;
+}
+
+# ln(1 + x). Mirrors `f64::ln_1p`.
+#must_use
+#pure
+fn _pmn_ln_1p(x: f64): f64 {
+    var r: f64 = _pmn_cr_log1p(x);
+    return r;
+}
+
+# x^y. Mirrors `f64::powf`.
+#must_use
+#pure
+fn _pmn_powf(x: f64, y: f64): f64 {
+    var r: f64 = _pmn_km_cr_pow(x, y);
+    return r;
+}
+
+# sin x. Mirrors `f64::sin`.
+#must_use
+#pure
+fn _pmn_sin(x: f64): f64 {
+    var r: f64 = _pmn_km_cr_sin(x);
+    return r;
+}
+
+# cos x. Mirrors `f64::cos`.
+#must_use
+#pure
+fn _pmn_cos(x: f64): f64 {
+    var r: f64 = _pmn_km_cr_cos(x);
+    return r;
+}
+
+# tan x. Mirrors `f64::tan`.
+#must_use
+#pure
+fn _pmn_tan(x: f64): f64 {
+    var r: f64 = _pmn_cr_tan(x);
+    return r;
+}
+
+# arctan x, as the correctly rounded atan2(x, 1): the same value. Mirrors `f64::atan`.
+#must_use
+#pure
+fn _pmn_atan(x: f64): f64 {
+    var r: f64 = _pmn_km_cr_atan2(x, 1.0);
+    return r;
+}
+
+# log₂ x. Mirrors `f64::log2`.
+#must_use
+#pure
+fn _pmn_log2(x: f64): f64 {
+    var r: f64 = _pmn_cr_log2(x);
+    return r;
+}
+
+# The cube root, ganita's, which is correctly rounded as Rust's (compiler_builtins) is. Mirrors `f64::cbrt`.
+#must_use
+#pure
+fn _pmn_cbrt(x: f64): f64 {
+    var r: f64 = ganita_f64_cbrt(x);
+    return r;
+}

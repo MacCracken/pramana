@@ -1459,3 +1459,41 @@ math row of the golden corpus is gated at 0 ulp:
 All 76 MPFR-corrected rows are accepted, nothing is measured, and the replay is identical on three targets: 28,556
 rows ok, 0 failed. The cost is 8–21× glibc. That is the price of correct rounding and the same bits everywhere; speed
 is measured, not gated.
+
+### 7.6 Part c: the Rust f64 surface (2026-11-15)
+
+`src/mathx.cyr` holds every std f64 operation pramana 1.3.0 calls, with Rust's semantics, as the names the rest of the
+port calls (ledger L2; port plan §8.1):
+- **min, max, clamp** ignore a NaN on either side. Equal operands, ±0 included, give the second operand, as rustc's
+  maxsd and minsd do;
+- **fract** is x − trunc(x), never the floor-based `f64_fract`;
+- **`u64 as f64`** rounds the unsigned value: above 2⁶³, the word halved with a sticky bit, converted, then doubled;
+- **`as usize`** saturates: NaN and negatives give 0, 2⁶⁴ and above give u64::MAX, and 2⁶³ … 2⁶⁴ go through an exact
+  subtraction;
+- **is_nan, is_finite and total_cmp** (the sign-folded bits);
+- **powi** is compiler-rt's and LLVM's square-and-multiply, the set bits multiplied in low to high from an exact 1;
+- **the transcendentals** are thin wrappers over the correctly rounded functions of parts b1–b4, so a conversion to
+  ganita's tier (ledger L1) changes only this file.
+
+**The golden rows.** The harness dispatches every `f64::*` and `u64::*` function through these names. The 7,077 rows
+that waited on them all pass:
+
+| Function | Rows | Class | Result |
+|---|---|---|---|
+| fract | 871 | A | all identical |
+| max, min | 760 each | A | all identical (the stdlib's differ on the 69 with a NaN second operand) |
+| clamp | 520 | A | all identical |
+| as_usize | 633 | A | all identical |
+| u64::as_f64 | 536 | A | all identical |
+| total_cmp | 169 | A | all identical |
+| is_nan, is_finite | 34 each | A | all identical |
+| powi 2, 3, 4 / 9, 25, 49 | 510 each / 410 each | B | all at 0 ulp |
+
+**The whole corpus is now gated:** 35,633 rows ok and 76 accepted (ADR 9), with 0 failed, 0 measured and 0 pending.
+The digests are identical on x86_64 ELF, PE and aarch64. `tests/mathx.tcyr` names the semantics each helper exists
+for, and the cases the corpus doesn't reach, in 30 checks: a negative powi, the ties of the u64 conversion above 2⁶³,
+and NaN's place in the total order.
+
+**Cost** (`tests/mathx.bcyr` against the Rust twin's `mathx` rows, pinned, three interleaved rounds): 8–24 ns a call
+in Cyrius against Rust's 0.8–3.4 ns. Rust inlines each into a few instructions. The Cyrius rows also pay a call and the
+bench loop's per-iteration dispatch, as probe P2 noted, so compare the rows with each other, not as bare costs.

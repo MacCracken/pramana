@@ -99,21 +99,15 @@ fn _par_constants(fp, fl): i64 {
     return _par_constant_row(load64(_par_in_v), load64(_par_in_l));
 }
 
-# `f64::*` and `u64::*` rows: the Rust std reference values (port plan §8.1).
-#
-# Dispatched now:
+# `f64::*` and `u64::*` rows: the Rust std reference values (port plan §8.1), every one through src/mathx.cyr, the
+# names the rest of the port calls (M1 part c):
 # - the exact builtins sqrt, abs and floor;
 # - the fdlibm word operations, which the port writes inline: `bits >> 32` (logical) and `bits & 0xFFFFFFFF00000000`;
-# - exp, ln, exp_m1, powf, sin, cos and atan: the correctly rounded functions of src/crmath.cyr (M1 part b1, vendored
-#   from kimiya; ledger L1), at 0 ulp (ADR 009). atan is atan2(x, 1), the same value;
-# - ln_1p, tan and log2: pramana's own correctly rounded functions (src/crmath_ext.cyr, M1 parts b2–b4), at 0 ulp.
-#
-# Pending until M1's src/mathx.cyr (ledger L2; port-parity §1):
-# - min, max, clamp: f64_min / f64_max ignore a NaN only as the FIRST operand;
-# - fract: the stdlib's f64_fract is floor-based; Rust's is x − trunc(x);
-# - is_nan, is_finite, total_cmp: no public stdlib counterpart;
-# - as_usize: f64_to doesn't saturate; u64::as_f64: f64_from reads the word as signed;
-# - the powi expansions, which the port writes in LLVM's order.
+# - the Rust-semantics helpers (ledger L2): min, max and clamp ignore a NaN as Rust does, fract is x − trunc(x),
+#   is_nan, is_finite and total_cmp, `as usize` saturates, `u64 as f64` is unsigned, and powi is LLVM's
+#   square-and-multiply;
+# - the transcendentals, correctly rounded at 0 ulp (ADR 009): kimiya's exp, ln, exp_m1, powf, sin, cos and atan
+#   (src/crmath.cyr, part b1), pramana's own ln_1p, tan and log2 (src/crmath_ext.cyr, parts b2–b4), ganita's cbrt.
 fn _par_math(fp, fl): i64 {
     var w = _par_in(0);
     var x: f64 = _par_in(0);
@@ -122,19 +116,36 @@ fn _par_math(fp, fl): i64 {
     if (_par_eq(fp, fl, "f64::floor") == 1) { var r: f64 = f64_floor(x); _par_got_f(r); return 1; }
     if (_par_eq(fp, fl, "f64::high_word") == 1) { _par_got_i(w >> 32); return 1; }
     if (_par_eq(fp, fl, "f64::low_masked") == 1) { _par_got_f(w & 0xFFFFFFFF00000000); return 1; }
-    if (_par_eq(fp, fl, "f64::exp") == 1) { var r: f64 = _pmn_km_cr_exp(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::ln") == 1) { var r: f64 = _pmn_km_cr_ln(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::ln_1p") == 1) { var r: f64 = _pmn_cr_log1p(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { var r: f64 = _pmn_km_cr_expm1(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::sin") == 1) { var r: f64 = _pmn_km_cr_sin(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::cos") == 1) { var r: f64 = _pmn_km_cr_cos(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::tan") == 1) { var r: f64 = _pmn_cr_tan(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::atan") == 1) { var r: f64 = _pmn_km_cr_atan2(x, 1.0); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::log2") == 1) { var r: f64 = _pmn_cr_log2(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::cbrt") == 1) { var r: f64 = ganita_f64_cbrt(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::fract") == 1) { var r: f64 = _pmn_fract(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::is_nan") == 1) { _par_got_i(_pmn_is_nan(x)); return 1; }
+    if (_par_eq(fp, fl, "f64::is_finite") == 1) { _par_got_i(_pmn_is_finite(x)); return 1; }
+    if (_par_eq(fp, fl, "f64::as_usize") == 1) { _par_got_i(_pmn_sat_usize(x)); return 1; }
+    if (_par_eq(fp, fl, "u64::as_f64") == 1) { var r: f64 = _pmn_u64_to_f64(w); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powi2") == 1) { var r: f64 = _pmn_powi(x, 2); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powi3") == 1) { var r: f64 = _pmn_powi(x, 3); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powi4") == 1) { var r: f64 = _pmn_powi(x, 4); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powi9") == 1) { var r: f64 = _pmn_powi(x, 9); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powi25") == 1) { var r: f64 = _pmn_powi(x, 25); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powi49") == 1) { var r: f64 = _pmn_powi(x, 49); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::exp") == 1) { var r: f64 = _pmn_exp(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::ln") == 1) { var r: f64 = _pmn_ln(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::ln_1p") == 1) { var r: f64 = _pmn_ln_1p(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { var r: f64 = _pmn_exp_m1(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::sin") == 1) { var r: f64 = _pmn_sin(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::cos") == 1) { var r: f64 = _pmn_cos(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::tan") == 1) { var r: f64 = _pmn_tan(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::atan") == 1) { var r: f64 = _pmn_atan(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::log2") == 1) { var r: f64 = _pmn_log2(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::cbrt") == 1) { var r: f64 = _pmn_cbrt(x); _par_got_f(r); return 1; }
     if (_par_in_n < 2) { return 0; }
     var y: f64 = _par_in(1);
-    if (_par_eq(fp, fl, "f64::powf") == 1) { var r: f64 = _pmn_km_cr_pow(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powf") == 1) { var r: f64 = _pmn_powf(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::max") == 1) { var r: f64 = _pmn_max(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::min") == 1) { var r: f64 = _pmn_min(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::total_cmp") == 1) { _par_got_i(_pmn_total_cmp(x, y)); return 1; }
+    if (_par_in_n < 3) { return 0; }
+    var z: f64 = _par_in(2);
+    if (_par_eq(fp, fl, "f64::clamp") == 1) { var r: f64 = _pmn_clamp(x, y, z); _par_got_f(r); return 1; }
     return 0;
 }
 

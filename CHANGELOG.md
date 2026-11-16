@@ -276,6 +276,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **The primitives are complete** (M1 part b): every transcendental Rust 1.3.0 calls is correctly rounded, and every
   class-C math row of the golden corpus is gated at 0 ulp (28,556 rows ok, nothing measured), identically on x86_64,
   PE and aarch64. The ten functions are correctly rounded on 11.6M MPFR rows, at 8–21× glibc's cost.
+- **M1 part c: the Rust f64 surface** (`src/mathx.cyr`; port plan §8.1; ledger L2; results in
+  `docs/development/port-parity.md` §7.6). Every std f64 operation Rust 1.3.0 calls, with Rust's semantics:
+  - **NaN-ignoring** min, max and clamp;
+  - **fract** as x − trunc(x);
+  - **conversions:** an unsigned `u64 as f64` and a saturating `as usize`;
+  - **predicates and order:** is_nan, is_finite and total_cmp;
+  - **powi** by square-and-multiply in LLVM's order;
+  - **the transcendentals' names**, over the correctly rounded functions.
+
+  The 7,077 golden rows that waited on them all pass (the powi rows at 0 ulp), so the whole corpus is gated: 35,633
+  rows ok and 76 accepted, with nothing failed, measured or pending, on x86_64, PE and aarch64. `tests/mathx.tcyr`
+  adds 30 checks; `tests/mathx.bcyr` and its Rust twin record the costs.
 
 ### Changed
 

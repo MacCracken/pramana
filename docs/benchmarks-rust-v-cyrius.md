@@ -74,3 +74,24 @@ The same bodies, one row added. Three rounds, interleaved, pinned to core 5, at 
 **Finding.** `log2` costs about 50 ns over `ln` (56 ns in the same rounds): separate split and fast-path calls with
 multi-value returns, ln's core called rather than inlined, and the Dekker product by 1/ln 2. `ln_1p` shows the same
 pattern; inlining both is the candidate to measure together. Rust 1.3.0 calls `log2` once, in the Hick's-law fit.
+
+## M1 part c: the Rust f64 surface (2026-11-15)
+
+**Bodies.** `tests/mathx.bcyr` and the twin's `mathx` rows (`m1_primitives mathx`): the same seed, regions and loop.
+Three rounds, interleaved, pinned to core 5, at a load average of 1.5–2.3.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `max`, x and y ∈ [−10, 10) | 1.4–1.6 ns | 13 ns | 8.7× |
+| `clamp`, x ∈ [−10, 10) to [−1, 2] | 0.8–1.1 ns | 13–16 ns | 16× |
+| `fract`, x ∈ [−10⁶, 10⁶) | 3.3–3.4 ns | 8–12 ns | 2.9× |
+| `powi(25)`, x ∈ [0.9, 1.1) | 0.9–1.1 ns | 20–24 ns | 22× |
+| `u64 as f64`, any word | 0.8 ns | 11–13 ns | 15× |
+| `as usize`, x ∈ [−10³, 10²⁰) | 1.2–1.3 ns | 12–16 ns | 11× |
+| `total_cmp`, x and y ∈ [−10, 10) | 2.0 ns | 11–13 ns | 6× |
+
+**Findings.** Rust inlines each into a few instructions; the Cyrius rows pay a call plus the loop's per-iteration
+`which` tests (probe P2's caveat), so these ratios measure the call more than the work. `powi(25)` is the one with
+work in it: a generic loop of seven squarings and multiplies, where LLVM unrolls a literal exponent. Explicit
+products for the six exponents Rust uses (2, 3, 4, 9, 25, 49), or an `#inline` that takes, are the candidates if a
+caller's bench shows them.

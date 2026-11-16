@@ -30,7 +30,8 @@
 > (`aa5df35`): **M0 is complete.** **M1** is in progress: part a (the error codes) and part b1 (kimiya's correctly
 > rounded primitives, vendored) are committed (`1f718c6`), and so is part b2, a new correctly rounded log1p
 > (`f08f233`) and part b3, a new correctly rounded tan (`3257918`). Part b4, a new correctly rounded log2, is done
-> but not committed; with it every class-C math row is at 0 ulp, and the primitives are verified on 11.6M MPFR rows. The maintainer took each
+> (`0c3f469`), so every class-C math row is at 0 ulp and the primitives are verified on 11.6M MPFR rows. Part c, the
+> Rust f64 surface (`src/mathx.cyr`), is done but not committed: the whole golden corpus is gated. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1073,7 +1074,7 @@ Every milestone, and every part of a large one, ends with pravash's gates:
 - **b3:** a correctly rounded tan, new, on kimiya's sin and cos ✅;
 - **b4:** a correctly rounded log2, new, on kimiya's ln with the exponent kept exact ✅. Part b is complete: every
   class-C math row of the golden corpus is at 0 ulp;
-- **c:** `src/mathx.cyr`, the Rust-semantics helpers;
+- **c:** `src/mathx.cyr`, the Rust-semantics helpers, and the transcendentals' names ✅: the whole corpus is gated;
 - **d:** the JSON core, `src/fmtf.cyr` and the `SimpleRng` codec;
 - **e:** the RNG, combinatorics with `PmnU128`, and the bridges;
 - **f:** the work-table pool, then M1's gate.

@@ -1,0 +1,98 @@
+# mathx.tcyr — the Rust f64 surface of src/mathx.cyr (M1 part c; port plan §8.1).
+#
+# tests/parity.tcyr replays every row of tests/golden/math.tsv through these helpers. These tests name the semantics
+# each one exists for, where the stdlib differs (port-parity §1), and the cases the corpus doesn't reach: a negative
+# powi, the u64 conversion's ties above 2^63, NaN's place in the total order.
+
+include "tests/lib.cyr"
+
+fn bits(x: f64): i64 {
+    return load64(&x);
+}
+
+# 1 when x has the bit pattern w.
+fn is_bits(x: f64, w): i64 {
+    if (load64(&x) == w) { return 1; }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var nan: f64 = 0x7FF8000000000000;
+    var inf: f64 = 0x7FF0000000000000;
+    var ninf: f64 = -inf;                          # negation flips only the sign bit
+    var pz: f64 = 0.0;
+    var nz: f64 = -0.0;
+    var one: f64 = 1.0;
+
+    test_group("min and max ignore a NaN on either side");
+    assert(is_bits(_pmn_max(one, nan), 0x3FF0000000000000) == 1, "max(1, NaN) = 1 (f64_max gives NaN)");
+    assert(is_bits(_pmn_max(nan, one), 0x3FF0000000000000) == 1, "max(NaN, 1) = 1");
+    assert(is_bits(_pmn_min(one, nan), 0x3FF0000000000000) == 1, "min(1, NaN) = 1 (f64_min gives NaN)");
+    assert(_pmn_is_nan(_pmn_max(nan, nan)) == 1, "max(NaN, NaN) is NaN");
+    assert(is_bits(_pmn_max(pz, nz), 0x8000000000000000) == 1, "max(+0, −0) = −0, the second operand (maxsd)");
+    assert(is_bits(_pmn_min(nz, pz), 0x0000000000000000) == 1, "min(−0, +0) = +0, the second operand (minsd)");
+
+    test_group("clamp");
+    var lo: f64 = -1.0;
+    var hi: f64 = 2.0;
+    var big: f64 = 5.0;
+    assert(is_bits(_pmn_clamp(big, lo, hi), bits(hi)) == 1, "clamp(5, −1, 2) = 2");
+    assert(_pmn_is_nan(_pmn_clamp(nan, lo, hi)) == 1, "clamp(NaN, −1, 2) is NaN");
+
+    test_group("fract is x − trunc(x)");
+    var a: f64 = -2.75;
+    assert(is_bits(_pmn_fract(a), 0xBFE8000000000000) == 1, "fract(−2.75) = −0.75 (f64_fract gives 0.25)");
+    assert(is_bits(_pmn_fract(nz), 0x0000000000000000) == 1, "fract(−0) = +0");
+    assert(_pmn_is_nan(_pmn_fract(inf)) == 1, "fract(∞) is NaN");
+
+    test_group("the predicates");
+    assert(_pmn_is_nan(nan) == 1 && _pmn_is_nan(inf) == 0, "is_nan");
+    assert(_pmn_is_finite(inf) == 0 && _pmn_is_finite(nan) == 0 && _pmn_is_finite(nz) == 1, "is_finite");
+
+    test_group("total_cmp orders −NaN < −∞ < −0 < +0 < +∞ < +NaN");
+    var nnan: f64 = -nan;
+    assert_eq(_pmn_total_cmp(nnan, ninf), 0 - 1, "−NaN < −∞");
+    assert_eq(_pmn_total_cmp(nz, pz), 0 - 1, "−0 < +0");
+    assert_eq(_pmn_total_cmp(inf, nan), 0 - 1, "+∞ < +NaN");
+    assert_eq(_pmn_total_cmp(nan, nan), 0, "NaN = NaN (the same bits)");
+
+    test_group("u64 as f64 is unsigned and rounds to nearest, ties to even");
+    var top = 0x8000000000000000;                 # 2^63
+    assert(is_bits(_pmn_u64_to_f64(top), 0x43E0000000000000) == 1, "2^63 (f64_from gives −2^63)");
+    assert(is_bits(_pmn_u64_to_f64(0 - 1), 0x43F0000000000000) == 1, "u64::MAX rounds up to 2^64");
+    # 2^63 + 2^10 is the tie between 2^63 and 2^63 + 2^11: to even, 2^63. One more, and it rounds up.
+    assert(is_bits(_pmn_u64_to_f64(top + 1024), 0x43E0000000000000) == 1, "2^63 + 2^10: the tie, to even");
+    assert(is_bits(_pmn_u64_to_f64(top + 1025), 0x43E0000000000001) == 1, "2^63 + 2^10 + 1: up (the sticky bit)");
+    assert(is_bits(_pmn_u64_to_f64(top + 3072), 0x43E0000000000002) == 1, "2^63 + 3·2^10: the tie, to even, up");
+
+    test_group("as usize saturates");
+    var m37: f64 = -3.7;
+    var huge: f64 = 100000000000000000000000000000.0;
+    var t63: f64 = 9223372036854775808.0;
+    assert_eq(_pmn_sat_usize(m37), 0, "−3.7 → 0 (f64_to gives −3)");
+    assert_eq(_pmn_sat_usize(nan), 0, "NaN → 0");
+    assert_eq(_pmn_sat_usize(huge), 0 - 1, "1e29 → u64::MAX");
+    assert_eq(_pmn_sat_usize(t63), top, "2^63 → 2^63");
+
+    test_group("powi is square-and-multiply, low bits first");
+    var two: f64 = 2.0;
+    var m2: f64 = -2.0;
+    assert(is_bits(_pmn_powi(two, 10), 0x4090000000000000) == 1, "2^10 = 1024");
+    assert(is_bits(_pmn_powi(m2, 0 - 3), 0xBFC0000000000000) == 1, "(−2)^−3 = −1/8");
+    assert(is_bits(_pmn_powi(nan, 0), 0x3FF0000000000000) == 1, "NaN^0 = 1");
+    var x: f64 = 1.0000001;
+    var x2: f64 = x * x;
+    var x4: f64 = x2 * x2;
+    var x8: f64 = x4 * x4;
+    var x16: f64 = x8 * x8;
+    var p25: f64 = (x * x8) * x16;
+    assert(is_bits(_pmn_powi(x, 25), bits(p25)) == 1, "x^25 = (x · x^8) · x^16, LLVM's order");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+# Any failure at all is exit 1: a wait status is 8 bits, so a raw count of 256 would read as success.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

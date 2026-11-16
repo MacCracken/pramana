@@ -1,0 +1,103 @@
+# mathx.bcyr — the Rust f64 surface of src/mathx.cyr (M1 part c).
+#
+# ns per call on 4,096 seeded arguments per row, cycled 250 times (1,024,000 calls). The Rust twin is
+# scripts/probes/rust/src/bin/m1_primitives.rs (its `mathx` rows): the same xorshift and regions, Rust's own
+# operations, which compile to a few instructions each. The record is docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+var g_rng = 0x2545F4914F6CDD1D;
+var g_xs = 0;
+var g_ys = 0;
+var g_ws = 0;
+
+fn next(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+fn unit(): f64 {
+    var top = next() >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# Fills `buf` with 4,096 uniform values in [lo, hi).
+fn fill(buf, lo: f64, hi: f64): i64 {
+    var i = 0;
+    while (i < 4096) {
+        var w: f64 = hi - lo;
+        var u: f64 = unit();
+        var x: f64 = lo + w * u;
+        store64(buf + i * 8, x);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# `which`: 0 max, 1 clamp, 2 fract, 3 powi(25), 4 u64 as f64, 5 as usize, 6 total_cmp.
+fn row(name: cstring, which): i64 {
+    var s: f64 = 0.0;
+    var n = 0;
+    var lo: f64 = -1.0;
+    var hi: f64 = 2.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var k = 0;
+    while (k < 250) {
+        var i = 0;
+        while (i < 4096) {
+            var x: f64 = load64(g_xs + i * 8);
+            var y: f64 = load64(g_ys + i * 8);
+            var r: f64 = 0.0;
+            if (which == 0) { r = _pmn_max(x, y); }
+            if (which == 1) { r = _pmn_clamp(x, lo, hi); }
+            if (which == 2) { r = _pmn_fract(x); }
+            if (which == 3) { r = _pmn_powi(x, 25); }
+            if (which == 4) { r = _pmn_u64_to_f64(load64(g_ws + i * 8)); }
+            if (which == 5) { n = n + _pmn_sat_usize(x); }
+            if (which == 6) { n = n + _pmn_total_cmp(x, y); }
+            s = s + r;
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+    bench_batch_stop(b, 1024000);
+    bench_report(b);
+    if (s != s || n == 7) { println("sink"); }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_xs = alloc(4096 * 8);
+    g_ys = alloc(4096 * 8);
+    g_ws = alloc(4096 * 8);
+    fill(g_xs, -10.0, 10.0);
+    fill(g_ys, -10.0, 10.0);
+    var i = 0;
+    while (i < 4096) {
+        store64(g_ws + i * 8, next());
+        i = i + 1;
+    }
+    row("max, x and y in [-10, 10)", 0);
+    row("clamp, x in [-10, 10) to [-1, 2]", 1);
+    fill(g_xs, -1000000.0, 1000000.0);
+    row("fract, x in [-1e6, 1e6)", 2);
+    fill(g_xs, 0.9, 1.1);
+    row("powi(25), x in [0.9, 1.1)", 3);
+    row("u64 as f64, any word", 4);
+    fill(g_xs, -1000.0, 100000000000000000000.0);
+    row("as usize, x in [-1e3, 1e20)", 5);
+    fill(g_xs, -10.0, 10.0);
+    row("total_cmp, x and y in [-10, 10)", 6);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

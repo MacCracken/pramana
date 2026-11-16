@@ -43,4 +43,5 @@ modules = [
     "src/crmath_data.cyr",
     "src/crmath.cyr",
     "src/crmath_ext.cyr",
+    "src/mathx.cyr",
 ]
