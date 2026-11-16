@@ -743,8 +743,10 @@ This agrees with ushma's probe 11, where Grisu2 differed on 6,276 of 160,378.
 - Every document serde_json writes decodes to the same bits once the pre-pass is in, except the 35.
 - Writing through `fmtf.cyr` instead of bayan's printer gives serde_json's text byte for byte, so text can compare
   as class A. pravash's `fmtf.cyr` is the same digit core with Rust's Debug form added, which D12 needs. One vendored
-  file can carry both forms. The amendment is proposed in the plan's D5 row.
-- The 35 documents need an ADR 007 row until bayan's opt-in lands. That row is proposed too.
+  file can carry both forms. **Decided 2026-11-15:** D5 is amended to write serde_json's text this way (ADR 007
+  row 7).
+- The 35 documents need an ADR 007 row until bayan's opt-in lands. **Decided 2026-11-15:** ADR 007 row 16 accepts
+  them; their rows map to the refusal.
 
 **P8, the bundle (`p8_bundle.sh`, `p8_bundle/`).** The probe works in scratch copies of pramana. Each holds
 `src/constants.cyr` and two stand-ins:

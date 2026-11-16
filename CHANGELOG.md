@@ -104,7 +104,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
       serde_json accepts only because it skips a member unchecked.
     - **Text:** impetus's `fmtf.cyr` writes serde_json's text on all 596 documents both sides read. bayan's Grisu2
       matches on 566, and differs on 9,714 of 280,562 doubles.
-    - **Proposed for the maintainer:** D5 text identity through `fmtf.cyr`, and ADR 007 row 16 for the 35.
+    - **Decided:** D5 is amended to write serde_json's text through `fmtf.cyr` (ADR 007 row 7), and ADR 007 row 16
+      accepts the 35.
   - **P8, the bundle:** a one-function consumer is the size of an empty one (411,928 bytes on x86_64), and a core
     consumer never compiles sandhi. `ai` adds 839 KB. Listing sandhi in `[deps] stdlib` would make every pramana
     compile 0.8 s slower (build 1.30 s against 0.49 s). So D8 is a `[lib.ai]` profile with sandhi kept out of

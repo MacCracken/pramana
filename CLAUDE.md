@@ -172,6 +172,8 @@ and `build` drive, never from `cyrius lint`. Each one is a bug:
   - hand codecs in `src/json.cyr`, over bayan's value tree;
   - every decoder goes through the validating constructor, as Rust's `try_from` did;
   - a document that serde_json wrote from 1.3.0 decodes to the same bits;
+  - pramana writes serde_json's text byte for byte, with f64s through `src/fmtf.cyr`'s serde_json form, never bayan's
+    Grisu2 printer (ADR 007 row 7);
   - every type has a round-trip test.
 - **Strings.** Write into a `str_builder` instead of building temporaries; borrow by pointer and copy only into
   owned storage (the Cyrius form of "`write!` over `format!`").

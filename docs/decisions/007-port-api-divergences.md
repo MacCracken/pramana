@@ -23,7 +23,7 @@ The Cyrius API differs from Rust 1.3.0 only in the rows below, each with how the
 | 4 | `u128` from `factorial`, `permutations`, `combinations` | an out-pointer `PmnU128 { lo, hi }` (D10) | A |
 | 5 | `impl Fn` closures | a function pointer plus a context pointer (D7) | the same values |
 | 6 | `&mut impl Rng`; `&mut dyn Rng` (Gibbs' conditionals) | `rng: *R`, generic over `R: PmnRng` and implemented by `PmnSimpleRng`, so a draw is a static call as in Rust; a Gibbs conditional gets the address of a stack `PmnRngRef { o: dyn PmnRng }`. Amended 2026-11-15 after probe P2: the seed row passed `dyn PmnRng` at every boundary, about 3 ns more per 12 ns draw (D7) | the same streams |
-| 7 | serde_json text | bayan's Grisu2 text; every 1.3.0 document decodes to the same bits (D5) | A on the decoded bits |
+| 7 | serde_json text | the same text byte for byte, through the serde_json form of the vendored `fmtf.cyr`; every 1.3.0 document decodes to the same bits (D5). Amended 2026-11-15 after probe P7: the seed row wrote bayan's Grisu2 text, which differs from serde_json's on 30 of P7's 596 documents | A on the text and on the decoded bits |
 | 8 | `PramanaError` JSON with a message | the code only; the message is dropped on decode | A on the variant |
 | 9 | `async StatQuery::query`; `HashMap` column order | synchronous HTTP to hoosh; columns in sorted name order (D8) | A on the tool results; the prompt text is n/a |
 | 10 | cargo features `ai`, `soorat-compat`, `logging` | one bundle with dead-code elimination; `ai` outside the core bundle; `logging` (a no-op) not carried (D8, D9) | — |
@@ -32,6 +32,7 @@ The Cyrius API differs from Rust 1.3.0 only in the rows below, each with how the
 | 13 | `math.rs`'s erf/erfc, `normal_cdf`, `ln_gamma`, `gamma_inc`, `beta_inc` | the more accurate algorithms of ADR 009 | `*.ref.tsv` at the ADR's bounds; downstream rows remapped by name |
 | 14 | `median`, `percentile`, `quartiles` and `iqr` take the k-th element from `select_nth_unstable_by`, whose order decides which zero a mix of −0 and +0 yields (P6: 9,393 of 180,000 zero-heavy results) | the k-th element, and its successor, of a **stable** sort of the input (ties, −0 and +0 among them, kept in input order). Decided 2026-11-15 | A on the value. Where Rust's sign of zero differs, the row maps to the stable rule's result (`descriptive.map.tsv`, from `validate.py`'s stable model) and passes as accepted (ADR 7) |
 | 15 | derived `Debug` | `x.debug(sb, alternate)` writers, with pravash's shortest-float printer (D12) | A on the text |
+| 16 | serde_json accepts a document whose unread member (a field the type doesn't know, or MVN's cached factor) holds a duplicate key, nesting past 128 levels or a lone surrogate: it skips that member without checking it | the document is refused with `PMN_ERR_DESERIALIZE`: bayan's value tree checks the whole document. P7 found 35 of serde_json's 1,495 documents; serde_json never writes one for pramana's types. Converted when bayan ships its opt-in for unread members (impetus's issue 2026-11-09, ledger note in plan §10). Decided 2026-11-15 | A on the verdict. Those rows map to the refusal and pass as accepted (ADR 7) |
 
 ## Consequences
 
