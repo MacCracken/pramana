@@ -1,0 +1,195 @@
+# p9_lgamma.cyr — probe P9, ln_gamma: accuracy rows for scripts/port-baseline/check.c (port plan §5 step 9d).
+#
+# Reads the Rust baseline's lgamma rows (build/p9/rust.txt, from scripts/port-baseline/main.rs: §3.2's five sets,
+# with Rust 1.3.0's results) and prints, for each input, Rust's result, T0's and T1's as `name/variant x result`
+# rows. Then six seeded sets weighted to the hard regions, T0 and T1 only. A negative-x row is printed twice, the
+# second as `…_mixed`, which check.c measures in ulps of max(|lnΓ|, 1), ADR 009's bound for x < 0.
+#   bash scripts/probes/p9_lgamma.sh       (builds the baseline, this probe and the checker, and runs them)
+
+include "scripts/probes/p9_lgamma_impl.cyr"
+
+var g_rng = 0x9E3779B97F4A7C15;
+var g_out = 0;
+
+# xorshift64*: uniform in [0, 1) from the top 53 bits.
+fn p9_unit(): f64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    var top = (x * 0x2545F4914F6CDD1D) >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+fn p9_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+fn p9_hexval(c): i64 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    return c - 87;
+}
+
+# One row: `name/variant x result`, every f64 as its bit pattern.
+fn p9_row(name: cstring, variant: cstring, x: f64, r: f64): i64 {
+    str_builder_add_cstr(g_out, name);
+    str_builder_putc(g_out, 47);
+    str_builder_add_cstr(g_out, variant);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, x);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, r);
+    str_builder_putc(g_out, 10);
+    if (load64(g_out + 8) > 1048576) {
+        print(load64(g_out), load64(g_out + 8));
+        store64(g_out + 8, 0);
+    }
+    return 0;
+}
+
+# T0 and T1 for one input of a seeded set; `neg` adds the mixed-bound rows.
+fn p9_both(name: cstring, x: f64, neg): i64 {
+    var a: f64 = p9_t0_ln_gamma(x);
+    var b: f64 = p9_t1_ln_gamma(x);
+    p9_row(name, "t0", x, a);
+    p9_row(name, "t1", x, b);
+    if (neg == 1) {
+        p9_row(name, "t0_mixed", x, a);
+        p9_row(name, "t1_mixed", x, b);
+    }
+    return 0;
+}
+
+# §3.2's sets: each `lgamma… x rust` line of the baseline's output.
+fn p9_baseline(buf, n): i64 {
+    var s = 0;
+    var i = 0;
+    var nm[40];
+    while (i < n) {
+        if (load8(buf + i) == 10) {
+            var line = buf + s;
+            var len = i - s;
+            if (len > 7 && load8(line) == 108 && load8(line + 1) == 103) {
+                var k = 0;
+                while (k < len && load8(line + k) != 32 && k < 38) {
+                    store8(&nm + k, load8(line + k));
+                    k = k + 1;
+                }
+                store8(&nm + k, 0);
+                var xw = 0;
+                var j = k + 1;
+                while (j < len && load8(line + j) != 32) {
+                    xw = (xw << 4) | p9_hexval(load8(line + j));
+                    j = j + 1;
+                }
+                var rw = 0;
+                j = j + 1;
+                while (j < len) {
+                    rw = (rw << 4) | p9_hexval(load8(line + j));
+                    j = j + 1;
+                }
+                var x: f64 = xw;
+                var r: f64 = rw;
+                var neg = 0;
+                if (k == 10 && load8(line + 7) == 110) { neg = 1; }   # "lgamma_neg"
+                p9_row(&nm, "rust", x, r);
+                if (neg == 1) { p9_row(&nm, "rust_mixed", x, r); }
+                p9_both(&nm, x, neg);
+            }
+            s = i + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    var cap = 134217728;
+    var buf = alloc(cap);
+    var n = file_read_all("build/p9/rust.txt", buf, cap);
+    if (n <= 0) {
+        var msg = "cannot read build/p9/rust.txt\n";
+        print(msg, strlen(msg));
+        return 1;
+    }
+    p9_baseline(buf, n);
+    var ln2: f64 = _km_cr_ln(2.0);
+    var ln8: f64 = _km_cr_ln(8.0);
+    var i = 0;
+    # Beside the roots: x = 1 ± d or 2 ± d, d log-uniform in [2^-52, 1/4].
+    while (i < 100000) {
+        var t: f64 = -52.0 + 50.0 * p9_unit();
+        var tl: f64 = t * ln2;
+        var d: f64 = _km_cr_exp(tl);
+        var base: f64 = 1.0;
+        if (p9_unit() < 0.5) { base = 2.0; }
+        var x: f64 = base + d;
+        if (p9_unit() < 0.5) { x = base - d; }
+        p9_both("lgamma_p9_roots", x, 0);
+        i = i + 1;
+    }
+    # The product region [2, 8), uniform.
+    i = 0;
+    while (i < 100000) {
+        var x2: f64 = 2.0 + 6.0 * p9_unit();
+        p9_both("lgamma_p9_2to8", x2, 0);
+        i = i + 1;
+    }
+    # x from 8 to 8·2^1010, log-uniform (lnΓ overflows near 2.56e305).
+    i = 0;
+    while (i < 50000) {
+        var e3: f64 = 1010.0 * p9_unit();
+        var t3: f64 = ln8 + e3 * ln2;
+        var x3: f64 = _km_cr_exp(t3);
+        p9_both("lgamma_p9_big", x3, 0);
+        i = i + 1;
+    }
+    # x from 2^-1070 (subnormal) to 2, log-uniform.
+    i = 0;
+    while (i < 50000) {
+        var e4: f64 = 1071.0 * p9_unit();
+        var t4: f64 = ln2 - e4 * ln2;
+        var x4: f64 = _km_cr_exp(t4);
+        p9_both("lgamma_p9_small", x4, 0);
+        i = i + 1;
+    }
+    # x < 0 out to −170: half uniform in each unit interval, half within 2^-50 … 1/10 of a pole.
+    i = 0;
+    while (i < 50000) {
+        var k5: f64 = f64_floor(170.0 * p9_unit());
+        var f5: f64 = p9_unit();
+        if (p9_unit() < 0.5) {
+            var t5: f64 = -50.0 + 46.7 * p9_unit();
+            var tl5: f64 = t5 * ln2;
+            f5 = _km_cr_exp(tl5);
+            if (p9_unit() < 0.5) { f5 = 1.0 - f5; }
+        }
+        var a5: f64 = k5 + f5;
+        var x5: f64 = -a5;
+        if (f5 > 0.0 && f5 < 1.0) { p9_both("lgamma_p9_neg", x5, 1); }
+        i = i + 1;
+    }
+    # (−8, −2), uniform: lnΓ crosses zero here, where the mixed bound is absolute.
+    i = 0;
+    while (i < 50000) {
+        var x6: f64 = -2.0 - 6.0 * p9_unit();
+        p9_both("lgamma_p9_negzeros", x6, 1);
+        i = i + 1;
+    }
+    print(load64(g_out), load64(g_out + 8));
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

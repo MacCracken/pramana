@@ -1,6 +1,6 @@
 // Reads "name x [y] rust" (hex bit patterns), computes the exact value with MPFR,
 // reports per function: n, max ulp error, mean ulp error, fraction not correctly rounded,
-// and the worst input.
+// and the worst input. A name ending "_mixed" is measured in ulps of max(|value|, 1).
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -42,6 +42,9 @@ int main(void){
     double cr=mpfr_get_d(v,MPFR_RNDN);
     if(!isfinite(cr) || fabs(cr) < 2.2250738585072014e-308 || isnan(r)){ s->skipped++; continue; }
     double u=nextafter(fabs(cr),INFINITY)-fabs(cr);
+    // A name ending "_mixed" is measured in ulps of max(|cr|, 1): ADR 009's bound for lnΓ at x < 0 (probe P9).
+    size_t nl=strlen(nm);
+    if(nl>6 && !strcmp(nm+nl-6,"_mixed") && u<2.220446049250313e-16) u=2.220446049250313e-16;
     mpfr_set_d(t,r,MPFR_RNDN); mpfr_sub(t,t,v,MPFR_RNDN); mpfr_abs(t,t,MPFR_RNDN);
     double e=mpfr_get_d(t,MPFR_RNDN)/u;
     s->n++; s->sumu+=e; if(r!=cr) s->ncr++;
