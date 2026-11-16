@@ -1,0 +1,9 @@
+# p8_bundle/ai.cyr — probe P8's stand-in for src/ai.cyr (D8): a chat-completions POST through sandhi, to a closed
+# local port, so the call fails fast. What is measured is what the code costs to carry.
+
+# sandhi's result for the POST: 1 when it returned a result word (it answers a refused connection with one), else 0.
+fn pmn_p8_ai_post(body, n): i64 {
+    var r = sandhi_http_post("http://127.0.0.1:9/v1/chat/completions", 0, body, n);
+    if (r == 0) { return 0; }
+    return 1;
+}

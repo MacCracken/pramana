@@ -21,7 +21,8 @@
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
 > **Steps 4–8** are committed (`53078cb`, `30eb41b`, `bb0f938`, `d7941bc`, `aec9861`). **Step 9,** the probes, is in
 > progress: part 9a (P1, P5, P6) is committed (`96ae9d5`, and P6's decision, ADR 007 row 14, as `aa3dc1e`). Part 9b
-> (P2, P3, P4) is done but not committed. After it, the maintainer amended D7: the RNG is generic. The maintainer took
+> (P2, P3, P4) and the D7 amendment it led to (the RNG is generic) are committed as `4a051bf`. Part 9c (P7, P8) is
+> done but not committed. It proposes an amendment to D5 and a row for ADR 007, for the maintainer. The maintainer took
 > each recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the
 > accuracy-baseline tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -76,10 +77,10 @@ Each row gives the decision and the alternatives not chosen.
 | D2 | ✅ **Correctly rounded primitives.** pramana needs exp, ln, ln_1p, exp_m1, pow, sin, cos, tan, atan and log2. kimiya's `src/mathx.cyr` has exp, expm1, ln, log10, pow, sin, cos, sincos, atan2 and acos, with `cr_verify.py` and `mpfr_ref.py`. **No sibling has a public log1p, tan or log2.** ushma 2.0.0 has a triple-double log1p kernel inside its ln (`ushma/src/mathx.cyr:819`), which is a starting point | Vendor kimiya's two-phase primitives (L1). By the two crates' own benchmarks they are faster than the impetus-derived crmath the ganita issue measures (§1.3): exp 39 against 110 ns, pow about 135 against 757 ns, atan2 111 ns against 1.41 µs. Compute atan(x) as the correctly rounded atan2(x, 1), which is the same value. Build correctly rounded log1p, tan and log2 with kimiya's method, verified on ≥ 1M MPFR arguments each. Join the open ganita correctly-rounded-tier issue as a consumer, adding the three new functions | ganita's private fdlibm `_gn_log1p` / `_gn_expm1` (≤ 0.87 ulp) and `ganita_f64_tan` (≤ 1 ulp): not correctly rounded, so not "better than glibc" |
 | D3 | ✅ **How accurate the special functions are** (§3). Correctly rounded primitives alone leave Rust's special-function errors in place: up to 1.2×10⁶ ulp in `ln_gamma`, 1,590 ulp in `normal_cdf` tails, and 583 ulp in `beta_inc` | **Decided 2026-11-15: option C.** M2 part a ports `math.rs` in Rust's operation order over the correctly rounded primitives (0 ulp against `*.cr.tsv`), which proves the transcription. M2 part b replaces the five weak spots in §3.4 with the T1 algorithms. **erf and erfc are correctly rounded**: a port of CORE-MATH's binary64 erf and erfc without FMA (§3.4). The other replacements are each gated against reference rows (`*.ref.tsv`) at the bounds **fixed on 2026-11-15** (§3.4): `normal_cdf` ≤ 1 ulp, `ln_gamma` ≤ 2, `gamma_inc` ≤ 4, `beta_inc` ≤ 8, each over a stated domain. ADR 0009 accepts all of them as "more accurate than Rust". Downstream rows are remapped once, before M3 uses them. **Fallback (decided 2026-11-15):** if the erf/erfc port does not verify within its time slot, ship erf/erfc at ≤ 1 ulp (option B's algorithm) and keep the port as a 2.x item. | A, T0 only (every distribution and hypothesis row would be remapped twice for later fixes). B, the same without correctly rounded erf/erfc (≤ 1 ulp). D, T1 without part a (a T1 defect could not be told apart from a transcription defect) |
 | D4 | ✅ **Numerical upgrades outside the special functions:** compensated summation in `sum` / `mean`, and polynomial regression on a centered, scaled Vandermonde matrix with Householder QR | Not in 2.0: in those chains Rust's operation order is the definition (as pravash). Measure them against NIST StRD in M4/M5 (class R, §3.6) and file the failures as 2.1 candidates, with numbers | Change them in 2.0: that alters every descriptive and regression row, a scope kimiya's mid-port overflow audit showed is costly (1.7 days, about 30 ADR rows) |
-| D5 | ✅ **JSON.** Rust serializes 38 types and validates 20 on deserialize, with 32 round-trip tests; CLAUDE.md requires serde on every type. tanmatra dropped serde and kimiya marked it n/a. pravash wrote hand codecs over bayan's value tree (1,947 lines). The `#derive` has **no validation hook**, no `Vec<Vec<f64>>`, `u64` or data-variant support, and four open defects | Carry JSON for all 38 types with hand codecs (pravash's `src/json.cyr` as template). Every document serde_json writes from 1.3.0 decodes to the same bits, and every Cyrius document round-trips. Text identity is not required: bayan prints Grisu2 digits. Every decoder goes through the validating constructor, as Rust's `try_from` does | `#derive` (it cannot validate). Or dropping JSON (it breaks a CLAUDE.md principle) |
+| D5 | ✅ **JSON.** Rust serializes 38 types and validates 20 on deserialize, with 32 round-trip tests; CLAUDE.md requires serde on every type. tanmatra dropped serde and kimiya marked it n/a. pravash wrote hand codecs over bayan's value tree (1,947 lines). The `#derive` has **no validation hook**, no `Vec<Vec<f64>>`, `u64` or data-variant support, and four open defects | Carry JSON for all 38 types with hand codecs (pravash's `src/json.cyr` as template). Every document serde_json writes from 1.3.0 decodes to the same bits, and every Cyrius document round-trips. Text identity is not required: bayan prints Grisu2 digits. Every decoder goes through the validating constructor, as Rust's `try_from` does. **Measured (P7, 2026-11-15; §5 step 9c):** through a stand-in pre-pass for bayan's integer and string gaps, 1,460 of 1,495 serde_json documents get serde_json's verdict, and every value read has its bits. **Proposed, for the maintainer:** (a) write serde_json's text byte for byte, with the serde form of impetus's `fmtf.cyr`, vendored with D12's Debug form on the same digit core, so JSON text compares class A (596 of 596 documents; bayan's Grisu2 gives 566); (b) ADR 007 row 16 for the other 35, which serde_json accepts only because it skips a member unchecked | `#derive` (it cannot validate). Or dropping JSON (it breaks a CLAUDE.md principle) |
 | D6 | ✅ **Errors.** Rust's five `PramanaError` variants carry message strings | `PMN_ERR_*` codes, append-only, with no detail strings (as every sibling), plus `PMN_ERR_OUT_OF_MEMORY` and `PMN_ERR_DESERIALIZE`. `pmn_err_name(code)` gives the text. A 1.3.0 error document decodes to its code, and the message is dropped (ADR 0007) | A thread-local "last error detail" string: no sibling precedent |
 | D7 | ✅ **Traits and callbacks.** `Distribution` has 13 impls, with `sample(&self, rng: &mut impl Rng)`. `Rng` is implemented by users. Closures are taken by `monte_carlo_integrate`, `metropolis_hastings`, `gibbs_sampling` (`Fn(&[f64], &mut dyn Rng)`) and `ks_one_sample` | A checked `trait PmnRng { fn next_f64(self): f64 }`, with `PmnSimpleRng` as its impl. **Amended 2026-11-15, after P2:** every API that takes Rust's `&mut impl Rng` is generic over `R: PmnRng` and takes `rng: *R`, so a draw is a static call, as Rust's monomorphized one is. That includes the trait method `fn sample<R: PmnRng>(self, rng: *R): f64`, which Cyrius 6.7.18 accepts. `dyn PmnRng` is kept only where Rust has `&mut dyn Rng`, for Gibbs' conditionals, which get the address of a stack `PmnRngRef` (P3). `Distribution` as a checked trait on each struct, statically dispatched. Callbacks as a function pointer plus a context pointer (kimiya): nothing allocates, and any arity works through `callptr`. **Measured (P2, P3; §5 step 9b):** the callback form stands; a dyn costs about 3 ns on a 12 ns draw | `dyn PmnRng` at every API boundary (D7 as first decided): about 3 ns more per draw (P2), and the gamma, Poisson and beta samplers draw several times per sample. Capturing closures: they allocate on the heap and take at most 5 parameters (3 on Windows). A Gibbs conditional with an explicit context needs 4 (corrected by P3: one that captures its context needs 3) |
-| D8 | ✅ **`ai`.** `StatQuery::query` is async (tokio) and uses the Rust hoosh 1.3 client with five tools (`describe`, `correlate`, `regress`, `t_test`, `forecast`). The Cyrius hoosh has no client library | Port it onto `sandhi_http_post` (synchronous) and bayan, against hoosh's OpenAI-compatible tool-calling API. It lives in `src/ai.cyr`, outside the core `[lib]`, or in a `[lib.ai]` profile (probe P8 decides), so core consumers never compile sandhi or TLS. Tests run on a recorded-response transport. File a client-library request in hoosh (L9) | Drop `ai`: there is no language reason, so the §0.1 rule forbids it |
+| D8 | ✅ **`ai`.** `StatQuery::query` is async (tokio) and uses the Rust hoosh 1.3 client with five tools (`describe`, `correlate`, `regress`, `t_test`, `forecast`). The Cyrius hoosh has no client library | Port it onto `sandhi_http_post` (synchronous) and bayan, against hoosh's OpenAI-compatible tool-calling API. It lives in `src/ai.cyr`, outside the core `[lib]`, or in a `[lib.ai]` profile (probe P8 decides), so core consumers never compile sandhi or TLS. Tests run on a recorded-response transport. File a client-library request in hoosh (L9). **Decided by P8 (2026-11-15; §5 step 9c):** a `[lib.ai]` profile, with sandhi kept out of `[deps] stdlib`. The `ai` test includes `lib/sandhi.cyr` itself. Consumers get both bundles with compile-verified sidecars, and pramana's own build stays at 0.49 s, not 1.30 s | Drop `ai`: there is no language reason, so the §0.1 rule forbids it |
 | D9 | ✅ **`soorat-compat`.** Five data shapes plus `HistogramData::from_data`; soorat is still Rust | Port it into the core bundle, with JSON. Dead-code elimination removes it for consumers who don't call it, and a Rust soorat can read the JSON. No feature flag | Leave it out until soorat ports |
 | D10 | ✅ **u128 results.** `factorial`, `permutations` and `combinations` return `Result<u128>` | An out-pointer `PmnU128 { lo, hi }` with pramana's own overflow-checked multiply and divide by u64 (about 60 lines; class A) | bayan's `u128` handles: they pull bayan's big-integer layer into a 4-function module |
 | D11 | ✅ **Memory convention.** About 20 functions return a `Vec`, and nine types own `Vec`s | **Caller buffers** `(out, cap)` plus a count, wherever the length follows from the inputs: `residuals*`, `moving_average`, `exponential_smoothing`, `difference`, `integrate`, `arima_forecast`, `evaluate_grid`, `simulate`, `viterbi`, `steady_state` and the MVN sample. **Owned structs** (`KernelDensity`, `MultivariateNormal`, `MarkovChain`, `HiddenMarkovModel`, the models, `PcaResult`, `McmcResult`) are freelist-allocated, with `_drop`. **Constructors** write into caller storage (`PmnNormal_new(out, mean, sd)`), which avoids the open small-struct-in-`Result` miscompile. **Scratch** (median and percentile copies, sort buffers, HMM tables) comes from a work-table pool (kimiya ADR 0007). Probe P4 confirms the heap stays flat | Returning `alloc`'d pointers: the bump heap never frees, so a `pdf` in a loop leaks |
@@ -165,11 +166,11 @@ Read from the 6.7.18 guide, the stdlib reference, the `lib/` sources and the ope
 | `Vec<f64>`, `Vec<Vec<f64>>` | `vec` holds 8-byte words, **aborts** on an out-of-bounds `vec_get` and never frees an outgrown buffer; ganita matrices are flat row-major | flat arrays plus counts; caller buffers (D11) |
 | `sort_unstable_by`, `select_nth_unstable_by`, `sort_by(total_cmp)` (median, percentile, mode, KS, PCA) | `vec_sort_by` (introsort, unstable) and `vec_select_nth` (aborts if k is out of range) work on a `Vec` only; there is no stable sort | an f64-array introsort and quickselect stand-in (L3); probe P6 settles ±0 and tie order |
 | `HashMap<String, Vec<f64>>` / `<String, f64>` (`ai` only) | `map_new_str`. Values are words, so f64 bits fit. The seed is random per process, and Rust's `RandomState` order is random too | port; iterate in sorted key order for determinism (ADR 0007) |
-| serde on 38 types, `try_from` validation on 20 | `#derive(Serialize/Deserialize)` through bayan: no validation hook, no `Vec<Vec<f64>>`, `u64` or data variants; four open defects. bayan writes Grisu2 digits and parses correctly rounded; non-finite values are written as `null` | hand codecs (D5), probe P7 |
+| serde on 38 types, `try_from` validation on 20 | `#derive(Serialize/Deserialize)` through bayan: no validation hook, no `Vec<Vec<f64>>`, `u64` or data variants; four open defects. bayan writes Grisu2 digits and parses correctly rounded; non-finite values are written as `null`. P7: the value tree refuses an integer at or above 2^63, reads `-0` as +0, and accepts a raw control byte in a string, all where serde_json differs; a text pre-pass covers the three. Grisu2 differs from serde_json's text on 9,714 of 280,562 doubles, impetus's `fmtf.cyr` on none | hand codecs (D5), probe P7 |
 | `thiserror` messages | integer codes, in the stdlib style | D6 |
 | `async fn query` (tokio) plus the Rust hoosh client | `async`/`await` over epoll exists; `sandhi_http_post` is synchronous; hoosh 2.x is a gateway with no client library | synchronous HTTP (D8) |
 | `#[must_use]`, `#[inline]` | `#must_use`, `#pure`; `#inline` declines helpers with more than 2 parameters or a pointer parameter | translate |
-| cargo features `ai`, `soorat-compat`, `logging` | `[features]` switch optional dependencies only; `[lib.X]` profiles; `[build] dce = true` | one bundle plus dead-code elimination; `ai` per D8 |
+| cargo features `ai`, `soorat-compat`, `logging` | `[features]` switch optional dependencies only; `[lib.X]` profiles; `[build] dce = true`. P8: `[deps] stdlib` is prepended to every compile, so listing sandhi there costs each build and test file about 0.8 s; a profile's sidecar is verified from its bundle alone. Dead code is removed on x86_64 ELF, but only NOPed on PE and aarch64 | one bundle plus dead-code elimination; `ai` per D8 |
 | criterion (34 benches), `#[test]` (319) | `cyrius bench` (`.bcyr`), `cyrius test` (`.tcyr`), `cyrius fuzz` (`.fcyr`). Asserts are integer-only, so use pravash's `tests/ulp.cyr` | twins for all |
 | `pub use hisab` | — | not carried: a Rust re-export |
 
@@ -820,7 +821,32 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
        - **Findings for later:** an owned object over 4 KB pays the freelist's open large-block issue (36 µs per MVN
          new/drop at d = 32). The stable median by merge sort takes 222 ms for 10⁶; M4 can make it O(n) with a stable
          three-way quickselect.
-   - **9c:** P7, P8.
+   - **9c ✅ (2026-11-15): P7, P8** (`port-parity.md` §6.3).
+     - **P7, JSON:** serde_json 1.0.154 wrote 1,495 documents for nine types that carry every shape pramana
+       serializes, with serde_json's verdict and value for each. pramana decodes each one through bayan's tree, serde's
+       struct rules and the constructor's checks.
+       - **bayan's tree alone** agrees on 1,325. It differs on integers at or above 2^63 (108; 13 of the 35 saved
+         `SimpleRng` states are refused), on raw control bytes (14) and on `-0` (13).
+       - **A stand-in pre-pass** fixes all 135 (§8.3, ledger L11). The 35 left are documents serde_json accepts only
+         because it skips a member unchecked: a duplicate key, nesting past 128 or a lone surrogate inside it.
+       - **Error codes:** every agreeing refusal maps a constructor's refusal to its code and the rest to
+         `DESERIALIZE`.
+       - **Text:** impetus's `fmtf.cyr` writes serde_json's text on all 596 documents both read; bayan's Grisu2 on 566.
+         Over 280,562 doubles, `fmtf.cyr` differs nowhere and Grisu2 on 9,714.
+       - **Proposed for the maintainer:**
+         - (a) amend D5 to write serde_json's text byte for byte, with `fmtf.cyr` vendored once for this and D12's
+           Debug form;
+         - (b) ADR 007 row 16, accepting the 35 until bayan's opt-in for unread members lands.
+       - **serde_json's default parse** misreads a float in 68 of the 596 documents, whichever printer wrote them. The
+         golden JSON rows are generated with `float_roundtrip` on, as ushma's and impetus's are.
+     - **P8, the bundle:** three layouts of a core stand-in, an `ai` stand-in on sandhi, and pramana's tests.
+       - **Dead-code elimination:** a one-function consumer is the size of an empty one (411,928 bytes on x86_64),
+         every core function adds 65,536, and a core consumer never compiles sandhi.
+       - **`ai`** adds 839 KB and about 1 s of build. A profile bundle and an outside file give the same binary.
+       - **sandhi in `[deps] stdlib`** costs every pramana compile about 0.8 s (build 1.30 s against 0.49 s).
+       - **Decided for D8:** the `[lib.ai]` profile, with sandhi out of `[deps]`. The `ai` test includes
+         `lib/sandhi.cyr` itself, and `distlib --check`, `deps --locked` and `audit` pass.
+       - **PE and aarch64:** dead code is NOPed, not compacted (cyrius's roadmap: "the DCE compaction arc").
    - **9d:** P9's prototypes.
    - **9e:** the CORE-MATH erf/erfc port.
 
@@ -993,7 +1019,9 @@ which keeps every consumer's compile free of it.
 | a closure capturing an f64 (tests, examples) | copy the capture into a typed local before arithmetic: `var kf: f64 = k;` (P3) |
 | `rng: &mut impl Rng` | `rng: *R`, with `<R: PmnRng>` on the fn or method: `fn sample<R: PmnRng>(self, rng: *R): f64` in `PmnDistribution` (D7, amended after P2) |
 | `&mut dyn Rng` (Gibbs' conditionals) | the address of a stack `PmnRngRef { o: dyn PmnRng }`, formed by a non-generic helper (P3) |
-| serde | `src/json.cyr` hand codecs; decode calls the validating constructor (D5) |
+| serde | `src/json.cyr` hand codecs; decode calls the validating constructor (D5). Before bayan parses, a pre-pass (P7's `p7_lift`, ledger L11) refuses a raw control byte in a string and rewrites integers: a negative one becomes a float, so `-0` stays −0.0; one in 2^63 … 2^64 − 1 becomes the negative integer with its bits; a larger one becomes a float. Then serde's struct rules: skip an unknown member, refuse a known one twice or missing, read the sequence form |
+| a u64 or usize field | a JSON integer only (a float, even `1.0` or `-0`, refuses); the pre-pass's negative integers are its values at or above 2^63 (P7) |
+| an f64 field | any JSON number, refusing one that parses to ±∞ (serde_json's "number out of range"); `null` refuses, so a document holding NaN can't be read back, in Rust or here (P7) |
 | `HashMap<String, Vec<f64>>` (`ai`) | `map_new_str`, with keys sorted before iteration |
 
 ### 8.4 Names
@@ -1019,7 +1047,8 @@ Probe 4 settles this, under D11:
 - **P4's soaks** (port-parity §6.2) left the bump heap, the freelist and the mapped size unchanged under every
   convention above. Two costs remain: an owned buffer over 4 KB maps and unmaps on each new/drop (the freelist's open
   large-block issue), and the pool holds its buffers for the process's lifetime.
-- **JSON** decoding allocates the decoded object, which the caller drops.
+- **JSON** decoding allocates the decoded object, which the caller drops. The value tree goes into an arena allocator
+  that is reset for each document (P7).
 - **Never `alloc_reset`**: it would wipe the consumer's heap.
 - **Every buffer parameter** is checked for null and for aliasing (the gaps kimiya's 2.0.1 review found).
 
@@ -1067,7 +1096,8 @@ the probe numbers. Where an issue is already open, pramana adds itself as a cons
 | L7 | `#derive`: a validation hook, `Vec<Vec<f64>>`, `u64` | cyrius (the vector-array issue is open; pramana adds the hook) | `src/json.cyr` |
 | L8 | lgamma, erf/erfc, incomplete gamma/beta in ganita | ganita: a **scope** request, since these are in neither its scope nor its out-of-scope list (§1.3). pramana's T1 functions are the seed, and a second consumer is the cue to extract them | `src/special.cyr` |
 | L9 | a hoosh client library (tool calling) | hoosh | `src/ai.cyr` |
-| L10 | `#derive(Debug)` and a shortest-float printer (pravash's L16) | cyrius | pravash's `fmtf.cyr` |
+| L10 | `#derive(Debug)` and a shortest-float printer (pravash's L16); serde_json's f64 text (P7: bayan's Grisu2 differs on 9,714 of 280,562 doubles) | cyrius; bayan (ushma's open issue 2026-11-11, `bayan_f64_to_json_serde`; pramana adds its numbers) | `src/fmtf.cyr`: impetus's digit core with its serde_json form and pravash's Debug form (if D5's proposed amendment is taken) |
+| L11 | the JSON value tree refuses an integer at or above 2^63, reads `-0` as +0, and accepts a raw control byte in a string (P7: 135 of 1,495 serde_json documents read differently) | bayan (open issues 2026-11-09 i64-max from impetus, 2026-11-11 `-0` from pravash, 2026-11-11 raw control bytes from ushma; pramana adds its numbers) | `src/json.cyr`'s pre-pass |
 
 Also filed at step 10, with no stand-in (a rule in §8.3 covers each meanwhile):
 - **cyrius:** a closure's captured f64 is an untyped word in arithmetic, though it binds `T = f64` as a generic
@@ -1076,6 +1106,9 @@ Also filed at step 10, with no stand-in (a rule in §8.3 covers each meanwhile):
   builds (P3).
 - **cyrius:** pramana's numbers added to the open freelist large-block issue (2026-11-11): 36 µs per MVN new/drop at
   d = 32, and an mmap per MH result (P4).
+- **bayan:** pramana's numbers added to impetus's open request for an opt-in that leaves unread members unchecked
+  (2026-11-09, duplicate keys), with two more cases P7 found there: nesting past 128 and a lone surrogate. 35 of 1,495
+  serde_json documents wait on it (ADR 007 row 16, if taken).
 
 ---
 

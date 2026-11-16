@@ -1,0 +1,73 @@
+# p8_bundle/core.cyr — probe P8's stand-in for the core modules (port plan §5 step 9c, D8). One public function per
+# production stdlib leaf, so a consumer's dead-code elimination is measured against a bundle that reaches all of
+# them. Bundled with src/constants.cyr by scripts/probes/p8_bundle.sh, in a scratch copy.
+
+var _pmn_p8_busy = 0;
+
+# math: a pdf's body (the exp polyfill).
+fn pmn_p8_normal_pdf(x: f64): f64 {
+    var e: f64 = -0.5 * x * x;
+    var r: f64 = _f64_exp_polyfill(e);
+    var c: f64 = 0.3989422804014327;
+    return c * r;
+}
+
+# ganita: the exact cube root.
+fn pmn_p8_cbrt(x: f64): f64 {
+    var r: f64 = ganita_f64_cbrt(x);
+    return r;
+}
+
+# bayan: an f64 through JSON text and back, as a codec does.
+fn pmn_p8_json_roundtrip(x: f64): f64 {
+    var buf[40];
+    var n = bayan_f64_to_json(x, &buf);
+    var v = bayan_json_v_parse_buf(&buf, n);
+    var b = bayan_json_v_float(v);
+    var r: f64 = b;
+    return r;
+}
+
+# freelist and atomic: a claim and release, as the work-table pool does.
+fn pmn_p8_pool_cycle(bytes): i64 {
+    if (atomic_cas(&_pmn_p8_busy, 0, 1) == 0) { return 0 - 1; }
+    var p = fl_alloc(bytes);
+    fl_free(p);
+    atomic_store(&_pmn_p8_busy, 0);
+    return 0;
+}
+
+# fnptr: a callback with its context word.
+fn pmn_p8_callback(f, ctx, x: f64): f64 {
+    var r: f64 = callptr(f, ctx, x);
+    return r;
+}
+
+# overflow: a saturating sum.
+fn pmn_p8_saturating(a, b): i64 {
+    return a +| b;
+}
+
+# tagged and result: a value-form Result.
+fn pmn_p8_checked(x: f64): Result {
+    if (x != x) { return Err(1); }
+    return Ok(0);
+}
+
+# vec, str and fmt: n integers formatted into a string; its length.
+fn pmn_p8_format(n): i64 {
+    var v = vec_new();
+    var i = 0;
+    while (i < n) {
+        vec_push(v, i * i);
+        i = i + 1;
+    }
+    var sb = str_builder_new();
+    i = 0;
+    while (i < vec_len(v)) {
+        str_builder_add_int(sb, vec_get(v, i));
+        str_builder_putc(sb, 32);
+        i = i + 1;
+    }
+    return load64(sb + 8);
+}

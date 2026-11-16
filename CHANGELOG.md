@@ -94,6 +94,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     frees what it outgrew. Every soak leaves the bump heap, the freelist and the mapped size unchanged: 10⁶ pdf/cdf
     calls, 10⁵ MVN pdfs, 10⁶ MH samples, 10³ Baum–Welch iterations, 10 medians of 10⁶, and pool overflow.
 
+- **Probes, part 9c** (port plan M0 step 9; `scripts/probes/p7_json.cyr` with `p7_compare.py` and the Rust twin
+  `rust/src/bin/p7_json.rs`, and `p8_bundle.sh` with `p8_bundle/`; results in `docs/development/port-parity.md`
+  §6.3).
+  - **P7, JSON:** serde_json 1.0.154 wrote 1,495 documents for nine types covering every serialized shape.
+    - **bayan's value tree alone** reads 1,325 as serde_json does. It differs on integers at or above 2^63 (13 of 35
+      saved RNG states are refused), on `-0` and on raw control bytes in strings.
+    - **A stand-in pre-pass** brings agreement to 1,460, with every value read bit-exact. The 35 left are documents
+      serde_json accepts only because it skips a member unchecked.
+    - **Text:** impetus's `fmtf.cyr` writes serde_json's text on all 596 documents both sides read. bayan's Grisu2
+      matches on 566, and differs on 9,714 of 280,562 doubles.
+    - **Proposed for the maintainer:** D5 text identity through `fmtf.cyr`, and ADR 007 row 16 for the 35.
+  - **P8, the bundle:** a one-function consumer is the size of an empty one (411,928 bytes on x86_64), and a core
+    consumer never compiles sandhi. `ai` adds 839 KB. Listing sandhi in `[deps] stdlib` would make every pramana
+    compile 0.8 s slower (build 1.30 s against 0.49 s). So D8 is a `[lib.ai]` profile with sandhi kept out of
+    `[deps]`, and the `ai` test includes it itself. On PE and aarch64, dead code is NOPed, not compacted.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

@@ -642,3 +642,160 @@ frees.
 - **The stable median costs a full sort:** 222 ms for 10⁶ elements by merge sort, where Rust selects in O(n). M4 can
   keep ADR 007 row 14's rule at O(n) expected with a stable three-way quickselect over pool scratch. Partitioning into
   <, = and > keeps input order within each part, so the k-th element is the stable sort's k-th. The parity rows decide.
+
+### 6.3 Part 9c: P7, P8 (2026-11-15)
+
+**P7, JSON (`p7_json.cyr`, `p7_compare.py`, and the twin `rust/src/bin/p7_json.rs`).** serde_json 1.0.154 wrote
+1,495 documents for nine types. Between them they carry every shape pramana serializes:
+- `Normal`: two validated f64s;
+- `Binomial`: a u64 and an f64;
+- `SimpleRng`: a u64, with zero mapped to 1;
+- `KernelDensity`: a vector and a unit enum;
+- `PramanaError`: a newtype-variant enum;
+- `TestResult`: a string, a bool, and f64s that may be NaN;
+- `MarkovChain`: a matrix and a usize;
+- `MultivariateNormal`: validated, with a cached factor that decoding ignores;
+- `HistogramData`: u64 vectors.
+
+The documents are:
+- 132 base values, each also in its pretty form;
+- 1,231 variants of each type's first value:
+  - whitespace and key order;
+  - unknown, missing, duplicate and null fields;
+  - 33 number forms and, in string fields, 15 string forms, in every field;
+  - enum and sequence forms;
+  - syntax faults;
+  - the constructors' edge values.
+
+Each row carries serde_json's verdict and the value it read, with `float_roundtrip` on (a correctly rounded parse). The
+Cyrius side decodes each document as a hand codec would:
+- bayan 1.11.1's value tree;
+- serde's rules for the type: an unknown member is skipped, a known one twice refuses, a missing one refuses, and the
+  sequence form is read;
+- then the constructor's checks.
+
+It then writes the value again with two printers, and serde_json reads both texts back. Run:
+- `p7_json corpus > build/p7_rust_corpus.tsv`, then `p7_json floats > build/p7_rust_floats.tsv`;
+- `./build/p7_json > build/p7_cyrius.tsv`;
+- `p7_json read build/p7_cyrius.tsv`, built with and without `roundtrip`;
+- `p7_compare.py`.
+
+| Decoding | Agrees with serde_json | Verdict differs | Value differs |
+|---|---|---|---|
+| bayan's tree alone | 1,325 | 162 | 8 |
+| through the stand-in pre-pass `p7_lift` | 1,460 | 35 | 0 |
+
+| Cause | Differs, tree alone | Fixed by the pre-pass |
+|---|---|---|
+| an integer at or above 2^63, or below −2^63, in a u64 field, an f64 field or an unread member | 108 | 108 |
+| a raw control byte in a string, which serde_json refuses anywhere | 14 | 14 |
+| `-0`: an f64 read +0.0, and a u64 read 0 where serde_json refuses the float −0.0 | 13 | 13 |
+| a duplicate key in a member the type doesn't read | 19 | 0 |
+| nesting past 128 levels in an unread member | 8 | 0 |
+| a lone surrogate in an unread member | 8 | 0 |
+
+- **Saved RNG states.** 13 of the 35 `SimpleRng` base states are above 2^63. bayan alone refuses each of those
+  documents, so a saved state could not be restored about a third of the time.
+- **The pre-pass** rewrites the text before bayan parses it (86 lines):
+  - a negative integer becomes a float (`-1.0`, `-0.0`), so an f64 field keeps −0.0 and a u64 field refuses, both as
+    serde_json does;
+  - an integer in 2^63 … 2^64 − 1 becomes the negative integer with the same bits, which nothing else now produces.
+    A u64 reader takes the bits back, and an f64 reader rounds them as unsigned;
+  - a larger integer becomes a float, which an f64 field reads correctly rounded and a u64 field refuses;
+  - a raw control byte inside a string refuses the document.
+  It covers three open bayan issues: integers above i64 (impetus), `-0` (pravash) and raw control bytes (ushma).
+- **The 35 left** are documents serde_json accepts only because it skips a member without checking it, where bayan
+  checks the whole document. serde_json never writes one for these types. bayan's open request for that opt-in is
+  impetus's duplicate-key issue. The nesting and lone-surrogate cases are new to it, and pramana adds them at step 10.
+- **Error codes.** Every agreeing refusal maps one to one:
+  - a constructor's refusal gives its own code (`INVALID_PARAMETER` 39, `INVALID_SAMPLE` 2, `DIMENSION_MISMATCH` 7);
+  - every other serde_json error gives `DESERIALIZE` (816).
+- **Non-finite values.** serde_json writes NaN and ±∞ as `null`, and refuses `null` for an f64. So Rust can't read
+  back its own document for a `TestResult` that holds one. pramana refuses it too, and its writer also writes `null`.
+- **MVN.** Decoding ignores the cached `cholesky_l`, `log_det` and `dim`, as serde's repr does, even when they hold
+  `"x"`, `null` or `1e400`. Re-encoding recomputes them with hisab 1.4.0's Cholesky, transcribed, and the stdlib ln.
+  The text matches serde_json's on all 7 base matrices.
+
+**The text** of the 596 documents both sides read:
+
+| Printer | Text equals serde_json's | pramana reads it back | serde_json reads it, `float_roundtrip` | serde_json reads it, default |
+|---|---|---|---|---|
+| impetus's `fmtf.cyr`, serde_json form | 596 | 596 | 596 | 528 |
+| bayan's Grisu2 | 566 | 596 | 596 | 528 |
+
+serde_json's default parse is best effort. It misreads a float in 68 of the 596 documents, whichever printer wrote
+them, and it does the same to documents Rust wrote (ushma measured 1–2 ulp). A Rust consumer that needs exact values
+turns on `float_roundtrip`. pramana's golden JSON rows are generated with it on.
+
+**The printers** on 280,562 doubles, with both signs: every f64 in the base values, every power of two, the powers of
+ten and their neighbours, the integers 0 … 1,000, 100,000 random bit patterns and 50,000 short decimals.
+
+| Comparison | Differs on |
+|---|---|
+| `fmtf.cyr`'s serde_json form against serde_json's text | 0 |
+| `fmtf.cyr`'s Display form against Rust's `{}` | 0 |
+| bayan's Grisu2 against serde_json's text | 9,714 (694 of them longer than the shortest) |
+| `bayan_f64_parse` of serde_json's text against the bits written | 0 |
+
+This agrees with ushma's probe 11, where Grisu2 differed on 6,276 of 160,378.
+
+**What it means for D5:**
+- Every document serde_json writes decodes to the same bits once the pre-pass is in, except the 35.
+- Writing through `fmtf.cyr` instead of bayan's printer gives serde_json's text byte for byte, so text can compare
+  as class A. pravash's `fmtf.cyr` is the same digit core with Rust's Debug form added, which D12 needs. One vendored
+  file can carry both forms. The amendment is proposed in the plan's D5 row.
+- The 35 documents need an ADR 007 row until bayan's opt-in lands. That row is proposed too.
+
+**P8, the bundle (`p8_bundle.sh`, `p8_bundle/`).** The probe works in scratch copies of pramana. Each holds
+`src/constants.cyr` and two stand-ins:
+- a core module with one public function per production stdlib leaf;
+- an `ai` module that posts through sandhi to a closed port.
+
+They are laid out three ways:
+- **profile:** sandhi and its five companions (tls, async, random, fdlopen and dynlib) in `[deps] stdlib`, as ushma
+  has it, plus `[lib]` and `[lib.ai]`;
+- **outside:** no sandhi in `[deps]`, and `src/ai.cyr` in no bundle;
+- **hybrid:** no sandhi in `[deps]`, plus `[lib]` and `[lib.ai]`.
+
+Each copy's tests include an `ai` test that includes `lib/sandhi.cyr` itself.
+
+**The bundles.** `dist/pramana.cyr` is 9,385 bytes, and its compile-verified sidecar lists 9 leaves (math, ganita,
+bayan, atomic, freelist, overflow, result, vec, str). `dist/pramana-ai.cyr` is 9,905 bytes, and its sidecar adds
+sandhi. The core bundle names sandhi nowhere. The hybrid's `ai` bundle and sidecar are byte-identical to the profile
+layout's. In the hybrid, `distlib --check`, `deps --locked` and `audit` all pass.
+
+**pramana's own compiles** (seconds, pinned, three interleaved runs):
+
+| Layout | `cyrius build` | `cyrius test` with the ai test | without it | the ai test alone |
+|---|---|---|---|---|
+| profile | 1.29–1.30 | 3.43–3.50 | 2.40 | 1.22 |
+| outside | 0.49–0.50 | 2.08–2.12 | | |
+| hybrid | 0.49 | 2.06–2.08 | 0.99 | 1.19 |
+
+`[deps] stdlib` is prepended to every compile. With sandhi listed there, every build and every test file pays about
+0.8 s more. In the hybrid only the `ai` test pays. Its `include "lib/sandhi.cyr"` resolves from the pinned
+toolchain's stdlib, so that copy is neither vendored nor locked.
+
+**Consumers**, built with dead-code elimination, in bytes. Each one runs on all three targets with the same output.
+
+| Consumer | x86_64 ELF | PE | aarch64 | Build |
+|---|---|---|---|---|
+| calls nothing | 411,928 | 1,338,880 | 1,357,992 | 0.51–0.57 s |
+| calls one function | 411,928 | 1,338,880 | 1,357,992 | 0.51–0.58 s |
+| calls every core function | 477,464 | 1,339,392 | 1,357,992 | 0.51–0.60 s |
+| calls one function, through the profile layout's core bundle | 411,928 | 1,338,880 | 1,357,992 | 0.51–0.58 s |
+| `ai`: the profile bundle, or the core bundle plus `src/ai.cyr` | 1,316,280 | 3,041,792 | 3,069,056 | 1.30–1.67 s |
+
+- **A one-function consumer** is the size of an empty one. A core consumer never compiles sandhi, TLS or sigil in
+  any layout.
+- **`ai` adds 839 KB** on x86_64 and about 1 s of build. The profile bundle and the outside file give the same binary.
+- **PE warnings.** A PE build of `ai` warns from `lib/dynlib.cyr` and `lib/fdlopen.cyr`: syscalls not routed on
+  Windows. ushma met the same.
+- **PE and aarch64 binaries keep their dead code.** On x86_64 ELF it is removed (805,391 bytes for the empty
+  consumer). On PE and aarch64 it is NOPed but not compacted. The compiler says so, and cyrius's roadmap has it as
+  "the DCE compaction arc".
+
+**What it means for D8:** the `[lib.ai]` profile, with sandhi kept out of `[deps] stdlib` (the hybrid):
+- consumers get both bundles and their sidecars, the same as ushma's form;
+- pramana's own compiles stay at the core's cost;
+- only the `ai` test carries sandhi.

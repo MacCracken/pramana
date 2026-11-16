@@ -1,0 +1,43 @@
+# p8_bundle/consumer.cyr — probe P8's consumer. `-D P8_ONE` calls one core function, `-D P8_ALL` every one, and
+# `-D P8_AI` the ai post as well; with none, main calls nothing. It prints sandhi's answer (`ai 1`) and a
+# checksum of the core results, and exits 0.
+
+fn p8_square(ctx, x: f64): f64 {
+    var r: f64 = x * x;
+    return r;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var s: f64 = 0.0;
+    #ifdef P8_ONE
+    var a: f64 = pmn_p8_normal_pdf(0.5);
+    s = s + a;
+    #endif
+    #ifdef P8_ALL
+    var b: f64 = pmn_p8_normal_pdf(0.5);
+    var c: f64 = pmn_p8_cbrt(27.0);
+    var d: f64 = pmn_p8_json_roundtrip(0.1);
+    var e: f64 = pmn_p8_callback(&p8_square, 0, 3.0);
+    s = s + b + c + d + e;
+    pmn_p8_pool_cycle(64);
+    var t, w = pmn_p8_checked(s);
+    if (is_err_result(t)) { s = 0.0; }
+    var k = pmn_p8_saturating(9223372036854775807, 1) + pmn_p8_format(10);
+    if (k == 0) { s = 0.0; }
+    #endif
+    #ifdef P8_AI
+    var j = "{\"model\":\"m\",\"messages\":[]}";
+    print("ai ", 3);
+    fmt_int(pmn_p8_ai_post(j, strlen(j)));
+    println("");
+    #endif
+    var bits = s;
+    print("p8 ", 3);
+    fmt_int(bits & 0xFFFF);
+    println("");
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);
