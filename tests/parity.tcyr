@@ -762,15 +762,33 @@ fn _par_math(fp, fl): i64 {
     return 0;
 }
 
-# `special` rows (M2): src/special.cyr, 1.3.0's math.rs. Part a1: fdlibm's erf and erfc and Φ and 1 − Φ, in Rust's
-# operation order on the correctly rounded exp (T0), so every row matches special.cr.tsv's model at 0 ulp.
+# `special` rows (M2): src/special.cyr, 1.3.0's math.rs in Rust's operation order on the correctly rounded primitives
+# (T0), so every row matches special.cr.tsv's model at 0 ulp. Part a1: fdlibm's erf and erfc, Φ and 1 − Φ. Part a2:
+# lnΓ, the Stirling remainder, bd0, the prefactor kernel and ln B.
 fn _par_special(fp, fl): i64 {
-    if (_par_in_n != 1) { return 0; }
     var x: f64 = _par_in(0);
-    if (_par_eq(fp, fl, "math::erf") == 1) { var r0: f64 = _pmn_erf(x); _par_got_f(r0); return 1; }
-    if (_par_eq(fp, fl, "math::erfc") == 1) { var r1: f64 = _pmn_erfc(x); _par_got_f(r1); return 1; }
-    if (_par_eq(fp, fl, "math::normal_cdf") == 1) { var r2: f64 = _pmn_normal_cdf(x); _par_got_f(r2); return 1; }
-    if (_par_eq(fp, fl, "math::normal_sf") == 1) { var r3: f64 = _pmn_normal_sf(x); _par_got_f(r3); return 1; }
+    if (_par_in_n == 1) {
+        if (_par_eq(fp, fl, "math::erf") == 1) { var r0: f64 = _pmn_erf(x); _par_got_f(r0); return 1; }
+        if (_par_eq(fp, fl, "math::erfc") == 1) { var r1: f64 = _pmn_erfc(x); _par_got_f(r1); return 1; }
+        if (_par_eq(fp, fl, "math::normal_cdf") == 1) { var r2: f64 = _pmn_normal_cdf(x); _par_got_f(r2); return 1; }
+        if (_par_eq(fp, fl, "math::normal_sf") == 1) { var r3: f64 = _pmn_normal_sf(x); _par_got_f(r3); return 1; }
+        if (_par_eq(fp, fl, "math::ln_gamma") == 1) { var r4: f64 = _pmn_ln_gamma(x); _par_got_f(r4); return 1; }
+        if (_par_eq(fp, fl, "math::stirling_error") == 1) {
+            var r5: f64 = _pmn_stirling_error(x);
+            _par_got_f(r5);
+            return 1;
+        }
+        return 0;
+    }
+    if (_par_in_n != 2) { return 0; }
+    var y: f64 = _par_in(1);
+    if (_par_eq(fp, fl, "math::bd0") == 1) { var r6: f64 = _pmn_bd0(x, y); _par_got_f(r6); return 1; }
+    if (_par_eq(fp, fl, "math::ln_gamma_kernel") == 1) {
+        var r7: f64 = _pmn_ln_gamma_kernel(x, y);
+        _par_got_f(r7);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "math::ln_beta") == 1) { var r8: f64 = _pmn_ln_beta(x, y); _par_got_f(r8); return 1; }
     return 0;
 }
 
@@ -879,6 +897,11 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "math::erfc") == 1) { return 0; }
     if (_par_eq(fp, fl, "math::normal_cdf") == 1) { return 0; }
     if (_par_eq(fp, fl, "math::normal_sf") == 1) { return 0; }
+    if (_par_eq(fp, fl, "math::ln_gamma") == 1) { return 0; }    # T0 on correctly rounded ln and sin (part a2)
+    if (_par_eq(fp, fl, "math::stirling_error") == 1) { return 0; }
+    if (_par_eq(fp, fl, "math::bd0") == 1) { return 0; }         # ln_1p
+    if (_par_eq(fp, fl, "math::ln_gamma_kernel") == 1) { return 0; }
+    if (_par_eq(fp, fl, "math::ln_beta") == 1) { return 0; }
     return 0 - 1;
 }
 

@@ -1,8 +1,9 @@
 # special.tcyr — the special functions of src/special.cyr (M2).
 #
-# tests/parity.tcyr replays 1.3.0's results on tests/golden/special.tsv at 0 ulp, against special.cr.tsv where exp
-# is corrected. These tests carry 1.3.0's own unit tests over (math.rs), and pin what a class-C replay does not
-# check bit for bit: the sign of a zero, a NaN's payload, and erf's odd symmetry.
+# tests/parity.tcyr replays 1.3.0's results on tests/golden/special.tsv at 0 ulp, against special.cr.tsv where a
+# primitive is corrected. These tests carry 1.3.0's own unit tests over (math.rs), and pin what a class-C replay does
+# not check bit for bit: the sign of a zero, a NaN's payload, erf's odd symmetry, 1.3.0's poles and cutoffs, and the
+# identities bd0 and ln B keep.
 
 include "tests/lib.cyr"
 
@@ -165,6 +166,141 @@ fn main() {
     var pt: f64 = _pmn_normal_cdf(-40.0);
     var st: f64 = _pmn_normal_sf(40.0);
     assert(bits(pt) == 0 && bits(st) == 0, "Phi(-40) and 1 - Phi(40) underflow to +0");
+
+    test_group("ln_gamma_known_values (1.3.0's test)");
+    var t10: f64 = 0.0000000001;
+    var t8: f64 = 0.00000001;
+    var g1: f64 = _pmn_ln_gamma(1.0);
+    var g5: f64 = _pmn_ln_gamma(5.0);
+    var gh: f64 = _pmn_ln_gamma(0.5);
+    var l24: f64 = _pmn_ln(24.0);
+    var lpi: f64 = _pmn_ln(pi);
+    var hlpi: f64 = 0.5 * lpi;
+    assert(f64_abs(g1) < t10, "lnGamma(1) = 0");
+    assert(f64_abs(g5 - l24) < t8, "lnGamma(5) = ln 24");
+    assert(f64_abs(gh - hlpi) < t8, "lnGamma(1/2) = ln sqrt(pi)");
+
+    test_group("stirling_error_continuous_at_cutoff (1.3.0's test)");
+    var g10: f64 = _pmn_ln_gamma(10.0);
+    var l10: f64 = _pmn_ln(10.0);
+    var b1: f64 = 9.5 * l10;
+    var b2: f64 = b1 - 10.0;
+    var b3: f64 = b2 + _PMN_MATH_LN_SQRT_2PI;
+    var below: f64 = g10 - b3;
+    var se10: f64 = _pmn_stirling_error(10.0);
+    var t14b: f64 = 0.00000000000001;
+    assert(f64_abs(se10 - below) < t14b, "the series at 10 agrees with the direct form within 1e-14");
+
+    test_group("ln_beta_matches_ln_gamma_and_is_stable (1.3.0's test)");
+    var pa[40];
+    var pb[40];
+    store64(&pa, 0.5);
+    store64(&pb, 0.5);
+    store64(&pa + 8, 2.0);
+    store64(&pb + 8, 3.0);
+    store64(&pa + 16, 0.5);
+    store64(&pb + 16, 12.0);
+    store64(&pa + 24, 12.0);
+    store64(&pb + 24, 0.5);
+    store64(&pa + 32, 15.0);
+    store64(&pb + 32, 25.0);
+    var t12: f64 = 0.000000000001;
+    var lb_ok = 1;
+    for (var m = 0; m < 5; m = m + 1) {
+        var am: f64 = load64(&pa + m * 8);
+        var bm: f64 = load64(&pb + m * 8);
+        var ga: f64 = _pmn_ln_gamma(am);
+        var gb: f64 = _pmn_ln_gamma(bm);
+        var abm: f64 = am + bm;
+        var gab: f64 = _pmn_ln_gamma(abm);
+        var naive: f64 = ga + gb - gab;
+        var lb: f64 = _pmn_ln_beta(am, bm);
+        if (f64_abs(lb - naive) >= t12) { lb_ok = 0; }
+    }
+    assert(lb_ok == 1, "ln B = lnGamma(a) + lnGamma(b) - lnGamma(a + b) within 1e-12 on five pairs");
+    var big: f64 = 10000000.0;
+    var lbb: f64 = _pmn_ln_beta(big, 1.0);
+    var lbig: f64 = _pmn_ln(big);
+    var nlbig: f64 = -lbig;
+    assert(rel_ok(lbb, nlbig, t14b) == 1, "ln B(1e7, 1) = -ln 1e7");
+
+    test_group("ln_gamma_kernel_matches_direct_form (1.3.0's test)");
+    var ka[24];
+    var kx[24];
+    store64(&ka, 10.0);
+    store64(&kx, 9.0);
+    store64(&ka + 8, 25.0);
+    store64(&kx + 8, 30.0);
+    store64(&ka + 16, 200.0);
+    store64(&kx + 16, 190.0);
+    var t11: f64 = 0.00000000001;
+    var k_ok = 1;
+    for (var k2 = 0; k2 < 3; k2 = k2 + 1) {
+        var a2: f64 = load64(&ka + k2 * 8);
+        var x2: f64 = load64(&kx + k2 * 8);
+        var lx2: f64 = _pmn_ln(x2);
+        var ax: f64 = a2 * lx2;
+        var lga: f64 = _pmn_ln_gamma(a2);
+        var direct: f64 = ax - x2 - lga;
+        var kv: f64 = _pmn_ln_gamma_kernel(a2, x2);
+        if (f64_abs(kv - direct) >= t11) { k_ok = 0; }
+    }
+    assert(k_ok == 1, "the Stirling form agrees with a ln x - x - lnGamma(a) within 1e-11");
+
+    test_group("1.3.0's poles, cutoff and specials, pinned");
+    var gpz: f64 = _pmn_ln_gamma(0.0);
+    var gnz: f64 = _pmn_ln_gamma(nz);
+    assert(bits(gpz) == 0x7FF0000000000000 && bits(gnz) == 0x7FF0000000000000, "lnGamma(+0) = lnGamma(-0) = +inf");
+    var cut: f64 = _PMN_MATH_LENTZ_TINY;
+    var x3: f64 = cut * 0.3;
+    var x4: f64 = cut * 0.4;
+    var g3: f64 = _pmn_ln_gamma(x3);
+    var g4: f64 = _pmn_ln_gamma(x4);
+    assert(bits(g3) == 0x7FF0000000000000, "lnGamma(3e-301) = +inf: 1.3.0's |sin(pi x)| < 1e-300 cutoff");
+    assert(_pmn_is_finite(g4) == 1 && g4 > 690.0, "lnGamma(4e-301) is finite, about 691");
+    var gm1: f64 = _pmn_ln_gamma(-1.0);
+    assert(_pmn_is_finite(gm1) == 1 && gm1 > 30.0, "lnGamma(-1) is finite in 1.3.0: sin(-pi) rounds to -1.2e-16");
+    var gin: f64 = _pmn_ln_gamma(inf);
+    var gnin: f64 = _pmn_ln_gamma(ninf);
+    var gnan: f64 = _pmn_ln_gamma(nan);
+    assert(_pmn_is_nan(gin) == 1 && _pmn_is_nan(gnin) == 1 && _pmn_is_nan(gnan) == 1,
+        "lnGamma(+inf), lnGamma(-inf) and lnGamma(NaN) are NaN, as in 1.3.0");
+
+    test_group("bd0's identities (no 1.3.0 test)");
+    var d0: f64 = _pmn_bd0(0.0, 2.5);
+    var dm: f64 = _pmn_bd0(7.25, 7.25);
+    assert(d0 == 2.5 && bits(dm) == 0, "bd0(0, m) = m, bd0(m, m) = +0");
+    var bd_ok = 1;
+    var xb: f64 = 0.37;
+    for (var j2 = 0; j2 < 60; j2 = j2 + 1) {
+        var mb: f64 = 3.0;
+        var db: f64 = _pmn_bd0(xb, mb);
+        var q: f64 = xb / mb;
+        var lq: f64 = _pmn_ln(q);
+        var xl: f64 = xb * lq;
+        var nv: f64 = xl + mb - xb;
+        var diff: f64 = db - nv;
+        if (db < 0.0 || f64_abs(diff) > t12) { bd_ok = 0; }
+        xb = xb * 1.09;
+    }
+    assert(bd_ok == 1, "bd0(x, 3) >= 0 and = x ln(x/3) + 3 - x within 1e-12, x from 0.37 to 60");
+
+    test_group("ln_beta: Rust's NaN-ignoring min and max, and symmetry");
+    var lbn1: f64 = _pmn_ln_beta(nan, 15.0);
+    var lbn2: f64 = _pmn_ln_beta(15.0, nan);
+    var lb15: f64 = _pmn_ln_beta(15.0, 15.0);
+    assert(bits(lbn1) == bits(lb15) && bits(lbn2) == bits(lb15),
+        "ln B(NaN, 15) = ln B(15, NaN) = ln B(15, 15), as 1.3.0's min and max read it");
+    var sym = 1;
+    var sa: f64 = 0.013;
+    for (var j3 = 0; j3 < 40; j3 = j3 + 1) {
+        var sb: f64 = sa * 0.7 + 0.3;
+        var u1: f64 = _pmn_ln_beta(sa, sb);
+        var u2: f64 = _pmn_ln_beta(sb, sa);
+        if (bits(u1) != bits(u2)) { sym = 0; }
+        sa = sa * 1.27;
+    }
+    assert(sym == 1, "ln B(a, b) = ln B(b, a) bit for bit, a from 0.013 to 145, b = 0.7a + 0.3: all three branches");
 
     return assert_summary();
 }

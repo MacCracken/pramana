@@ -1,6 +1,6 @@
-//! M2: the Rust twin of tests/special.bcyr. 1.3.0's erf, erfc, normal_cdf and normal_sf (through the `oracle` hooks,
-//! on glibc 2.44's exp) on the same seeded arguments, regions and loop: 4,096 values per row, cycled 250 times, ns per
-//! call, and each row's sum as bits. Run pinned, interleaved with `cyrius bench tests/special.bcyr`:
+//! M2: the Rust twin of tests/special.bcyr. 1.3.0's special functions (through the `oracle` hooks, on glibc 2.44's
+//! primitives) on the same seeded arguments, regions and loop: 4,096 values (or pairs, drawn alternately) per row,
+//! cycled 250 times, ns per call, and each row's sum as bits. Run pinned, interleaved with `cyrius bench tests/special.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m2_special
 
 use pramana::oracle;
@@ -18,13 +18,18 @@ impl Rng {
     }
 }
 
-fn row(r: &mut Rng, name: &str, f: fn(f64) -> f64, lo: f64, hi: f64) {
-    let xs: Vec<f64> = (0..4096).map(|_| lo + (hi - lo) * r.unit()).collect();
+fn row(r: &mut Rng, name: &str, f: fn(f64, f64) -> f64, (lo, hi): (f64, f64), (lo2, hi2): (f64, f64)) {
+    let xy: Vec<(f64, f64)> = (0..4096)
+        .map(|_| {
+            let x = lo + (hi - lo) * r.unit();
+            (x, lo2 + (hi2 - lo2) * r.unit())
+        })
+        .collect();
     let mut s = 0.0;
     let t0 = Instant::now();
     for _ in 0..250 {
-        for &x in &xs {
-            s += f(black_box(x));
+        for &(x, y) in &xy {
+            s += f(black_box(x), black_box(y));
         }
     }
     let ns = t0.elapsed().as_nanos() as f64 / 1_024_000.0;
@@ -34,14 +39,29 @@ fn row(r: &mut Rng, name: &str, f: fn(f64) -> f64, lo: f64, hi: f64) {
 
 fn main() {
     let mut r = Rng(0x2545F4914F6CDD1D);
-    row(&mut r, "the loop alone, x -> x", |x| x, -0.84375, 0.84375);
-    row(&mut r, "erf, |x| < 0.84375", oracle::erf, -0.84375, 0.84375);
-    row(&mut r, "erf, 0.84375 <= x < 1.25", oracle::erf, 0.84375, 1.25);
-    row(&mut r, "erf, 1.25 <= x < 6", oracle::erf, 1.25, 6.0);
-    row(&mut r, "erfc, 0.25 <= x < 0.84375", oracle::erfc, 0.25, 0.84375);
-    row(&mut r, "erfc, 1.25 <= x < 2.857", oracle::erfc, 1.25, 2.857);
-    row(&mut r, "erfc, 2.857 <= x < 27", oracle::erfc, 2.857, 27.0);
-    row(&mut r, "normal_cdf, z in [-10, 10)", oracle::normal_cdf, -10.0, 10.0);
-    row(&mut r, "normal_cdf, z in [-38, -1.2)", oracle::normal_cdf, -38.0, -1.2);
-    row(&mut r, "normal_sf, z in [0, 38)", oracle::normal_sf, 0.0, 38.0);
+    let u = (0.0, 1.0);
+    row(&mut r, "the loop alone, x -> x", |x, _| x, (-0.84375, 0.84375), u);
+    row(&mut r, "erf, |x| < 0.84375", |x, _| oracle::erf(x), (-0.84375, 0.84375), u);
+    row(&mut r, "erf, 0.84375 <= x < 1.25", |x, _| oracle::erf(x), (0.84375, 1.25), u);
+    row(&mut r, "erf, 1.25 <= x < 6", |x, _| oracle::erf(x), (1.25, 6.0), u);
+    row(&mut r, "erfc, 0.25 <= x < 0.84375", |x, _| oracle::erfc(x), (0.25, 0.84375), u);
+    row(&mut r, "erfc, 1.25 <= x < 2.857", |x, _| oracle::erfc(x), (1.25, 2.857), u);
+    row(&mut r, "erfc, 2.857 <= x < 27", |x, _| oracle::erfc(x), (2.857, 27.0), u);
+    row(&mut r, "normal_cdf, z in [-10, 10)", |x, _| oracle::normal_cdf(x), (-10.0, 10.0), u);
+    row(&mut r, "normal_cdf, z in [-38, -1.2)", |x, _| oracle::normal_cdf(x), (-38.0, -1.2), u);
+    row(&mut r, "normal_sf, z in [0, 38)", |x, _| oracle::normal_sf(x), (0.0, 38.0), u);
+    row(&mut r, "ln_gamma, x in [0.5, 10)", |x, _| oracle::ln_gamma(x), (0.5, 10.0), u);
+    row(&mut r, "ln_gamma, x in [-10, 0.5), reflected", |x, _| oracle::ln_gamma(x), (-10.0, 0.5), u);
+    row(&mut r, "ln_gamma, x in [10, 1000)", |x, _| oracle::ln_gamma(x), (10.0, 1000.0), u);
+    row(&mut r, "stirling_error, a in [0.5, 10)", |x, _| oracle::stirling_error(x), (0.5, 10.0), u);
+    let series = "stirling_error, a in [10, 1000), the series";
+    row(&mut r, series, |x, _| oracle::stirling_error(x), (10.0, 1000.0), u);
+    row(&mut r, "bd0, x in [0, 100), m in [1, 100)", oracle::bd0, (0.0, 100.0), (1.0, 100.0));
+    let k1 = "ln_gamma_kernel, a in [1, 10), x in [0.1, 20)";
+    row(&mut r, k1, oracle::ln_gamma_kernel, (1.0, 10.0), (0.1, 20.0));
+    let k2 = "ln_gamma_kernel, a in [10, 1000), x in [5, 1500)";
+    row(&mut r, k2, oracle::ln_gamma_kernel, (10.0, 1000.0), (5.0, 1500.0));
+    row(&mut r, "ln_beta, a and b in [0.5, 10)", oracle::ln_beta, (0.5, 10.0), (0.5, 10.0));
+    row(&mut r, "ln_beta, a in [0.5, 10), b in [10, 1000)", oracle::ln_beta, (0.5, 10.0), (10.0, 1000.0));
+    row(&mut r, "ln_beta, a and b in [10, 1000)", oracle::ln_beta, (10.0, 1000.0), (10.0, 1000.0));
 }

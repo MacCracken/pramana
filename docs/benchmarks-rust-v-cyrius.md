@@ -277,3 +277,36 @@ exp misrounds). Three rounds, interleaved, pinned to core 5, at a load average o
   from 85–87 to 55–56, and the tails from 184–196 to 151–157. The bits are the same (all 28,290 golden rows at 0 ulp
   in both forms). The numbers were added to cyrius's open `#inline` issue
   (`2026-11-11-inline-refuses-small-numeric-helpers.md`).
+
+## M2 part a2: lnΓ and its relatives, T0 (2026-11-15)
+
+**Bodies.** `tests/special.bcyr` and its twin `m2_special.rs`, as in part a1. The row helper now draws a pair per
+argument, so a1's rows run on new arguments. Both sides print every row's sum as bits, and all 21 agree. Three rounds,
+interleaved, pinned to core 5, at a load average of 2.3–2.4 on 16 cores. a1's rows re-measured within 3 ns of part
+a1's record (12.3× and 10.6× for erf's two rationals, 7.0–7.6× for the tails).
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `ln_gamma`, x in [0.5, 10) | 23.1–23.3 ns | 136–137 ns | 5.9× |
+| `ln_gamma`, x in [−10, 0.5), reflected | 50.3 ns | 401–403 ns | 8.0× |
+| `ln_gamma`, x in [10, 1000) | 27.2–27.5 ns | 137–138 ns | 5.0× |
+| `stirling_error`, a in [0.5, 10) | 28.7 ns | 198–200 ns | 6.9× |
+| `stirling_error`, a in [10, 1000), the series | 3.9–4.1 ns | 34–35 ns | 8.5× |
+| `bd0`, x in [0, 100), m in [1, 100) | 9.5–9.7 ns | 106 ns | 11.2× |
+| `ln_gamma_kernel`, a in [1, 10), x in [0.1, 20) | 29.7–30.3 ns | 198–200 ns | 6.7× |
+| `ln_gamma_kernel`, a in [10, 1000), x in [5, 1500) | 17.3–17.5 ns | 204–207 ns | 11.8× |
+| `ln_beta`, a and b in [0.5, 10) | 70.5–71.7 ns | 493–497 ns | 7.0× |
+| `ln_beta`, a in [0.5, 10), b in [10, 1000) | 43.1–43.4 ns | 398–405 ns | 9.2× |
+| `ln_beta`, a and b in [10, 1000) | 28.8–29.4 ns | 340–342 ns | 11.8× |
+
+**Where the time goes.** Each row is its primitives:
+- **lnΓ** on [½, ∞) is two correctly rounded lns (about 46 ns each, part b1) and eight divisions, at 5–6× Rust.
+  Reflected, it adds a sin and two more lns, at 8×.
+- **`bd0`, the large-shape kernel and the both-large ln B** are the slowest rows, 11–12×. Each is led by the
+  correctly rounded log1p (51–96 ns, part b2), against glibc's few ns. The kernel adds an ln and the series, and
+  ln B three series, two lns and a log1p.
+- **The Stirling series** is pure arithmetic: eight divisions and six multiply-adds, 34 ns against Rust's 4, the
+  compiler's f64 code as in part a1's rationals.
+
+None of these functions is a public API in 1.3.0: they are the inner terms of the distributions and tests that M3
+and M4 port. T1 (part b) replaces `ln_gamma` with P9's fdlibm-layout prototype, 72–192 ns (§5 step 9d-1).

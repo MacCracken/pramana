@@ -96,8 +96,12 @@ files. This README records what is specific to pramana.
   Rust's path, `math::<fn>`. Part a1 records `erf` and `erfc` at every high word fdlibm branches on, with the five
   doubles either side and 24 seeded low words in the high word at and below it, both signs, then seeded sweeps of
   each branch, tiny and wide sweeps and k/32 on [−30, 30]; and `normal_cdf` and `normal_sf` on that grid times √2,
-  k/16 on [−40, 40] and seeds. All class C. `validate.py` transcribes each function and re-derives every row through
-  glibc's exp; `special.cr.tsv` holds the rows that move when exp is correctly rounded.
+  k/16 on [−40, 40] and seeds. Part a2 records `ln_gamma` (its switch at ½, its 1e-300 cutoff near 0, the negative
+  integers and half-integers, the roots, sweeps to ±10³⁰⁶), `stirling_error` (its switch at 10), `bd0` and
+  `ln_gamma_kernel` on x = m·r and x = a·r for fixed ratios over seeded scales, and `ln_beta` on a pairwise shape grid
+  from 10⁻³ to 10¹², seeds, and NaN, ±0 and negative shapes. All class C. `validate.py` transcribes each function and
+  re-derives every row through glibc's exp, ln, log1p and sin; `special.cr.tsv` holds the rows that move when they are
+  correctly rounded.
 - **`json.map.tsv`** (ADR 007 row 16), written by `validate.py --write-cr`. These are the rows serde_json reads only
   by skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
   surrogate. `validate.py` finds them with its own model of bayan's three whole-document refusals. They map to
@@ -136,7 +140,7 @@ files. This README records what is specific to pramana.
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `debug` | M1 f | 60 | `src/m_debug.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
-| `special` | M2 a1 | 28,290 | `src/m_special.rs` | `special.cr.tsv`, 10 rows (exp misrounded in erfc's deep tail, and in Φ and 1 − Φ there) |
+| `special` | M2 a1–a2 | 45,070 | `src/m_special.rs` | `special.cr.tsv`, 102 rows (exp misrounded in erfc's deep tail and in Φ and 1 − Φ there, 10; log1p in bd0, the kernel and ln B, 91; ln in ln B, 1) |
 
 ## Format 1
 

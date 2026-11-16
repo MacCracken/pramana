@@ -33,7 +33,8 @@
 > foundation is ported: the error codes, every primitive correctly rounded, the Rust f64 surface,
 > the JSON core, the work-table pool, the RNG, combinatorics and the bridges, gated by 75,266 golden rows on three
 > targets. The maintainer took each recommendation and chose option C for D3. **M2, the special functions, is in
-> progress** (its parts are in §7): part a1, fdlibm's erf and erfc and Φ and 1 − Φ at T0, is done and not committed.
+> progress** (its parts are in §7): part a1, fdlibm's erf and erfc and Φ and 1 − Φ at T0, is committed (`569dfa5`),
+> and part a2, lnΓ and its relatives, is done and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1105,7 +1106,9 @@ operation order on the correctly rounded primitives, at 0 ulp against `special.c
 `special.ref.tsv` at ADR 009's bounds:
 - **a1:** fdlibm's `erf` and `erfc`, and `normal_cdf` and `normal_sf` on erfc, against 1.3.0 on 28,290 rows (every
   branch point with its neighbours, both signs, seeded sweeps of each branch), 10 of them corrected for exp ✅;
-- **a2:** `ln_gamma` (Lanczos g = 7, n = 9, with reflection), `stirling_error`, `bd0`, `ln_gamma_kernel`, `ln_beta`;
+- **a2:** `ln_gamma` (Lanczos g = 7, n = 9, with reflection), `stirling_error`, `bd0`, `ln_gamma_kernel` and
+  `ln_beta`, against 1.3.0 on 16,780 rows (its +∞ cutoff near 0, the switches at ½ and 10, shapes from 10⁻³ to
+  10¹²), 92 of them corrected for log1p and ln ✅;
 - **a3:** `gamma_inc`: the series, the Lentz continued fraction, the Wilson–Hilferty branch, `iteration_budget`, and
   the regularized lower and upper wrappers;
 - **a4:** `beta_inc`, `beta_cf` and `regularized_incomplete_beta`;

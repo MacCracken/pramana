@@ -1,14 +1,16 @@
 # special.bcyr — the special functions of src/special.cyr (M2): ns per call.
 #
-# 4,096 seeded arguments per row, cycled 250 times (1,024,000 calls), one row per fdlibm branch and the two normal
-# tails. The Rust twin is scripts/probes/rust/src/bin/m2_special.rs: the same xorshift, regions and loop, 1.3.0's
-# functions through the oracle hooks (glibc's exp). Each side prints the row's sum as bits: the sums differ only
-# where a row hits one of the arguments whose glibc exp misrounds. The record is docs/benchmarks-rust-v-cyrius.md.
+# 4,096 seeded arguments (or pairs) per row, cycled 250 times (1,024,000 calls): one row per fdlibm branch and the two
+# normal tails (part a1), and per branch of lnΓ and its relatives (part a2). The Rust twin is
+# scripts/probes/rust/src/bin/m2_special.rs: the same xorshift, regions and loop, 1.3.0's functions through the oracle
+# hooks (glibc's primitives). Each side prints the row's sum as bits: the sums differ only where a row hits an
+# argument on which a glibc primitive misrounds. The record is docs/benchmarks-rust-v-cyrius.md.
 
 include "tests/lib.cyr"
 
 var g_rng = 0x2545F4914F6CDD1D;
 var g_xs = 0;
+var g_ys = 0;
 
 fn next(): i64 {
     var x = g_rng;
@@ -26,14 +28,19 @@ fn unit(): f64 {
     return a / d;
 }
 
-# `which`: 0 erf, 1 erfc, 2 normal_cdf, 3 normal_sf, 4 the loop alone (x → x), on 4,096 uniform arguments in
-# [lo, hi).
-fn row(name: cstring, which, lo: f64, hi: f64): i64 {
+# `which`: 0 erf, 1 erfc, 2 normal_cdf, 3 normal_sf, 4 the loop alone (x → x), 5 ln_gamma, 6 stirling_error, 7 bd0,
+# 8 ln_gamma_kernel, 9 ln_beta, on 4,096 uniform x in [lo, hi) and y in [lo2, hi2) (y unused by the one-argument
+# functions), drawn alternately.
+fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
     for (var j = 0; j < 4096; j = j + 1) {
         var w: f64 = hi - lo;
         var u: f64 = unit();
         var x0: f64 = lo + w * u;
         store64(g_xs + j * 8, x0);
+        var w2: f64 = hi2 - lo2;
+        var u2: f64 = unit();
+        var y0: f64 = lo2 + w2 * u2;
+        store64(g_ys + j * 8, y0);
     }
     var s: f64 = 0.0;
     var b = bench_new(name);
@@ -41,12 +48,18 @@ fn row(name: cstring, which, lo: f64, hi: f64): i64 {
     for (var k = 0; k < 250; k = k + 1) {
         for (var i = 0; i < 4096; i = i + 1) {
             var x: f64 = load64(g_xs + i * 8);
+            var y: f64 = load64(g_ys + i * 8);
             var r: f64 = 0.0;
             if (which == 0) { r = _pmn_erf(x); }
             if (which == 1) { r = _pmn_erfc(x); }
             if (which == 2) { r = _pmn_normal_cdf(x); }
             if (which == 3) { r = _pmn_normal_sf(x); }
             if (which == 4) { r = x; }
+            if (which == 5) { r = _pmn_ln_gamma(x); }
+            if (which == 6) { r = _pmn_stirling_error(x); }
+            if (which == 7) { r = _pmn_bd0(x, y); }
+            if (which == 8) { r = _pmn_ln_gamma_kernel(x, y); }
+            if (which == 9) { r = _pmn_ln_beta(x, y); }
             s = s + r;
         }
     }
@@ -64,16 +77,28 @@ fn row(name: cstring, which, lo: f64, hi: f64): i64 {
 fn main(): i64 {
     alloc_init();
     g_xs = alloc(4096 * 8);
-    row("the loop alone, x -> x", 4, -0.84375, 0.84375);
-    row("erf, |x| < 0.84375", 0, -0.84375, 0.84375);
-    row("erf, 0.84375 <= x < 1.25", 0, 0.84375, 1.25);
-    row("erf, 1.25 <= x < 6", 0, 1.25, 6.0);
-    row("erfc, 0.25 <= x < 0.84375", 1, 0.25, 0.84375);
-    row("erfc, 1.25 <= x < 2.857", 1, 1.25, 2.857);
-    row("erfc, 2.857 <= x < 27", 1, 2.857, 27.0);
-    row("normal_cdf, z in [-10, 10)", 2, -10.0, 10.0);
-    row("normal_cdf, z in [-38, -1.2)", 2, -38.0, -1.2);
-    row("normal_sf, z in [0, 38)", 3, 0.0, 38.0);
+    g_ys = alloc(4096 * 8);
+    row("the loop alone, x -> x", 4, -0.84375, 0.84375, 0.0, 1.0);
+    row("erf, |x| < 0.84375", 0, -0.84375, 0.84375, 0.0, 1.0);
+    row("erf, 0.84375 <= x < 1.25", 0, 0.84375, 1.25, 0.0, 1.0);
+    row("erf, 1.25 <= x < 6", 0, 1.25, 6.0, 0.0, 1.0);
+    row("erfc, 0.25 <= x < 0.84375", 1, 0.25, 0.84375, 0.0, 1.0);
+    row("erfc, 1.25 <= x < 2.857", 1, 1.25, 2.857, 0.0, 1.0);
+    row("erfc, 2.857 <= x < 27", 1, 2.857, 27.0, 0.0, 1.0);
+    row("normal_cdf, z in [-10, 10)", 2, -10.0, 10.0, 0.0, 1.0);
+    row("normal_cdf, z in [-38, -1.2)", 2, -38.0, -1.2, 0.0, 1.0);
+    row("normal_sf, z in [0, 38)", 3, 0.0, 38.0, 0.0, 1.0);
+    row("ln_gamma, x in [0.5, 10)", 5, 0.5, 10.0, 0.0, 1.0);
+    row("ln_gamma, x in [-10, 0.5), reflected", 5, -10.0, 0.5, 0.0, 1.0);
+    row("ln_gamma, x in [10, 1000)", 5, 10.0, 1000.0, 0.0, 1.0);
+    row("stirling_error, a in [0.5, 10)", 6, 0.5, 10.0, 0.0, 1.0);
+    row("stirling_error, a in [10, 1000), the series", 6, 10.0, 1000.0, 0.0, 1.0);
+    row("bd0, x in [0, 100), m in [1, 100)", 7, 0.0, 100.0, 1.0, 100.0);
+    row("ln_gamma_kernel, a in [1, 10), x in [0.1, 20)", 8, 1.0, 10.0, 0.1, 20.0);
+    row("ln_gamma_kernel, a in [10, 1000), x in [5, 1500)", 8, 10.0, 1000.0, 5.0, 1500.0);
+    row("ln_beta, a and b in [0.5, 10)", 9, 0.5, 10.0, 0.5, 10.0);
+    row("ln_beta, a in [0.5, 10), b in [10, 1000)", 9, 0.5, 10.0, 10.0, 1000.0);
+    row("ln_beta, a and b in [10, 1000)", 9, 10.0, 1000.0, 10.0, 1000.0);
     return 0;
 }
 

@@ -15,8 +15,8 @@ Standard library plus ctypes: glibc's libm, and MPFR through `mpfr_ref.py`. It n
   beside the generator's, with Python's float parser for the literals.
 - **`fmt`:** every row's text is rebuilt from Python's own shortest digits (`repr`: the shortest that read back, the
   closest, ties to the even digit, as serde_json's zmij), put into serde_json's form.
-- **`special`** (M2): 1.3.0's math.rs transcribed, every row re-derived with glibc's exp, and `special.cr.tsv` the
-  rows whose value changes when exp is correctly rounded.
+- **`special`** (M2): 1.3.0's math.rs transcribed, every row re-derived through glibc's exp, ln, log1p and sin, and
+  `special.cr.tsv` the rows whose value changes when each of them is correctly rounded.
 - **`math.cr.tsv`:** for every class-C row whose recorded value isn't correctly rounded, the correctly rounded value.
   This is the expectation the port's correctly rounded functions are gated against at 0 ulp (ADR 009). `--write-cr`
   writes it, and a plain run checks that the committed file is exactly what it would write.
@@ -1300,36 +1300,137 @@ def sp_erfc(C, exp, x):
     return 2.0 - sys.float_info.min if negative else 0.0
 
 
-SPECIAL = {
-    "math::erf": lambda C, exp, x: sp_erf(C, exp, x),
-    "math::erfc": lambda C, exp, x: sp_erfc(C, exp, x),
-    "math::normal_cdf": lambda C, exp, z: 0.5 * sp_erfc(C, exp, -z / math.sqrt(2.0)),
-    "math::normal_sf": lambda C, exp, z: 0.5 * sp_erfc(C, exp, z / math.sqrt(2.0)),
+def fdiv(a, b):
+    """IEEE division: Python raises on a zero divisor, Rust gives ±∞ or NaN."""
+    if b == 0.0:
+        if math.isnan(a) or a == 0.0:
+            return math.nan
+        return math.inf if (math.copysign(1.0, a) * math.copysign(1.0, b)) > 0 else -math.inf
+    return a / b
+
+
+def sp_min(x, y):
+    """Rust's f64::min as src/mathx.cyr has it: a NaN operand ignored, equal operands give y."""
+    if math.isnan(x):
+        return y
+    if math.isnan(y):
+        return x
+    return x if x < y else y
+
+
+def sp_max(x, y):
+    if math.isnan(x):
+        return y
+    if math.isnan(y):
+        return x
+    return x if x > y else y
+
+
+class Prims:
+    """The primitives 1.3.0's math.rs calls: glibc's (ctypes), or correctly rounded (MPFR)."""
+
+    def __init__(self, cr):
+        if cr:
+            self.exp = lambda x: mpfr_ref.cr("exp", x)
+            self.ln = lambda x: mpfr_ref.cr("log", x)
+            self.ln1p = lambda x: mpfr_ref.cr("log1p", x)
+            self.sin = lambda x: mpfr_ref.cr("sin", x)
+        else:
+            self.exp, self.ln, self.ln1p, self.sin = _libm.exp, _libm.log, _libm.log1p, _libm.sin
+
+
+def sp_ln_gamma(K, L, x):
+    """1.3.0's ln_gamma: Lanczos g = 7, n = 9, the reflection below ½ with its 1e-300 cutoff."""
+    if x < 0.5:
+        sin_val = L.sin(math.pi * x)
+        if abs(sin_val) < 1e-300:
+            return math.inf
+        return L.ln(math.pi) - L.ln(abs(sin_val)) - sp_ln_gamma(K, L, 1.0 - x)
+    x = x - 1.0
+    total = K["LG"][0]
+    for i in range(1, 9):
+        total += fdiv(K["LG"][i], x + float(i))
+    t = x + K["G"] + 0.5
+    return K["LS"] + (L.ln(t) * (x + 0.5)) - t + L.ln(total)
+
+
+def sp_stirling(K, L, a):
+    if a >= 10.0:
+        r = 1.0 / a
+        r2 = r * r
+        return r * (1.0 / 12.0 - r2 * (1.0 / 360.0 - r2 * (1.0 / 1260.0 - r2 * (1.0 / 1680.0 - r2 * (
+            1.0 / 1188.0 - r2 * (691.0 / 360360.0 - r2 / 156.0))))))
+    return sp_ln_gamma(K, L, a) - ((a - 0.5) * L.ln(a) - a + K["LS"])
+
+
+def sp_bd0(K, L, x, m):
+    if x == 0.0:
+        return m
+    u = fdiv(x - m, m)
+    return m * ((1.0 + u) * L.ln1p(u) - u)
+
+
+def sp_kernel(K, L, a, x):
+    if a < 10.0:
+        return a * L.ln(x) - x - sp_ln_gamma(K, L, a)
+    u = fdiv(x - a, a)
+    return -a * (u - L.ln1p(u)) + 0.5 * L.ln(a) - K["LS"] - sp_stirling(K, L, a)
+
+
+def sp_ln_beta(K, L, a, b):
+    p, q = sp_min(a, b), sp_max(a, b)
+    if p >= 10.0:
+        corr = sp_stirling(K, L, p) + sp_stirling(K, L, q) - sp_stirling(K, L, p + q)
+        return (-0.5 * L.ln(q) + K["LS"] + corr + (p - 0.5) * L.ln(fdiv(p, p + q))
+                + q * L.ln1p(fdiv(-p, p + q)))
+    if q >= 10.0:
+        corr = sp_stirling(K, L, q) - sp_stirling(K, L, p + q)
+        return (sp_ln_gamma(K, L, p) + corr + p - p * L.ln(p + q)
+                + (q - 0.5) * L.ln1p(fdiv(-p, p + q)))
+    return sp_ln_gamma(K, L, a) + sp_ln_gamma(K, L, b) - sp_ln_gamma(K, L, a + b)
+
+
+SPECIAL = {  # name: (inputs, model(K, L, *inputs))
+    "math::erf": (1, lambda K, L, x: sp_erf(K["F"], L.exp, x)),
+    "math::erfc": (1, lambda K, L, x: sp_erfc(K["F"], L.exp, x)),
+    "math::normal_cdf": (1, lambda K, L, z: 0.5 * sp_erfc(K["F"], L.exp, -z / math.sqrt(2.0))),
+    "math::normal_sf": (1, lambda K, L, z: 0.5 * sp_erfc(K["F"], L.exp, z / math.sqrt(2.0))),
+    "math::ln_gamma": (1, sp_ln_gamma),
+    "math::stirling_error": (1, sp_stirling),
+    "math::bd0": (2, sp_bd0),
+    "math::ln_gamma_kernel": (2, sp_kernel),
+    "math::ln_beta": (2, sp_ln_beta),
 }
 
 
 def check_special(root, rows):
-    """Every row re-derived with glibc's exp; the rows whose value changes with exp correctly rounded go to
-    special.cr.tsv. The fdlibm coefficients are python_constants' own reading of rust-old/src."""
-    C = {k[len("math::fdlibm::"):]: v for k, v in python_constants(root).items() if k.startswith("math::fdlibm::")}
-    cr_exp = lambda x: mpfr_ref.cr("exp", x)
+    """Every row re-derived through glibc's primitives; the rows whose value changes when every primitive is correctly
+    rounded go to special.cr.tsv. The coefficients are python_constants' own reading of rust-old/src."""
+    consts = python_constants(root)
+    K = {
+        "F": {k[len("math::fdlibm::"):]: v for k, v in consts.items() if k.startswith("math::fdlibm::")},
+        "LG": [consts[f"math::ln_gamma::COEFFICIENTS[{i}]"] for i in range(9)],
+        "G": consts["math::ln_gamma::G"],
+        "LS": consts["math::LN_SQRT_2PI"],
+    }
+    glibc, cr = Prims(False), Prims(True)
     failures, by_fn, crs = [], {}, []
     for fn, cls, ins, outs, raw in rows:
-        model = SPECIAL.get(fn)
-        if model is None or len(ins) != 1 or len(outs) != 1:
+        n, model = SPECIAL.get(fn, (None, None))
+        if model is None or len(ins) != n or len(outs) != 1:
             failures.append(f"special: no model for {fn}({raw[:60]})")
             continue
-        want = model(C, _libm.exp, ins[0])
+        want = model(K, glibc, *ins)
         ok = same(outs[0], want)
         stat = by_fn.setdefault(fn, [0, 0])
         stat[0 if ok else 1] += 1
         if not ok:
-            failures.append(f"special: {fn}({ins[0]!r}) recorded {outs[0]!r}, modelled {want!r}")
-        cr = model(C, cr_exp, ins[0])
-        if not same(outs[0], cr):
-            ulps = abs(ordered(bits(outs[0])) - ordered(bits(cr)))
-            crs.append(f"{fn}\t{raw}\tf:{bits(cr):016x}\t1.3.0 {outs[0]!r} through glibc's exp; {cr!r} with exp "
-                       f"correctly rounded, {ulps} ulp apart")
+            failures.append(f"special: {fn}{tuple(ins)!r} recorded {outs[0]!r}, modelled {want!r}")
+        want_cr = model(K, cr, *ins)
+        if not same(outs[0], want_cr):
+            ulps = abs(ordered(bits(outs[0])) - ordered(bits(want_cr)))
+            crs.append(f"{fn}\t{raw}\tf:{bits(want_cr):016x}\t1.3.0 {outs[0]!r} through glibc; {want_cr!r} with every "
+                       f"primitive correctly rounded, {ulps} ulp apart")
     return failures, by_fn, crs
 
 

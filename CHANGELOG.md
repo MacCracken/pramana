@@ -451,6 +451,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     The Horner steps are written out, because `#inline` declines a three-argument step: that took 18–38 ns off
     every row. pramana's numbers were added to cyrius's open `#inline` issue.
 
+- **M2 part a2: lnΓ and its relatives, T0** (`src/special.cyr`; port plan D3 = C, ADR 009; results in
+  `docs/development/port-parity.md` §8.2):
+  - **the functions:** 1.3.0's Lanczos `ln_gamma` (g = 7, n = 9, the reflection below ½), `stirling_error`, Loader's
+    `bd0`, `ln_gamma_kernel` and `ln_beta` (R's lbeta scheme), in Rust's operation order on the correctly rounded ln,
+    ln_1p and sin. 1.3.0's own edges are kept for T1 to change: lnΓ is +∞ for |x| ≲ 3.2·10⁻³⁰¹, finite at the
+    negative integers, and NaN at +∞; ln B reads a NaN shape through Rust's NaN-ignoring min and max;
+  - **golden rows:** 16,780 more in `special` (45,070 in all): lnΓ's switch at ½ and its 1e-300 cutoff, the negative
+    integers and half-integers, the switches at 10, bd0 and the kernel on fixed ratios over seeded scales from 10⁻³ to
+    10¹², and ln B on a pairwise shape grid and seeds. `validate.py` transcribes all five. `special.cr.tsv` gains 92
+    rows: glibc's log1p misrounds on them (ln on one), and cancellation carries that to 13 ulp in bd0 and 101 in the
+    kernel. Every row matches at 0 ulp on x86_64, PE and aarch64;
+  - **mutation checks:** all fifteen mutants fail rows (2–5,853) or crash the replay. The first grid let a reordered
+    ln B correction through, so 1,000 both-large pairs were added;
+  - **tests:** `tests/special.tcyr` has 41 checks: 1.3.0's four tests for these functions, the poles and cutoff,
+    bd0's identities (1.3.0 never tested bd0), and ln B's NaN reading and symmetry bit for bit;
+  - **cost:** 5–8× 1.3.0 where ln and sin lead, 11–12× where the correctly rounded log1p does (`bd0`, the
+    large-shape kernel, the both-large ln B); all 21 bench rows give the same sums as the twin.
+
 ### Performance
 
 - **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),

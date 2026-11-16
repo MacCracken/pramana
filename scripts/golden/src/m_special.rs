@@ -10,8 +10,25 @@
 //! - `normal_cdf(z)` and `normal_sf(z)` on that grid times √2 (so −z/√2 lands on or next to every threshold), the
 //!   grid k/16 on [−40, 40] (Φ underflows below −38.4), and a seeded sweep of [−40, 40].
 //!
-//! Every row is class C: each function calls glibc's exp. `validate.py` transcribes them, re-derives every row with
-//! glibc's exp, and writes `special.cr.tsv` with the rows whose value changes when exp is correctly rounded.
+//! Part a2, lnΓ and its relatives:
+//! - `ln_gamma(x)`: the reflection's switch at ½ and its 1e-300 cutoff (x = 1e-300/π with 40 doubles either side, both
+//!   signs), the negative integers and half-integers with their neighbours, the roots at 1 and 2, k/16 on [−20, 30],
+//!   the integers to 200, seeded sweeps of [−10, ½), [½, 10) and [10, 200), and log-uniform sweeps to 10^306 and to
+//!   −10^15.
+//! - `stirling_error(a)`: the switch at 10 with its neighbours, the integers to 100, seeded sweeps either side of 10,
+//!   and log-uniform sweeps from 10^-310 to 10^300.
+//! - `bd0(x, m)`: x = 0; x = m·r for twelve ratios r from 0 to 1000 on 300 seeded m in [10^-3, 10^12]; x a few
+//!   doubles from m (u tiny); integer counts against seeded means; and independent seeded pairs.
+//! - `ln_gamma_kernel(a, x)`: the switch at a = 10 with its neighbours; x = a·r for nine ratios on 300 seeded a in
+//!   [10^-3, 10^12]; x = a(1 + k/64) near the mode; seeded pairs.
+//! - `ln_beta(a, b)`: a grid of 19 shapes from 10^-3 to 10^12 (10 with its neighbours among them) taken pairwise, so
+//!   every branch of R's lbeta scheme is hit from both sides; seeded pairs, 1,000 of them with both shapes in
+//!   [10, 60), where the Stirling corrections are largest against the result; and NaN, ±0 and negative shapes, which
+//!   pin Rust's NaN-ignoring min and max.
+//!
+//! Every row is class C: each function calls glibc's exp, ln, ln_1p or sin. `validate.py` transcribes them,
+//! re-derives every row through glibc, and writes `special.cr.tsv` with the rows whose value changes when every
+//! primitive is correctly rounded.
 
 use std::hint::black_box;
 
@@ -97,6 +114,148 @@ fn normal_grid(xs: &[f64]) -> Vec<f64> {
     v
 }
 
+/// x and the `k` doubles on either side of it, by bit pattern.
+fn around(v: &mut Vec<f64>, x: f64, k: u64) {
+    let b = x.to_bits();
+    for d in 0..=k {
+        v.push(f64::from_bits(b + d));
+        if b & 0x7fff_ffff_ffff_ffff >= d {
+            v.push(f64::from_bits(b - d));
+        }
+    }
+}
+
+fn ln_gamma_grid() -> Vec<f64> {
+    let mut v = specials();
+    around(&mut v, 0.5, 8);
+    let cut = 1e-300 / std::f64::consts::PI;
+    around(&mut v, cut, 40);
+    around(&mut v, -cut, 40);
+    for n in 0..=30 {
+        let x = -f64::from(n);
+        around(&mut v, x, 4);
+        around(&mut v, x - 0.5, 2);
+    }
+    around(&mut v, 1.0, 8);
+    around(&mut v, 2.0, 8);
+    for k in -320..=480 {
+        v.push(f64::from(k) / 16.0);
+    }
+    for n in 1..=200 {
+        v.push(f64::from(n));
+    }
+    let mut g = Rng::new(0x6a09_e667_f3bc_c908);
+    for _ in 0..400 {
+        v.push(g.uniform(-10.0, 0.5));
+        v.push(g.uniform(0.5, 10.0));
+        v.push(g.uniform(10.0, 200.0));
+    }
+    for _ in 0..300 {
+        v.push(g.log_uniform(-310.0, 306.0));
+        v.push(-g.log_uniform(-310.0, 15.0));
+    }
+    sort_dedup(&mut v);
+    v
+}
+
+fn stirling_grid() -> Vec<f64> {
+    let mut v = specials();
+    around(&mut v, 10.0, 8);
+    for n in 1..=100 {
+        v.push(f64::from(n));
+    }
+    let mut g = Rng::new(0xbb67_ae85_84ca_a73b);
+    for _ in 0..300 {
+        v.push(g.uniform(0.5, 10.0));
+        v.push(g.uniform(10.0, 1000.0));
+        v.push(g.log_uniform(-3.0, 300.0));
+    }
+    for _ in 0..100 {
+        v.push(g.log_uniform(-310.0, -3.0));
+        v.push(g.uniform(-10.0, 0.0));
+    }
+    sort_dedup(&mut v);
+    v
+}
+
+/// Pairs over two lists, every combination.
+fn cross(xs: &[f64], ys: &[f64]) -> Vec<(f64, f64)> {
+    xs.iter().flat_map(|&x| ys.iter().map(move |&y| (x, y))).collect()
+}
+
+fn bd0_pairs() -> Vec<(f64, f64)> {
+    let mut v = cross(&specials(), &[1.0, 2.5]);
+    v.extend(cross(&[0.0, 1.0, 2.5], &specials()));
+    let mut g = Rng::new(0x3c6e_f372_fe94_f82b);
+    let ratios = [0.0, 0.001, 0.1, 0.5, 0.9, 0.99, 1.0, 1.01, 1.1, 2.0, 10.0, 1000.0];
+    for _ in 0..300 {
+        let m = g.log_uniform(-3.0, 12.0);
+        v.extend(ratios.iter().map(|&r| (m * r, m)));
+    }
+    for _ in 0..100 {
+        let m = g.log_uniform(-3.0, 12.0);
+        let b = m.to_bits();
+        for d in 1..=4 {
+            v.push((f64::from_bits(b + d), m));
+            v.push((f64::from_bits(b - d), m));
+        }
+    }
+    for _ in 0..300 {
+        let k = g.int(0, 100);
+        #[allow(clippy::cast_precision_loss)]
+        v.push((k as f64, g.uniform(0.1, 100.0)));
+    }
+    for _ in 0..300 {
+        v.push((g.log_uniform(-3.0, 12.0), g.log_uniform(-3.0, 12.0)));
+    }
+    v
+}
+
+fn kernel_pairs() -> Vec<(f64, f64)> {
+    let mut v = cross(&specials(), &[1.0, 15.0]);
+    v.extend(cross(&[1.0, 15.0], &specials()));
+    let mut tens = Vec::new();
+    around(&mut tens, 10.0, 6);
+    v.extend(cross(&tens, &[1.0, 10.0, 15.0]));
+    let mut g = Rng::new(0xa54f_f53a_5f1d_36f1);
+    let ratios = [0.001, 0.1, 0.5, 0.9, 1.0, 1.1, 2.0, 10.0, 1000.0];
+    for _ in 0..300 {
+        let a = g.log_uniform(-3.0, 12.0);
+        v.extend(ratios.iter().map(|&r| (a, a * r)));
+    }
+    for _ in 0..100 {
+        let a = g.log_uniform(-3.0, 12.0);
+        for k in -8..=8 {
+            v.push((a, a * (1.0 + f64::from(k) / 64.0)));
+        }
+    }
+    for _ in 0..300 {
+        v.push((g.log_uniform(-3.0, 12.0), g.log_uniform(-3.0, 12.0)));
+    }
+    v
+}
+
+fn ln_beta_pairs() -> Vec<(f64, f64)> {
+    let mut shapes = vec![0.001, 0.01, 0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 9.5, 10.5, 20.0, 100.0, 1e3, 1e6, 1e9, 1e12];
+    around(&mut shapes, 10.0, 1);
+    sort_dedup(&mut shapes);
+    let mut v = cross(&shapes, &shapes);
+    v.extend(cross(&specials(), &[1.0, 15.0]));
+    v.extend(cross(&[1.0, 15.0], &specials()));
+    v.extend([(0.0, -0.0), (-0.0, 0.0), (-0.5, 2.0), (-2.5, 12.0), (12.0, -2.5), (-15.5, 30.0)]);
+    let mut g = Rng::new(0x510e_527f_ade6_82d1);
+    for _ in 0..600 {
+        v.push((g.log_uniform(-3.0, 12.0), g.log_uniform(-3.0, 12.0)));
+    }
+    for _ in 0..300 {
+        v.push((g.uniform(0.5, 20.0), g.uniform(0.5, 20.0)));
+    }
+    for _ in 0..1000 {
+        v.push((g.uniform(10.0, 60.0), g.uniform(10.0, 60.0)));
+    }
+    v
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("special");
     let xs = erf_grid();
@@ -112,6 +271,22 @@ pub fn emit() -> Module {
     }
     for &z in &zs {
         m.row("math::normal_sf", Class::C, &[f(z)], &[f(oracle::normal_sf(black_box(z)))]);
+    }
+    for &x in &ln_gamma_grid() {
+        m.row("math::ln_gamma", Class::C, &[f(x)], &[f(oracle::ln_gamma(black_box(x)))]);
+    }
+    for &a in &stirling_grid() {
+        m.row("math::stirling_error", Class::C, &[f(a)], &[f(oracle::stirling_error(black_box(a)))]);
+    }
+    for &(x, mu) in &bd0_pairs() {
+        m.row("math::bd0", Class::C, &[f(x), f(mu)], &[f(oracle::bd0(black_box(x), black_box(mu)))]);
+    }
+    for &(a, x) in &kernel_pairs() {
+        let r = oracle::ln_gamma_kernel(black_box(a), black_box(x));
+        m.row("math::ln_gamma_kernel", Class::C, &[f(a), f(x)], &[f(r)]);
+    }
+    for &(a, b) in &ln_beta_pairs() {
+        m.row("math::ln_beta", Class::C, &[f(a), f(b)], &[f(oracle::ln_beta(black_box(a), black_box(b)))]);
     }
     m
 }

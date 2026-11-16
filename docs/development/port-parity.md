@@ -2239,3 +2239,108 @@ Three mutants were equivalent, and no replay could catch them:
 
 Writing the Horner steps out, rather than calling a three-argument helper that `#inline` declines, took 18–38 ns
 off every row.
+
+### 8.2 Part a2: lnΓ and its relatives, T0 (2026-11-15)
+
+**The module** adds five functions to `src/special.cyr`, each in Rust's operation order:
+- **`ln_gamma`:** Lanczos with g = 7 and nine coefficients. Below ½ it uses the reflection ln π − ln|sin πx| −
+  lnΓ(1 − x).
+- **`stirling_error`:** the asymptotic series in 1/a² from a = 10, and the difference lnΓ(a) − [(a − ½) ln a − a +
+  ln √(2π)] below.
+- **`bd0`:** Loader's deviance term, m·((1 + u) ln(1 + u) − u).
+- **`ln_gamma_kernel`:** a ln x − x − lnΓ(a), in its Stirling form from a = 10.
+- **`ln_beta`:** in R's lbeta scheme, on p = min(a, b) and q = max(a, b).
+
+The primitives are the correctly rounded ln, ln_1p and sin.
+
+Three of 1.3.0's behaviours are kept as they are, for T1 to change:
+- **The cutoff:** `ln_gamma` returns +∞ when |sin πx| < 1e-300. That holds at ±0, and for 0 < |x| ≲ 3.2·10⁻³⁰¹,
+  where lnΓ is about 691. The literal is 1e-300, and the port reads it as the generated `LENTZ_TINY`, which is that
+  literal's double.
+- **Negative integers:** they are not poles. sin(π·n) rounds to about n·1.2·10⁻¹⁶, so lnΓ(−1) is 37.8.
+- **lnΓ(+∞) is NaN,** from ∞ − ∞ in the last line.
+
+`ln_beta` uses Rust's `min` and `max`, which ignore a NaN, so ln B(NaN, 15) is ln B(15, 15). Probe P9's T0
+transcription swapped the shapes with one comparison, which disagrees with 1.3.0 on exactly those rows.
+
+**The golden rows.** The `special` module grows to 45,070 rows, all class C:
+- **`ln_gamma`,** 3,377 rows:
+  - the switch at ½;
+  - the cutoff, x = 1e-300/π with 40 doubles on either side, both signs;
+  - the negative integers and half-integers to −30 with their neighbours;
+  - the roots at 1 and 2;
+  - k/16 on [−20, 30], and the integers to 200;
+  - seeded sweeps of [−10, ½), [½, 10) and [10, 200);
+  - log-uniform sweeps to 10³⁰⁶ and to −10¹⁵.
+- **`stirling_error`,** 1,225 rows: the switch at 10 with its neighbours, the integers to 100, seeded sweeps on either
+  side, and log-uniform sweeps from 10⁻³¹⁰ to 10³⁰⁰.
+- **`bd0`,** 5,050 rows:
+  - x = 0;
+  - x = m·r for twelve ratios from 0 to 1000, on 300 seeded m in [10⁻³, 10¹²];
+  - x within 4 doubles of m;
+  - integer counts against seeded means;
+  - seeded pairs.
+- **`ln_gamma_kernel`,** 4,782 rows: the switch at a = 10 with its neighbours; x = a·r for nine ratios, on 300 seeded
+  a; x = a(1 + k/64) near the mode; and seeded pairs.
+- **`ln_beta`,** 2,346 rows:
+  - 19 shapes from 10⁻³ to 10¹² taken pairwise, 10 and its neighbours among them;
+  - seeded pairs, 1,000 of them with both shapes in [10, 60);
+  - NaN, ±0 and negative shapes.
+
+The 1,000 pairs were added after the first grid let one mutant through: the both-large branch's `(t1 + ln √2π) +
+corr` reordered. corr is about 0.008 against results near 14, so a 1-ulp change in the partial sum rarely reaches
+the output.
+
+**The model.** `validate.py` transcribes the five functions as well. The coefficients come from its own reading of
+`rust-old/src`, and a zero divisor gives ±∞ or NaN as IEEE does, not Python's exception. Every row is re-derived
+through glibc's exp, ln, log1p and sin, and all 45,070 agree. With each primitive correctly rounded (MPFR), 92 more
+rows move, and `special.cr.tsv` has 102 in all:
+
+| Function | Rows corrected | Max | The glibc primitive that moves them |
+|---|---|---|---|
+| `bd0` | 15 of 5,050 | 13 ulp | log1p |
+| `ln_gamma_kernel` | 21 of 4,782 | 101 ulp | log1p |
+| `ln_beta` | 56 of 2,346 | 2 ulp | log1p (55), ln (1) |
+| `ln_gamma`, `stirling_error` | 0 | — | — |
+
+The large distances are cancellation. In bd0, (1 + u) ln(1 + u) − u is small next to its terms when x is near m. In
+the kernel, so is u − ln(1 + u). A 1-ulp difference in log1p then becomes 13 or 101 ulp of the result. These rows
+are still Rust's operations on correctly rounded primitives, so ADR 009 accepts them. T1's bounds apply to
+`ln_gamma` and the incomplete functions, not to these intermediate terms.
+
+**The result.** Every row matches at 0 ulp: 44,968 against 1.3.0's own bits and 102 against `special.cr.tsv`. The
+replay is nine modules: 120,234 rows ok and 208 accepted (178 under ADR 9, 30 under ADR 7), warning-free, on x86_64
+ELF, PE (wine) and aarch64 (qemu). Every `math::` result line is identical on the three.
+
+**Mutation checks** (the whole corpus replayed with each change; the unmutated run passes):
+
+| Mutant | Rows failed |
+|---|---|
+| the reflection at x ≤ ½ | the replay crashes: lnΓ(½) recurses into itself |
+| the cutoff compared with ≤ | 2 (two rows land on 1e-300 exactly) |
+| the cutoff doubled | 83 |
+| Lanczos's c0 dropped | 5,853 |
+| Lanczos's terms summed from c8 down | 1,425 |
+| lnΓ's last line as `(a2 + ln sum) − t` | 1,848 |
+| the Stirling switch at a > 10 | 38 |
+| the series' 1/156 as 1/157 | 11 |
+| bd0 as the naive x ln(x/m) + m − x | 3,554 |
+| the kernel's switch at 9 | 35 |
+| the kernel's `(m + h) − ln √2π` as `m + (h − ln √2π)` | 863 |
+| ln B's min and max as one comparison (P9's form) | 2 (the NaN rows) |
+| ln B's both-large branch at p > 10 | 9 |
+| ln B's mixed branch at q > 10 | 22 |
+| ln B's `(t1 + ln √2π) + corr` as `(t1 + corr) + ln √2π` | 8 |
+
+**Tests.** `tests/special.tcyr` grows to 41 checks:
+- 1.3.0's four tests for these functions: lnΓ's known values, the Stirling series continuous at 10, ln B against
+  lnΓ on five pairs and ln B(10⁷, 1) = −ln 10⁷, and the kernel against its direct form;
+- the poles and cutoff pinned: lnΓ(±0) = +∞, lnΓ(3·10⁻³⁰¹) = +∞ and lnΓ(4·10⁻³⁰¹) finite, lnΓ(−1) finite, and NaN
+  for ±∞ and NaN;
+- bd0's identities, which 1.3.0 never tested: bd0(0, m) = m, bd0(m, m) = +0, and bd0 ≥ 0 and equal to the naive
+  form on 60 arguments;
+- ln B(NaN, 15) = ln B(15, NaN) = ln B(15, 15) bit for bit, and ln B symmetric bit for bit on 40 pairs across all
+  three branches.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 5–8× Rust where ln and sin lead, and 11–12× where the correctly
+rounded log1p does (`bd0`, the large-shape kernel, the both-large ln B). All 21 rows' sums agree with the twin.
