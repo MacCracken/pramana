@@ -67,6 +67,15 @@ pub fn emit(consts: &[Const], provenance: &str) -> String {
     for c in consts {
         let g = group(&c.path);
         if g != last {
+            if g == "f64" {
+                // The typed std float constants stand in for the stdlib's untyped F64_* (ledger L2).
+                out.push_str("\n# Rust std float constants (port-parity §1: the stdlib's F64_* names are untyped).\n");
+                out.push_str(
+                    "# UPSTREAM(L2): cyrius:docs/development/issues/2026-11-11-f64-min-max-drop-nan-only-as-first-operand.md\n",
+                );
+                out.push_str("#   replace with the stdlib's typed F64_* constants once it has them; parity: the constants rows\n");
+                out.push_str("#   (class A)\n");
+            }
             out.push_str(&format!("\n# Rust: {g}\n"));
             last = g;
         }

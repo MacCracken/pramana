@@ -25,8 +25,9 @@
 > committed as `155dce0`. After it, the maintainer amended D5 (serde_json's text, byte for byte) and accepted ADR 007
 > row 16. Parts 9d-1 and 9d-2, P9's `ln_gamma` and `gamma_inc` prototypes, are committed (`998b64b`, `d424b90`,
 > `2f572be`), and so is part 9d-3, `beta_inc` (`121e182`). Part 9e, the FMA-free CORE-MATH erf/erfc port, is
-> committed (`ea7f1a0`): it is correctly rounded, so D3 = C holds without the fallback. Part 9d-4, the `normal_cdf`
-> prototype on it, is done but not committed: it is within 0.5 ulp. **Step 10** is next. The maintainer took each
+> committed (`ea7f1a0`): it is correctly rounded, so D3 = C holds without the fallback. So is part 9d-4, the
+> `normal_cdf` prototype on it, within 0.5 ulp (`26f04f2`). **Step 10**, the upstream requests and the ledger, is done
+> but not committed, and the M0 gate passes. **M1** is next. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -189,7 +190,7 @@ What it adds to §1.2:
 | Finding | Where | Effect on this plan |
 |---|---|---|
 | No erf, erfc, gamma, lgamma, beta or incomplete functions. They are in neither ganita's scope nor its "Out of scope" list | `src/math_advanced.cyr`, `docs/development/roadmap.md` | `src/special.cyr` is pramana's own. Asking ganita to take it over is a scope request, not a gap report (L8) |
-| The correctly-rounded-tier issue is open with **four consumers**: impetus, kimiya, pravash, ushma. Its speed table measures the impetus-derived crmath: exp 110 ns, pow 757 ns, atan2 1.41 µs | `docs/development/issues/2026-11-09-correctly-rounded-exp-sin-cos-hypot.md` | pramana joins as the fifth consumer, asking for log1p, tan and log2 too (L1). It vendors kimiya's faster two-phase versions (D2) |
+| The correctly-rounded-tier issue is open with **four consumers**: impetus, kimiya, pravash, ushma. Its speed table measures the impetus-derived crmath: exp 110 ns, pow 757 ns, atan2 1.41 µs | `docs/development/issues/2026-11-09-correctly-rounded-exp-sin-cos-hypot.md` | pramana joins as a consumer, asking for log1p, tan and log2 too (L1). It vendors kimiya's faster two-phase versions (D2). **Joined at step 10 as the sixth, after soorat** |
 | **No fused multiply-add** anywhere in ganita (nor a scalar one in the stdlib) | `grep fma src/` | the CORE-MATH erf/erfc port must be FMA-free (§3.4). Done in 9e with an exact emulation, at 6.5–20× CORE-MATH's cost in C; a scalar fma is requested (§10, L12) |
 | `ganita_mat_cholesky_solve` allocates n words per call. **No issue is filed for it**, though its siblings `mat_lu_solve` and `mat_inv` have open issues | `docs/development/issues/2026-11-11-mat-{lu-solve,inv}-allocates-per-call.md` | pramana files the third issue of that family (L4) |
 | `ganita_mat_eigen_sym` stops at an absolute 1e-12, an open issue | `2026-10-31-eigen-sym-absolute-stop.md` | PCA transcribes hisab 1.4.0's Jacobi (L6) |
@@ -963,7 +964,30 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
         starts; it is never a reason to move the bound. ADR 0009 records the bounds as fixed.
       - Port CORE-MATH's erf and erfc without FMA, in a fixed time slot. Classify every fma site: a Dekker product, or
         an exact software fma. Verify as §3.4 says; if it misses the slot, fall back to ≤ 1 ulp (§3.4).
-10. **File the upstream requests and seed the ledger** (§10).
+10. **✅ (2026-11-15) File the upstream requests and seed the ledger** (§10).
+    - **Filed:** eight new issues:
+      - cyrius: the captured f64, lint without the manifest, a scalar fma (each with a repro);
+      - ganita: the Cholesky family (with a repro), the special functions' scope;
+      - hisab: polynomial least squares, `eigen_symmetric`'s tolerance and scratch;
+      - hoosh: a client bundle.
+
+      A fifth repro, for the fract and u64 conversions, goes with pramana's section of the joined f64 issue.
+    - **Joined:** thirteen open issues, each with pramana's probe numbers:
+      - cyrius: the f64 surface, stable sort, `vec`'s aborts, the derive's shapes, `Debug` and the shortest printer,
+        the freelist's large blocks;
+      - ganita: the correctly rounded tier, as its sixth consumer, with per-function misround counts from the golden
+        corpus;
+      - bayan: the four JSON tree issues, the shortest printer, the nesting cap.
+    - **Checked as filed:** each repro was run from its repo's root and shows its gap on cyrius 6.7.18. Each 1.4.0
+      behaviour quoted was read from hisab 1.4.0's source. A finding on the way: the stdlib's vector `f64v_fmadd` rounds
+      twice on x86_64 (`mulpd` + `addpd`) and once on aarch64 (`fmla`), so it is not the same function on the two
+      targets (the fma issue records it).
+    - **The ledger:** §10's table in pravash's shape, read by `scripts/upstream_ledger.py` (pravash's, which also
+      checks the requests filed with no stand-in) and run in CI. Its first run caught an unmarked stand-in:
+      `src/constants.cyr`'s typed std constants (L2). The generator now writes the `UPSTREAM(L2)` note. 12 rows, 1 note,
+      0 failures.
+    - **The gate:** build, `test` (warning-free) and `test --bounds`, `bench`, `fmt --check` and `lint`, `vet`,
+      `deps --locked`, `audit` and the ledger pass. What remains is the maintainer's commit.
 
 **Gate:**
 - `cyrius build` and `cyrius bench` pass;
@@ -1167,37 +1191,48 @@ checks; hoist primitive calls out of loops; use caller buffers. A slow row is fi
 
 ---
 
-## 10. Upstream requests and the conversion ledger (seed)
+## 10. Upstream requests and the conversion ledger
 
-Each request is filed in the owning repo's `docs/development/issues/` at M0 step 10, with a self-proving repro and
-the probe numbers. Where an issue is already open, pramana adds itself as a consumer instead. Each stand-in carries
-`UPSTREAM(Ln)`, and `scripts/upstream_ledger.py --check` runs in CI.
+Each request is filed in the owning repo's `docs/development/issues/`, with a self-proving repro where one fits and
+the probe numbers. Where an issue is already open, pramana adds itself as a consumer instead, with its own numbers.
+Each stand-in carries `UPSTREAM(Ln)`, and `scripts/upstream_ledger.py --check` runs in CI.
 
-| Row | Gap | Owner | Stand-in |
-|---|---|---|---|
-| L1 | no correctly rounded tier: exp, ln, pow, sin, cos, atan2, expm1, and **log1p, tan, log2 (new asks)** | ganita (open issue 2026-11-09; pramana joins as the fifth consumer, §1.3) | `src/crmath.cyr` |
-| L2 | the Rust f64 surface: `is_nan`, `is_finite`, `copysign`, typed constants, NaN-symmetric min/max; plus, from the step 4 probe, a trunc-based `fract` (`f64_fract` is floor-based), an unsigned `u64 → f64`, and saturating `as usize` | cyrius (open issue 2026-11-11; the three new items filed at step 10) | `src/mathx.cyr` |
-| L3 | sort/select on raw f64 arrays without aborts | cyrius (`vec`) | `src/sort.cyr` |
-| L4 | `cholesky_solve` allocates n words per call (P5: 8n bytes left on the heap), and ganita's Cholesky sums in another order (P5: up to 40 ulp from 1.4.0); `_into` forms | ganita (**new issue**: the third of the `mat_inv` / `mat_lu_solve` family, §1.3) | `src/linalg.cyr` |
-| L5 | polynomial least squares (P5: ganita's Householder fit is up to 13,619 ulp from 1.4.0's Gram–Schmidt, and leaves 1.3–2.3 KB per call) | hisab | `src/linalg.cyr` (kimiya's transcription) |
-| L6 | `eigen_symmetric` with tol/max_iter and a Rust-compatible order (P5: ganita and hisab 3.5 agree with each other, but only 61 of 330 eigenvalues match 1.4.0, up to 14 ulp; 9n²–16n² bytes per call) | hisab (its absolute-stop issue is related) | `src/linalg.cyr` |
-| L7 | `#derive`: a validation hook, `Vec<Vec<f64>>`, `u64` | cyrius (the vector-array issue is open; pramana adds the hook) | `src/json.cyr` |
-| L8 | lgamma, erf/erfc, incomplete gamma/beta in ganita | ganita: a **scope** request, since these are in neither its scope nor its out-of-scope list (§1.3). pramana's T1 functions are the seed, and a second consumer is the cue to extract them | `src/special.cyr` |
-| L9 | a hoosh client library (tool calling) | hoosh | `src/ai.cyr` |
-| L10 | `#derive(Debug)` and a shortest-float printer (pravash's L16); serde_json's f64 text (P7: bayan's Grisu2 differs on 9,714 of 280,562 doubles) | cyrius; bayan (ushma's open issue 2026-11-11, `bayan_f64_to_json_serde`; pramana adds its numbers) | `src/fmtf.cyr`: impetus's digit core with its serde_json form and pravash's Debug form (D5, D12) |
-| L11 | the JSON value tree refuses an integer at or above 2^63, reads `-0` as +0, and accepts a raw control byte in a string (P7: 135 of 1,495 serde_json documents read differently) | bayan (open issues 2026-11-09 i64-max from impetus, 2026-11-11 `-0` from pravash, 2026-11-11 raw control bytes from ushma; pramana adds its numbers) | `src/json.cyr`'s pre-pass |
-| L12 | no scalar fma (§1.3). The FMA-free erf/erfc (P9, 9e) emulates 57 fma sites exactly, and the emulation is 6.5–20× CORE-MATH's cost in C | cyrius (**new issue**: `f64_fma`, hardware where the target has it, exact software otherwise, so the bits are the same everywhere) | `src/crmath.cyr`'s exact fma (Dekker's product and a round-to-odd sum) |
+**The ledger.** Seeded at M0 step 10 (2026-11-15), when every request below was filed or joined with pramana's numbers
+(eight new issues and thirteen joined, with five repros). `scripts/upstream_ledger.py` reads this table, so keep its
+shape:
+- the status is `open`, `conditional` (no request until its milestone measures a need) or `closed`;
+- each stand-in file is a backticked `src/…` path;
+- each request is a backticked `<repo>:<path>` (from `/home/macro/Repos`).
 
-Also filed at step 10, with no stand-in (a rule in §8.3 covers each meanwhile):
+| # | Status | pramana stand-in | Gap | Upstream request | Converts to | Parity rows to re-run |
+|---|---|---|---|---|---|---|
+| L1 | open | `src/crmath.cyr`: kimiya's correctly rounded two-phase exp, ln, pow, sin, cos, atan2 and expm1, vendored (D2); new log1p, tan and log2 to the same contract; kimiya's double-double ln core (§8.1) | ganita has no correctly rounded tier. On pramana's golden rows its counterparts misround up to 8% (exp 264 of 3,274; tan 82 of 2,010); log1p and expm1 are private; log2 has no guarantee | `ganita:docs/development/issues/2026-11-09-correctly-rounded-exp-sin-cos-hypot.md` (pramana joined as the sixth consumer, after soorat, adding log1p, tan and log2) | ganita's correctly rounded tier | every class C row, at 0 ulp against `*.cr.tsv` |
+| L2 | open | `src/mathx.cyr`: `_pmn_min` / `_pmn_max` with Rust's NaN rule, fract as x − trunc(x), `_pmn_u64_to_f64`, `_pmn_sat_usize`, `is_nan` / `is_finite`; the typed std constants are generated into `src/constants.cyr` | `f64_min` / `f64_max` keep a NaN second operand (69 rows); `f64_fract` is floor-based; `f64_from` reads a u64 as signed; no saturating casts (port-parity §1) | `cyrius:docs/development/issues/2026-11-11-f64-min-max-drop-nan-only-as-first-operand.md` (pramana's section adds a trunc-based fract and an unsigned conversion, with the repro `2026-11-15-f64-fract-floor-and-f64-from-signed.cyr`) | the stdlib's `f64_*` | the math sweep's class A rows: fract, min, max, clamp, `as usize`, `u64 as f64` |
+| L3 | open | `src/sort.cyr`: a stable merge sort and the order statistics' selection on raw f64 arrays, NaN refused first (ADR 007 row 14) | no stable sort; `vec_select_nth`, `vec_get` and `vec_set` abort; both work on `vec`, not on a caller's `(ptr, n)` | `cyrius:docs/development/issues/2026-11-11-no-stable-sort.md`; `cyrius:docs/development/issues/2026-11-11-vec-keeps-outgrown-buffer-and-aborts.md` (pramana's sections added to both) | a stable sort over raw words in the stdlib | the order statistics' rows (class A on the stable rule) |
+| L4 | open | `src/linalg.cyr`: hisab 1.4.0's `cholesky` and `cholesky_solve`, transcribed, with caller scratch | `ganita_mat_cholesky_solve` leaves 8n bytes per call; ganita's Cholesky sums in another order (P5: up to 40 ulp from 1.4.0) | `ganita:docs/development/issues/2026-11-15-mat-cholesky-solve-allocates-and-sums-in-another-order.md` (with a repro) | ganita's `_into` solve, and its factor if it offers the term-by-term order | the MVN, ARIMA and logistic-regression rows |
+| L5 | open | `src/linalg.cyr`: hisab 1.4.0's `least_squares_poly` (modified Gram–Schmidt), transcribed | hisab 3.5 has no polynomial least squares; ganita's Householder fit is up to 13,619 ulp from 1.4.0 and leaves 1.3–2.3 KB per call | `hisab:docs/development/issues/2026-11-15-no-polynomial-least-squares.md` | hisab's polynomial fit | the polynomial-regression rows |
+| L6 | open | `src/linalg.cyr`: hisab 1.4.0's cyclic Jacobi `eigen_symmetric(tol, max_iter)`, transcribed | hisab 3.5's `eigen_symmetric` takes no tolerance or budget, leaves ≈ 16n² bytes per call, and differs from 1.4.0 by up to 14 ulp | `hisab:docs/development/issues/2026-11-15-eigen-symmetric-no-tolerance-budget-or-caller-scratch.md` | hisab's `eigen_symmetric` with a tolerance and caller scratch | the PCA rows (class D) |
+| L7 | open | `src/json.cyr`: hand codecs for the 38 types over bayan's tree | `#derive` has no validation hook (20 types validate on deserialize), no `Vec<Vec<f64>>` (15 fields) and no u64 | `cyrius:docs/development/issues/2026-11-11-derive-json-no-vector-array-or-tagged-variant-shapes.md` (pramana's section adds the hook, matrices and u64) | `#derive(Serialize)` / `#derive(Deserialize)` | the JSON rows (class A) |
+| L8 | open | `src/special.cyr`: the T1 special functions (CORE-MATH's erf and erfc, `normal_cdf`, `ln_gamma`, `gamma_inc`, `beta_inc`) | in neither ganita's scope nor its out-of-scope list (§1.3) | `ganita:docs/development/issues/2026-11-15-special-functions-scope-request.md` (a scope request) | ganita's special functions, if it takes them | every `*.ref.tsv` row |
+| L9 | open | `src/ai.cyr`: a synchronous tool-calling client over sandhi and bayan, in the `[lib.ai]` profile (D8) | hoosh 2.x is a binary by decision, with no client library; agnosai and selah each carry their own | `hoosh:docs/development/issues/2026-11-15-pramana-no-client-bundle-for-tool-calling.md` | a hoosh client bundle | the `ai` tests' recorded responses |
+| L10 | open | `src/fmtf.cyr`: impetus's digit core with its serde_json form and pravash's Debug form, and pravash's `debug(sb, alternate)` builders (D5, D12) | no `#derive(Debug)` and no shortest printer in the stdlib; bayan's Grisu2 differs from serde_json's text on 9,714 of 280,562 doubles | `cyrius:docs/development/issues/2026-11-13-derive-debug-and-shortest-float-digits.md`; `bayan:docs/development/issues/2026-11-11-no-serde-compatible-shortest-f64-printer.md` (pramana's numbers added to both) | the stdlib printer, `bayan_f64_to_json_serde`, `#derive(Debug)` | the JSON text rows and the `Debug` rows (class A) |
+| L11 | open | `src/json.cyr`'s pre-pass (P7) | the tree refuses an integer at or above 2⁶³, reads `-0` as +0 and accepts a raw control byte in a string: 135 of 1,495 serde_json documents read differently | `bayan:docs/development/issues/2026-11-09-json-integer-above-i64-max-refuses-the-document.md`; `bayan:docs/development/issues/2026-11-11-json-integer-negative-zero-loses-its-sign.md`; `bayan:docs/development/issues/2026-11-11-json-strings-accept-raw-control-bytes-and-invalid-utf8.md` (pramana's numbers added to each) | bayan's u64 node, signed zero and strict strings | the JSON decode rows (class A) |
+| L12 | open | `src/crmath.cyr`'s exact fma: Dekker's product, a round-to-odd sum, and the tiny-path rounding (§5 step 9e) | no scalar fma (§1.3). The vector `f64v_fmadd` rounds twice on x86_64 and once on aarch64. The emulation costs 6.5–20× CORE-MATH's own in C | `cyrius:docs/development/issues/2026-11-15-no-scalar-fma.md` (with a repro) | `f64_fma`: hardware where the target has it, exact software elsewhere, the same bits everywhere | the erf, erfc and `normal_cdf` rows; their bits must not change |
+
+**Also filed at step 10, with no stand-in** (a rule in §8.3 covers each meanwhile):
 - **cyrius:** a closure's captured f64 is an untyped word in arithmetic, though it binds `T = f64` as a generic
-  argument (P3).
+  argument (P3), `cyrius:docs/development/issues/2026-11-15-closure-captured-f64-is-untyped-in-arithmetic.md`, with a
+  repro.
 - **cyrius:** `cyrius lint` compiles a file without the manifest's stdlib, so it refuses a capturing closure that
-  builds (P3).
-- **cyrius:** pramana's numbers added to the open freelist large-block issue (2026-11-11): 36 µs per MVN new/drop at
-  d = 32, and an mmap per MH result (P4).
-- **bayan:** pramana's numbers added to impetus's open request for an opt-in that leaves unread members unchecked
-  (2026-11-09, duplicate keys), with two more cases P7 found there: nesting past 128 and a lone surrogate. 35 of 1,495
-  serde_json documents wait on it (ADR 007 row 16).
+  builds (P3), `cyrius:docs/development/issues/2026-11-15-lint-refuses-a-capturing-closure-the-build-accepts.md`, with
+  a repro.
+- **cyrius:** pramana's numbers added to the open freelist large-block issue: 36 µs per MVN new and drop at d = 32,
+  and an mmap per MH result (P4), `cyrius:docs/development/issues/2026-11-11-freelist-maps-every-block-over-4k.md`.
+- **bayan:** pramana's numbers added to impetus's open request for an opt-in that leaves unread members unchecked,
+  with the two other cases P7 found there, nesting past 128 and a lone surrogate. 35 of 1,495 serde_json documents
+  wait on it (ADR 007 row 16):
+  `bayan:docs/development/issues/2026-11-09-json-duplicate-key-has-no-opt-in-for-ignored-members.md` and
+  `bayan:docs/development/issues/2026-11-15-json-nesting-cap-of-128-refuses-what-serde-skips.md`.
 
 ---
 

@@ -202,6 +202,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     2⁻¹⁰⁷⁴ (ADR 009). `scripts/port-baseline/merge.py` merges its reports from interleaved chunks, so a slow MPFR check
     runs on ten cores.
 
+- **Upstream requests and the conversion ledger** (port plan M0 step 10, §10; ADR 008).
+  - **Filed in the owning repos' `docs/development/issues/`**, with pramana's probe numbers:
+    - **cyrius:** a captured f64 is an untyped word in closure arithmetic; `cyrius lint` refuses a capturing closure
+      the build accepts; no scalar fma (L12; the vector `f64v_fmadd` rounds twice on x86_64 and once on aarch64);
+    - **ganita:** `cholesky_solve` allocates 8n bytes per call, and the factor sums in another order than hisab 1.4.0
+      (L4); the special functions' scope (L8);
+    - **hisab:** no polynomial least squares (L5); `eigen_symmetric` has no tolerance, budget or caller scratch (L6);
+    - **hoosh:** a client bundle for tool calling, which agnosai and selah each carry their own of (L9).
+  - **Joined, as a consumer with its own numbers:**
+    - **cyrius:** the f64 surface, adding a trunc-based fract and an unsigned u64 → f64 (L2); stable sort and `vec`'s
+      aborts (L3); the derive's shapes, adding a validation hook, matrices and u64 (L7); `Debug` and the shortest
+      printer (L10); the freelist's large blocks;
+    - **ganita:** the correctly rounded tier, as its sixth consumer, adding log1p, tan and log2, with each counterpart's
+      misrounds on the golden corpus (exp 264 of 3,274, tan 82 of 2,010; L1);
+    - **bayan:** the u64, `-0` and raw-control-byte issues (L11), the serde_json printer (L10), and the unread-member
+      opt-in and nesting cap (ADR 007 row 16).
+  - **Repros:** five (four in cyrius, one in ganita), each run from its repo's root on cyrius 6.7.18 and showing its
+    gap.
+  - **The ledger:** §10's table in pravash's shape (status, stand-in, gap, request, conversion, rows to re-run), read
+    by `scripts/upstream_ledger.py --check` (pravash's, extended to check the requests filed with no stand-in), now a
+    CI step. Its first run caught `src/constants.cyr`'s typed std constants unmarked; the generator now writes their
+    `UPSTREAM(L2)` note, and the rest of its output is unchanged. 12 rows, 1 note, 0 failures.
+  - **The M0 gate passes:** build, `test` (warning-free), `test --bounds`, `bench`, `fmt --check`, `lint`, `vet`,
+    `deps --locked`, `audit` and the ledger.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

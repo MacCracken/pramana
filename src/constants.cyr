@@ -133,6 +133,11 @@ const _PMN_MATH_LN_GAMMA_COEFFICIENTS_7 = 0.000009984369578019572;
 const _PMN_MATH_LN_GAMMA_COEFFICIENTS_8 = 0.00000015056327351493116;
 const _PMN_MATH_LN_GAMMA_G = 7.0;
 
+# Rust std float constants (port-parity §1: the stdlib's F64_* names are untyped).
+# UPSTREAM(L2): cyrius:docs/development/issues/2026-11-11-f64-min-max-drop-nan-only-as-first-operand.md
+#   replace with the stdlib's typed F64_* constants once it has them; parity: the constants rows
+#   (class A)
+
 # Rust: f64
 const _PMN_F64_EPSILON = 0.0000000000000002220446049250313;
 var _PMN_F64_MIN_POSITIVE: f64 = 0x0010000000000000;
