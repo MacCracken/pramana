@@ -140,7 +140,7 @@ fn main() {
     var nz: f64 = -0.0;
     var enz: f64 = _pmn_erf(nz);
     var epz: f64 = _pmn_erf(0.0);
-    assert(bits(enz) == bits(nz) && bits(epz) == 0, "erf(-0) = -0, erf(+0) = +0 (fdlibm's tiny branch keeps the sign)");
+    assert(bits(enz) == bits(nz) && bits(epz) == 0, "erf(-0) = -0 and erf(+0) = +0: the sign is kept");
     var cnz: f64 = _pmn_erfc(nz);
     assert(cnz == 1.0, "erfc(-0) = 1");
     var payload: f64 = of_bits(0x7FF8000000ABCDEF);
@@ -162,7 +162,30 @@ fn main() {
     var cmax: f64 = _pmn_erfc(-40.0);
     var mp: f64 = _PMN_F64_MIN_POSITIVE;
     var want_cmax: f64 = 2.0 - mp;
-    assert(bits(cmax) == bits(want_cmax) && cmax == 2.0, "erfc(-40) is 2 - MIN_POSITIVE, which rounds to 2");
+    assert(bits(cmax) == bits(want_cmax) && cmax == 2.0, "erfc(-40) = 2");
+    test_group("T1 (M2 part b1): erf and erfc correctly rounded, CORE-MATH's hard cases");
+    var wx: f64 = of_bits(0x3C20380EBD7A8F91);
+    var we: f64 = _pmn_erf(wx);
+    var nwx: f64 = -wx;
+    var nwe: f64 = _pmn_erf(nwx);
+    assert(bits(we) == 0x3C224D1863C5B5B5 && bits(nwe) == 0xBC224D1863C5B5B5,
+        "erf(0x1.0380ebd7a8f91p-61) = 0x1.24d1863c5b5b5p-61, a worst case its fast path can't round");
+    var cx: f64 = of_bits(0x3C8C5BF891B4EF6B);
+    var ce1: f64 = _pmn_erfc(cx);
+    var ncx: f64 = -cx;
+    var ce2: f64 = _pmn_erfc(ncx);
+    assert(bits(ce1) == 0x3FEFFFFFFFFFFFFF && bits(ce2) == 0x3FF0000000000000,
+        "erfc(±0x1.c5bf891b4ef6bp-55) = 1 - 2^-53 and 1: worst cases beside 1");
+    var sx: f64 = of_bits(0x403A8F7BFBD15495);
+    var se: f64 = _pmn_erfc(sx);
+    assert(bits(se) == 0x000667BD620FD95B,
+        "erfc(0x1.a8f7bfbd15495p+4) = 0x1.99ef5883f656cp-1024, a subnormal exception");
+    var ux: f64 = of_bits(0x403B39DC41E48BFD);
+    var ue: f64 = _pmn_erfc(ux);
+    var ux1: f64 = of_bits(0x403B39DC41E48BFC);
+    var ue1: f64 = _pmn_erfc(ux1);
+    assert(bits(ue) == 0 && bits(ue1) == 1,
+        "erfc underflows to +0 from 0x1.b39dc41e48bfdp+4, and is the smallest subnormal just below");
     var pt: f64 = _pmn_normal_cdf(-40.0);
     var st: f64 = _pmn_normal_sf(40.0);
     assert(bits(pt) == 0 && bits(st) == 0, "Phi(-40) and 1 - Phi(40) underflow to +0");

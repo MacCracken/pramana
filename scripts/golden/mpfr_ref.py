@@ -35,7 +35,8 @@ _m.mpfr_get_d.restype = ctypes.c_double
 _m.mpfr_subnormalize.argtypes = [_P, ctypes.c_int, ctypes.c_int]
 
 _UNARY = ("exp", "expm1", "exp2", "exp10", "log", "log2", "log10", "log1p",
-          "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "cbrt", "sqrt")
+          "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "cbrt", "sqrt",
+          "erf", "erfc")   # erf and erfc: M2 part b1's reference rows
 _BINARY = ("pow", "atan2", "hypot")
 for _name in _UNARY:
     getattr(_m, "mpfr_" + _name).argtypes = [_P, _P, ctypes.c_int]

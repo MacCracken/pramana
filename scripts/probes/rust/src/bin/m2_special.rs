@@ -1,6 +1,6 @@
 //! M2: the Rust twin of tests/special.bcyr. 1.3.0's special functions (through the `oracle` hooks, on glibc 2.44's
 //! primitives) on the same seeded arguments, regions and loop: 4,096 values (or pairs, drawn alternately) per row,
-//! cycled 250 times, ns per call, and each row's sum as bits. Run pinned, interleaved with `cyrius bench tests/special.bcyr`:
+//! cycled 250 times, ns per call, each row's sum as bits, and an FNV-1a digest of its 4,096 results' bits. Run pinned, interleaved with `cyrius bench tests/special.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m2_special
 
 use pramana::oracle;
@@ -34,6 +34,12 @@ fn row(r: &mut Rng, name: &str, f: fn(f64, f64) -> f64, (lo, hi): (f64, f64), (l
     }
     let ns = t0.elapsed().as_nanos() as f64 / 1_024_000.0;
     println!("  {name}, the sum: {:x}", s.to_bits());
+    // FNV-1a over the 4,096 results' bits, word by word, untimed: equal digests mean equal values.
+    let mut dg: u64 = 0xcbf2_9ce4_8422_2325;
+    for &(x, y) in &xy {
+        dg = (dg ^ f(x, y).to_bits()).wrapping_mul(0x0100_0000_01b3);
+    }
+    println!("  {name}, the digest: {dg:x}");
     println!("  {name}: {ns:.1} ns");
 }
 

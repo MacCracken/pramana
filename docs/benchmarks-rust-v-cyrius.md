@@ -358,3 +358,51 @@ row counts matched.
 **Where the time goes.** The prefactor (part a2's ln B or the brcomp form, and an exp) and the loop's two divisions
 per half-step. The large-shape row is the closest to Rust of any special-function row: its time is mostly the
 loop's arithmetic, which costs about the same in both compilers' code.
+
+## M2 part b1: erf and erfc correctly rounded, T1 (2026-11-16)
+
+**A stronger cross-check, and a correction.** Until now each bench row printed its sum of 1,024,000 results, and I
+recorded agreeing sums as agreement. A sum that size absorbs a 1-ulp change in any one result, so it could not have
+shown one. This part proved that: CORE-MATH's erfc differs from 1.3.0's on 1,648 of the mid-range row's 4,096
+arguments, and the sums still agree.
+- **The digest:** each row now also prints an FNV-1a digest of its 4,096 results' bit patterns, on both sides,
+  computed in a separate untimed pass. The timed loop is unchanged.
+- **The check:** a script re-creates every row's arguments from the bench's xorshift and computes both digests
+  through `validate.py`'s models. All 26 are explained: Rust's equals the glibc model's, and the port's equals the
+  reference model's (correctly rounded primitives, and MPFR's erf and erfc).
+- **What the sums hid:** the values differ between the two sides on 0 to 1,648 of each row's 4,096 arguments.
+  - **The erf, erfc, Φ and Wilson–Hilferty rows:** 13 to 1,648, from T1.
+  - **Part a2–a4's other rows:** up to 275, all of it glibc's misrounding: bd0 268, the large-shape kernel 275, ln B
+    with both shapes large 145, beta at the mean 144, and 10 or fewer on the rest.
+
+  Those parts' "sums agree" should read "sums agree, which checks nothing finer than the sum's own rounding".
+
+**Timings.** Only the rows b1 changes were re-timed, from a copy of the bench with the other rows left out. Three
+rounds, interleaved, pinned to core 5. Each round started only once the load average fell below 3, after an earlier
+attempt ran at 15–24 (another project's fuzzer) and doubled Rust's own rows; these ran at 2.8–3.1. The
+Wilson–Hilferty row's arguments differ from the full bench's (the copy skips the rows that draw before it), from the
+same range.
+
+| Row | Rust 1.3.0 (fdlibm) | Cyrius T1 (CORE-MATH) | Cyrius / Rust | Cyrius T0 (part a1) |
+|---|---|---|---|---|
+| the loop alone | 1.2–1.3 ns | 8 ns | — | 7–8 ns |
+| `erf`, \|x\| < 0.84375 | 3.9–4.0 ns | 623–630 ns | 157× | 47–48 ns |
+| `erf`, 0.84375 ≤ x < 1.25 | 5.3–5.4 ns | 630–634 ns | 119× | 55–56 ns |
+| `erf`, 1.25 ≤ x < 6 | 21.8–22.0 ns | 616–625 ns | 28× | 159–161 ns |
+| `erfc`, 0.25 ≤ x < 0.84375 | 4.3–4.4 ns | 542–550 ns | 127× | 50 ns |
+| `erfc`, 1.25 ≤ x < 2.857 | 21.7–21.8 ns | 797–800 ns | 37× | 157 ns |
+| `erfc`, 2.857 ≤ x < 27 | 22.0–22.1 ns | 2.42–2.43 µs | 110× | 154–155 ns |
+| `normal_cdf`, z in [−10, 10) | 20.1 ns | 1.06–1.07 µs | 53× | 145–146 ns |
+| `normal_cdf`, z in [−38, −1.2) | 23.7–24.0 ns | 2.27–2.28 µs | 96× | 161–162 ns |
+| `normal_sf`, z in [0, 38) | 23.1–23.3 ns | 2.24–2.28 µs | 98× | 158–159 ns |
+| `gamma_inc`, Wilson–Hilferty | 58.8–59.3 ns | 1.23 µs | 21× | 315 ns |
+
+**Where the time goes.** This is correct rounding without a hardware fma, at the cost ADR 009 accepted for it:
+- **CORE-MATH's fast paths** are double-double polynomials. Every fma in them is emulated exactly, by a Dekker
+  product and a round-to-odd sum: about 17 flops for one instruction.
+- **P9 measured the same costs** (508–675 ns on the main ranges, 2.3 µs on erfc's asymptotic range; §3.7), and found
+  that in C the emulation alone takes CORE-MATH from 6–38 ns to 82–426 ns.
+- **A scalar fma would remove most of it.** That is the cyrius request ledger row L12 tracks.
+
+Against the T0 port of fdlibm, T1 costs 4–16×; against Rust's fdlibm, 28–157×. Φ and 1 − Φ, and gamma_inc's
+Wilson–Hilferty branch, inherit it through erfc until part b2 replaces Φ.

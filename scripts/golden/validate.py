@@ -1327,16 +1327,26 @@ def sp_max(x, y):
 
 
 class Prims:
-    """The primitives 1.3.0's math.rs calls: glibc's (ctypes), or correctly rounded (MPFR)."""
+    """The primitives 1.3.0's math.rs calls, and its erf and erfc, in one of three modes:
+    - "glibc": glibc's primitives (ctypes) and 1.3.0's fdlibm erf and erfc on them: 1.3.0's own bits;
+    - "cr": every primitive correctly rounded (MPFR) under 1.3.0's fdlibm erf and erfc: the T0 model (`*.cr.tsv`);
+    - "ref": as "cr", with erf and erfc at their true values (MPFR), as T1 computes them since M2 part b1: the
+      reference model (`*.ref.tsv`). Each later T1 function joins it as its part lands."""
 
-    def __init__(self, cr):
-        if cr:
+    def __init__(self, mode, F):
+        if mode == "glibc":
+            self.exp, self.ln, self.ln1p, self.sin = _libm.exp, _libm.log, _libm.log1p, _libm.sin
+        else:
             self.exp = lambda x: mpfr_ref.cr("exp", x)
             self.ln = lambda x: mpfr_ref.cr("log", x)
             self.ln1p = lambda x: mpfr_ref.cr("log1p", x)
             self.sin = lambda x: mpfr_ref.cr("sin", x)
+        if mode == "ref":
+            self.erf = lambda x: mpfr_ref.cr("erf", x)
+            self.erfc = lambda x: mpfr_ref.cr("erfc", x)
         else:
-            self.exp, self.ln, self.ln1p, self.sin = _libm.exp, _libm.log, _libm.log1p, _libm.sin
+            self.erf = lambda x: sp_erf(F, self.exp, x)
+            self.erfc = lambda x: sp_erfc(F, self.exp, x)
 
 
 def sp_ln_gamma(K, L, x):
@@ -1461,7 +1471,7 @@ def sp_gamma_inc(K, L, a, x):
     if a > K["WH"]:
         v = 1.0 / (9.0 * a)
         z = fdiv(mpfr_ref.cr("cbrt", x / a) - (1.0 - v), math.sqrt(v))
-        return (0.5 * sp_erfc(K["F"], L.exp, -z / math.sqrt(2.0)), 0.5 * sp_erfc(K["F"], L.exp, z / math.sqrt(2.0)))
+        return (0.5 * L.erfc(-z / math.sqrt(2.0)), 0.5 * L.erfc(z / math.sqrt(2.0)))
     if x < a + 1.0:
         p = sp_series_p(K, L, a, x)
         return (p, 1.0 - p)
@@ -1534,10 +1544,10 @@ def sp_beta_inc(K, L, a, b, x, y):
 
 
 SPECIAL = {  # name: (inputs, model(K, L, *inputs))
-    "math::erf": (1, lambda K, L, x: sp_erf(K["F"], L.exp, x)),
-    "math::erfc": (1, lambda K, L, x: sp_erfc(K["F"], L.exp, x)),
-    "math::normal_cdf": (1, lambda K, L, z: 0.5 * sp_erfc(K["F"], L.exp, -z / math.sqrt(2.0))),
-    "math::normal_sf": (1, lambda K, L, z: 0.5 * sp_erfc(K["F"], L.exp, z / math.sqrt(2.0))),
+    "math::erf": (1, lambda K, L, x: L.erf(x)),
+    "math::erfc": (1, lambda K, L, x: L.erfc(x)),
+    "math::normal_cdf": (1, lambda K, L, z: 0.5 * L.erfc(-z / math.sqrt(2.0))),
+    "math::normal_sf": (1, lambda K, L, z: 0.5 * L.erfc(z / math.sqrt(2.0))),
     "math::ln_gamma": (1, sp_ln_gamma),
     "math::stirling_error": (1, sp_stirling),
     "math::bd0": (2, sp_bd0),
@@ -1551,12 +1561,21 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
 }
 
 
+# The T1 functions landed so far (M2 part b), each at its true value in the reference model.
+T1_SO_FAR = {"math::erf": "MPFR's correctly rounded erf", "math::erfc": "MPFR's correctly rounded erfc"}
+
+
 def check_special(root, rows):
-    """Every row re-derived through glibc's primitives; the rows whose value changes when every primitive is correctly
-    rounded go to special.cr.tsv. The coefficients are python_constants' own reading of rust-old/src."""
+    """Every row re-derived three ways (Prims): through glibc, which must give 1.3.0's recorded bits; on correctly
+    rounded primitives (the T0 model); and with the T1 functions landed so far at their true values (the reference
+    model), which is what the port computes. A row whose port value differs from its recorded bits is written to
+    special.cr.tsv when the two models agree (only a primitive's rounding moves it), else to special.ref.tsv (a T1
+    function, or Rust's formula on one, moves it). The coefficients are python_constants' own reading of
+    rust-old/src."""
     consts = python_constants(root)
+    F = {k[len("math::fdlibm::"):]: v for k, v in consts.items() if k.startswith("math::fdlibm::")}
     K = {
-        "F": {k[len("math::fdlibm::"):]: v for k, v in consts.items() if k.startswith("math::fdlibm::")},
+        "F": F,
         "LG": [consts[f"math::ln_gamma::COEFFICIENTS[{i}]"] for i in range(9)],
         "G": consts["math::ln_gamma::G"],
         "LS": consts["math::LN_SQRT_2PI"],
@@ -1565,33 +1584,67 @@ def check_special(root, rows):
         "MAXIT": consts["math::MAX_ITERATIONS"],
         "WH": consts["math::GAMMA_WILSON_HILFERTY_SHAPE"],
     }
-    glibc, cr = Prims(False), Prims(True)
-    failures, by_fn, crs = [], {}, []
+    glibc, cr, ref = Prims("glibc", F), Prims("cr", F), Prims("ref", F)
+    failures, by_fn, crs, refs = [], {}, [], []
 
     def shown(v):
         return repr(v[0]) if len(v) == 1 else repr(tuple(v))
+
+    def listed(v):
+        return list(v) if isinstance(v, tuple) else [v]
 
     for fn, cls, ins, outs, raw in rows:
         n, model = SPECIAL.get(fn, (None, None))
         if model is None or len(ins) != n:
             failures.append(f"special: no model for {fn}({raw[:60]})")
             continue
-        want = model(K, glibc, *ins)
-        wants = list(want) if isinstance(want, tuple) else [want]
+        wants = listed(model(K, glibc, *ins))
         ok = len(outs) == len(wants) and all(same(g, w) for g, w in zip(outs, wants))
         stat = by_fn.setdefault(fn, [0, 0])
         stat[0 if ok else 1] += 1
         if not ok:
             failures.append(f"special: {fn}{tuple(ins)!r} recorded {outs!r}, modelled {wants!r}")
             continue
-        want_cr = model(K, cr, *ins)
-        crv = list(want_cr) if isinstance(want_cr, tuple) else [want_cr]
-        if not all(same(g, w) for g, w in zip(outs, crv)):
-            ulps = max(abs(ordered(bits(g)) - ordered(bits(w))) for g, w in zip(outs, crv))
-            toks = " ".join(f"f:{bits(w):016x}" for w in crv)
-            crs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {shown(outs)} through glibc; {shown(crv)} with every "
+        crv = listed(model(K, cr, *ins))
+        refv = listed(model(K, ref, *ins))
+        if all(same(g, w) for g, w in zip(outs, refv)):
+            continue
+        ulps = max(abs(ordered(bits(g)) - ordered(bits(w))) for g, w in zip(outs, refv))
+        toks = " ".join(f"f:{bits(w):016x}" for w in refv)
+        if all(same(a, b) for a, b in zip(crv, refv)):
+            crs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {shown(outs)} through glibc; {shown(refv)} with every "
                        f"primitive correctly rounded, {ulps} ulp apart")
-    return failures, by_fn, crs
+        elif fn in T1_SO_FAR:
+            refs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {shown(outs)}; {T1_SO_FAR[fn]} {shown(refv)}, {ulps} ulp "
+                        f"apart")
+        else:
+            refs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {shown(outs)}; {shown(refv)} by Rust's formula on the T1 "
+                        f"functions' true values and correctly rounded primitives, {ulps} ulp apart")
+    return failures, by_fn, crs, refs
+
+
+def ref_file(gdir, module, provenance, refs, write_cr, failures):
+    """Writes (--write-cr) or checks a module's reference rows (M2 part b, ADR 009's T1)."""
+    head = [
+        f"# pramana reference rows (ADR 009, T1), format 1: {module}",
+        f"# recorded: {provenance}. Reference: MPFR {mpfr_ref.VERSION}. "
+        "Generated by scripts/golden/validate.py; do not edit.",
+        "# regenerate: python3 -I -B scripts/golden/validate.py . --write-cr",
+        "# columns: fn<TAB>inputs<TAB>outputs<TAB>note (fn, inputs: the golden row's, byte for byte; outputs: a T1 "
+        "function's true value, or Rust's formula on the T1 functions' true values and correctly rounded primitives)",
+        f"# rows: {len(refs)}",
+    ]
+    text = "\n".join(head + refs) + "\n"
+    path = gdir / f"{module}.ref.tsv"
+    if write_cr:
+        path.write_text(text, encoding="utf-8")
+        print(f"  wrote {path.name}: {len(refs)} rows")
+    elif not path.exists():
+        failures.append(f"{path.name} missing (run with --write-cr)")
+    elif path.read_text(encoding="utf-8") != text:
+        failures.append(f"{path.name} differs from what MPFR gives")
+    else:
+        print(f"  {path.name}: {len(refs)} rows, as MPFR gives")
 
 
 def cr_file(gdir, module, provenance, crs, write_cr, failures):
@@ -1754,12 +1807,13 @@ def main(argv):
                 print(f"  {fn:42s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
             cr_file(gdir, module, provenance, crs, write_cr, failures)
         if module == "special":
-            f, by_fn, crs = check_special(root, rows)
+            f, by_fn, crs, refs = check_special(root, rows)
             failures.extend(f)
             for fn in sorted(by_fn):
                 ok, bad = by_fn[fn]
                 print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
             cr_file(gdir, module, provenance, crs, write_cr, failures)
+            ref_file(gdir, module, provenance, refs, write_cr, failures)
         if module == "rng":
             f, by_fn = check_rng(rows)
             failures.extend(f)

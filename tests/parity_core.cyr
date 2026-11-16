@@ -30,8 +30,12 @@
 # row fails its module.
 #
 # The mapped rows (ADR 007) work the same way: tests/golden/<module>.map.tsv holds the outputs of each row whose result
-# an accepted divergence changes (scripts/golden/validate.py), and a pass against them is *accepted (ADR 7)*. Both
-# files load into one table, each row tagged.
+# an accepted divergence changes (scripts/golden/validate.py), and a pass against them is *accepted (ADR 7)*.
+#
+# The reference rows (ADR 009's T1, from M2 part b1) too: tests/golden/<module>.ref.tsv holds, for each row a T1
+# function moves, its true value, or Rust's formula on the T1 functions' true values downstream. It is compared under
+# the row's class and `_par_c_bound`, which for a T1 function is ADR 009's bound for it, and a pass is *accepted
+# (ADR 9)*, reported per file. All three files load into one table, each row tagged (4, 2, 9).
 
 # ── tokens ──────────────────────────────────────────────────────────────────────────
 # Three token lists of up to _PAR_MAX tokens: the row's inputs, its wanted outputs, and what the port returned.
@@ -633,8 +637,10 @@ fn _par_cr_key_is(r, fp, fl, ip, il): i64 {
 }
 
 var _par_map_file[128];
+var _par_ref_file[128];
 var _par_cr_n4 = 0;   # the table's rows from <module>.cr.tsv (ADR 9)
 var _par_cr_n2 = 0;   # ... and from <module>.map.tsv (ADR 007)
+var _par_cr_n9 = 0;   # ... and from <module>.ref.tsv (ADR 9, T1)
 
 # tests/golden/<module><ext> (ext elen bytes) read whole into a buffer, its path into name (128 bytes) and its length
 # into *lenw; 0 with *lenw = -2 when there is no such file, 0 with another length when it can't be read.
@@ -695,28 +701,37 @@ fn _par_tab_parse(buf, len, adr): i64 {
     return 0;
 }
 
-# Loads tests/golden/<module>.cr.tsv (ADR 9) and <module>.map.tsv (ADR 007) into the table. Returns its row count
-# (0 when the module has neither file), or -1 when a file exists but can't be read or holds a malformed row
-# (_par_cr_file names the file).
+# Loads tests/golden/<module>.cr.tsv (ADR 9), <module>.map.tsv (ADR 007) and <module>.ref.tsv (ADR 9, T1) into the
+# table. Returns its row count (0 when the module has none of them), or -1 when a file exists but can't be read or
+# holds a malformed row (_par_cr_file names the file).
 fn _par_cr_load(mp, ml): i64 {
     _par_cr_n = 0;
     _par_cr_n4 = 0;
     _par_cr_n2 = 0;
+    _par_cr_n9 = 0;
     var len4w[8];
     var len2w[8];
+    var len9w[8];
     var b4 = _par_tab_read(mp, ml, ".cr.tsv", 7, &_par_cr_file, &len4w);
     var b2 = _par_tab_read(mp, ml, ".map.tsv", 8, &_par_map_file, &len2w);
+    var b9 = _par_tab_read(mp, ml, ".ref.tsv", 8, &_par_ref_file, &len9w);
     var len4 = load64(&len4w);
     var len2 = load64(&len2w);
+    var len9 = load64(&len9w);
     if (b4 == 0 && len4 != 0 - 2) { return 0 - 1; }
     if (b2 == 0 && len2 != 0 - 2) {
         memcpy(&_par_cr_file, &_par_map_file, 128);
         return 0 - 1;
     }
+    if (b9 == 0 && len9 != 0 - 2) {
+        memcpy(&_par_cr_file, &_par_ref_file, 128);
+        return 0 - 1;
+    }
     var rows = 0;
     if (b4 != 0) { _par_cr_n4 = _par_tab_rows(b4, len4); }
     if (b2 != 0) { _par_cr_n2 = _par_tab_rows(b2, len2); }
-    rows = _par_cr_n4 + _par_cr_n2;
+    if (b9 != 0) { _par_cr_n9 = _par_tab_rows(b9, len9); }
+    rows = _par_cr_n4 + _par_cr_n2 + _par_cr_n9;
     if (rows == 0) { return 0; }
     var cap = 16;
     while (cap < rows * 2) { cap = cap * 2; }
@@ -729,6 +744,10 @@ fn _par_cr_load(mp, ml): i64 {
     if (b4 != 0 && _par_tab_parse(b4, len4, 4) < 0) { return 0 - 1; }
     if (b2 != 0 && _par_tab_parse(b2, len2, 2) < 0) {
         memcpy(&_par_cr_file, &_par_map_file, 128);
+        return 0 - 1;
+    }
+    if (b9 != 0 && _par_tab_parse(b9, len9, 9) < 0) {
+        memcpy(&_par_cr_file, &_par_ref_file, 128);
         return 0 - 1;
     }
     return _par_cr_n;
@@ -835,6 +854,9 @@ fn _par_module(mp, ml): i64 {
     var cr_other = 0;
     var cr_pend = 0;
     var cr_fail = 0;
+    var ref_acc = 0;
+    var ref_other = 0;
+    var ref_fail = 0;
     var line = 0;
     while (line < len) {
         var eol = _par_find(buf, line, len, 10);
@@ -913,17 +935,19 @@ fn _par_module(mp, ml): i64 {
                 map_acc = map_acc + 1;
             }
             elif (outcome == 1 && cr >= 0) {
-                # ADR 9: the port matches the correctly rounded rows where 1.3.0's libm misrounded.
+                # ADR 9: the port matches the correctly rounded rows where 1.3.0's libm misrounded, or (tag 9) the
+                # reference rows where a T1 function moved the value, within the function's bound.
                 _par_bump(_par_fn_acc, slot);
                 _par_bump(_par_fn_adr6, slot);
                 _par_rows_acc = _par_rows_acc + 1;
                 _par_rows_adr6 = _par_rows_adr6 + 1;
-                cr_acc6 = cr_acc6 + 1;
+                if (tag == 9) { ref_acc = ref_acc + 1; } else { cr_acc6 = cr_acc6 + 1; }
             }
             elif (outcome == 1) { _par_bump(_par_fn_ok, slot); _par_rows_ok = _par_rows_ok + 1; }
             elif (outcome == 2) {
                 if (cr >= 0 && tag == 4) { cr_meas = cr_meas + 1; }
                 if (cr >= 0 && tag == 2) { map_other = map_other + 1; }
+                if (cr >= 0 && tag == 9) { ref_other = ref_other + 1; }
                 _par_bump(_par_fn_meas, slot);
                 _par_rows_meas = _par_rows_meas + 1;
                 if (_par_outlier == 1 && outliers_shown < 10) {
@@ -937,6 +961,7 @@ fn _par_module(mp, ml): i64 {
             elif (outcome == 3) {
                 if (cr >= 0 && tag == 4) { cr_pend = cr_pend + 1; }
                 if (cr >= 0 && tag == 2) { map_other = map_other + 1; }
+                if (cr >= 0 && tag == 9) { ref_other = ref_other + 1; }
                 _par_bump(_par_fn_pend, slot);
                 _par_rows_pend = _par_rows_pend + 1;
             }
@@ -950,12 +975,14 @@ fn _par_module(mp, ml): i64 {
             elif (adr > 0 && _par_accepted_quiet(adr) == 1) {
                 if (cr >= 0 && tag == 4) { cr_other = cr_other + 1; }
                 if (cr >= 0 && tag == 2) { map_other = map_other + 1; }
+                if (cr >= 0 && tag == 9) { ref_other = ref_other + 1; }
                 _par_bump(_par_fn_acc, slot);
                 _par_rows_acc = _par_rows_acc + 1;
             }
             elif (adr > 0) {
                 if (cr >= 0 && tag == 4) { cr_other = cr_other + 1; }
                 if (cr >= 0 && tag == 2) { map_other = map_other + 1; }
+                if (cr >= 0 && tag == 9) { ref_other = ref_other + 1; }
                 _par_bump(_par_fn_acc, slot);
                 _par_rows_acc = _par_rows_acc + 1;
                 print("  accepted (ADR ", 16);
@@ -968,6 +995,7 @@ fn _par_module(mp, ml): i64 {
             else {
                 if (cr >= 0 && tag == 4) { cr_fail = cr_fail + 1; }
                 if (cr >= 0 && tag == 2) { map_fail = map_fail + 1; }
+                if (cr >= 0 && tag == 9) { ref_fail = ref_fail + 1; }
                 _par_bump(_par_fn_fail, slot);
                 _par_rows_fail = _par_rows_fail + 1;
                 mod_fail = 1;
@@ -975,6 +1003,7 @@ fn _par_module(mp, ml): i64 {
                     eprint("  FAIL: ", 8);
                     if (cr >= 0 && tag == 4) { eprint("(against the ADR 9 corrected outputs) ", 38); }
                     if (cr >= 0 && tag == 2) { eprint("(against the ADR 7 mapped outputs) ", 35); }
+                    if (cr >= 0 && tag == 9) { eprint("(against the ADR 9 reference outputs) ", 38); }
                     if (crbad == 1) {
                         eprint("malformed correction for the row: ", 34);
                         eprint(buf + line, eol - line);
@@ -996,11 +1025,19 @@ fn _par_module(mp, ml): i64 {
     # A correction that no golden row took is stale: its key matches no row (or one row twice).
     var unmatched = 0;
     var unmatched2 = 0;
+    var unmatched9 = 0;
     var k = 0;
     while (k < _par_cr_n) {
         var at = _par_cr_t + k * 64;
         if (load64(at + 48) == 0) {
-            if (load64(at + 56) == 2) { unmatched2 = unmatched2 + 1; } else { unmatched = unmatched + 1; }
+            var utag = load64(at + 56);
+            if (utag == 2) {
+                unmatched2 = unmatched2 + 1;
+            } elif (utag == 9) {
+                unmatched9 = unmatched9 + 1;
+            } else {
+                unmatched = unmatched + 1;
+            }
             _par_rows_fail = _par_rows_fail + 1;
             mod_fail = 1;
             if (fails_shown < 10) {
@@ -1049,6 +1086,21 @@ fn _par_module(mp, ml): i64 {
         fmt_int(map_fail);
         print(" FAILED, ", 9);
         fmt_int(unmatched2);
+        println(" matching no golden row");
+    }
+    if (_par_cr_n9 > 0) {
+        print("  ADR 009 reference rows (T1), ", 31);
+        print(&_par_ref_file, strlen(&_par_ref_file));
+        print(": ", 2);
+        fmt_int(_par_cr_n9);
+        print(" rows: ", 7);
+        fmt_int(ref_acc);
+        print(" accepted (ADR 9), ", 19);
+        fmt_int(ref_other);
+        print(" otherwise (measured, pending, another ADR), ", 45);
+        fmt_int(ref_fail);
+        print(" FAILED, ", 9);
+        fmt_int(unmatched9);
         println(" matching no golden row");
     }
     if (_par_module_done(mp, ml) != 0) { mod_fail = 1; }

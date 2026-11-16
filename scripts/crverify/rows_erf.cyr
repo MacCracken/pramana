@@ -1,0 +1,325 @@
+# rows_erf.cyr — the correct-rounding check of pramana's erf and erfc (M2 part b1; port plan D3 = C, §3.4, ADR 009).
+#
+# Prints `cr:<fn>/<set> x result` rows (bit patterns) for scripts/port-baseline/check.c (MPFR at 1,024 bits, zero and
+# subnormal results in units of 2^-1074) and for scripts/crverify/cmp_coremath.c (CORE-MATH's own C build, hardware
+# FMA, bit for bit). Probe P9's argument sets (scripts/probes/p9_erf.cyr), with its seed and order, so the same
+# 2,768,518 arguments reach src/crerf.cyr:
+# - CORE-MATH's worst cases, both signs (build/crverify/erf_wc.bits, erfc_wc.bits, one input per line, which run.sh
+#   writes from build/coremath/'s lists);
+# - over 10^6 seeded arguments per function, weighted to every branch point, the subnormal range and the tails;
+# - 10^5 per function through the accurate path alone (`erf_acc`, `erfc_acc`), which the C build has no entry for.
+#   bash scripts/crverify/run.sh erf
+
+include "tests/lib.cyr"
+
+var g_rng = 0x9E3779B97F4A7C15;
+var g_out = 0;
+
+# Every shift here is `>>`, the logical one (`>>>` sign-extends).
+fn ce_word(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+fn ce_bits(w): f64 {
+    var r: f64 = 0.0;
+    store64(&r, w);
+    return r;
+}
+
+fn ce_unit(): f64 {
+    var top = ce_word() >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# Uniform in [lo, hi).
+fn ce_range(lo: f64, hi: f64): f64 {
+    var w: f64 = hi - lo;
+    var u: f64 = ce_unit();
+    var r: f64 = lo + w * u;
+    return r;
+}
+
+# 2^u·(1 + f) with u a random integer in [elo, ehi] (2^-1074 granularity below 2^-1022), and a random sign when sg.
+fn ce_scale(elo, ehi, sg): f64 {
+    var span = ehi - elo + 1;
+    var e = elo + (ce_word() >> 1) % span;
+    var m = ce_word() >> 12;
+    var x: f64 = 0.0;
+    if (e >= 0 - 1022) {
+        var bits = ((e + 1023) << 52) | m;
+        x = ce_bits(bits);
+    } else {
+        var sh = 0 - 1022 - e;
+        var sub = (m | 0x10000000000000) >> sh;
+        if (sub == 0) { sub = 1; }
+        x = ce_bits(sub);
+    }
+    if (sg == 1 && (ce_word() & 1) == 1) { x = -x; }
+    return x;
+}
+
+# Any finite double.
+fn ce_anybits(): f64 {
+    var b = ce_word();
+    if (((b >> 52) & 0x7FF) == 0x7FF) { b = b & 0xBFFFFFFFFFFFFFFF; }
+    var x: f64 = ce_bits(b);
+    return x;
+}
+
+fn ce_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+fn ce_hexval(c): i64 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    return c - 87;
+}
+
+fn ce_flush(): i64 {
+    print(load64(g_out), load64(g_out + 8));
+    store64(g_out + 8, 0);
+    return 0;
+}
+
+fn ce_row(name: cstring, set: cstring, x: f64, r: f64): i64 {
+    str_builder_add_cstr(g_out, "cr:");
+    str_builder_add_cstr(g_out, name);
+    str_builder_putc(g_out, 47);
+    str_builder_add_cstr(g_out, set);
+    str_builder_putc(g_out, 32);
+    ce_hex64(g_out, x);
+    str_builder_putc(g_out, 32);
+    ce_hex64(g_out, r);
+    str_builder_putc(g_out, 10);
+    if (load64(g_out + 8) > 1048576) { ce_flush(); }
+    return 0;
+}
+
+fn ce_erf(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_erf(x);
+    ce_row("erf", set, x, r);
+    return 0;
+}
+
+fn ce_erfc(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_erfc(x);
+    ce_row("erfc", set, x, r);
+    return 0;
+}
+
+# One worst-case list: each input and its negation.
+fn ce_worst(path: cstring, which): i64 {
+    var cap = 8388608;
+    var buf = alloc(cap);
+    var n = file_read_all(path, buf, cap);
+    if (n <= 0) {
+        print(path, strlen(path));
+        println(": cannot read (run.sh writes it from build/coremath/)");
+        return 1;
+    }
+    var i = 0;
+    var w = 0;
+    var digits = 0;
+    while (i < n) {
+        var c = load8(buf + i);
+        if (c == 10) {
+            if (digits > 0) {
+                var x: f64 = ce_bits(w);
+                var nx: f64 = -x;
+                if (which == 0) {
+                    ce_erf("wc", x);
+                    ce_erf("wc", nx);
+                } else {
+                    ce_erfc("wc", x);
+                    ce_erfc("wc", nx);
+                }
+            }
+            w = 0;
+            digits = 0;
+        } else {
+            w = (w << 4) | ce_hexval(c);
+            digits = digits + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# x ± k ulps, for k in 0 … 3, around a branch point.
+fn ce_around(name, x: f64): i64 {
+    var b = load64(&x);
+    var k = 0 - 3;
+    while (k <= 3) {
+        var y: f64 = ce_bits(b + k);
+        if (name == 0) { ce_erf("edges", y); } else { ce_erfc("edges", y); }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn rows_erf(): i64 {
+    var i = 0;
+    # 1,050,000 seeded arguments.
+    while (i < 400000) {
+        ce_erf("main", ce_range(-6.0, 6.0));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 300000) {
+        ce_erf("scales", ce_scale(0 - 1074, 3, 1));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        ce_erf("tiny", ce_scale(0 - 61, 0 - 4, 1));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        ce_erf("bits", ce_anybits());
+        i = i + 1;
+    }
+    # every interval edge i/16 and i/8, the clamp, 2^-61, 1/16 and 1/8, 6 ulps around each, both signs, then
+    # random points near them
+    var k = 1;
+    while (k < 96) {
+        var e16: f64 = f64_from(k);
+        var e16b: f64 = e16 / 16.0;
+        ce_around(0, e16b);
+        var ne16: f64 = -e16b;
+        ce_around(0, ne16);
+        k = k + 1;
+    }
+    var clamp: f64 = ce_bits(0x4017AFB48DC96626);     # 0x1.7afb48dc96626p+2
+    ce_around(0, clamp);
+    var t61: f64 = ce_bits(0x3C20000000000000);       # 0x1p-61
+    ce_around(0, t61);
+    i = 0;
+    while (i < 148000) {
+        var kk = 1 + (ce_word() >> 1) % 94;
+        var c16: f64 = f64_from(kk);
+        var base: f64 = c16 / 16.0;
+        var off: f64 = ce_range(-0.000001, 0.000001);
+        var y: f64 = base + off;
+        ce_erf("edges", y);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn rows_erfc(): i64 {
+    var i = 0;
+    # 1,050,000 seeded arguments.
+    while (i < 400000) {
+        ce_erfc("main", ce_range(-6.0, 28.0));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 200000) {
+        ce_erfc("scales", ce_scale(0 - 1074, 4, 1));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 150000) {
+        ce_erfc("tail", ce_range(25.0, 27.3));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        ce_erfc("neg", ce_range(-5.9, 0.0));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        ce_erfc("bits", ce_anybits());
+        i = i + 1;
+    }
+    var th1: f64 = _PMN_CM_D_THRESHOLD1;
+    ce_around(1, th1);
+    var mid: f64 = ce_bits(0x3FFB59FFB450828C);       # 0x1.b59ffb450828cp+0
+    ce_around(1, mid);
+    var top: f64 = ce_bits(0x4039DB1BB14E15CA);       # 0x1.9db1bb14e15cap+4
+    ce_around(1, top);
+    var half: f64 = ce_bits(0x3FDE861FBB24C00A);      # 0x1.e861fbb24c00ap-2
+    ce_around(1, half);
+    var lo54: f64 = ce_bits(0xBC9C5BF891B4EF6A);      # -0x1.c5bf891b4ef6ap-54
+    ce_around(1, lo54);
+    var hi55: f64 = ce_bits(0x3C8C5BF891B4EF6A);      # 0x1.c5bf891b4ef6ap-55
+    ce_around(1, hi55);
+    var big: f64 = ce_bits(0x403B39DC41E48BFD);       # 0x1.b39dc41e48bfdp+4
+    ce_around(1, big);
+    var neg: f64 = ce_bits(0xC017744F8F74E94B);       # -0x1.7744f8f74e94bp+2
+    ce_around(1, neg);
+    i = 0;
+    while (i < 199944) {
+        var pick = (ce_word() >> 1) % 4;
+        var b2: f64 = th1;
+        if (pick == 1) { b2 = mid; }
+        if (pick == 2) { b2 = top; }
+        if (pick == 3) { b2 = half; }
+        var o2: f64 = ce_range(-0.001, 0.001);
+        var y2: f64 = b2 + o2;
+        ce_erfc("edges", y2);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The accurate paths alone, 10^5 each, inside the domains their callers give them: erf's for 2^-61 ≤ |x| ≤
+# 0x1.7afb48dc96626p+2, erfc's for −0x1.7744f8f74e94bp+2 < x < 0x1.b39dc41e48bfdp+4 (beyond them the C2 table index
+# runs past its end, as it would in C; erf and erfc never call them there).
+fn rows_acc(): i64 {
+    var erfmax: f64 = ce_bits(0x4017AFB48DC96626);
+    var erfcmin: f64 = ce_bits(0xC017744F8F74E94B);
+    var erfcmax: f64 = ce_bits(0x403B39DC41E48BFD);
+    var i = 0;
+    while (i < 100000) {
+        var xa: f64 = ce_range(-5.9, 5.9);
+        if ((i & 1) == 1) { xa = ce_scale(0 - 61, 2, 1); }
+        var axa: f64 = f64_abs(xa);
+        if (axa <= erfmax) {
+            var ra: f64 = _pmn_cm_erf_acc(xa);
+            ce_row("erf_acc", "acc", xa, ra);
+            i = i + 1;
+        }
+    }
+    i = 0;
+    while (i < 100000) {
+        var xc: f64 = ce_range(-5.8, 27.2);
+        if ((i & 1) == 1) { xc = ce_scale(0 - 53, 4, 1); }
+        if (xc > erfcmin && xc < erfcmax) {
+            var rc: f64 = _pmn_cm_erfc_acc(xc);
+            ce_row("erfc_acc", "acc", xc, rc);
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    if (ce_worst("build/crverify/erf_wc.bits", 0) != 0) { return 1; }
+    if (ce_worst("build/crverify/erfc_wc.bits", 1) != 0) { return 1; }
+    rows_erf();
+    rows_erfc();
+    rows_acc();
+    ce_flush();
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

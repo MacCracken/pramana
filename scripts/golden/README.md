@@ -134,8 +134,14 @@ files. This README records what is specific to pramana.
   regenerated. It is never patched in a `.tsv`.
 - **Modules arrive with their milestone.** Each one starts by adding its golden emitter (`src/m_<module>.rs`, with
   the grid from the port plan §7) and registering it in `src/main.rs`. Its `validate.py` rules come in the same part.
-  The special-function rows (`special.tsv`) arrive with M2 part a, and their MPFR reference rows (`special.ref.tsv`)
-  with part b.
+  The special-function rows (`special.tsv`) arrive with M2 part a, and their reference rows (`special.ref.tsv`) with
+  part b.
+- **`special.ref.tsv`** (M2 part b, ADR 009's T1), written by `validate.py --write-cr`: for each `special` row a T1
+  function moves, its true value (MPFR), or Rust's formula on the T1 functions' true values and correctly rounded
+  primitives downstream. `validate.py` models every row three ways (glibc, correctly rounded primitives, and the
+  reference) and writes a moved row to `.cr.tsv` when only a primitive's rounding moves it, else here. The harness
+  compares a reference row under the function's `_par_c_bound`, ADR 009's bound for a T1 function (0 for erf and
+  erfc, from part b1).
 
 | Module | Milestone | Golden rows | Golden emitter | Generated Cyrius / correctly rounded rows |
 |---|---|---|---|---|
@@ -147,7 +153,7 @@ files. This README records what is specific to pramana.
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `debug` | M1 f | 60 | `src/m_debug.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
-| `special` | M2 a1–a4 | 58,101 | `src/m_special.rs` | `special.cr.tsv`, 226 rows (exp misrounded in erfc's deep tail and in Φ and 1 − Φ there, 10, and in the incomplete gamma's and beta's prefactors, 16; log1p in bd0, the kernel, ln B and the two incomplete functions, 199; ln in ln B, 1) |
+| `special` | M2 a1–a4, b1 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 3,546 rows (b1: erf and erfc at their true values, 1,074; Rust's formulas on them in Φ, 1 − Φ and gamma_inc's Wilson–Hilferty rows, 2,472); `special.cr.tsv`, 221 rows (exp misrounded in the incomplete gamma's and beta's prefactors, 14; log1p in bd0, the kernel, ln B and the two incomplete functions, 199; ln in ln B, 1; and 7 of part a1's exp rows, where fdlibm on a correctly rounded exp already gives the true erfc) |
 
 ## Format 1
 
