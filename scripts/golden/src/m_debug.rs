@@ -5,10 +5,17 @@
 //! - `debug::PramanaError`: each variant with an empty message, the error pramana's codes carry (ADR 007 row 8, as
 //!   amended), in both forms.
 //!
-//! Inputs: the seed or the variant, then `i:0` for `{:?}` or `i:1` for `{:#?}`. Output: the text. Class A.
+//! - `debug::Normal` (M3 part a1): 1.3.0's Normal at 24 (μ, σ), the special parameters among them, in both forms.
+//! - `debug::f64` (M3 part a1): an f64 field's form, `{:?}`, on `fmt.tsv`'s 25,200 doubles. `{:#?}` prints an f64
+//!   the same way.
+//!
+//! Inputs: the seed, the variant or the fields, then `i:0` for `{:?}` or `i:1` for `{:#?}` (an f64 alone for
+//! `debug::f64`). Output: the text. Class A.
 
 use crate::grids::Rng as Seeds;
 use crate::tsv::{Class, Module, Tok, i, s};
+use crate::tsv::f;
+use pramana::distribution::Normal;
 use pramana::{PramanaError, SimpleRng};
 
 fn both<T: std::fmt::Debug>(x: &T) -> [String; 2] {
@@ -41,6 +48,28 @@ pub fn emit() -> Module {
                 &[s(text.clone())],
             );
         }
+    }
+    let mut normals: Vec<(f64, f64)> = vec![
+        (0.0, 1.0),
+        (-0.0, 1.0),
+        (1.5, 2.3),
+        (-3.5, 0.25),
+        (1e-300, 1e300),
+        (f64::MAX, f64::MIN_POSITIVE),
+        (1e16, 1e-4),
+        (9.999_999_999_999_999e15, 9.999_999_999_999_999e-5),
+        (f64::from_bits(1), 5e-324),
+        (2.980_232_238_769_531_3e-8, 1.0),
+    ];
+    normals.extend((0..14).map(|_| (g.signed_log_uniform(-20.0, 20.0), g.log_uniform(-20.0, 20.0))));
+    for &(mu, sd) in &normals {
+        let n = Normal::new(mu, sd).expect("valid parameters");
+        for (alt, text) in both(&n).iter().enumerate() {
+            m.row("debug::Normal", Class::A, &[f(mu), f(sd), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    for x in crate::m_fmt::inputs() {
+        m.row("debug::f64", Class::A, &[f(x)], &[s(format!("{x:?}"))]);
     }
     m
 }

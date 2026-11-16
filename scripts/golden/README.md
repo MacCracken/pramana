@@ -57,7 +57,7 @@ files. This README records what is specific to pramana.
   and seeded bit patterns. pramana's JSON writes this text byte for byte (port plan D5). serde_json is a dependency
   here, pinned to `rust-old/Cargo.lock`'s version. `validate.py` rebuilds every row from Python's own shortest
   digits (`repr`, ties to even as serde_json's zmij), and 62 of the inputs are exact ties.
-- **`json.tsv`** (M1 parts d3a, d3b and d4, `src/m_json.rs`), 6,209 rows. The reading rows are
+- **`json.tsv`** (M1 parts d3a, d3b and d4, `src/m_json.rs`; from M3 part a1, Normal's codec), 6,630 rows. The reading rows are
   `serde_json::from_slice::<T>`, with `float_roundtrip` on, on 4,725 documents. T is one of:
   - each value type 1.3.0's serialized types are made of (`f64`, `u64`, `usize`, `bool`, `String`, `Vec<f64>`,
     `Vec<u64>`, `Vec<String>`, `Vec<Vec<f64>>`);
@@ -78,8 +78,17 @@ files. This README records what is specific to pramana.
     writing: the escape table, the f64 text model it checks `fmt.tsv` with, and the struct and enum forms.
 - **`debug.tsv`** (M1 part f, `src/m_debug.rs`): Rust's derived `Debug`, `{:?}` and `{:#?}` (D12), of 1.3.0's types
   as each milestone ports them: in M1, `SimpleRng` from 25 seeds and each `PramanaError` variant with an empty
-  message. The second input is 0 for `{:?}` and 1 for `{:#?}`. `validate.py` models the derive's struct and tuple
-  text.
+  message; from M3 part a1, `Normal` at 24 parameter pairs, and `debug::f64`, Rust's `{:?}` of `fmt.tsv`'s 25,200
+  doubles (an f64 field's form). The last input is 0 for `{:?}` and 1 for `{:#?}`. `validate.py` models the derive's
+  struct and tuple text, and an f64's from Python's shortest digits, with an exact tie, which `repr` breaks to even,
+  redone with Rust's upper choice.
+- **`dist.tsv`** (M3, `src/m_dist.rs`): 1.3.0's distributions, named by Rust's path (`Normal::pdf`), and the oracle's
+  `standard_normal`. Part a1, 12,882 rows: `Normal::new` on a 16-value grid of each parameter (the fields, or the
+  error); the pdf and cdf of N(0, 1) at x = k/16 on [−40, 40], of eight more fixed (μ, σ) at z = k/4 on [−40, 40] and
+  the specials, of 40 seeded pairs at z = −40 … 40 by 2.5, and at 1,000 seeded triples; the mean and variance; 10⁴
+  draws of N(0, 1) and 256 of each other fixed pair from three seeds; 1,024 Box–Muller variates from three seeds.
+  The constructor, mean and variance are class A, the rest class C. `validate.py` models every row three ways, as
+  `special`'s, and writes `dist.cr.tsv` (a glibc primitive's misround) and `dist.ref.tsv` (the cdf on the T1 Φ).
 - **`bridge.tsv`** (M1 part e3, `src/m_bridge.rs`): the eleven bridges on special-value grids, the 1e-15 floors and
   their neighbours, empty, single, mismatched and NaN-bearing slices, the fits' skipped records, and seeds. Class B,
   except the likelihood and the two fits (class C). A slice of pairs is `v:n` then each pair's `i:` and `f:` tokens;
@@ -171,10 +180,11 @@ files. This README records what is specific to pramana.
 | `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
 | `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
-| `json` | M1 d3a–d4, e1 | 6,399 | `src/m_json.rs` | `json.map.tsv`, 30 rows (ADR 007 row 16) |
+| `json` | M1 d3a–d4, e1, M3 a1 | 6,630 | `src/m_json.rs` | `json.map.tsv`, 40 rows (ADR 007 row 16) |
 | `rng` | M1 e1 | 46 | `src/m_rng.rs` | — |
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
-| `debug` | M1 f | 60 | `src/m_debug.rs` | — |
+| `debug` | M1 f, M3 a1 | 25,308 | `src/m_debug.rs` | — |
+| `dist` | M3 a1 | 12,882 | `src/m_dist.rs` | `dist.cr.tsv`, 14 rows (glibc's exp, ln or cos misrounded in a pdf value or a draw); `dist.ref.tsv`, 2,699 rows (the cdf on the T1 Φ) |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
 | `special` | M2 a1–a4, b1–b5 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 20,621 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; b5: the incomplete beta's I and 1 − I at theirs, 4,834; and the rows downstream of them on T1's values, 3,029, among them gamma_inc's 510 Wilson–Hilferty rows and the three wrappers' 777); `special.cr.tsv`, 91 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel and ln B, 87; two `beta_inc` rows whose true value is Rust's form on correctly rounded primitives; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
 

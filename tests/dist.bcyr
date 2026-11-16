@@ -1,0 +1,124 @@
+# dist.bcyr — the distributions of src/dist*.cyr (M3): ns per call.
+#
+# 4,096 seeded arguments (or pairs) per row, cycled 250 times (1,024,000 calls), as tests/special.bcyr. The Rust twin
+# is scripts/probes/rust/src/bin/m3_dist.rs: the same xorshift, regions and loop, 1.3.0's distributions on glibc's
+# primitives. Each side prints the row's sum and an FNV-1a digest of its 4,096 results' bits; they differ where a
+# glibc primitive misrounds or a T1 function (here Φ, M2 part b2) moves a value. The record is
+# docs/benchmarks-rust-v-cyrius.md. Part a1: Normal.
+
+include "tests/lib.cyr"
+
+var g_rng = 0x2545F4914F6CDD1D;
+var g_xs = 0;
+var g_ys = 0;
+var g_sb = 0;
+
+fn next(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+fn unit(): f64 {
+    var top = next() >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# One row's function at (x, y), with g the generator a draw takes its uniforms from.
+# `which`: 0 N(0, 1)'s pdf at x, 1 N(0, 1)'s cdf at x, 2 one draw of N(x, y), 3 N(x, y) to JSON and back (the mean
+# read back), 4 N(x, y)'s Debug (the text's length).
+fn eval(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    var r: f64 = 0.0;
+    var n: PmnNormal;
+    if (which <= 1) {
+        if (PmnNormal_new(&n, 0.0, 1.0) != PMN_ERR_NONE) { return 0.0; }
+        if (which == 0) { r = n.pdf(x); }
+        if (which == 1) { r = n.cdf(x); }
+        return r;
+    }
+    if (PmnNormal_new(&n, x, y) != PMN_ERR_NONE) { return 0.0; }
+    if (which == 2) { r = n.sample(g); }
+    if (which == 3) {
+        store64(g_sb + 8, 0);
+        if (n.to_json(g_sb) == PMN_ERR_NONE) {
+            var back: PmnNormal;
+            if (PmnNormal_from_json(&back, load64(g_sb), load64(g_sb + 8)) == PMN_ERR_NONE) { r = back.mean; }
+        }
+    }
+    if (which == 4) {
+        store64(g_sb + 8, 0);
+        if (n.debug(g_sb, 0) == PMN_ERR_NONE) { r = f64_from(load64(g_sb + 8)); }
+    }
+    return r;
+}
+
+fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
+    for (var j = 0; j < 4096; j = j + 1) {
+        var w: f64 = hi - lo;
+        var u: f64 = unit();
+        var x0: f64 = lo + w * u;
+        store64(g_xs + j * 8, x0);
+        var w2: f64 = hi2 - lo2;
+        var u2: f64 = unit();
+        var y0: f64 = lo2 + w2 * u2;
+        store64(g_ys + j * 8, y0);
+    }
+    var g: PmnSimpleRng;
+    if (PmnSimpleRng_new(&g, 42) != PMN_ERR_NONE) { return 1; }
+    var s: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    for (var k = 0; k < 250; k = k + 1) {
+        for (var i = 0; i < 4096; i = i + 1) {
+            var x: f64 = load64(g_xs + i * 8);
+            var y: f64 = load64(g_ys + i * 8);
+            var r: f64 = eval(which, x, y, &g);
+            s = s + r;
+        }
+    }
+    bench_batch_stop(b, 1024000);
+    var sb: f64 = s;
+    print("  ", 2);
+    print(name, strlen(name));
+    print(", the sum: ", 11);
+    fmt_hex(load64(&sb));
+    println("");
+    # The digest: FNV-1a over the 4,096 results' bit patterns, untimed, a draw row from a fresh generator.
+    if (PmnSimpleRng_new(&g, 42) != PMN_ERR_NONE) { return 1; }
+    var dg = 0xCBF29CE484222325;
+    for (var t = 0; t < 4096; t = t + 1) {
+        var xd: f64 = load64(g_xs + t * 8);
+        var yd: f64 = load64(g_ys + t * 8);
+        var rd: f64 = eval(which, xd, yd, &g);
+        dg = (dg ^ load64(&rd)) * 0x100000001B3;
+    }
+    print("  ", 2);
+    print(name, strlen(name));
+    print(", the digest: ", 14);
+    fmt_hex(dg);
+    println("");
+    bench_report(b);
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_xs = alloc(4096 * 8);
+    g_ys = alloc(4096 * 8);
+    g_sb = str_builder_new();
+    row("Normal::pdf, N(0, 1), x in [-10, 10)", 0, -10.0, 10.0, 0.0, 1.0);
+    row("Normal::cdf, N(0, 1), x in [-10, 10)", 1, -10.0, 10.0, 0.0, 1.0);
+    row("Normal::cdf, N(0, 1), x in [-38, -1.2)", 1, -38.0, -1.2, 0.0, 1.0);
+    row("Normal::sample, mean in [-10, 10), sd in [0.1, 10)", 2, -10.0, 10.0, 0.1, 10.0);
+    row("Normal, to JSON and back, mean in [-10, 10), sd in [0.1, 10)", 3, -10.0, 10.0, 0.1, 10.0);
+    row("Normal, Debug, mean in [-10, 10), sd in [0.1, 10)", 4, -10.0, 10.0, 0.1, 10.0);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

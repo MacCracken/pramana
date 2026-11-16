@@ -1,0 +1,156 @@
+# dist_cont.cyr — the continuous distributions of Rust 1.3.0's src/distribution.rs (port plan §4.1, D5, D7, D11, D12;
+# M3 parts a1–a3): their constructors, the five `PmnDistribution` methods, serde_json's codec and the derived Debug.
+#
+# Each is Rust's in its operation order on the correctly rounded primitives and the T1 special functions (ADR 009),
+# so its values differ from 1.3.0's only where glibc misrounds or where T1 moves a special function. JSON is serde's
+# derived form, `{"mean":0.0,"std_dev":1.0}`, written byte for byte as serde_json writes it (D5), and read through the
+# validating constructor, as Rust's `#[serde(try_from = "…Repr")]` does: a document whose parameters the constructor
+# refuses reads as PMN_ERR_DESERIALIZE, the code every serde_json error maps to (D6). Debug is the derive's form,
+# `Normal { mean: 0.0, std_dev: 1.0 }` (D12).
+
+include "src/dist.cyr"   # the trait, for `cyrius lint`'s compile of this file alone (see src/dist.cyr)
+
+# ── Normal (part a1) ────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `Normal`: the normal (Gaussian) distribution with mean `mean` and standard deviation `std_dev`.
+struct PmnNormal {
+    mean: f64;
+    std_dev: f64;
+}
+
+# Rust's `Normal::new(mean, std_dev)` into out (caller storage, D11): PMN_ERR_NONE, or PMN_ERR_INVALID_PARAMETER,
+# writing nothing, unless mean is finite and std_dev finite and positive, or for a null out.
+#must_use
+fn PmnNormal_new(out: *PmnNormal, mean: f64, std_dev: f64): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_require_finite(mean);
+    if (e == PMN_ERR_NONE) { e = _pmn_require_positive(std_dev); }
+    if (e != PMN_ERR_NONE) { return e; }
+    out.mean = mean;
+    out.std_dev = std_dev;
+    return PMN_ERR_NONE;
+}
+
+impl PmnDistribution for PmnNormal {
+    # Rust's `pdf`: (1/(σ·√(2π)))·exp(−½z²), z = (x − μ)/σ.
+    #must_use
+    fn pdf(self, x: f64): f64 {
+        var m: f64 = self.mean;
+        var s: f64 = self.std_dev;
+        var d: f64 = x - m;
+        var z: f64 = d / s;
+        var tp: f64 = 2.0 * _PMN_F64_PI;
+        var r: f64 = f64_sqrt(tp);
+        var sr: f64 = s * r;
+        var c: f64 = 1.0 / sr;
+        var h: f64 = -0.5 * z;
+        var q: f64 = h * z;
+        var ex: f64 = _pmn_exp(q);
+        return c * ex;
+    }
+
+    # Rust's `cdf`: Φ((x − μ)/σ), the T1 Φ (M2 part b2: within 0.5 + 2^-7 ulp of the true Φ of the rounded z).
+    #must_use
+    fn cdf(self, x: f64): f64 {
+        var m: f64 = self.mean;
+        var s: f64 = self.std_dev;
+        var d: f64 = x - m;
+        var z: f64 = d / s;
+        return _pmn_normal_cdf(z);
+    }
+
+    # Rust's `mean`: μ.
+    #must_use
+    fn mean(self): f64 {
+        var m: f64 = self.mean;
+        return m;
+    }
+
+    # Rust's `variance`: σ·σ.
+    #must_use
+    fn variance(self): f64 {
+        var s: f64 = self.std_dev;
+        return s * s;
+    }
+
+    # Rust's `sample`: μ + σ·Z, Z from Box–Muller (`_pmn_standard_normal`), two uniforms a draw.
+    #must_use
+    fn sample<R: PmnRng>(self, rng: *R): f64 {
+        var m: f64 = self.mean;
+        var s: f64 = self.std_dev;
+        var z: f64 = _pmn_standard_normal(rng);
+        var t: f64 = s * z;
+        return m + t;
+    }
+}
+
+impl PmnNormal {
+    # Appends Rust's Debug (D12): `Normal { mean: 0.0, std_dev: 1.0 }` for `{:?}` (alternate 0), or
+    # `Normal {\n    mean: 0.0,\n    std_dev: 1.0,\n}` for `{:#?}` (1). PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb
+    # can't grow.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var m: f64 = self.mean;
+        var s: f64 = self.std_dev;
+        var e = _pmn_dbg_open(sb, "Normal", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "mean", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, m); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "std_dev", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, s); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text, `{"mean":M,"std_dev":S}`: PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var m: f64 = self.mean;
+        var s: f64 = self.std_dev;
+        var e = _pmn_json_w_key(sb, "mean", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, m); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "std_dev", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, s); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# Reads n f64 fields of a struct by serde's rules (names[i] into the words at vals), for the distributions' decoders.
+#must_use
+fn _pmn_dist_fields(root, names, n, vals): i64 {
+    var sl[64];
+    var e = _pmn_json_struct(root, names, n, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    for (var i = 0; i < n; i = i + 1) {
+        e = _pmn_json_f64(load64(&sl + i * 8), vals + i * 8);
+        if (e != PMN_ERR_NONE) { return e; }
+    }
+    return PMN_ERR_NONE;
+}
+
+# The decoder for PmnNormal_from_json: NormalRepr's two f64 fields by serde's struct rules, then `Normal::new`, whose
+# refusal serde_json reports as an error (PMN_ERR_DESERIALIZE).
+fn _pmn_normal_from_root(root, out): i64 {
+    var names[16];
+    store64(&names, "mean");
+    store64(&names + 8, "std_dev");
+    var v[16];
+    var e = _pmn_dist_fields(root, &names, 2, &v);
+    if (e != PMN_ERR_NONE) { return e; }
+    var m: f64 = load64(&v);
+    var s: f64 = load64(&v + 8);
+    if (PmnNormal_new(out, m, s) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a Normal document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document
+# serde_json refuses (its parameters included: a std_dev ≤ 0, as `Normal::new` refuses it), or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnNormal_from_json(out: *PmnNormal, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_normal_from_root, out);
+}

@@ -1,0 +1,229 @@
+# dist.tcyr — the distributions (M3; port plan D5, D7 as amended, D11, D12).
+#
+# tests/parity.tcyr replays 1.3.0's own values (tests/golden/dist.tsv), documents (json.tsv) and Debug text
+# (debug.tsv). These tests carry 1.3.0's own unit tests over (distribution.rs) and pin what a replay doesn't: a
+# constructor's refusals, the identities each method keeps bit for bit, a consumer's own generator through the trait,
+# and the codecs' and Debug's exact text. Part a1: Normal, Box–Muller and Debug's f64 form.
+
+include "tests/lib.cyr"
+
+fn bits(x: f64): i64 {
+    return load64(&x);
+}
+
+fn of_bits(b): f64 {
+    var x: f64 = 0.0;
+    store64(&x, b);
+    return x;
+}
+
+# 1.3.0's assert_rel: |actual − expected| / |expected| ≤ tol.
+fn rel_ok(actual: f64, expected: f64, tol: f64): i64 {
+    var d: f64 = actual - expected;
+    var ad: f64 = f64_abs(d);
+    var ae: f64 = f64_abs(expected);
+    var lim: f64 = tol * ae;
+    if (ad <= lim) { return 1; }
+    return 0;
+}
+
+# A consumer's own generator, as Rust users implemented `Rng`: it counts up in steps of 1/8, then wraps; `calls`
+# counts the draws.
+struct Eighths {
+    k;
+    calls;
+}
+
+impl PmnRng for Eighths {
+    fn next_f64(self): f64 {
+        var a: f64 = f64_from(self.k);
+        var d: f64 = 8.0;
+        self.k = (self.k + 1) & 7;
+        self.calls = self.calls + 1;
+        return a / d;
+    }
+}
+
+# What an API generic over the distribution does with it (a static call through the bound, D7).
+fn mean_and_variance<T: PmnDistribution>(d: *T): f64 {
+    var m: f64 = d.mean();
+    var v: f64 = d.variance();
+    return m + v;
+}
+
+# Appends x's Debug text to sb and compares it with want.
+fn dbg_is(sb, x: f64, want: cstring): i64 {
+    store64(sb + 8, 0);
+    if (_pmn_dbg_f64(sb, x) != PMN_ERR_NONE) { return 0; }
+    if (load64(sb + 8) != strlen(want)) { return 0; }
+    return memeq(load64(sb), want, strlen(want));
+}
+
+# Appends a Normal's JSON or Debug text and compares it with want.
+fn text_is(sb, want: cstring): i64 {
+    if (load64(sb + 8) != strlen(want)) { return 0; }
+    return memeq(load64(sb), want, strlen(want));
+}
+
+fn main() {
+    alloc_init();
+    var nan: f64 = _PMN_F64_NAN;
+    var inf: f64 = _PMN_F64_INFINITY;
+    var n: PmnNormal;
+    var g: PmnSimpleRng;
+    var h: PmnSimpleRng;
+    var sb = str_builder_new();
+
+    test_group("1.3.0's Normal tests (normal_pdf_at_mean, normal_cdf_at_mean, normal_invalid_std_dev)");
+    assert_eq(PmnNormal_new(&n, 0.0, 1.0), PMN_ERR_NONE, "N(0, 1)");
+    var p0: f64 = n.pdf(0.0);
+    var tp: f64 = 2.0 * _PMN_F64_PI;
+    var st: f64 = f64_sqrt(tp);
+    var w0: f64 = 1.0 / st;
+    assert(bits(p0) == bits(w0), "pdf(0) = 1/√(2π), bit for bit (1.3.0: within 1e-10)");
+    var c0: f64 = n.cdf(0.0);
+    assert(c0 == 0.5, "cdf(0) = 0.5 exactly (1.3.0: within 1e-6)");
+    var bad: PmnNormal;
+    assert_eq(PmnNormal_new(&bad, 0.0, 0.0), PMN_ERR_INVALID_PARAMETER, "std_dev 0 refused");
+    assert_eq(PmnNormal_new(&bad, 0.0, -1.0), PMN_ERR_INVALID_PARAMETER, "std_dev −1 refused");
+
+    test_group("1.3.0's constructors_reject_non_finite_parameters and normal_cdf_tail_precision");
+    assert_eq(PmnNormal_new(&bad, nan, 1.0), PMN_ERR_INVALID_PARAMETER, "a NaN mean");
+    assert_eq(PmnNormal_new(&bad, 0.0, nan), PMN_ERR_INVALID_PARAMETER, "a NaN std_dev");
+    assert_eq(PmnNormal_new(&bad, 0.0, inf), PMN_ERR_INVALID_PARAMETER, "an infinite std_dev");
+    var c6: f64 = n.cdf(-6.0);
+    assert(rel_ok(c6, 0.0000000009865876450377014, 0.0000000000001) == 1, "Φ(−6) within 1e-13");
+    var c1: f64 = n.cdf(-1.0);
+    var c1p: f64 = n.cdf(1.0);
+    assert(rel_ok(c1, 0.15865525393145707, 0.000000000000001) == 1, "Φ(−1) within 1e-15");
+    var c40: f64 = n.cdf(-40.0);
+    assert(c40 >= 0.0, "Φ(−40) is not negative");
+    var sym: f64 = c1p + c1 - 1.0;
+    assert(f64_abs(sym) < 0.000000000000001, "Φ(1) + Φ(−1) = 1 within 1e-15");
+
+    test_group("the constructor (D11)");
+    assert_eq(PmnNormal_new(0, 0.0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out is the caller's error");
+    bad.mean = 7.0;
+    bad.std_dev = 7.0;
+    assert_eq(PmnNormal_new(&bad, 0.0, -1.0), PMN_ERR_INVALID_PARAMETER, "refused");
+    var bm: f64 = bad.mean;
+    var bs: f64 = bad.std_dev;
+    assert(bm == 7.0 && bs == 7.0, "a refusal writes nothing");
+    var mz: f64 = -0.0;
+    assert_eq(PmnNormal_new(&bad, mz, 1.0), PMN_ERR_NONE, "a mean of −0.0");
+    var bz: f64 = bad.mean;
+    assert_eq(bits(bz), bits(mz), "kept with its sign");
+    var tiny: f64 = of_bits(1);
+    assert_eq(PmnNormal_new(&bad, 0.0, tiny), PMN_ERR_NONE, "a subnormal std_dev is positive and finite");
+    var mx: f64 = of_bits(0x7FEFFFFFFFFFFFFF);
+    assert_eq(PmnNormal_new(&bad, mx, mx), PMN_ERR_NONE, "f64::MAX for both");
+
+    test_group("the methods' identities");
+    assert_eq(PmnNormal_new(&n, 1.5, 2.3), PMN_ERR_NONE, "built");
+    var cdf_ok = 1;
+    var sym_ok = 1;
+    var std: PmnNormal;
+    assert_eq(PmnNormal_new(&std, 0.0, 1.0), PMN_ERR_NONE, "built");
+    for (var k = 0 - 80; k <= 80; k = k + 1) {
+        var kf: f64 = f64_from(k);
+        var x: f64 = kf / 8.0;
+        var nx: f64 = -x;
+        var c: f64 = n.cdf(x);
+        var d: f64 = x - 1.5;
+        var z: f64 = d / 2.3;
+        var phi: f64 = _pmn_normal_cdf(z);
+        if (bits(c) != bits(phi)) { cdf_ok = 0; }
+        var pa: f64 = std.pdf(x);
+        var pb: f64 = std.pdf(nx);
+        if (bits(pa) != bits(pb)) { sym_ok = 0; }
+    }
+    assert_eq(cdf_ok, 1, "cdf(x) is the T1 Φ((x − μ)/σ), bit for bit");
+    assert_eq(sym_ok, 1, "N(0, 1)'s pdf is even, bit for bit");
+    var mv: f64 = mean_and_variance(&n);
+    var mvw: f64 = 1.5 + 2.3 * 2.3;
+    assert(bits(mv) == bits(mvw), "mean and variance through a bound generic: μ and σ·σ");
+
+    test_group("sampling (1.3.0's normal_sample_finite; D7)");
+    assert_eq(PmnNormal_new(&n, 0.0, 1.0), PMN_ERR_NONE, "built");
+    PmnSimpleRng_new(&g, 42);
+    var fin = 1;
+    for (var i = 0; i < 1000; i = i + 1) {
+        var s: f64 = n.sample(&g);
+        if (_pmn_is_finite(s) == 0) { fin = 0; }
+    }
+    assert_eq(fin, 1, "1,000 draws of N(0, 1) from seed 42, all finite");
+    assert_eq(PmnNormal_new(&n, 1.5, 2.3), PMN_ERR_NONE, "built");
+    PmnSimpleRng_new(&g, 12345);
+    PmnSimpleRng_new(&h, 12345);
+    var bm_ok = 1;
+    for (var j = 0; j < 1000; j = j + 1) {
+        var a: f64 = n.sample(&g);
+        var zz: f64 = _pmn_standard_normal(&h);
+        var t: f64 = 2.3 * zz;
+        var b: f64 = 1.5 + t;
+        if (bits(a) != bits(b)) { bm_ok = 0; }
+    }
+    assert_eq(bm_ok, 1, "a draw is μ + σ·Z, Z from Box–Muller on the same stream, bit for bit");
+    var e8: Eighths;
+    e8.k = 0;
+    e8.calls = 0;
+    var s0: f64 = n.sample(&e8);
+    assert_eq(e8.calls, 2, "a consumer's own generator, through the trait: two uniforms a draw");
+    assert(_pmn_is_finite(s0) == 1, "a first uniform of 0 is kept from ln(0) by f64::MIN_POSITIVE");
+
+    test_group("JSON (1.3.0's serde_roundtrip_normal, deserialize_rejects_invalid_parameters; D5)");
+    assert_eq(PmnNormal_new(&n, 1.5, 2.3), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(n.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"mean\":1.5,\"std_dev\":2.3}") == 1, "as serde_json writes it");
+    var r: PmnNormal;
+    assert_eq(PmnNormal_from_json(&r, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rm: f64 = r.mean;
+    var rs: f64 = r.std_dev;
+    assert(rm == 1.5 && rs == 2.3, "the same parameters");
+    var d1 = "{\"mean\":0.0,\"std_dev\":-1.0}";
+    assert_eq(PmnNormal_from_json(&r, d1, strlen(d1)), PMN_ERR_DESERIALIZE, "a std_dev the constructor refuses");
+    var d2 = "[0.5,2.0]";
+    assert_eq(PmnNormal_from_json(&r, d2, strlen(d2)), PMN_ERR_NONE, "serde's sequence form");
+    var d3 = "{\"mean\":0.5}";
+    assert_eq(PmnNormal_from_json(&r, d3, strlen(d3)), PMN_ERR_DESERIALIZE, "a missing field");
+    var d4 = "{\"mean\":0.5,\"std_dev\":1e999}";
+    assert_eq(PmnNormal_from_json(&r, d4, strlen(d4)), PMN_ERR_DESERIALIZE, "a number out of range");
+    var d5 = "{\"mean\":-0,\"std_dev\":5e-324}";
+    assert_eq(PmnNormal_from_json(&r, d5, strlen(d5)), PMN_ERR_NONE, "−0 and the least subnormal");
+    var r5: f64 = r.mean;
+    assert(bits(r5) == bits(mz), "−0 reads as −0.0");
+    assert_eq(PmnNormal_from_json(0, d2, strlen(d2)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnNormal_new(&n, mz, tiny), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(n.to_json(sb), PMN_ERR_NONE, "−0.0 and 5e-324");
+    assert(text_is(sb, "{\"mean\":-0.0,\"std_dev\":5e-324}") == 1, "written as serde_json writes them");
+
+    test_group("Debug (D12)");
+    assert_eq(PmnNormal_new(&n, 0.0, 1.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(n.debug(sb, 0), PMN_ERR_NONE, "{:?}");
+    assert(text_is(sb, "Normal { mean: 0.0, std_dev: 1.0 }") == 1, "Normal { mean: 0.0, std_dev: 1.0 }");
+    store64(sb + 8, 0);
+    assert_eq(n.debug(sb, 1), PMN_ERR_NONE, "{:#?}");
+    assert(text_is(sb, "Normal {\n    mean: 0.0,\n    std_dev: 1.0,\n}") == 1, "one field a line");
+    assert(dbg_is(sb, 0.1, "0.1") == 1, "0.1");
+    assert(dbg_is(sb, 10000000000000000.0, "1e16") == 1, "1e16: exponential from 1e16");
+    assert(dbg_is(sb, 9999999999999998.0, "9999999999999998.0") == 1, "positional below 1e16, with .0");
+    assert(dbg_is(sb, 0.0001, "0.0001") == 1, "0.0001: positional from 1e-4");
+    assert(dbg_is(sb, of_bits(0x3F1A36E2EB1C432C), "9.999999999999999e-5") == 1, "exponential below 1e-4");
+    assert(dbg_is(sb, of_bits(0x3E60000000000000), "2.9802322387695313e-8") == 1,
+      "2^-25: an exact tie, the upper digit as Rust's core printer (serde_json's ...5312e-8)");
+    assert(dbg_is(sb, tiny, "5e-324") == 1, "5e-324");
+    assert(dbg_is(sb, of_bits(0x7FEFFFFFFFFFFFFF), "1.7976931348623157e308") == 1, "f64::MAX, no + in the exponent");
+    assert(dbg_is(sb, mz, "-0.0") == 1, "-0.0");
+    assert(dbg_is(sb, nan, "NaN") == 1 && dbg_is(sb, of_bits(0xFFF8000000000000), "NaN") == 1, "NaN, either sign");
+    var ninf: f64 = -inf;
+    assert(dbg_is(sb, inf, "inf") == 1 && dbg_is(sb, ninf, "-inf") == 1, "inf and -inf");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

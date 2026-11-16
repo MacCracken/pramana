@@ -38,8 +38,9 @@
 > (`7729f5c`), and part a4, the incomplete beta (`f5f006f`), completes T0. T1 has begun: part b1, erf and erfc
 > correctly rounded, is committed (`6a0a201`), part b2, Φ and 1 − Φ within 1 ulp, is committed (`cc0cea5`), part
 > b3, lnΓ within 2 ulp, is committed (`7628c0c`), part b4, the incomplete gamma within 4 ulp, is committed (`0191a05`),
-> part b5, the incomplete beta within 8 ulp, is committed (`a19e947`), and part c, M2's gate, is done and not
-> committed: **M2 is complete.**
+> part b5, the incomplete beta within 8 ulp, is committed (`a19e947`), and part c, M2's gate, is committed
+> (`46d107b`): **M2 is complete.** M3, the distributions, has begun (its parts are in §7): part a1, the trait,
+> Box–Muller and Normal, with Debug's f64 form, is done and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1161,6 +1162,27 @@ operation order on the correctly rounded primitives, at 0 ulp against `special.c
   37,389 at 1.3.0's bits, 91 corrected, 17,592 at the true value, 3,029 downstream), with M3's to be recorded against
   T1 from the start; the audit of M2's sources (no aborts, no allocation, `#must_use` added to 58 pure helpers with
   byte-identical binaries); and a soak group showing M2's fourteen functions allocate nothing.
+
+**M3's parts** (set at its start, 2026-11-16). The distributions of 1.3.0's `distribution.rs`, each with its
+constructor's refusals, `pdf`, `cdf`, `mean`, `variance` and `sample` (D7's generic over `R: PmnRng`), its JSON codec
+through the validating constructor (D5), its `Debug` (D12) and its surface-parity entries. Golden rows in a new `dist`
+module (named by Rust's path, `Normal::pdf`), with the codecs in `json` and Debug in `debug`. Every row downstream of a
+T1 function is recorded against T1 from the start (ADR 009 as amended):
+- **a1:** `src/dist.cyr` (the `PmnDistribution` trait, the parameter checks, Box–Muller's `standard_normal`) and
+  `Normal` in `src/dist_cont.cyr`; Debug's f64 form (pravash's, on impetus's digit core, in `src/debug.cyr`). A new
+  golden `dist` module (12,882 rows: the constructor's grid, the pdf and cdf over z ∈ [−40, 40] at nine fixed and 40
+  seeded parameter pairs, 10⁴-draw streams from three seeds), 231 codec rows and 25,248 Debug rows (Normal's, and
+  Rust's `{:?}` on `fmt.tsv`'s 25,200 doubles); every row passing on the first replay, at 0 ulp, on three targets ✅;
+- **a2:** `Uniform`, `Exponential` and `Bernoulli`;
+- **a3:** `Cauchy` and `Weibull`;
+- **b1:** `Gamma` (Marsaglia–Tsang) and `ChiSquared`, in `src/dist_gamma.cyr`;
+- **b2:** `Beta`, `StudentT` and `FDistribution`, with the oracle's Student-t and F hooks;
+- **c1:** `Poisson` (Loader's pdf, PTRS), in `src/dist_disc.cyr`;
+- **c2:** `Binomial` (the saddle-point pdf, the `beta_inc` CDF, Beta splitting);
+- **d1:** `src/linalg.cyr`: hisab 1.4.0's Cholesky and solve, transcribed allocation-free (ledger L4);
+- **d2:** `MultivariateNormal` in `src/dist_mvn.cyr`: owned, freelist-allocated with `_drop`, its sample into a caller
+  buffer (D11), its decode recomputing the factor;
+- **e:** M3's gate.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

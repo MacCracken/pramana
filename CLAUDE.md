@@ -195,8 +195,11 @@ and `build` drive, never from `cyrius lint`. Each one is a bug:
 - **Function names follow the Rust API**, except where ADR 007 changes them.
 - **Optional dependencies** go in `[features]`, so consumers pull only what they need; `[build] dce` drops unused code.
 - Build with `cyrius build`, not raw `cat file | cc5` — the manifest auto-resolves deps.
-- Source files only need project includes — stdlib auto-resolves from `cyrius.cyml`. The one exception: a file that
-  builds a capturing closure includes `lib/alloc.cyr` itself, because `cyrius lint` compiles without the manifest.
+- Source files only need project includes — stdlib auto-resolves from `cyrius.cyml`. Two exceptions, because
+  `cyrius lint` compiles a file alone, without the manifest: a file that builds a capturing closure includes
+  `lib/alloc.cyr` itself, and a file that names another module's trait (`impl PmnDistribution for …`, a bound
+  `<R: PmnRng>`) includes that module (`include "src/rng.cyr"`). A repeated include is skipped, and `cyrius distlib`
+  leaves project includes out of the bundle.
 - `var buf[N]` = N **bytes**, not N entries.
 
 ## DO NOT

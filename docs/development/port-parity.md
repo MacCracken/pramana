@@ -3225,3 +3225,112 @@ aarch64 (qemu), with every `math::` result line identical on the three. `tests/s
 ledger has 14 rows, all open, with 18 notes in `src/`. The cost is recorded part by part in
 `docs/benchmarks-rust-v-cyrius.md`: T1 runs 5–157× Rust, most of it in double-double arithmetic and the emulated FMA
 (ledger L12).
+
+## 9. M3: the distributions
+
+M3 ports 1.3.0's `src/distribution.rs`: the `Distribution` trait and its fourteen implementations, each with its
+validating constructor, its five methods, serde's codec and the derived Debug. The parts are listed in plan §7. Each
+distribution is a `PmnX` struct filled in caller storage by `PmnX_new(out, …)` (D11), with its methods under Rust's
+names, `sample` generic over `R: PmnRng` (D7 as amended). Its golden rows are in a new `dist` module, named by Rust's
+path (`Normal::pdf`), with its codec in `json` and its Debug in `debug`. The functions are Rust's in its operation
+order, on the correctly rounded primitives and the T1 special functions (ADR 009), so a row downstream of a T1 function
+is recorded against T1 from the start, and nothing in M3 is remapped twice.
+
+### 9.1 Part a1: Normal, Box–Muller and Debug's f64 form (2026-11-16)
+
+**The modules.**
+- **`src/dist.cyr`:** the `PmnDistribution` trait (`pdf`, `cdf`, `mean`, `variance`, and `sample<R: PmnRng>`), Rust's
+  three parameter checks (`require_finite`, `require_positive`, `require_probability`), and `standard_normal`,
+  Box–Muller's cosine branch √(−2 ln u1)·cos(2π u2) with u1 kept from 0 by f64::MIN_POSITIVE, generic over the
+  generator.
+- **`src/dist_cont.cyr`:** `PmnNormal { mean, std_dev }`. `PmnNormal_new` refuses a non-finite mean or a std_dev that
+  isn't finite and positive (`PMN_ERR_INVALID_PARAMETER`; Rust's message is dropped, D6), writing nothing then. The
+  pdf, (1/(σ√(2π)))·exp(−½z²), and the cdf, Φ((x − μ)/σ) on the T1 Φ, are Rust's in its operation order; a draw is
+  μ + σ·Z. `to_json` writes serde_json's `{"mean":M,"std_dev":S}`; `PmnNormal_from_json` reads serde's struct rules
+  and then the constructor, whose refusal reads as `PMN_ERR_DESERIALIZE`, as serde_json reports `try_from`'s error.
+  `debug` writes the derive's two forms.
+- **Debug's f64 form** (D12), `_pmn_dbg_f64` in `src/debug.cyr`: the shortest digits that read back, the closest and
+  on an exact tie the upper one, as Rust's core printer chooses (impetus's digit core with `tie_even` 0), in
+  pravash's form: positional with at least one fractional digit, exponential for a nonzero |x| below 10⁻⁴ or from
+  10¹⁶ with no `+`, and `NaN`, `inf`, `-inf`, `-0.0`. D12 expected pravash's form vendored into `src/fmtf.cyr`, but it
+  sits on pravash's own copy of the digit core, generalised for f32: vendoring it would bring a second bignum. So the
+  form is moved onto impetus's core, about 40 lines in pramana's own module, and pinned by golden rows against Rust's
+  `{:?}` instead.
+
+**The golden rows.**
+- **`dist`, a new module, 12,882 rows:**
+  - `Normal::new` on every pair of a 16-value grid (the specials, ±1e-300, ±1e300, 0.25, −3.5): the fields, or the
+    error; 256 rows, class A;
+  - `Normal::pdf` and `Normal::cdf`, 6,249 rows each: N(0, 1) at x = k/16 on [−40, 40]; eight more fixed (μ, σ)
+    (among them σ = 1e-300 and 1e300, μ = −0.0 and f64::MAX) at z = k/4 on [−40, 40] and at the specials; 40 seeded
+    pairs at z = −40, −37.5, …, 40; 1,000 seeded triples. Class C;
+  - `Normal::mean` and `Normal::variance` on the 49 pairs, class A;
+  - `Normal::sample`, 27 streams: the plan's 10⁴ draws of N(0, 1) from three seeds, and 256 draws of each other fixed
+    pair from the same seeds; `standard_normal`, the oracle's hook, 1,024 draws from three seeds. Class C.
+- **`json`**, 231 more rows: 187 Normal documents (`struct_docs`'s variants on each field's 22 number forms, serde's
+  sequence form, and 88 seeded documents, half with a negative std_dev) and 44 writes.
+- **`debug`**, 25,248 more rows: Normal in both forms at 24 pairs, and `debug::f64`, Rust's `{:?}` of `fmt.tsv`'s
+  25,200 doubles: every power of two and of ten with its neighbours, the thresholds, and seeded words.
+
+**The models.** `validate.py` re-derives every row without the oracle:
+- **`dist`** three ways, as `special`: through glibc (1.3.0's bits on all 12,882), on correctly rounded primitives,
+  and on the T1 functions. `dist.cr.tsv` has 14 rows where glibc's exp, ln or cos misrounds (5 pdf values, and 7
+  streams and 2 `standard_normal` streams with a moved draw), and `dist.ref.tsv` 2,699, the cdf rows the T1 Φ moves.
+- **Normal's codec** in its serde model: the `Repr`'s fields, then the constructor's test. Ten documents serde_json
+  reads only by skipping a member unchecked join `json.map.tsv` under ADR 007 row 16, as M1's did.
+- **Debug's f64 form:** Python's `repr` gives the shortest length, and an exact tie, which it breaks to even, is redone
+  from the exact value with Rust's upper choice. All 25,200 rows match Rust, ties included.
+
+**The result.** Every row passes on the first replay. The replay is ten modules: 148,293 rows ok and 23,541 accepted
+(23,501 under ADR 9, 40 under ADR 7), warning-free, on x86_64 ELF, PE (wine) and aarch64 (qemu). Every Normal row is at
+0 ulp, against 1.3.0's bits or its correction; every Debug and JSON text matches byte for byte.
+
+**Mutation checks** (`build/handoff/mut_a1.py`: the replay and `tests/dist.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| the pdf's 1/(σ√(2π)) as (1/σ)/√(2π) | 1,567 | 0 |
+| the cdf's (x − μ)/σ as x/σ − μ/σ | 906 | 1 |
+| `require_positive` accepting 0 | 28 | 1 |
+| the mean unchecked | 21 | 1 |
+| Box–Muller's sine branch | 27 | 0 |
+| Box–Muller's u1 and u2 swapped | 27 | 0 |
+| a draw as σ·(Z + μ/σ) | 6 | 1 |
+| Box–Muller without the MIN_POSITIVE guard | 0 | 1 |
+| Debug's tie to even (serde_json's) | 41 | 1 |
+| Debug's exponential form from 1e-5 | 204 | 1 |
+| Debug's exponential form from 1e15 | 247 | 1 |
+| Debug without `.0` on an integer | 1,265 | 3 |
+| a refused parameter decoded as `INVALID_PARAMETER` | 50 | 1 |
+| the fields written in reverse | 44 | 2 |
+| the field names read swapped | 103 | 3 |
+| the pdf's (−½z)·z as −½(z·z) | 0 | 0 |
+
+- **Fifteen of sixteen fail.** No golden stream draws a 0, so only the unit test, through a consumer's generator whose
+  first draw is 0, sees the MIN_POSITIVE guard.
+- **The survivor is equivalent:** −½z is exact outside the subnormals, so both orders round once to the same value.
+
+**Tests.** `tests/dist.tcyr` has 61 checks:
+- 1.3.0's Normal tests: `normal_pdf_at_mean` (now bit for bit), `normal_cdf_at_mean` (Φ(0) = 0.5 exactly),
+  `normal_invalid_std_dev`, `normal_sample_finite`, `serde_roundtrip_normal`, and Normal's lines of
+  `constructors_reject_non_finite_parameters`, `deserialize_rejects_invalid_parameters` and
+  `normal_cdf_tail_precision`;
+- the constructor: a null `out`, and a refusal that writes nothing; −0.0, a subnormal σ and f64::MAX kept;
+- the identities, bit for bit: the cdf is the T1 Φ((x − μ)/σ), N(0, 1)'s pdf is even, and a draw is μ + σ·Z on the
+  same stream;
+- a consumer's own generator through the trait, two uniforms a draw, and the first one 0;
+- the codec's text, serde's sequence form, a missing field, a number out of range, −0 and 5e-324;
+- Debug's two forms, and the f64 form's edges: the thresholds, the tie 2⁻²⁵, f64::MAX, the specials.
+
+**Surface parity.** `scripts/surface_parity.py` takes `distribution` as a module in progress: its 17 items for the trait
+and Normal are mapped, and its other 144 are listed as pending until M3's gate.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 86–90 ns a pdf (3.4× Rust: the correctly rounded exp), 1.37–1.41 µs a cdf
+in the bulk and 2.51–2.58 µs in the deep tail (51× and 84×: the T1 Φ), 227–235 ns a draw (8×: the correctly rounded ln
+and cos), 8.7–9.7 µs a JSON round trip and 6.3–6.4 µs a Debug (48× and 23.5×: the exact shortest-digit printer, L10).
+The bench's six digests are all explained by the models.
+
+**`lint` and the trait.** `cyrius lint` compiles a file alone, and a bound or an impl naming another module's trait
+doesn't compile there. So `src/dist.cyr` includes `src/rng.cyr`, and `src/dist_cont.cyr` includes `src/dist.cyr`. A
+repeated include is skipped, and `cyrius distlib` leaves project includes out of the bundle. CLAUDE.md now names this
+as the second exception to "source files need no includes".

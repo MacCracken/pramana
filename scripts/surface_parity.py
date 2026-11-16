@@ -24,6 +24,9 @@ SRC = ROOT / "src"
 
 # The modules ported so far, in the plan's order. A milestone adds its modules here with their SURFACE entries.
 PORTED = ["error", "rng", "combinatorics", "bridge"]
+# Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
+# module moves to PORTED at its milestone's gate.
+PARTIAL = {"distribution": "M3"}
 
 SURFACE = {
     # error.rs (M1 part a; D6, ADR 007 rows 1 and 8)
@@ -60,6 +63,24 @@ SURFACE = {
     "bridge::trait_scores_to_correlation": ["fn pmn_trait_scores_to_correlation"],
     "bridge::learning_trials_to_power_law": ["fn pmn_learning_trials_to_power_law"],
     "bridge::response_times_to_hick_params": ["fn pmn_response_times_to_hick_params"],
+    # distribution.rs (M3; D7 as amended, D11, D5, D12). Part a1: the trait and Normal.
+    "distribution::Distribution": ["trait PmnDistribution"],
+    "distribution::Distribution.pdf": ["method PmnDistribution.pdf"],
+    "distribution::Distribution.cdf": ["method PmnDistribution.cdf"],
+    "distribution::Distribution.mean": ["method PmnDistribution.mean"],
+    "distribution::Distribution.variance": ["method PmnDistribution.variance"],
+    "distribution::Distribution.sample": ["method PmnDistribution.sample"],
+    "distribution::Normal": ["struct PmnNormal"],
+    "distribution::Normal.new": ["fn PmnNormal_new"],
+    "distribution::Normal.pdf": ["method PmnNormal.pdf"],
+    "distribution::Normal.cdf": ["method PmnNormal.cdf"],
+    "distribution::Normal.mean": ["method PmnNormal.mean"],
+    "distribution::Normal.variance": ["method PmnNormal.variance"],
+    "distribution::Normal.sample": ["method PmnNormal.sample"],
+    "distribution::Normal#Debug": ["method PmnNormal.debug"],
+    "distribution::Normal#Clone": "a struct of two f64s: copying it clones it",
+    "distribution::Normal#Serialize": ["method PmnNormal.to_json"],
+    "distribution::Normal#Deserialize": ["fn PmnNormal_from_json"],
 }
 
 DERIVES = {"Debug", "Clone", "Serialize", "Deserialize", "Error"}
@@ -131,11 +152,11 @@ def cyrius_symbols():
             syms.add(f"{m.group(1)} {m.group(2)}")
         for m in re.finditer(r"^impl (?:(\w+) for )?(\w+)\s*\{", text, re.M):
             body = text[m.end() - 1:block_end(text, m.end() - 1)]
-            for f in re.findall(r"^\s+fn (\w+)\(", body, re.M):
+            for f in re.findall(r"^\s+fn (\w+)[<(]", body, re.M):
                 syms.add(f"method {m.group(2)}.{f}")
         for m in re.finditer(r"^trait (\w+)\s*\{", text, re.M):
             body = text[m.end() - 1:block_end(text, m.end() - 1)]
-            for f in re.findall(r"\bfn (\w+)\(", body):
+            for f in re.findall(r"\bfn (\w+)[<(]", body):
                 syms.add(f"method {m.group(1)}.{f}")
     return syms
 
@@ -145,12 +166,16 @@ def main(argv):
     syms = cyrius_symbols()
     failures = []
     seen = set()
-    for module in PORTED:
-        print(f"== {module}.rs")
+    pending = 0
+    for module in PORTED + list(PARTIAL):
+        print(f"== {module}.rs" + (f" (in progress, {PARTIAL[module]})" if module in PARTIAL else ""))
         for item in rust_items(module):
             seen.add(item)
             port = SURFACE.get(item)
-            if port is None:
+            if port is None and module in PARTIAL:
+                pending += 1
+                print(f"  {item:48s} pending ({PARTIAL[module]})")
+            elif port is None:
                 failures.append(f"{item}: no SURFACE entry")
                 print(f"  {item:48s} UNMAPPED")
             elif isinstance(port, str):
@@ -164,7 +189,9 @@ def main(argv):
         failures.append(f"{key}: SURFACE lists an item 1.3.0 doesn't have")
     for msg in failures:
         print("FAILED:", msg)
-    print(f"surface parity: {len(seen)} items in {len(PORTED)} modules, {len(failures)} failures")
+    done = len(seen) - pending
+    print(f"surface parity: {done} items in {len(PORTED) + len(PARTIAL)} modules, {pending} pending, "
+          f"{len(failures)} failures")
     return 1 if check and failures else 0
 
 

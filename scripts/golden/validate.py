@@ -756,6 +756,12 @@ class SerdeModel:
         if ty == "SimpleRng":
             state = self.struct([("state", "u64")])[0]   # SimpleRngRepr, then SimpleRng::new: 0 becomes 1
             return [1 if state == 0 else state]
+        if ty in JSON_VALIDATED:
+            fields, check = JSON_VALIDATED[ty]
+            vals = self.struct(fields)                   # the Repr, then the constructor: its refusal is an error
+            if not check(*vals):
+                raise SerdeRefusal("invalid value (the constructor refuses it)")
+            return vals
         if ty in JSON_STRUCTS:
             return self.struct(JSON_STRUCTS[ty])
         if ty in JSON_ENUMS:
@@ -793,6 +799,12 @@ JSON_STRUCTS = {
     "Pair": [("mean", "f64"), ("std_dev", "f64")],
     "Shapes": [("x", "f64"), ("n", "u64"), ("k", "usize"), ("flag", "bool"), ("name", "String"), ("xs", "Vec<f64>"),
                ("ns", "Vec<u64>"), ("labels", "Vec<String>"), ("m", "Vec<Vec<f64>>"), ("kernel", "Kernel")],
+}
+# 1.3.0's types read through a `…Repr` and their validating constructor (`#[serde(try_from)]`, port plan D5): the
+# Repr's fields, and the constructor's test.
+JSON_VALIDATED = {
+    "Normal": ([("mean", "f64"), ("std_dev", "f64")],
+               lambda m, s: math.isfinite(m) and math.isfinite(s) and s > 0.0),
 }
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
@@ -919,9 +931,10 @@ def serde_write(ty: str, toks) -> bytes:
     if ty == "SimpleRng":
         seed = next(toks) % (1 << 64)
         return b'{"state":' + str(seed if seed != 0 else 1).encode() + b"}"
-    if ty in JSON_STRUCTS:
+    if ty in JSON_STRUCTS or ty in JSON_VALIDATED:
+        fields = JSON_STRUCTS[ty] if ty in JSON_STRUCTS else JSON_VALIDATED[ty][0]
         return b"{" + b",".join(b'"' + name.encode() + b'":' + serde_write(t, toks)
-                                for name, t in JSON_STRUCTS[ty]) + b"}"
+                                for name, t in fields) + b"}"
     if ty in JSON_ENUMS:
         name = next(toks).split(".", 1)[1].encode()
         return b'"' + name + b'"' if JSON_ENUMS[ty][1] is None else b'{"' + name + b'":""}'
@@ -2268,11 +2281,13 @@ class Prims:
     def __init__(self, mode, F):
         if mode == "glibc":
             self.exp, self.ln, self.ln1p, self.sin = _libm.exp, _libm.log, _libm.log1p, _libm.sin
+            self.cos = _libm.cos                    # Box–Muller (M3)
         else:
             self.exp = lambda x: mpfr_ref.cr("exp", x)
             self.ln = lambda x: mpfr_ref.cr("log", x)
             self.ln1p = lambda x: mpfr_ref.cr("log1p", x)
             self.sin = lambda x: mpfr_ref.cr("sin", x)
+            self.cos = lambda x: mpfr_ref.cr("cos", x)
         if mode == "ref":
             self.erf = lambda x: mpfr_ref.cr("erf", x)
             self.erfc = lambda x: mpfr_ref.cr("erfc", x)
@@ -2596,6 +2611,99 @@ def check_special(root, rows):
     return failures, by_fn, crs, refs
 
 
+# ── dist: 1.3.0's distributions (M3), in Rust's operation order on a Prims ──
+MIN_POSITIVE = 2.2250738585072014e-308
+
+
+def d_standard_normal(L, u):
+    """Box–Muller's cosine branch on two uniforms from the iterator u: √(−2 ln u1)·cos(2π·u2), u1 ≥ MIN_POSITIVE."""
+    u1 = max(next(u), MIN_POSITIVE)
+    u2 = next(u)
+    return math.sqrt(-2.0 * L.ln(u1)) * L.cos((2.0 * math.pi) * u2)
+
+
+def d_uniforms(seed):
+    """SimpleRng::new(seed)'s draws, as floats, without end."""
+    x = seed % (1 << 64) or 1
+    while True:
+        x ^= (x << 13) & MASK64
+        x ^= x >> 7
+        x ^= (x << 17) & MASK64
+        yield (x >> 11) / 9007199254740992.0
+
+
+def d_normal_new(mu, sd):
+    return math.isfinite(mu) and math.isfinite(sd) and sd > 0.0
+
+
+def d_normal_pdf(L, mu, sd, x):
+    z = fdiv(x - mu, sd)
+    return fdiv(1.0, sd * math.sqrt(2.0 * math.pi)) * L.exp((-0.5 * z) * z)
+
+
+def d_sample(L, draw, seed, n):
+    u = d_uniforms(seed)
+    return [draw(L, u) for _ in range(n)]
+
+
+DIST = {  # name: model(L, *inputs) -> outputs (a list)
+    "Normal::new": lambda L, mu, sd: [mu, sd] if d_normal_new(mu, sd) else ["E:InvalidParameter"],
+    "Normal::pdf": lambda L, mu, sd, x: [d_normal_pdf(L, mu, sd, x)],
+    "Normal::cdf": lambda L, mu, sd, x: [L.ncdf(fdiv(x - mu, sd))],
+    "Normal::mean": lambda L, mu, sd: [mu],
+    "Normal::variance": lambda L, mu, sd: [sd * sd],
+    "Normal::sample": lambda L, mu, sd, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: mu + sd * d_standard_normal(L, u), seed, n),
+    "standard_normal": lambda L, seed, n: [f"v:{n}"] + d_sample(L, d_standard_normal, seed, n),
+}
+DIST_T1 = {"Normal::cdf": "Φ"}   # rows downstream of a T1 function (ADR 009 as amended)
+
+
+def check_dist(root, rows):
+    """As check_special: every row re-derived through glibc (1.3.0's bits), on correctly rounded primitives (the T0
+    model, `dist.cr.tsv`) and on the T1 functions as the port computes them (`dist.ref.tsv`)."""
+    consts = python_constants(root)
+    F = {k[len("math::fdlibm::"):]: v for k, v in consts.items() if k.startswith("math::fdlibm::")}
+    glibc, cr, ref = Prims("glibc", F), Prims("cr", F), Prims("ref", F)
+    failures, by_fn, crs, refs = [], {}, [], []
+
+    def same_all(a, b):
+        return len(a) == len(b) and all(same(x, y) if isinstance(y, float) else x == y for x, y in zip(a, b))
+
+    def toks(v):
+        return " ".join(f"f:{bits(w):016x}" if isinstance(w, float) else str(w) for w in v)
+
+    for fn, cls, ins, outs, raw in rows:
+        model = DIST.get(fn)
+        if model is None:
+            failures.append(f"dist: no model for {fn}")
+            continue
+        stat = by_fn.setdefault(fn, [0, 0])
+        want = model(glibc, *ins)
+        ok = same_all(outs, want)
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"dist: {fn}{tuple(ins)} recorded {outs[:4]!r}, modelled {want[:4]!r}")
+            continue
+        if cls != "C":
+            continue
+        crv, refv = model(cr, *ins), model(ref, *ins)
+        if same_all(outs, refv):
+            continue
+        fl = [(g, w) for g, w in zip(outs, refv) if isinstance(w, float)]
+        ulps = max(abs(ordered(bits(g)) - ordered(bits(w))) for g, w in fl if not same(g, w))
+        moved = sum(1 for g, w in fl if not same(g, w))
+        what = f"{moved} of {len(fl)} values" if len(fl) > 1 else "the value"
+        if same_all(crv, refv):
+            crs.append(f"{fn}\t{raw}\t{toks(refv)}\t1.3.0 through glibc; with every primitive correctly rounded, "
+                       f"{what} moved, up to {ulps} ulp")
+        else:
+            refs.append(f"{fn}\t{raw}\t{toks(refv)}\t1.3.0 through glibc; Rust's formula on the T1 "
+                        f"{DIST_T1.get(fn, 'functions')} as the port computes it and correctly rounded primitives, "
+                        f"{what} moved, up to {ulps} ulp")
+    return failures, by_fn, crs, refs
+
+
 def ref_file(gdir, module, provenance, refs, write_cr, failures):
     """Writes (--write-cr) or checks a module's reference rows (M2 part b, ADR 009's T1)."""
     head = [
@@ -2641,13 +2749,64 @@ def cr_file(gdir, module, provenance, crs, write_cr, failures):
 ERROR_VARIANTS = ["InvalidParameter", "InvalidSample", "ConvergenceFailure", "DimensionMismatch", "ComputationError"]
 
 
+def rust_debug_f64(x):
+    """Rust's `{:?}` of an f64 (M3 part a1): the shortest digits that read back to x, the closest to its exact value
+    and on an exact tie the upper one (Rust's core printer; Python's repr takes the even one, so a tie is redone from
+    the exact value); positional with at least one fractional digit, or exponential for a nonzero |x| below 1e-4 or
+    from 1e16 with no `+` in the exponent; `NaN`, `inf`, `-inf`, `-0.0`."""
+    from fractions import Fraction
+    if math.isnan(x):
+        return "NaN"
+    if math.isinf(x):
+        return "inf" if x > 0 else "-inf"
+    sign = "-" if math.copysign(1.0, x) < 0 else ""
+    if x == 0.0:
+        return sign + "0.0"
+    ax = abs(x)
+    d = Decimal(repr(ax)).normalize()
+    _, digit_tuple, exp = d.as_tuple()
+    digits = "".join(str(t) for t in digit_tuple)
+    n = len(digits)
+    k = n + exp
+    scaled = Fraction(ax) / (Fraction(10) ** (k - n))
+    lo = scaled.numerator // scaled.denominator
+    if scaled - lo == Fraction(1, 2) and int(digits) == lo:
+        up = lo + 1                                    # repr took the lower, even candidate: Rust takes the upper
+        if float(Fraction(up) * Fraction(10) ** (k - n)) == ax:
+            ds = str(up)
+            k += len(ds) - n
+            digits = ds.rstrip("0")
+            n = len(digits)
+    if ax < 1e-4 or ax >= 1e16:
+        body = digits[0] + ("." + digits[1:] if n > 1 else "") + "e" + str(k - 1)
+    elif k <= 0:
+        body = "0." + "0" * (-k) + digits
+    elif k >= n:
+        body = digits + "0" * (k - n) + ".0"
+    else:
+        body = digits[:k] + "." + digits[k:]
+    return sign + body
+
+
+def debug_struct(name, fields, alt):
+    """The derive's struct text from (field, text) pairs."""
+    if alt:
+        return name + " {\n" + "".join(f"    {f}: {v},\n" for f, v in fields) + "}"
+    return name + " { " + ", ".join(f"{f}: {v}" for f, v in fields) + " }"
+
+
 def debug_text(fn, ins):
     """The derive's text: a struct `Name { f: v }` / `Name {\\n    f: v,\\n}`, a tuple `Name(v)` / `Name(\\n    v,\\n)`."""
-    alt = ins[1] == 1
+    if fn == "debug::f64":
+        return rust_debug_f64(ins[0])
+    alt = len(ins) > 1 and ins[1] == 1
     if fn == "debug::SimpleRng":
         seed = ins[0] % (1 << 64)
         state = str(seed or 1)
         return "SimpleRng {\n    state: " + state + ",\n}" if alt else "SimpleRng { state: " + state + " }"
+    if fn == "debug::Normal":
+        return debug_struct("Normal", [("mean", rust_debug_f64(ins[0])), ("std_dev", rust_debug_f64(ins[1]))],
+                            ins[2] == 1)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:
@@ -2782,6 +2941,14 @@ def main(argv):
             cr_file(gdir, module, provenance, crs, write_cr, failures)
         if module == "special":
             f, by_fn, crs, refs = check_special(root, rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
+            cr_file(gdir, module, provenance, crs, write_cr, failures)
+            ref_file(gdir, module, provenance, refs, write_cr, failures)
+        if module == "dist":
+            f, by_fn, crs, refs = check_dist(root, rows)
             failures.extend(f)
             for fn in sorted(by_fn):
                 ok, bad = by_fn[fn]

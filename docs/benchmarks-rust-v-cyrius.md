@@ -525,3 +525,34 @@ As for `gamma_inc`, P9 showed that plain-double loops miss the bound, so the cos
 - the Stirling coefficients as generated double-double constants, rather than seven divisions per call.
 
 Both are findings to measure, not changes for this part.
+
+## M3 part a1: Normal, T1 on its cdf (2026-11-16)
+
+**Bodies.** `tests/dist.bcyr` and its twin `scripts/probes/rust/src/bin/m3_dist.rs`, built with `--features roundtrip`
+(serde_json's correctly rounded parse, as the golden corpus reads JSON; its default parse misses by an ulp on some
+means, which the JSON row's digest showed). The loop is `tests/special.bcyr`'s: 4,096 seeded arguments or pairs per
+row, cycled 250 times; a draw row takes its uniforms from one generator seeded 42. Three rounds, interleaved and pinned
+to core 5, each started under a load average of 3 (2.21, 2.60, 2.60).
+- **The digests:** all six are explained by `validate.py`'s models (`build/handoff/bench_digests_dist.py`): 1.3.0's
+  through glibc, the port's through the reference model. The pdf differs from 1.3.0's on 2 of 4,096 values and the
+  draws on 1 (glibc's exp, ln or cos misrounding); the cdf on 1,877 and 4,023 (the T1 Φ); the JSON and Debug rows not
+  at all.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `Normal::pdf`, N(0, 1), x in [−10, 10) | 23.9–26.6 ns | 86.0–90.0 ns | 3.4× |
+| `Normal::cdf`, N(0, 1), x in [−10, 10) | 26.6–27.6 ns | 1.37–1.41 µs | 51× |
+| `Normal::cdf`, N(0, 1), x in [−38, −1.2) | 30.0–31.0 ns | 2.51–2.58 µs | 84× |
+| `Normal::sample`, μ in [−10, 10), σ in [0.1, 10) | 28.8–29.3 ns | 227–235 ns | 8.0× |
+| Normal to JSON and back | 188.6–192.5 ns | 8.72–9.67 µs | 48× |
+| Normal's Debug | 270.5–271.1 ns | 6.32–6.40 µs | 23.5× |
+
+**Where the time goes:**
+- **the pdf** is one correctly rounded exp, kimiya's, about 3.4× glibc's, as M1 part b1 measured;
+- **the cdf** is the T1 Φ, CORE-MATH's erfc with its FMA emulated (M2 part b2: 1.4–2.5 µs, 70–106× Rust's Φ); the
+  constructor and the division cost nothing beside it;
+- **a draw** is two correctly rounded primitives, ln and cos, and two uniforms;
+- **JSON and Debug** print through impetus's exact shortest-digit printer on a bignum, the cost M1 part d1 measured
+  (ledger L10 asks the stdlib for a faster one); the JSON row also parses through bayan's tree.
+
+These are findings to measure against, not changes for this part: the cdf's cost is T1's, which ADR 009 accepts.

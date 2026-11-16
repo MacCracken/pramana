@@ -3,6 +3,7 @@ bridge
 combinatorics
 constants
 debug
+dist
 fmt
 json
 math

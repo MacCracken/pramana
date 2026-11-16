@@ -17,7 +17,7 @@ use std::hint::black_box;
 use crate::grids::{Rng, pow2, specials};
 use crate::tsv::{Class, Module, f, s};
 
-fn inputs() -> Vec<f64> {
+pub fn inputs() -> Vec<f64> {
     let mut v = specials();
     let near = |v: &mut Vec<f64>, x: f64| {
         let b = x.to_bits();

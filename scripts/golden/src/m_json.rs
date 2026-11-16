@@ -9,6 +9,8 @@
 //! - the error codec's reading (d4, `json::PramanaError::code`): the variant alone, the message dropped (ADR 007
 //!   row 8);
 //! - 1.3.0's `SimpleRng` (e1), read through its repr and `new`, so a state of 0 reads as 1.
+//! - 1.3.0's `Normal` (M3 part a1), read through `NormalRepr` and `Normal::new`, so a std_dev it refuses is an error;
+//!   and written.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -42,6 +44,7 @@
 
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
+use pramana::distribution::Normal;
 use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
 use serde::{Deserialize, Serialize};
@@ -589,7 +592,46 @@ pub fn emit() -> Module {
     enums(&mut m, &strings);
     writes(&mut m, &mut g);
     simple_rng(&mut m, &mut g);
+    normal(&mut m, &mut g);
     m
+}
+
+// ── M3 a1: Normal's codec ──
+
+/// The number forms an f64 field gets: valid ones, ones `Normal::new` refuses for a std_dev, and non-numbers.
+fn f64_forms() -> Vec<Vec<u8>> {
+    bytes(&[
+        "0", "-0", "1", "-1", "2", "1.5", "-3.5", "1e300", "-1e300", "1e-300", "5e-324", "1.7976931348623157e308",
+        "1e309", "-1e309", "1e999", "null", "\"1\"", "true", "[]", "{}", "1.0e0", "0.1",
+    ])
+}
+
+fn normal(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Normal::new(1.5, 2.3).expect("valid")).expect("a Normal");
+    let forms = f64_forms();
+    let mut docs = struct_docs(&base, &["mean", "std_dev"], &[forms.clone(), forms]);
+    docs.push(b"[0.5,2.0]".to_vec());
+    docs.push(b"[0.5]".to_vec());
+    docs.push(b"[0.5,2.0,1]".to_vec());
+    docs.push(b"[0.5,-2.0]".to_vec());
+    let mut pairs: Vec<(f64, f64)> = vec![(0.0, 1.0), (-0.0, 1.0), (1e-300, 1e300), (f64::MAX, f64::MIN_POSITIVE)];
+    pairs.extend((0..40).map(|_| (g.signed_log_uniform(-20.0, 20.0), g.log_uniform(-20.0, 20.0))));
+    for &(mu, sd) in &pairs {
+        docs.push(format!("{{\"mean\":{},\"std_dev\":{}}}", ryu_like(mu), ryu_like(sd)).into_bytes());
+        docs.push(format!("{{\"mean\":{},\"std_dev\":{}}}", ryu_like(mu), ryu_like(-sd)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Normal", d, serde_json::from_slice::<Normal>(d), |n| vec![f(n.mean), f(n.std_dev)]);
+    }
+    for &(mu, sd) in &pairs {
+        let n = Normal::new(mu, sd).expect("valid parameters");
+        m.row("json::write::Normal", Class::A, &[f(mu), f(sd)], &[text(&n)]);
+    }
+}
+
+/// An f64 as serde_json writes it, for a document's member.
+fn ryu_like(x: f64) -> String {
+    serde_json::to_string(&x).expect("a finite f64")
 }
 
 // ── e1: SimpleRng's codec ──

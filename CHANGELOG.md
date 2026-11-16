@@ -692,6 +692,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     it; the `crverify` generators compile to byte-identical binaries before and after;
   - **the soak:** `tests/soak.tcyr` gains 10⁴ rounds of all fourteen of math.rs's functions across their branches.
     The bump heap, the freelist, the mapped size and the pool are unchanged on all three targets (13 checks).
+- **M3 part a1: the distributions begin — the trait, Box–Muller and Normal** (`src/dist.cyr`, `src/dist_cont.cyr`;
+  port plan §7, whose M3 parts are set; D5, D7 as amended, D11, D12; results in `docs/development/port-parity.md` §9.1):
+  - **`PmnDistribution`,** 1.3.0's `Distribution`: `pdf`, `cdf`, `mean`, `variance`, and `sample<R: PmnRng>`, generic
+    over the caller's generator; Rust's three parameter checks; `standard_normal`, Box–Muller's cosine branch;
+  - **`PmnNormal`:** `PmnNormal_new(out, mean, std_dev)` fills caller storage or refuses as 1.3.0 does, writing
+    nothing; the pdf and the draw in Rust's operation order on the correctly rounded exp, ln and cos, and the cdf on the
+    T1 Φ; serde_json's text byte for byte, and reading through serde's struct rules and the constructor, whose refusal
+    is a deserialization error; the derived Debug in both forms;
+  - **Debug's f64 form** (`_pmn_dbg_f64`): Rust's `{:?}`, the shortest digits with the upper choice on an exact tie,
+    pravash's form on impetus's digit core, pinned against Rust on 25,200 doubles;
+  - **golden rows:** a new `dist` module of 12,882 rows (the constructor's grid, the pdf and cdf over z ∈ [−40, 40],
+    10⁴-draw streams from three seeds), 231 codec rows and 25,248 Debug rows; `validate.py` models every one, and writes
+    `dist.cr.tsv` (14 rows where glibc misrounds) and `dist.ref.tsv` (2,699 cdf rows on the T1 Φ). Every row passes on
+    the first replay, at 0 ulp, warning-free, on x86_64 ELF, PE and aarch64;
+  - **tests and checks:** `tests/dist.tcyr`, 61 checks (1.3.0's Normal tests, the refusals, the identities bit for bit,
+    a consumer's own generator, the codec's and Debug's text); 15 of 16 mutants caught, the other equivalent; surface
+    parity takes `distribution` as a module in progress (17 items mapped, 144 pending);
+  - **cost:** 86–90 ns a pdf (3.4× Rust), 1.37–2.58 µs a cdf (51–84×: the T1 Φ), 227–235 ns a draw (8×), 8.7–9.7 µs a
+    JSON round trip (48×) and 6.3–6.4 µs a Debug (23.5×: the exact printer, ledger L10), with every bench digest
+    explained by the models.
 
 ### Performance
 
