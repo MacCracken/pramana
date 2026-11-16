@@ -140,6 +140,14 @@ int main(void){
       continue;
     }
     mpfr_set_d(a,x,MPFR_RNDN); mpfr_set_d(b,y,MPFR_RNDN);
+    // M1's correct-rounding rows, "cr:<fn>/<set>" (scripts/crverify/): the function before the "/" picks the
+    // reference, and zero and subnormal results count in units of 2^-1074 (ADR 009). The full name keeps the stats.
+    char full[48]; int crv=0;
+    if(!strncmp(nm,"cr:",3)){
+      crv=1; strcpy(full,nm);
+      char *sl=strchr(nm+3,'/'); size_t k=sl?(size_t)(sl-(nm+3)):strlen(nm+3);
+      memmove(nm,nm+3,k); nm[k]=0;
+    }
     int ok=1;
     if(!strcmp(nm,"exp")) mpfr_exp(v,a,MPFR_RNDN);
     else if(!strcmp(nm,"log")) mpfr_log(v,a,MPFR_RNDN);
@@ -148,6 +156,8 @@ int main(void){
     else if(!strcmp(nm,"sin")) mpfr_sin(v,a,MPFR_RNDN);
     else if(!strcmp(nm,"cos")) mpfr_cos(v,a,MPFR_RNDN);
     else if(!strcmp(nm,"tan")) mpfr_tan(v,a,MPFR_RNDN);
+    else if(!strcmp(nm,"atan")) mpfr_atan(v,a,MPFR_RNDN);
+    else if(!strcmp(nm,"log2")) mpfr_log2(v,a,MPFR_RNDN);
     else if(!strcmp(nm,"pow")) mpfr_pow(v,a,b,MPFR_RNDN);
     else if(!strncmp(nm,"erfc",4)) mpfr_erfc(v,a,MPFR_RNDN);  // "erfc", and probe P9's "erfc/set", "erfc_acc/set"
     else if(!strncmp(nm,"erf",3)) mpfr_erf(v,a,MPFR_RNDN);    // "erf", "erf/set", "erf_acc/set"
@@ -171,12 +181,21 @@ int main(void){
       if(e>s->maxu){ s->maxu=e; s->worst_x=x; s->worst_y=y; }
       continue;
     } else ok=0;
+    if(crv) strcpy(nm,full);
     Stat *s=get(nm);
     if(!ok){ s->skipped++; continue; }
     double cr=mpfr_get_d(v,MPFR_RNDN);
     // Probe P9's erf/erfc and normal_cdf rows ("erf/…", "erfc_acc/…", "ncdf_core/t1", …) count zero and subnormal
     // results in units of 2^-1074 (ADR 009), as gref's do; every other row keeps the baseline's rule of skipping them.
-    int p9e=strchr(nm,'/')!=NULL && (!strncmp(nm,"erf",3) || !strncmp(nm,"ncdf",4));
+    int p9e=crv || (strchr(nm,'/')!=NULL && (!strncmp(nm,"erf",3) || !strncmp(nm,"ncdf",4)));
+    // A cr: row with a non-finite reference or result is compared too: right when both are the same infinity or both
+    // NaN (0 ulp), wrong otherwise (counted as +∞ ulp), so overflow and the invalid cases are checked, not skipped.
+    if(crv && (!isfinite(cr) || !isfinite(r))){
+      int same=(isnan(cr) && isnan(r)) || (isinf(cr) && cr==r);
+      s->n++;
+      if(!same){ s->ncr++; if(INFINITY>s->maxu){ s->maxu=INFINITY; s->worst_x=x; s->worst_y=y; } }
+      continue;
+    }
     if(!isfinite(cr) || (!gr && !p9e && fabs(cr) < 2.2250738585072014e-308) || isnan(r)){ s->skipped++; continue; }
     double u=nextafter(fabs(cr),INFINITY)-fabs(cr);
     // A name ending "_mixed" is measured in ulps of max(|cr|, 1): ADR 009's bound for lnΓ at x < 0 (probe P9).
@@ -190,7 +209,8 @@ int main(void){
   printf("%-14s %8s %12s %10s %9s  %s\n","function","n","max ulp","mean ulp","not CR","worst input");
   for(int i=0;i<nst;i++){ Stat*s=&st[i];
     printf("%-14s %8ld %12.4g %10.3g %8.4f%%  x=%.17g%s", s->name,s->n,s->maxu,s->n?s->sumu/s->n:0,100.0*s->ncr/(s->n?s->n:1),s->worst_x, "");
-    if(!strncmp(s->name,"gamma",5)||!strncmp(s->name,"gref",4)||!strcmp(s->name,"pow")) printf(" y=%.17g",s->worst_y);
+    if(!strncmp(s->name,"gamma",5)||!strncmp(s->name,"gref",4)||!strcmp(s->name,"pow")||!strncmp(s->name,"cr:pow",6))
+      printf(" y=%.17g",s->worst_y);
     // A bref row's worst input is a (x=), b (b=) and then x, or −y when y was the smaller.
     if(!strncmp(s->name,"bref_i",6)||!strncmp(s->name,"bref_c",6)) printf(" b=%.17g x(−y)=%.17g",s->worst_y,s->worst_z);
     if(s->skipped) printf("  (skipped %ld)",s->skipped);

@@ -227,6 +227,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **The M0 gate passes:** build, `test` (warning-free), `test --bounds`, `bench`, `fmt --check`, `lint`, `vet`,
     `deps --locked`, `audit` and the ledger.
 
+- **M1 part a: the error codes** (`src/error.cyr`; port plan D6, ADR 007 row 1). `PMN_ERR_*`: the five Rust
+  variants in their order, then the Cyrius-only `OUT_OF_MEMORY` and `DESERIALIZE`, append-only. `pmn_err_name` and
+  `pmn_err_message` give the variant's name and thiserror's message up to its field. `tests/error.tcyr` pins them (30
+  checks). `[lib]` starts, so `dist/pramana.cyr` is written, and `distlib --check` joins CI.
+- **M1 part b1: the correctly rounded primitives** (`src/crmath_data.cyr`, `src/crmath.cyr`; port plan D2, ADR 009;
+  ledger L1, L12; results in `docs/development/port-parity.md` §7.2).
+  - **Vendored** from kimiya 2.0.1's tag by `scripts/vendor_crmath.py` (after soorat's): exp, expm1, ln, pow, sin, cos
+    and atan2, with the double-double ln and exp cores and the exact two-sum, Dekker product and round-to-odd sum.
+    That is 58 functions and 59 tables, renamed `_pmn_km_`. `--check` runs in CI.
+  - **The golden rows:** exp, ln, exp_m1, powf, sin, cos and atan (atan2(x, 1)) are at 0 ulp on all 18,326 of their
+    rows, with their bounds at 0. The 76 MPFR-corrected rows are all accepted, and ganita's `pow(-1, DBL_MAX)` = +∞
+    outlier is gone. The same digests on x86_64, PE and aarch64.
+  - **Against MPFR:** correctly rounded on all 7.7M seeded rows (`scripts/crverify/`, about 1.1M per function),
+    overflow, subnormal and NaN results included. `check.c` gained `atan`, `log2` and the `cr:` rows, which count
+    those cases instead of skipping them.
+  - **Cost:** 46–136 ns a call, 8.0–14.1× glibc's (`tests/crmath.bcyr` against the Rust twin
+    `scripts/probes/rust/src/bin/m1_primitives.rs`; `docs/benchmarks-rust-v-cyrius.md`, new).
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

@@ -1228,3 +1228,79 @@ That makes 2,506,918 rows. T1 has 1,246,809 of them, 1,146,809 seeded.
 - §3.4's sketch is replaced by T1's form. Its two roundings sit at the bound.
 - The fast bound is a speed knob within the bound. 2⁻⁵⁶ still leaves 0.375 ulp of margin and takes 30% off the core.
   M2 part b chooses, and its ≥ 1M verification keeps the (−4.1, −2.5) set.
+
+## 7. M1: the foundation
+
+M1 lands in parts, in the manifest's module order (error → constants → crmath_data → crmath → mathx → json → rng →
+combinatorics → bridge):
+- **a:** `src/error.cyr`;
+- **b1–b4:** `src/crmath.cyr`, kimiya's correctly rounded primitives first, then the new log1p, tan and log2, one part
+  each;
+- **c and on:** `src/mathx.cyr`, the JSON core, the RNG, combinatorics with `PmnU128`, the bridges and the work-table
+  pool.
+
+### 7.1 Part a: the error codes (2026-11-15)
+
+`src/error.cyr` holds `PMN_ERR_*`: the five Rust variants in their order (1–5), then the Cyrius-only `OUT_OF_MEMORY`
+(6) and `DESERIALIZE` (7) (D6). `pmn_err_name` gives the variant's name, and `pmn_err_message` thiserror's message up
+to its field. Rust 1.3.0 has no tests of `error.rs`, so `tests/error.tcyr` pins the codes, the names, the messages and
+a Result that carries one (30 checks). The parity harness now names a golden `E:` token through `pmn_err_name`. `[lib]`
+starts here, so `dist/pramana.cyr` is written and checked from now on.
+
+### 7.2 Part b1: kimiya's correctly rounded primitives (2026-11-15)
+
+**What it vendors.** `scripts/vendor_crmath.py`, after soorat's, copies from kimiya's git tag 2.0.1 (`9cb3936`), not
+its working tree. It takes the dependency closure of exp, expm1, ln, pow, sin, cos and atan2, with the double-double ln
+and exp cores and the exact two-sum, Dekker product and round-to-odd sum that M2's special functions build on (probe
+P9; ledger L12): 58 functions in `src/crmath.cyr`, a `const`, and 59 tables in `src/crmath_data.cyr`. Every name is
+renamed `_km_` → `_pmn_km_`, and a comment line the longer prefix pushes past 120 columns is wrapped. `--check`
+regenerates and compares, and runs in CI. Two things a closure over `fn` and `var` items alone would miss: kimiya's
+`_KM_INF` is a `const` in `mathx.cyr`, not a table; and the headers must not be renamed.
+
+**The golden rows.** The harness dispatches exp, ln, exp_m1, powf, sin, cos and atan (as atan2(x, 1), the same value)
+to them, with their class-C bounds at **0 ulp** (ADR 009). ln_1p, tan and log2 keep their interim counterparts and
+bound 2 until parts b2–b4.
+
+| Function | Rows | 0 ulp | Of the MPFR-corrected rows (`math.cr.tsv`) |
+|---|---|---|---|
+| exp | 3,274 | 3,274 | — |
+| ln | 3,112 | 3,112 | — |
+| exp_m1 | 1,010 | 1,010 | 52, all now the correctly rounded value |
+| powf | 4,400 | 4,400 | 6, all; and `pow(−1, DBL_MAX)` is 1, where ganita's gave +∞ |
+| sin / cos | 2,510 each | all | 4 (sin), all |
+| atan | 1,510 | 1,510 | — |
+
+All 76 corrected rows are accepted, and nothing is left measured: 28,556 rows ok, 0 failed, identically on x86_64
+ELF, PE and aarch64 (the seven digests match).
+
+**Against MPFR** (`scripts/crverify/`): 7,700,000 seeded rows, about 1.1M per function, weighted to each one's hard
+regions, checked by `check.c` at 1,024 bits in ten chunks. The `cr:` rows count zero and subnormal results in units of
+2⁻¹⁰⁷⁴, and compare ±∞ and NaN results too (right only when MPFR's is the same), so overflow and invalid cases are
+checked, not skipped.
+
+| Function | Rows | Sets | Max ulp | Not CR |
+|---|---|---|---|---|
+| exp | 1,100,000 | [−745.2, 709.8], \|x\| from 2⁻¹⁰⁷⁴ to ½, ±10⁻⁶ of the overflow and underflow ends, ±1 of the subnormal edge, (−20, 20), any bits | 0.5 | 0 |
+| ln | 1,100,000 | every binade from 2⁻¹⁰⁷⁴, 1 ± 2⁻⁶⁰ … 2⁻⁶, (½, 2), integers to 10⁶, any bits | 0.5 | 0 |
+| expm1 | 1,100,000 | [−40, 709.7], \|x\| from 2⁻¹⁰⁷⁴ to 8, (−1, 1), the overflow end, any bits | 0.5 | 0 |
+| pow | 1,200,000 | x in every binade of 2^±1000 with y in (−1, 1); x in (½, 2) with y to ±1000; integer and half-integer y; x = 1 + 2⁻⁵³ … 2⁻²⁰ with y to 2⁶⁰; within 10⁻⁶ of the overflow edge; any bits | 0.5 | 0 |
+| sin, cos | 1,100,000 each | (−10, 10), (−10⁶, 10⁶), 2²⁰ … 2¹⁰²³, \|x\| from 2⁻¹⁰⁷⁴, ±4 ulps of k·π/2 for \|k\| ≤ 10⁵, any bits | 0.5 | 0 |
+| atan | 1,000,000 | (−10, 10), every binade, near ±1, any bits | 0.5 | 0 |
+
+The rows are byte-identical on x86_64 ELF, PE and aarch64, sha256 `6e4295ca…`.
+
+**Cost** (`tests/crmath.bcyr` against its Rust twin `scripts/probes/rust/src/bin/m1_primitives.rs`, the same inputs):
+ns per call, pinned, three interleaved rounds. The record is `docs/benchmarks-rust-v-cyrius.md`.
+
+| Function | Cyrius, correctly rounded | Rust (glibc 2.44) | Ratio |
+|---|---|---|---|
+| exp | 46 | 5.7–5.8 | 8.0× |
+| ln | 54–55 | 5.3–5.4 | 10.2× |
+| exp_m1 | 50–51 | 5.7 | 8.9× |
+| powf | 134–136 | 12.1–12.2 | 11.1× |
+| sin | 91 | 9.2–9.3 | 9.8× |
+| cos | 87–89 | 9.4 | 9.4× |
+| atan | 119–120 | 8.4–8.5 | 14.1× |
+
+These are inside the siblings' 12–62× against glibc (port plan §3.7). The price buys correct rounding and the same bits
+on every target, which glibc's results don't have.

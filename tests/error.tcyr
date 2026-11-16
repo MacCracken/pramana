@@ -1,0 +1,80 @@
+# error.tcyr — pramana's error codes (M1 part a; port plan D6, ADR 007 row 1).
+#
+# Rust 1.3.0 has no tests of src/error.rs itself: its 159 uses of the five variants are tested through the functions
+# that return them, which the parity corpus replays by code (`E:InvalidSample`). These tests pin the codes, their
+# names and messages, and the Result that carries one.
+
+include "tests/lib.cyr"
+
+# 1 when C strings a and b are equal.
+fn cs_eq(a, b): i64 {
+    var n = strlen(a);
+    if (n != strlen(b)) { return 0; }
+    return memeq(a, b, n);
+}
+
+# A function that fails with `code`, as a fallible pramana function does.
+fn fails_with(code): Result {
+    return Err(code);
+}
+
+# Runs the error tests.
+fn main() {
+    alloc_init();
+
+    test_group("the Rust variants, their names and messages");
+    assert(cs_eq(pmn_err_name(PMN_ERR_INVALID_PARAMETER), "InvalidParameter") == 1, "InvalidParameter: name");
+    assert(cs_eq(pmn_err_message(PMN_ERR_INVALID_PARAMETER), "invalid parameter") == 1, "InvalidParameter: message");
+    assert(cs_eq(pmn_err_name(PMN_ERR_INVALID_SAMPLE), "InvalidSample") == 1, "InvalidSample: name");
+    assert(cs_eq(pmn_err_message(PMN_ERR_INVALID_SAMPLE), "invalid sample") == 1, "InvalidSample: message");
+    assert(cs_eq(pmn_err_name(PMN_ERR_CONVERGENCE_FAILURE), "ConvergenceFailure") == 1, "ConvergenceFailure: name");
+    assert(cs_eq(pmn_err_message(PMN_ERR_CONVERGENCE_FAILURE), "convergence failure") == 1,
+        "ConvergenceFailure: message");
+    assert(cs_eq(pmn_err_name(PMN_ERR_DIMENSION_MISMATCH), "DimensionMismatch") == 1, "DimensionMismatch: name");
+    assert(cs_eq(pmn_err_message(PMN_ERR_DIMENSION_MISMATCH), "dimension mismatch") == 1,
+        "DimensionMismatch: message");
+    assert(cs_eq(pmn_err_name(PMN_ERR_COMPUTATION_ERROR), "ComputationError") == 1, "ComputationError: name");
+    assert(cs_eq(pmn_err_message(PMN_ERR_COMPUTATION_ERROR), "computation error") == 1, "ComputationError: message");
+
+    test_group("the Cyrius-only codes");
+    assert(cs_eq(pmn_err_name(PMN_ERR_OUT_OF_MEMORY), "OutOfMemory") == 1, "OutOfMemory: name");
+    assert(cs_eq(pmn_err_message(PMN_ERR_OUT_OF_MEMORY), "out of memory") == 1, "OutOfMemory: message");
+    assert(cs_eq(pmn_err_name(PMN_ERR_DESERIALIZE), "Deserialize") == 1, "Deserialize: name");
+    assert(cs_eq(pmn_err_message(PMN_ERR_DESERIALIZE), "deserialization error") == 1, "Deserialize: message");
+
+    test_group("codes are append-only");
+    # The Rust variant order, 1 … 5, then the Cyrius-only codes; never renumbered.
+    assert_eq(PMN_ERR_NONE, 0, "None = 0");
+    assert_eq(PMN_ERR_INVALID_PARAMETER, 1, "InvalidParameter = 1");
+    assert_eq(PMN_ERR_INVALID_SAMPLE, 2, "InvalidSample = 2");
+    assert_eq(PMN_ERR_CONVERGENCE_FAILURE, 3, "ConvergenceFailure = 3");
+    assert_eq(PMN_ERR_DIMENSION_MISMATCH, 4, "DimensionMismatch = 4");
+    assert_eq(PMN_ERR_COMPUTATION_ERROR, 5, "ComputationError = 5");
+    assert_eq(PMN_ERR_OUT_OF_MEMORY, 6, "OutOfMemory = 6");
+    assert_eq(PMN_ERR_DESERIALIZE, 7, "Deserialize = 7");
+    var named = 0;
+    for (var c = 0; c <= 7; c = c + 1) {
+        if (cs_eq(pmn_err_name(c), "Unknown") == 0) { named = named + 1; }
+    }
+    assert_eq(named, 8, "every code 0 … 7 has a name");
+
+    test_group("a value that is no code");
+    assert(cs_eq(pmn_err_name(8), "Unknown") == 1, "8: name");
+    assert(cs_eq(pmn_err_message(8), "unknown error") == 1, "8: message");
+    assert(cs_eq(pmn_err_name(0 - 1), "Unknown") == 1, "-1: name");
+    assert(cs_eq(pmn_err_message(0 - 1), "unknown error") == 1, "-1: message");
+    assert(cs_eq(pmn_err_message(PMN_ERR_NONE), "no error") == 1, "None: message");
+
+    test_group("a Result carries the code");
+    var t, v = fails_with(PMN_ERR_INVALID_SAMPLE);
+    assert(is_err_result(t) == 1 && v == PMN_ERR_INVALID_SAMPLE, "Err(PMN_ERR_INVALID_SAMPLE)");
+    var t2, v2 = fails_with(PMN_ERR_DESERIALIZE);
+    assert(is_err_result(t2) == 1 && v2 == PMN_ERR_DESERIALIZE, "Err(PMN_ERR_DESERIALIZE)");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+# Any failure at all is exit 1: a wait status is 8 bits, so a raw count of 256 would read as success.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

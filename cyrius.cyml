@@ -33,5 +33,13 @@ stdlib = ["syscalls", "string", "alloc", "str", "fmt", "io", "vec", "math", "gan
 [test]
 stdlib = ["assert", "bench"]
 
-# There is no `[lib]` yet: `modules = []` is invalid. It arrives with M1's first module (port plan §5 step 3 gives
-# the order: error → constants → crmath_data → crmath → mathx → json → rng → combinatorics → bridge → special → …).
+# The library's modules, in dependency order (port plan §5 step 3: error → constants → crmath_data → crmath → mathx →
+# json → rng → combinatorics → bridge → special → …). `cyrius distlib` bundles them into dist/pramana.cyr; tests
+# include the same list through tests/lib.cyr, which must stay in step.
+[lib]
+modules = [
+    "src/error.cyr",
+    "src/constants.cyr",
+    "src/crmath_data.cyr",
+    "src/crmath.cyr",
+]

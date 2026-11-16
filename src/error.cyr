@@ -1,0 +1,63 @@
+# error.cyr — pramana's error codes (port of Rust 1.3.0's src/error.rs; port plan D6, ADR 007 row 1).
+#
+# A fallible pramana function returns a value-form Result whose Err payload is one of these codes:
+# `var t, v = f(..); if (is_err_result(t) == 1) { .. v is the code .. }`. The golden token `E:InvalidParameter` is
+# PMN_ERR_INVALID_PARAMETER: PMN_ERR_ + snake(variant). The values follow the Rust variant order and are append-only,
+# never renumbered (the Cyrius form of #[non_exhaustive]).
+#
+# Every Rust variant carries a reason string (`InvalidParameter(String)`); the code carries none (D6, as every sibling
+# port). `pmn_err_name(code)` gives the variant's name and `pmn_err_message(code)` thiserror's message up to its field,
+# the part that doesn't depend on the string.
+#
+# Two codes are Cyrius-only (D6):
+# - PMN_ERR_OUT_OF_MEMORY: an allocation a constructor or a caller-buffer function couldn't get, where Rust aborts;
+# - PMN_ERR_DESERIALIZE: a JSON reader's refusal, where serde_json returns its own error type, not a PramanaError.
+
+enum PmnError {
+    PMN_ERR_NONE = 0;
+    PMN_ERR_INVALID_PARAMETER = 1;
+    PMN_ERR_INVALID_SAMPLE = 2;
+    PMN_ERR_CONVERGENCE_FAILURE = 3;
+    PMN_ERR_DIMENSION_MISMATCH = 4;
+    PMN_ERR_COMPUTATION_ERROR = 5;
+    PMN_ERR_OUT_OF_MEMORY = 6;
+    PMN_ERR_DESERIALIZE = 7;
+}
+
+# The Rust variant name of an error code (`"InvalidParameter"`): "None" for PMN_ERR_NONE, "OutOfMemory" and
+# "Deserialize" for the Cyrius-only codes, and "Unknown" for a value that is no code.
+#must_use
+#pure
+fn pmn_err_name(code): i64 {
+    match code {
+        PMN_ERR_NONE => { return "None"; }
+        PMN_ERR_INVALID_PARAMETER => { return "InvalidParameter"; }
+        PMN_ERR_INVALID_SAMPLE => { return "InvalidSample"; }
+        PMN_ERR_CONVERGENCE_FAILURE => { return "ConvergenceFailure"; }
+        PMN_ERR_DIMENSION_MISMATCH => { return "DimensionMismatch"; }
+        PMN_ERR_COMPUTATION_ERROR => { return "ComputationError"; }
+        PMN_ERR_OUT_OF_MEMORY => { return "OutOfMemory"; }
+        PMN_ERR_DESERIALIZE => { return "Deserialize"; }
+        _ => { return "Unknown"; }
+    }
+    return "Unknown";
+}
+
+# The Rust error's Display text up to its field (`"invalid parameter"` for `invalid parameter: std_dev must be
+# positive`): "no error" for PMN_ERR_NONE, and "unknown error" for a value that is no code.
+#must_use
+#pure
+fn pmn_err_message(code): i64 {
+    match code {
+        PMN_ERR_NONE => { return "no error"; }
+        PMN_ERR_INVALID_PARAMETER => { return "invalid parameter"; }
+        PMN_ERR_INVALID_SAMPLE => { return "invalid sample"; }
+        PMN_ERR_CONVERGENCE_FAILURE => { return "convergence failure"; }
+        PMN_ERR_DIMENSION_MISMATCH => { return "dimension mismatch"; }
+        PMN_ERR_COMPUTATION_ERROR => { return "computation error"; }
+        PMN_ERR_OUT_OF_MEMORY => { return "out of memory"; }
+        PMN_ERR_DESERIALIZE => { return "deserialization error"; }
+        _ => { return "unknown error"; }
+    }
+    return "unknown error";
+}

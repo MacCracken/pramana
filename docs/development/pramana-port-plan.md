@@ -26,8 +26,9 @@
 > row 16. Parts 9d-1 and 9d-2, P9's `ln_gamma` and `gamma_inc` prototypes, are committed (`998b64b`, `d424b90`,
 > `2f572be`), and so is part 9d-3, `beta_inc` (`121e182`). Part 9e, the FMA-free CORE-MATH erf/erfc port, is
 > committed (`ea7f1a0`): it is correctly rounded, so D3 = C holds without the fallback. So is part 9d-4, the
-> `normal_cdf` prototype on it, within 0.5 ulp (`26f04f2`). **Step 10**, the upstream requests and the ledger, is done
-> but not committed, and the M0 gate passes. **M1** is next. The maintainer took each
+> `normal_cdf` prototype on it, within 0.5 ulp (`26f04f2`), and step 10, the upstream requests and the ledger
+> (`aa5df35`): **M0 is complete.** **M1** is in progress: part a (the error codes) and part b1 (kimiya's correctly
+> rounded primitives, vendored and verified on 7.7M MPFR rows) are done but not committed. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1061,6 +1062,16 @@ Every milestone, and every part of a large one, ends with pravash's gates:
 | **M6 Stochastic** | markov, monte_carlo | `MarkovChain` (bounds-checked step, simulate capped, steady state with the stall switch), HMM (scaled forward, Viterbi, scaled Baum–Welch with O(T·N) emission counts); Monte Carlo integration (Welford), π, MH (NaN treated as −∞, escape from a zero-density start), Gibbs | chains: periodic, absorbing, reducible; HMM underflow lengths (10⁴ observations); MCMC streams at fixed seeds; all refusals |
 | **M7 Integrations** | soorat, ai | the soorat data shapes and `HistogramData::from_data` (non-finite skipped, the ulp floor); `ai` per D8, with the five tools, the untrusted-argument bounds, and a recorded-response transport | histogram edges at 1e12; every tool on fixture responses; unknown tool and column errors; bounds refusals |
 | **M8 Release 2.0.0** (a–e) | all | a: the Rust-test ledger, accounting for all 319 tests. b: the benchmark record, 34 rows in both columns. c: the full surface diff, README, `docs/guides/migration-2.0.md`, CHANGELOG *Breaking*, examples compiled and run. d: the fuzz harness for the 38 JSON readers. e: the release gate on 3 targets, the Rust CI job removed, VERSION 2.0.0 | the full corpus green on x86_64 ELF, PE and aarch64 |
+
+**M1's parts** (set at its start, 2026-11-15), in the manifest's module order:
+- **a:** `src/error.cyr` ✅;
+- **b1:** `src/crmath_data.cyr` and `src/crmath.cyr`, kimiya's correctly rounded exp, expm1, ln, pow, sin, cos and
+  atan2 vendored by `scripts/vendor_crmath.py`, verified by `scripts/crverify/` on ≥ 1M MPFR rows each ✅;
+- **b2, b3, b4:** correctly rounded log1p, tan and log2, new, one part each, verified the same way;
+- **c:** `src/mathx.cyr`, the Rust-semantics helpers;
+- **d:** the JSON core, `src/fmtf.cyr` and the `SimpleRng` codec;
+- **e:** the RNG, combinatorics with `PmnU128`, and the bridges;
+- **f:** the work-table pool, then M1's gate.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

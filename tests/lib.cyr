@@ -1,0 +1,9 @@
+# lib.cyr — the library's module list, in cyrius.cyml [lib] order, for test compiles.
+#
+# `cyrius test` never prepends [lib] (cyrius distlib alone reads it), so every test that exercises the library
+# includes this file. Keep it in step with [lib] (impetus port-parity §4.4 and pravash found the same).
+
+include "src/error.cyr"
+include "src/constants.cyr"
+include "src/crmath_data.cyr"
+include "src/crmath.cyr"

@@ -1,0 +1,357 @@
+# rows.cyr — the correct-rounding check of pramana's primitives (M1 part b; port plan D2, ADR 009).
+#
+# Prints `cr:<fn>/<set> x [y] result` rows (bit patterns) for scripts/port-baseline/check.c, which compares each with
+# MPFR's correctly rounded value at 1,024 bits, zero and subnormal results included. Over 10^6 seeded arguments per
+# function, weighted to each one's hard regions: the overflow and underflow ends, tiny and subnormal inputs, arguments
+# near 1, huge and near-π/2 arguments for sin and cos, pow near its overflow edge, and any finite bit pattern.
+#   bash scripts/crverify/run.sh
+
+include "tests/lib.cyr"
+
+var g_rng = 0x9E3779B97F4A7C15;
+var g_out = 0;
+
+# Every shift here is `>>`, the logical one (`>>>` sign-extends).
+fn cv_word(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+fn cv_bits(w): f64 {
+    var r: f64 = 0.0;
+    store64(&r, w);
+    return r;
+}
+
+fn cv_unit(): f64 {
+    var top = cv_word() >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# Uniform in [lo, hi).
+fn cv_range(lo: f64, hi: f64): f64 {
+    var w: f64 = hi - lo;
+    var u: f64 = cv_unit();
+    var r: f64 = lo + w * u;
+    return r;
+}
+
+# 2^u·(1 + f) with u a random integer in [elo, ehi] (2^-1074 granularity below 2^-1022), and a random sign when sg.
+fn cv_scale(elo, ehi, sg): f64 {
+    var span = ehi - elo + 1;
+    var e = elo + (cv_word() >> 1) % span;
+    var m = cv_word() >> 12;
+    var x: f64 = 0.0;
+    if (e >= 0 - 1022) {
+        x = cv_bits(((e + 1023) << 52) | m);
+    } else {
+        var sub = (m | 0x10000000000000) >> (0 - 1022 - e);
+        if (sub == 0) { sub = 1; }
+        x = cv_bits(sub);
+    }
+    if (sg == 1 && (cv_word() & 1) == 1) { x = -x; }
+    return x;
+}
+
+# Any finite double.
+fn cv_anybits(): f64 {
+    var b = cv_word();
+    if (((b >> 52) & 0x7FF) == 0x7FF) { b = b & 0xBFFFFFFFFFFFFFFF; }
+    var x: f64 = cv_bits(b);
+    return x;
+}
+
+# x moved by up to ±k ulps.
+fn cv_near(x: f64, k): f64 {
+    var b = load64(&x);
+    var d = (cv_word() >> 1) % (2 * k + 1) - k;
+    var r: f64 = cv_bits(b + d);
+    return r;
+}
+
+fn cv_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+fn cv_flush(): i64 {
+    print(load64(g_out), load64(g_out + 8));
+    store64(g_out + 8, 0);
+    return 0;
+}
+
+fn cv_head(name: cstring, set: cstring): i64 {
+    str_builder_add_cstr(g_out, "cr:");
+    str_builder_add_cstr(g_out, name);
+    str_builder_putc(g_out, 47);
+    str_builder_add_cstr(g_out, set);
+    return 0;
+}
+
+fn cv_tail(): i64 {
+    str_builder_putc(g_out, 10);
+    if (load64(g_out + 8) > 1048576) { cv_flush(); }
+    return 0;
+}
+
+fn cv_row1(name: cstring, set: cstring, x: f64, r: f64): i64 {
+    cv_head(name, set);
+    str_builder_putc(g_out, 32);
+    cv_hex64(g_out, x);
+    str_builder_putc(g_out, 32);
+    cv_hex64(g_out, r);
+    cv_tail();
+    return 0;
+}
+
+fn cv_row2(name: cstring, set: cstring, x: f64, y: f64, r: f64): i64 {
+    cv_head(name, set);
+    str_builder_putc(g_out, 32);
+    cv_hex64(g_out, x);
+    str_builder_putc(g_out, 32);
+    cv_hex64(g_out, y);
+    str_builder_putc(g_out, 32);
+    cv_hex64(g_out, r);
+    cv_tail();
+    return 0;
+}
+
+fn cv_exp(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_km_cr_exp(x);
+    cv_row1("exp", set, x, r);
+    return 0;
+}
+
+fn cv_ln(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_km_cr_ln(x);
+    cv_row1("log", set, x, r);
+    return 0;
+}
+
+fn cv_expm1(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_km_cr_expm1(x);
+    cv_row1("expm1", set, x, r);
+    return 0;
+}
+
+fn cv_pow(set: cstring, x: f64, y: f64): i64 {
+    var r: f64 = _pmn_km_cr_pow(x, y);
+    cv_row2("pow", set, x, y, r);
+    return 0;
+}
+
+fn cv_sincos(set: cstring, x: f64): i64 {
+    var s: f64 = _pmn_km_cr_sin(x);
+    cv_row1("sin", set, x, s);
+    var c: f64 = _pmn_km_cr_cos(x);
+    cv_row1("cos", set, x, c);
+    return 0;
+}
+
+fn cv_atan(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_km_cr_atan2(x, 1.0);
+    cv_row1("atan", set, x, r);
+    return 0;
+}
+
+fn rows_exp(): i64 {
+    var i = 0;
+    while (i < 400000) { cv_exp("wide", cv_range(-745.2, 709.8)); i = i + 1; }
+    i = 0;
+    while (i < 200000) { cv_exp("small", cv_scale(0 - 1074, 0 - 1, 1)); i = i + 1; }
+    var ov: f64 = 709.782712893384;              # ln(DBL_MAX): overflow beyond
+    var sub: f64 = -708.3964185322641;           # ln(2^-1022): subnormal results below
+    var uf: f64 = -745.1332191019412;            # ln(2^-1075): zero below
+    var w: f64 = 0.000001;
+    i = 0;
+    while (i < 100000) {
+        var a: f64 = ov - w;
+        var b: f64 = ov + w;
+        cv_exp("overflow", cv_range(a, b));
+        var c: f64 = sub - 1.0;
+        var d: f64 = sub + 1.0;
+        cv_exp("subnormal", cv_range(c, d));
+        var e: f64 = uf - w;
+        var f: f64 = uf + w;
+        cv_exp("underflow", cv_range(e, f));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) { cv_exp("mid", cv_range(-20.0, 20.0)); i = i + 1; }
+    i = 0;
+    while (i < 100000) { cv_exp("bits", cv_anybits()); i = i + 1; }
+    return 0;
+}
+
+fn rows_ln(): i64 {
+    var i = 0;
+    while (i < 400000) { cv_ln("binades", cv_scale(0 - 1074, 1023, 0)); i = i + 1; }
+    i = 0;
+    while (i < 300000) {
+        var t: f64 = cv_scale(0 - 60, 0 - 6, 1);
+        var x: f64 = 1.0 + t;
+        cv_ln("near1", x);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 200000) { cv_ln("unit", cv_range(0.5, 2.0)); i = i + 1; }
+    i = 0;
+    while (i < 100000) {
+        var k = 1 + (cv_word() >> 1) % 1000000;
+        var kf: f64 = f64_from(k);
+        cv_ln("ints", kf);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) { cv_ln("bits", cv_anybits()); i = i + 1; }
+    return 0;
+}
+
+fn rows_expm1(): i64 {
+    var i = 0;
+    while (i < 300000) { cv_expm1("wide", cv_range(-40.0, 709.7)); i = i + 1; }
+    i = 0;
+    while (i < 400000) { cv_expm1("small", cv_scale(0 - 1074, 2, 1)); i = i + 1; }
+    i = 0;
+    while (i < 200000) { cv_expm1("unit", cv_range(-1.0, 1.0)); i = i + 1; }
+    var ov: f64 = 709.782712893384;
+    var w: f64 = 0.000001;
+    i = 0;
+    while (i < 100000) {
+        var a: f64 = ov - w;
+        var b: f64 = ov + w;
+        cv_expm1("overflow", cv_range(a, b));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) { cv_expm1("bits", cv_anybits()); i = i + 1; }
+    return 0;
+}
+
+fn rows_pow(): i64 {
+    var i = 0;
+    while (i < 300000) {
+        var x: f64 = cv_scale(0 - 1000, 1000, 0);
+        cv_pow("wide", x, cv_range(-1.0, 1.0));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 300000) {
+        var x2: f64 = cv_range(0.5, 2.0);
+        cv_pow("unitx", x2, cv_range(-1000.0, 1000.0));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 200000) {
+        var x3: f64 = cv_range(-10.0, 10.0);
+        var k = (cv_word() >> 1) % 121 - 60;
+        var kf: f64 = f64_from(k);
+        cv_pow("inty", x3, kf);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        var x4: f64 = cv_scale(0 - 100, 100, 0);
+        var h = (cv_word() >> 1) % 41 - 20;
+        var hf: f64 = f64_from(h);
+        var y4: f64 = hf / 2.0;
+        cv_pow("halfy", x4, y4);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        var t: f64 = cv_scale(0 - 53, 0 - 20, 1);
+        var x5: f64 = 1.0 + t;
+        var y5: f64 = cv_scale(20, 60, 1);
+        cv_pow("near1", x5, y5);
+        i = i + 1;
+    }
+    # x^y within 10^-6 relative of y = 1024·ln 2 / ln x: the overflow edge.
+    var l2: f64 = 709.782712893384;
+    i = 0;
+    while (i < 100000) {
+        var x6: f64 = cv_range(1.5, 100.0);
+        var lx: f64 = _pmn_km_cr_ln(x6);
+        var y0: f64 = l2 / lx;
+        var j: f64 = cv_range(-0.000001, 0.000001);
+        var one: f64 = 1.0 + j;
+        var y6: f64 = y0 * one;
+        cv_pow("overflow", x6, y6);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) {
+        var x7: f64 = cv_anybits();
+        cv_pow("bits", x7, cv_anybits());
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn rows_sincos(): i64 {
+    var i = 0;
+    while (i < 300000) { cv_sincos("small", cv_range(-10.0, 10.0)); i = i + 1; }
+    i = 0;
+    while (i < 200000) { cv_sincos("mid", cv_range(-1000000.0, 1000000.0)); i = i + 1; }
+    i = 0;
+    while (i < 200000) { cv_sincos("big", cv_scale(20, 1023, 1)); i = i + 1; }
+    i = 0;
+    while (i < 200000) { cv_sincos("tiny", cv_scale(0 - 1074, 0 - 1, 1)); i = i + 1; }
+    var pio2: f64 = 1.5707963267948966;
+    i = 0;
+    while (i < 100000) {
+        var k = (cv_word() >> 1) % 200001 - 100000;
+        var kf: f64 = f64_from(k);
+        var x: f64 = kf * pio2;
+        cv_sincos("halfpi", cv_near(x, 4));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) { cv_sincos("bits", cv_anybits()); i = i + 1; }
+    return 0;
+}
+
+fn rows_atan(): i64 {
+    var i = 0;
+    while (i < 300000) { cv_atan("small", cv_range(-10.0, 10.0)); i = i + 1; }
+    i = 0;
+    while (i < 500000) { cv_atan("binades", cv_scale(0 - 1074, 1023, 1)); i = i + 1; }
+    i = 0;
+    while (i < 100000) {
+        var t: f64 = cv_range(-0.01, 0.01);
+        var x: f64 = 1.0 + t;
+        if ((cv_word() & 1) == 1) { x = -x; }
+        cv_atan("near1", x);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 100000) { cv_atan("bits", cv_anybits()); i = i + 1; }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    rows_exp();
+    rows_ln();
+    rows_expm1();
+    rows_pow();
+    rows_sincos();
+    rows_atan();
+    cv_flush();
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

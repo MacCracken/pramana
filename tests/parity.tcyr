@@ -18,7 +18,7 @@
 # against another Cyrius candidate and are never gated. The exit code is the number of modules with a failure.
 
 include "tests/ulp.cyr"
-include "src/constants.cyr"
+include "tests/lib.cyr"
 
 alloc_init();
 
@@ -81,11 +81,10 @@ _par_dg_init();
 
 # ── hooks ───────────────────────────────────────────────────────────────────────────
 
-# The Rust variant name of an error code. src/error.cyr (M1) brings the real table; until then no dispatcher returns
-# an error.
+# The Rust variant name of an error code (src/error.cyr).
 #must_use
 fn _par_error_name(code): i64 {
-    return "Unknown";
+    return pmn_err_name(code);
 }
 
 # ── dispatch ────────────────────────────────────────────────────────────────────────
@@ -105,9 +104,10 @@ fn _par_constants(fp, fl): i64 {
 # Dispatched now:
 # - the exact builtins sqrt, abs and floor;
 # - the fdlibm word operations, which the port writes inline: `bits >> 32` (logical) and `bits & 0xFFFFFFFF00000000`;
-# - for each transcendental, the stdlib or ganita counterpart with the same bits on every target (the polyfills, not
-#   the x87 builtins), measured until M1's correctly rounded functions replace them (ledger L1). ln_1p and exp_m1 have
-#   only ganita's private fdlibm ports.
+# - exp, ln, exp_m1, powf, sin, cos and atan: the correctly rounded functions of src/crmath.cyr (M1 part b1, vendored
+#   from kimiya; ledger L1), at 0 ulp (ADR 009). atan is atan2(x, 1), the same value;
+# - ln_1p, tan and log2: the interim stdlib or ganita counterparts with the same bits on every target, until M1 parts
+#   b2–b4 write their correctly rounded forms. ln_1p has only ganita's private fdlibm port.
 #
 # Pending until M1's src/mathx.cyr (ledger L2; port-parity §1):
 # - min, max, clamp: f64_min / f64_max ignore a NaN only as the FIRST operand;
@@ -123,19 +123,19 @@ fn _par_math(fp, fl): i64 {
     if (_par_eq(fp, fl, "f64::floor") == 1) { var r: f64 = f64_floor(x); _par_got_f(r); return 1; }
     if (_par_eq(fp, fl, "f64::high_word") == 1) { _par_got_i(w >> 32); return 1; }
     if (_par_eq(fp, fl, "f64::low_masked") == 1) { _par_got_f(w & 0xFFFFFFFF00000000); return 1; }
-    if (_par_eq(fp, fl, "f64::exp") == 1) { var r: f64 = _f64_exp_polyfill(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::ln") == 1) { var r: f64 = _f64_ln_polyfill(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::exp") == 1) { var r: f64 = _pmn_km_cr_exp(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::ln") == 1) { var r: f64 = _pmn_km_cr_ln(x); _par_got_f(r); return 1; }
     if (_par_eq(fp, fl, "f64::ln_1p") == 1) { var r: f64 = _gn_log1p(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { var r: f64 = _gn_expm1(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::sin") == 1) { var r: f64 = f64_sin(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::cos") == 1) { var r: f64 = f64_cos(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { var r: f64 = _pmn_km_cr_expm1(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::sin") == 1) { var r: f64 = _pmn_km_cr_sin(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::cos") == 1) { var r: f64 = _pmn_km_cr_cos(x); _par_got_f(r); return 1; }
     if (_par_eq(fp, fl, "f64::tan") == 1) { var r: f64 = ganita_f64_tan(x); _par_got_f(r); return 1; }
-    if (_par_eq(fp, fl, "f64::atan") == 1) { var r: f64 = _f64_atan_polyfill(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::atan") == 1) { var r: f64 = _pmn_km_cr_atan2(x, 1.0); _par_got_f(r); return 1; }
     if (_par_eq(fp, fl, "f64::log2") == 1) { var r: f64 = _f64_log2_polyfill(x); _par_got_f(r); return 1; }
     if (_par_eq(fp, fl, "f64::cbrt") == 1) { var r: f64 = ganita_f64_cbrt(x); _par_got_f(r); return 1; }
     if (_par_in_n < 2) { return 0; }
     var y: f64 = _par_in(1);
-    if (_par_eq(fp, fl, "f64::powf") == 1) { var r: f64 = ganita_f64_pow(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powf") == 1) { var r: f64 = _pmn_km_cr_pow(x, y); _par_got_f(r); return 1; }
     return 0;
 }
 
@@ -148,8 +148,8 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
 
 # Shadow comparisons, never gated: the same golden rows through another Cyrius candidate. Each row's own outputs are
 # folded into its digest first (a pending row has none), before a shadow replaces them.
-# - the native exp, ln, atan and log2 builtins: x87 on x86_64, so their bits differ between targets, and the polyfill
-#   forms are dispatched instead (digests 13–16);
+# - the native exp, ln, atan and log2 builtins: x87 on x86_64, so their bits differ between targets (digests 13–16).
+#   M0 step 8 dispatched the polyfill forms instead; M1 dispatches the correctly rounded functions;
 # - the stdlib min / max, to show where their NaN semantics differ from Rust's.
 fn _par_shadow_f(name, cls, r: f64) {
     _par_got_n = 0;
@@ -214,18 +214,20 @@ fn _par_shadows(mp, ml, fp, fl, cls) {
 # - 0 for cbrt: Rust's (compiler_builtins) and ganita's are both correctly rounded;
 # - powf stays measured: ganita's open pow(−1, |y| > 2^64) defect gives +inf against Rust's 1, and no ADR accepts a
 #   counterpart that M1 replaces.
-# M1 dispatches the correctly rounded functions, and every bound becomes 0 (ADR 009).
+# M1 dispatches the correctly rounded functions, and each one's bound becomes 0 (ADR 009): exp, ln, exp_m1, powf,
+# sin, cos and atan at part b1; ln_1p, tan and log2 keep the interim 2 until parts b2–b4.
 #must_use
 fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "f64::cbrt") == 1) { return 0; }
-    if (_par_eq(fp, fl, "f64::exp") == 1) { return 2; }
-    if (_par_eq(fp, fl, "f64::ln") == 1) { return 2; }
+    if (_par_eq(fp, fl, "f64::exp") == 1) { return 0; }
+    if (_par_eq(fp, fl, "f64::ln") == 1) { return 0; }
+    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { return 0; }
+    if (_par_eq(fp, fl, "f64::powf") == 1) { return 0; }
+    if (_par_eq(fp, fl, "f64::sin") == 1) { return 0; }
+    if (_par_eq(fp, fl, "f64::cos") == 1) { return 0; }
+    if (_par_eq(fp, fl, "f64::atan") == 1) { return 0; }
     if (_par_eq(fp, fl, "f64::ln_1p") == 1) { return 2; }
-    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { return 2; }
-    if (_par_eq(fp, fl, "f64::sin") == 1) { return 2; }
-    if (_par_eq(fp, fl, "f64::cos") == 1) { return 2; }
     if (_par_eq(fp, fl, "f64::tan") == 1) { return 2; }
-    if (_par_eq(fp, fl, "f64::atan") == 1) { return 2; }
     if (_par_eq(fp, fl, "f64::log2") == 1) { return 2; }
     return 0 - 1;
 }
@@ -247,15 +249,15 @@ fn _par_accepted_quiet(adr): i64 {
 fn _par_module_done(mp, ml) {
     if (_par_eq(mp, ml, "constants") == 1) { _par_dg_print(12, "const"); }
     if (_par_eq(mp, ml, "math") != 1) { return 0; }
-    _par_dg_print(0, "f64::exp (_f64_exp_polyfill)");
-    _par_dg_print(1, "f64::ln (_f64_ln_polyfill)");
+    _par_dg_print(0, "f64::exp (_pmn_km_cr_exp)");
+    _par_dg_print(1, "f64::ln (_pmn_km_cr_ln)");
     _par_dg_print(2, "f64::ln_1p (_gn_log1p)");
-    _par_dg_print(3, "f64::exp_m1 (_gn_expm1)");
-    _par_dg_print(4, "f64::powf (ganita_f64_pow)");
-    _par_dg_print(5, "f64::sin (f64_sin)");
-    _par_dg_print(6, "f64::cos (f64_cos)");
+    _par_dg_print(3, "f64::exp_m1 (_pmn_km_cr_expm1)");
+    _par_dg_print(4, "f64::powf (_pmn_km_cr_pow)");
+    _par_dg_print(5, "f64::sin (_pmn_km_cr_sin)");
+    _par_dg_print(6, "f64::cos (_pmn_km_cr_cos)");
     _par_dg_print(7, "f64::tan (ganita_f64_tan)");
-    _par_dg_print(8, "f64::atan (_f64_atan_polyfill)");
+    _par_dg_print(8, "f64::atan (_pmn_km_cr_atan2)");
     _par_dg_print(9, "f64::log2 (_f64_log2_polyfill)");
     _par_dg_print(10, "f64::cbrt (ganita_f64_cbrt)");
     _par_dg_print(11, "class A/B math rows");

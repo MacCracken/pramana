@@ -61,6 +61,12 @@ jobs:
       - name: Conversion ledger (every stand-in marked, every note on a ledger row)
         run: python3 -I -B scripts/upstream_ledger.py --check
 
+      - name: Bundle current (dist/pramana.cyr is what distlib writes from [lib])
+        run: cyrius distlib --check
+
+      - name: Vendored primitives current (src/crmath*.cyr; unverified without ../kimiya)
+        run: python3 -I -B scripts/vendor_crmath.py . --check
+
   rust-oracle:
     # The frozen Rust 1.3.0 crate in rust-old/ is the parity oracle. It is never
     # edited; this job only proves it still builds and passes (port plan, M0
