@@ -11,8 +11,8 @@
 # - erf and erfc are T1 (part b1): CORE-MATH's, correctly rounded (src/crerf.cyr). 1.3.0's fdlibm transcription, which
 #   part a1 proved at 0 ulp, is retired;
 # - Φ and 1 − Φ are T1 (part b2): within 0.5 + 2^-7 ulp, on erfc's double-double core (src/crerf.cyr);
-# - a2: the Lanczos lnΓ (g = 7, n = 9, reflection below ½), the Stirling remainder, Loader's bd0, the incomplete
-#   gamma's prefactor kernel, and ln B (T0);
+# - lnΓ is T1 (part b3): fdlibm's layout with double-double logarithms (src/lgamma.cyr), within 2 ulp;
+# - a2: the Stirling remainder, Loader's bd0, the incomplete gamma's prefactor kernel, and ln B (T0, on T1's lnΓ);
 # - a3: the regularized incomplete gamma P and Q: the series below x = a + 1, Lentz's continued fraction above, and
 #   Wilson–Hilferty's normal approximation past a = 10⁹ (T0);
 # - a4: the regularized incomplete beta I_x(a, b) and its complement, by Lentz's continued fraction on the side where
@@ -63,59 +63,14 @@ fn _pmn_normal_sf(z: f64): f64 {
 
 # ── part a2: lnΓ and its relatives ──────────────────────────────────────────────────────────────────────────────
 
-# Rust's `ln_gamma`: ln|Γ(x)| by Lanczos (g = 7, n = 9), with the reflection ln π − ln|sin πx| − lnΓ(1 − x) below ½.
-# +∞ where |sin πx| < 1e-300: x = ±0 and 0 < |x| ≲ 3.2e-301 (1.3.0's own cutoff, which T1 removes). A negative integer
-# is not a pole here: sin(π·n) rounds to about n·1.2e-16, so 1.3.0 returns a finite value there, and so does this.
-# +∞ gives NaN, as in 1.3.0 (∞ − ∞ in the last line).
+# lnΓ(x) = ln|Γ(x)| within 2 ulp for x > 0, and within 2 ulp of max(|lnΓ|, 1) for x < 0 (T1, M2 part b3; ADR 009):
+# probe P9's fdlibm-layout form with double-double logarithms and products, rounded once (src/lgamma.cyr). 1.3.0's
+# Lanczos form, which part a2 proved at 0 ulp, is retired: it is off by up to 4.3×10¹³ ulp beside the roots at 1 and
+# 2. +∞ at 0, at the negative integers and at ±∞; −ln x below 2^-70.
 #must_use
 fn _pmn_ln_gamma(x: f64): f64 {
-    if (x < 0.5) {
-        var pi: f64 = _PMN_F64_PI;
-        var px: f64 = pi * x;
-        var sv: f64 = _pmn_sin(px);
-        var asv: f64 = f64_abs(sv);
-        # 1.3.0 compares with the literal 1e-300: the generated LENTZ_TINY is that literal's double (and has no
-        # positional form inside a line).
-        var tiny: f64 = _PMN_MATH_LENTZ_TINY;
-        if (asv < tiny) {
-            var inf: f64 = _PMN_F64_INFINITY;
-            return inf;
-        }
-        var lp: f64 = _pmn_ln(pi);
-        var ls: f64 = _pmn_ln(asv);
-        var omx: f64 = 1.0 - x;
-        var lg: f64 = _pmn_ln_gamma(omx);
-        var d: f64 = lp - ls;
-        return d - lg;
-    }
-    var xm: f64 = x - 1.0;
-    var sum: f64 = _PMN_MATH_LN_GAMMA_COEFFICIENTS_0;
-    var d1: f64 = xm + 1.0;
-    sum = sum + _PMN_MATH_LN_GAMMA_COEFFICIENTS_1 / d1;
-    var d2: f64 = xm + 2.0;
-    sum = sum + _PMN_MATH_LN_GAMMA_COEFFICIENTS_2 / d2;
-    var d3: f64 = xm + 3.0;
-    sum = sum + _PMN_MATH_LN_GAMMA_COEFFICIENTS_3 / d3;
-    var d4: f64 = xm + 4.0;
-    sum = sum + _PMN_MATH_LN_GAMMA_COEFFICIENTS_4 / d4;
-    var d5: f64 = xm + 5.0;
-    sum = sum + _PMN_MATH_LN_GAMMA_COEFFICIENTS_5 / d5;
-    var d6: f64 = xm + 6.0;
-    sum = sum + _PMN_MATH_LN_GAMMA_COEFFICIENTS_6 / d6;
-    var d7: f64 = xm + 7.0;
-    sum = sum + _PMN_MATH_LN_GAMMA_COEFFICIENTS_7 / d7;
-    var d8: f64 = xm + 8.0;
-    sum = sum + _PMN_MATH_LN_GAMMA_COEFFICIENTS_8 / d8;
-    var g: f64 = _PMN_MATH_LN_GAMMA_G;
-    var tg: f64 = xm + g;
-    var t: f64 = tg + 0.5;
-    var lt: f64 = _pmn_ln(t);
-    var xh: f64 = xm + 0.5;
-    var a1: f64 = lt * xh;
-    var a2: f64 = _PMN_MATH_LN_SQRT_2PI + a1;
-    var a3: f64 = a2 - t;
-    var lsum: f64 = _pmn_ln(sum);
-    return a3 + lsum;
+    var r: f64 = _pmn_lg_ln_gamma(x);
+    return r;
 }
 
 # Rust's `stirling_error`: lnΓ(a) − [(a − ½) ln a − a + ln √(2π)]. From a = 10 the asymptotic series, seven terms in

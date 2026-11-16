@@ -70,7 +70,7 @@ jobs:
       - name: Vendored primitives current (src/crmath*.cyr; unverified without ../kimiya)
         run: python3 -I -B scripts/vendor_crmath.py . --check
 
-      - name: Correctly rounded constants (src/crmath_ext.cyr against their definitions)
+      - name: Multi-word constants (src/crmath_ext.cyr, src/crerf.cyr) against their definitions
         run: python3 -I -B scripts/crverify/consts.py .
 
       - name: Vendored printer current (src/fmtf.cyr; unverified without ../impetus)
@@ -78,6 +78,9 @@ jobs:
 
       - name: CORE-MATH erf/erfc tables current (src/crerf*.cyr; unverified without build/coremath/)
         run: python3 -I -B scripts/vendor_coremath.py . --check
+
+      - name: fdlibm lgamma coefficients current (src/lgamma*.cyr; unverified without libm 0.2.16 in the cargo registry)
+        run: python3 -I -B scripts/vendor_lgamma.py . --check
 
   rust-oracle:
     # The frozen Rust 1.3.0 crate in rust-old/ is the parity oracle. It is never

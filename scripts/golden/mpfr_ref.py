@@ -121,6 +121,41 @@ def nsf(z):
     return _phi(z, True)
 
 
+# ln|Γ(x)| (M2 part b3's reference rows): mpfr_lgamma at 53 bits, binary64's exponent range, subnormalized, the sign
+# of Γ discarded. +∞ at 0, at the negative integers and at ±∞.
+_m.mpfr_lgamma.argtypes = [_P, ctypes.POINTER(ctypes.c_int), _P, ctypes.c_int]
+
+
+def lgamma(x):
+    """ln|Γ(x)|, correctly rounded to binary64 (x a float)."""
+    sign = ctypes.c_int(0)
+    _m.mpfr_set_d(ctypes.byref(_a), x, _RNDN)
+    t = _m.mpfr_lgamma(ctypes.byref(_r), ctypes.byref(sign), ctypes.byref(_a), _RNDN)
+    return _finish(t)
+
+
+# ln x as a double-double (M2 part b3: validate.py's model of the T1 lnΓ): h = RN(ln x), l = RN(ln x − h), from ln x
+# at 1,024 bits over MPFR's widest exponent range. kimiya's ln core, which the port uses, is within about 2^-80 of ln
+# x, so the model's single final rounding matches the port's except within about that of a tie.
+_m.mpfr_log.argtypes = [_P, _P, ctypes.c_int]
+_m.mpfr_sub_d.argtypes = [_P, _P, ctypes.c_double, ctypes.c_int]
+
+
+def ln_dd(x):
+    """(RN(ln x), RN(ln x − RN(ln x))) for a positive finite x."""
+    _m.mpfr_set_emin(_m.mpfr_get_emin_min())
+    _m.mpfr_set_emax(_m.mpfr_get_emax_max())
+    try:
+        _m.mpfr_set_d(ctypes.byref(_hz), x, _RNDN)
+        _m.mpfr_log(ctypes.byref(_ht), ctypes.byref(_hz), _RNDN)
+        h = _m.mpfr_get_d(ctypes.byref(_ht), _RNDN)
+        _m.mpfr_sub_d(ctypes.byref(_ht), ctypes.byref(_ht), h, _RNDN)
+        return h, _m.mpfr_get_d(ctypes.byref(_ht), _RNDN)
+    finally:
+        _m.mpfr_set_emin(-1073)
+        _m.mpfr_set_emax(1024)
+
+
 def _self_check():
     """Known correctly rounded values, among them glibc's misrounds that port-parity §1 found."""
     import struct

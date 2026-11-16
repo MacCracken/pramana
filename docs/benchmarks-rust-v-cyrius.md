@@ -430,3 +430,41 @@ equal MPFR's correctly rounded Φ on all 12,288 of their arguments, and 1.3.0's 
 That is 30% in the core and 8% in the tails. P9 measured 1.28–1.33 µs in (−5, 5) and 2.29–2.36 µs in (−36, −5). A
 2⁻⁵⁶ fast bound would take about 30% off the core (P9, §6.8) at a proven 0.5 + 2⁻³ ulp; the port keeps the verified
 2⁻⁶⁰.
+
+## M2 part b3: lnΓ within 2 ulp, T1 (2026-11-16)
+
+**Bodies.** The whole of `tests/special.bcyr` and its twin, since lnΓ reaches most rows. Three rounds, interleaved and
+pinned to core 5, each started under a load average of 3 (1.7–1.9 throughout).
+- **The digests:** all 26 are explained by `validate.py`'s models. The port's lnΓ rows equal the T1 model's on all
+  12,288 arguments, and so do the downstream rows. 1.3.0's lnΓ differs from T1's on 3,851, 3,814 and 2,172 of each
+  row's 4,096.
+- **The rows b3 leaves alone:** erf, erfc, Φ and the Wilson–Hilferty row re-measured 0.5–4% under their b1 and b2
+  records, at the lower load.
+- **One noisy round:** the first round put two rows 10–17% above the other two (ln B with both shapes large at 374 ns,
+  the small-shape `gamma_inc` at 642 ns). The ranges below include it.
+
+| Row | Rust 1.3.0 | Cyrius T1 (b3) | Cyrius / Rust | Cyrius T0 (parts a2–a4) |
+|---|---|---|---|---|
+| `ln_gamma`, x in [0.5, 10) | 22.3–23.1 ns | 177–179 ns | 7.9× | 136–137 ns |
+| `ln_gamma`, x in [−10, 0.5), reflected | 49.6–52.5 ns | 555–562 ns | 11.0× | 401–403 ns |
+| `ln_gamma`, x in [10, 1000) | 27.2–28.5 ns | 153–156 ns | 5.6× | 137–138 ns |
+| `stirling_error`, a in [0.5, 10) | 28.4–29.4 ns | 250–253 ns | 8.7× | 198–200 ns |
+| `ln_gamma_kernel`, a in [1, 10), x in [0.1, 20) | 29.5–30.5 ns | 253–261 ns | 8.5× | 198–200 ns |
+| `ln_beta`, a and b in [0.5, 10) | 69.5–72.0 ns | 524–532 ns | 7.5× | 493–497 ns |
+| `ln_beta`, a in [0.5, 10), b in [10, 1000) | 41.7–43.8 ns | 411–415 ns | 9.6× | 398–405 ns |
+| `gamma_inc`, a in [0.5, 10), x in [0.1, 20) | 118.0–123.3 ns | 549–642 ns | 4.9× | 564–565 ns |
+| `beta_inc`, a and b in [0.5, 10), x at the mean | 239.2–248.6 ns | 1.30–1.33 µs | 5.4× | 1.29–1.30 µs |
+
+The rows that never call lnΓ are unchanged: Stirling's series, bd0, the large-shape kernel, ln B with both shapes
+large, and the large-shape incomplete functions. They measured 38, 101–103, 204–208, 335–374, 585–614 ns and
+2.27–2.34 µs.
+
+**Where the time goes.** T1's lnΓ costs 12–30% more than T0's for x > 0 and 39% more reflected:
+- every logarithm is kimiya's double-double ln core, not a rounded ln;
+- the products and the large-x form's x·(ln x − 1) are double-double;
+- the reflection adds an exactly reduced sin(πr) and the double-double ln of x·sin(πr).
+
+P9 measured 72–192 ns for x > 0 (by branch) and 570 ns for x < 0. Downstream, the cost is the extra lnΓ calls:
+- 26–28% on Stirling's remainder and the small-shape kernel, which call it once or twice around a few flops;
+- 3–7% on ln B with a small shape;
+- within the noise on the incomplete functions, whose loops dominate.

@@ -1326,13 +1326,193 @@ def sp_max(x, y):
     return x if x > y else y
 
 
+# ── T1 lnΓ as the port computes it (M2 part b3): rows downstream of a T1 function are Rust's formulas on the T1
+# function's own values (the maintainer, 2026-11-16), so the model needs T1's lnΓ, not only the true one. This is
+# src/lgamma.cyr (probe P9's fdlibm-layout form) in its operation order, with exact double-double steps and MPFR's
+# double-double ln in place of kimiya's ln core (2^-80 apart, so the one final rounding agrees except within about
+# that of a tie). Its coefficients are read from the libm crate's lgamma_r.rs, as scripts/vendor_lgamma.py does.
+
+def _lgamma_coefficients():
+    import glob
+    import os
+    paths = glob.glob(os.path.expanduser("~/.cargo/registry/src/*/libm-0.2.16/src/math/lgamma_r.rs"))
+    if not paths:
+        return None
+    line = re.compile(r"^const (\w+): f64 = ([-+0-9.eE]+); /\* (0x[0-9A-Fa-f]{8}), (0x[0-9A-Fa-f]{8}) \*/$")
+    out = {}
+    for row in open(paths[0], encoding="utf-8").read().splitlines():
+        m = line.match(row.strip())
+        if m:
+            out[m.group(1)] = from_bits((int(m.group(3), 16) << 32) | int(m.group(4), 16))
+    return out
+
+
+LG = _lgamma_coefficients()
+PI_L = 1.2246467991473532e-16   # RN(π − RN(π)), kimiya's _KM_CR_SC_PIM
+
+
+def t_two_sum(a, b):
+    s = a + b
+    bb = s - a
+    return s, (a - (s - bb)) + (b - bb)
+
+
+def t_fast_two_sum(a, b):
+    s = a + b
+    return s, b - (s - a)
+
+
+def t_two_prod(a, b):
+    p = a * b
+    return p, math.fma(a, b, -p)
+
+
+def t_dd_mul(ah, al, bh, bl):
+    p, e = t_two_prod(ah, bh)
+    c = ah * bl + al * bh
+    return t_fast_two_sum(p, e + c)
+
+
+def t_lg_poly12(y, i):
+    C = LG
+    if i == 0:
+        z = y * y
+        p1 = C["A0"] + z * (C["A2"] + z * (C["A4"] + z * (C["A6"] + z * (C["A8"] + z * C["A10"]))))
+        p2 = z * (C["A1"] + z * (C["A3"] + z * (C["A5"] + z * (C["A7"] + z * (C["A9"] + z * C["A11"])))))
+        p = y * p1 + p2
+        return p - 0.5 * y
+    if i == 1:
+        z1 = y * y
+        w = z1 * y
+        q1 = C["T0"] + w * (C["T3"] + w * (C["T6"] + w * (C["T9"] + w * C["T12"])))
+        q2 = C["T1"] + w * (C["T4"] + w * (C["T7"] + w * (C["T10"] + w * C["T13"])))
+        q3 = C["T2"] + w * (C["T5"] + w * (C["T8"] + w * (C["T11"] + w * C["T14"])))
+        inner = q2 + y * q3
+        pp = z1 * q1 - (C["TT"] - w * inner)
+        return C["TF"] + pp
+    r1 = y * (C["U0"] + y * (C["U1"] + y * (C["U2"] + y * (C["U3"] + y * (C["U4"] + y * C["U5"])))))
+    r2 = 1.0 + y * (C["V1"] + y * (C["V2"] + y * (C["V3"] + y * (C["V4"] + y * C["V5"]))))
+    return -0.5 * y + r1 / r2
+
+
+def t_lg_rat23(y):
+    C = LG
+    p = y * (C["S0"] + y * (C["S1"] + y * (C["S2"] + y * (C["S3"] + y * (C["S4"] + y * (C["S5"] + y * C["S6"]))))))
+    q = 1.0 + y * (C["R1"] + y * (C["R2"] + y * (C["R3"] + y * (C["R4"] + y * (C["R5"] + y * C["R6"])))))
+    return 0.5 * y + p / q
+
+
+def t_lg_pos_dd(x):
+    u = bits(x)
+    ix = (u >> 32) & 0x7FFFFFFF
+    if (ix == 0x3FF00000 or ix == 0x40000000) and (u & 0xFFFFFFFF) == 0:
+        return 0.0, 0.0
+    if ix < 0x40000000:
+        rh = rl = y = 0.0
+        i = 0
+        tc = LG["TC"]
+        if ix <= 0x3FECCCCC:
+            lh, ll = mpfr_ref.ln_dd(x)
+            rh, rl = -lh, -ll
+            if ix >= 0x3FE76944:
+                y = 1.0 - x
+            elif ix >= 0x3FCDA661:
+                y = x - (tc - 1.0)
+                i = 1
+            else:
+                y = x
+                i = 2
+        else:
+            if ix >= 0x3FFBB4C3:
+                y = 2.0 - x
+            elif ix >= 0x3FF3B4C4:
+                y = x - tc
+                i = 1
+            else:
+                y = x - 1.0
+                i = 2
+        pv = t_lg_poly12(y, i)
+        s_, e = t_two_sum(rh, pv)
+        return s_, e + rl
+    if ix < 0x40200000:
+        k = int(x)
+        y2 = x - float(k)
+        r0 = t_lg_rat23(y2)
+        if k < 3:
+            return r0, 0.0
+        zh, zl = t_two_sum(y2, 2.0)
+        for j in range(3, k):
+            fh, fl = t_two_sum(y2, float(j))
+            zh, zl = t_dd_mul(zh, zl, fh, fl)
+        lzh, lzl = mpfr_ref.ln_dd(zh)
+        lzl2 = lzl + zl / zh
+        s2, e2 = t_two_sum(lzh, r0)
+        return s2, e2 + lzl2
+    th, tl = mpfr_ref.ln_dd(x)
+    sh, sl0 = t_two_sum(th, -1.0)
+    sl = sl0 + tl
+    if x < 2.0 ** 990:
+        ph, pe = t_two_prod(x, sh)
+    else:
+        p1, e1 = t_two_prod(x * 2.0 ** -64, sh)
+        ph, pe = p1 * 2.0 ** 64, e1 * 2.0 ** 64
+    if ph == math.inf:
+        return ph, 0.0
+    pe = pe + x * sl
+    hsh, hsl = -0.5 * sh, -0.5 * sl
+    C = LG
+    zr = 1.0 / x
+    yr = zr * zr
+    w = C["W0"] + zr * (C["W1"] + yr * (C["W2"] + yr * (C["W3"] + yr * (C["W4"] + yr * (C["W5"] + yr * C["W6"])))))
+    tail = (hsh + hsl) + w
+    return t_fast_two_sum(ph, pe + tail)
+
+
+def t1_ln_gamma(x):
+    """src/lgamma.cyr's T1 lnΓ, as the port computes it."""
+    u = bits(x)
+    ix = (u >> 32) & 0x7FFFFFFF
+    if ix >= 0x7FF00000:
+        return x * x
+    if ix < 0x3B900000:
+        return -mpfr_ref.cr("log", abs(x))
+    if x > 0.0:
+        h, l = t_lg_pos_dd(x)
+        return h + l
+    a = -x
+    if a >= 2.0 ** 52:
+        return math.inf
+    n = float(math.floor(a + 0.5))
+    rr = a - n
+    if rr == 0.0:
+        return math.inf
+    ar = abs(rr)
+    qh, ql0 = t_two_prod(math.pi, ar)
+    ql = ql0 + PI_L * ar
+    sn = mpfr_ref.cr("sin", qh)
+    cs = mpfr_ref.cr("cos", qh)
+    lsh, lsl0 = mpfr_ref.ln_dd(sn)
+    lsl = lsl0 + (ql * cs) / sn
+    lah, lal = mpfr_ref.ln_dd(a)
+    lph, lpl0 = mpfr_ref.ln_dd(math.pi)
+    lpl = lpl0 + PI_L / math.pi
+    gh, gl = t_lg_pos_dd(a)
+    s1, e1 = t_two_sum(lph, -lah)
+    s2, e2 = t_two_sum(s1, -lsh)
+    s3, e3 = t_two_sum(s2, -gh)
+    lo = ((e1 + e2) + e3) + (((lpl - lal) - lsl) - gl)
+    return s3 + lo
+
+
 class Prims:
     """The primitives 1.3.0's math.rs calls, and its erf and erfc, in one of three modes:
     - "glibc": glibc's primitives (ctypes) and 1.3.0's fdlibm erf and erfc on them: 1.3.0's own bits;
     - "cr": every primitive correctly rounded (MPFR) under 1.3.0's fdlibm erf and erfc: the T0 model (`*.cr.tsv`);
-    - "ref": as "cr", with the T1 functions landed so far at their true values (MPFR), as T1 computes them: erf and
-      erfc since M2 part b1, Φ and 1 − Φ since b2. The reference model (`*.ref.tsv`); each later T1 function joins it
-      as its part lands."""
+    - "ref": as "cr", with the T1 functions landed so far: each T1 function's own rows expect its true value (MPFR),
+      and the formulas downstream of it take T1's own value (the maintainer, 2026-11-16), as the port computes them.
+      erf and erfc (b1) are correctly rounded, and Φ (b2) is on every golden row, so for them the two are the same;
+      lnΓ (b3) is within 2 ulp, so the model carries T1's lnΓ (t1_ln_gamma) for its callers. The reference model
+      (`*.ref.tsv`); each later T1 function joins it as its part lands."""
 
     def __init__(self, mode, F):
         if mode == "glibc":
@@ -1346,16 +1526,25 @@ class Prims:
             self.erf = lambda x: mpfr_ref.cr("erf", x)
             self.erfc = lambda x: mpfr_ref.cr("erfc", x)
             self.ncdf, self.nsf = mpfr_ref.ncdf, mpfr_ref.nsf
+            # lnΓ (part b3) is the first T1 function that isn't correctly rounded: its own rows expect the true value
+            # (lgamma_row), and the formulas downstream take T1's (lgamma), as the port does.
+            if LG is None:
+                raise SystemExit("the reference model needs libm 0.2.16's lgamma_r.rs in the cargo registry")
+            self.lgamma, self.lgamma_row = t1_ln_gamma, mpfr_ref.lgamma
         else:
             self.erf = lambda x: sp_erf(F, self.exp, x)
             self.erfc = lambda x: sp_erfc(F, self.exp, x)
             # 1.3.0's formulas, on whichever erfc: Φ(z) = 0.5·erfc(−z/SQRT_2), 1 − Φ(z) = 0.5·erfc(z/SQRT_2)
             self.ncdf = lambda z: 0.5 * self.erfc(-z / math.sqrt(2.0))
             self.nsf = lambda z: 0.5 * self.erfc(z / math.sqrt(2.0))
+            self.lgamma = self.lgamma_row = None   # 1.3.0's Lanczos form, sp_ln_gamma
 
 
 def sp_ln_gamma(K, L, x):
-    """1.3.0's ln_gamma: Lanczos g = 7, n = 9, the reflection below ½ with its 1e-300 cutoff."""
+    """1.3.0's ln_gamma: Lanczos g = 7, n = 9, the reflection below ½ with its 1e-300 cutoff; in the reference model
+    (from M2 part b3), MPFR's true ln|Γ(x)|."""
+    if L.lgamma is not None:
+        return L.lgamma(x)
     if x < 0.5:
         sin_val = L.sin(math.pi * x)
         if abs(sin_val) < 1e-300:
@@ -1553,7 +1742,7 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
     "math::erfc": (1, lambda K, L, x: L.erfc(x)),
     "math::normal_cdf": (1, lambda K, L, z: L.ncdf(z)),
     "math::normal_sf": (1, lambda K, L, z: L.nsf(z)),
-    "math::ln_gamma": (1, sp_ln_gamma),
+    "math::ln_gamma": (1, lambda K, L, x: L.lgamma_row(x) if L.lgamma_row else sp_ln_gamma(K, L, x)),
     "math::stirling_error": (1, sp_stirling),
     "math::bd0": (2, sp_bd0),
     "math::ln_gamma_kernel": (2, sp_kernel),
@@ -1569,7 +1758,8 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
 # The T1 functions landed so far (M2 part b), each at its true value in the reference model.
 T1_SO_FAR = {"math::erf": "MPFR's correctly rounded erf", "math::erfc": "MPFR's correctly rounded erfc",
              "math::normal_cdf": "MPFR's ½·erfc(−z/√2), correctly rounded",
-             "math::normal_sf": "MPFR's ½·erfc(z/√2), correctly rounded"}
+             "math::normal_sf": "MPFR's ½·erfc(z/√2), correctly rounded",
+             "math::ln_gamma": "MPFR's ln|Γ(x)|, correctly rounded"}
 
 
 def check_special(root, rows):

@@ -2708,3 +2708,97 @@ function, shows each move to 1.
 **Cost** (`docs/benchmarks-rust-v-cyrius.md`): 1.37–1.40 µs in the core and 2.44–2.53 µs in the tails, 70–106× Rust's
 Φ. That is 8–30% over Rust's formula on b1's correctly rounded erfc: the argument's double-double, the correction's
 exp, and CORE-MATH's accurate path where its fast bound misses 2⁻⁶⁰. P9 measured the same.
+
+### 8.7 Part b3: lnΓ within 2 ulp, T1 (2026-11-16)
+
+**The module.** `ln_gamma` is now probe P9's T1 form (§6.4), in `src/lgamma.cyr`: fdlibm's `e_lgamma_r` layout,
+with kimiya's double-double ln core for every logarithm, double-double products, an exact reflection for x < 0, and
+one final rounding.
+- **The coefficients** are generated into `src/lgamma_data.cyr` by a new `scripts/vendor_lgamma.py`, from the libm
+  crate 0.2.16's `lgamma_r.rs` in the cargo registry, pinned by sha256. Each decimal literal is checked against the
+  bits in its comment. `--check`, now in CI, also proves the port's inline words: each 16-digit word is a power of two
+  its comment cites, and each high-word threshold occurs in the source, verbatim or as libm's
+  `(0x3ff - 70) << 20`.
+- **1.3.0's Lanczos form,** which part a2 proved at 0 ulp, is retired from `src/`. lnΓ's edges change as part a2
+  recorded they would:
+  - −ln x below 2⁻⁷⁰, where 1.3.0 returned +∞ below about 3.2·10⁻³⁰¹;
+  - +∞ at the negative integers, where 1.3.0 gave finite values;
+  - +∞ at ±∞, where 1.3.0 gave NaN at +∞.
+
+  `tests/special.tcyr`'s three checks of 1.3.0's edges now check T1's.
+
+**A fix to P9's form.** Past lnΓ's overflow, about 2.556·10³⁰⁵, the double-double product x·(ln x − 1) is +∞ and
+its error term makes ∞ − ∞, so P9's form returned NaN. P9's sets stopped at 8·2¹⁰¹⁰, short of the overflow; two
+golden rows found it (4.19·10³⁰⁵ and f64::MAX). T1 now returns +∞ once that product overflows. It agrees with the
+rounded lnΓ except within about 352 of the binary64 overflow tie, a relative window near 10⁻²⁹⁰.
+
+**Verification** (`scripts/crverify/run.sh lgamma`, a new set). P9's six seeded sets have 400,000
+arguments, so this set takes 2.5 times as many, 1,000,000, and carries the large set past the overflow to
+f64::MAX. Results against MPFR's lgamma at 1,024 bits:
+- **x > 0:** max 1.27 ulp, against ADR 009's 2. By set: [2, 8) 1.265, beside the roots 1.146, small x 0.837, large
+  x 0.530, with every overflowed row +∞, as MPFR's is.
+- **x < 0:** max 1.26 ulp of max(|lnΓ|, 1), against 2 (`_mixed` rows; 1.05 near the poles, 1.263 across the
+  zeros). Plain ulps reach 7,955 near lnΓ's zeros, which is why ADR 009's bound is mixed there.
+- **On three targets:** identical outputs (sha256 `b9b77d894d78127f`).
+
+**The harness's mixed bound.** A new hook, `_par_c_mixed`, is 1 for an `ln_gamma` row with x < 0. A row past its
+bound in plain ulps then passes if |got − want| ≤ bound·2⁻⁵², where |want| < 1. The histogram keeps the plain
+distance, so these rows stay visible. `_par_c_bound` gives `ln_gamma` ADR 009's 2.
+
+**Downstream rows: your decision, and ADR 009 amended.** lnΓ is the first T1 function that isn't correctly rounded.
+Fed T1's lnΓ, 1.3.0's formulas land up to 1,024 ulp from the same formulas fed the true lnΓ:
+- Stirling's remainder: 1,024;
+- the kernel and `beta_inc`: 64;
+- `gamma_inc`: 12;
+- ln B: 8.
+
+Gating those against the true values would have needed bounds that loose. You chose (2026-11-16) to gate a
+downstream row on Rust's formula fed the T1 function's own value, at 0 ulp, with each T1 function gated against the
+truth at its bound, and ADR 009's Consequences now say so.
+- **The model:** `validate.py` carries `t1_ln_gamma`, src/lgamma.cyr in its operation order. It uses exact
+  double-double steps (`math.fma`), MPFR's double-double ln (`mpfr_ref.ln_dd`) in place of kimiya's ln core, which
+  is within about 2⁻⁸⁰, and libm 0.2.16's coefficients read independently.
+- **What it shows:** every downstream row matches at 0 ulp on the first run, Stirling, the kernel, ln B, `gamma_inc`,
+  `beta_inc` and the wrappers. So the model reproduces the port's lnΓ bit for bit at every argument they pass it.
+
+**The rows.** `mpfr_ref.py` gains `lgamma` (MPFR's, correctly rounded). `special.ref.tsv` grows to 14,299 rows:
+
+| Rows | Count |
+|---|---|
+| lnΓ at its true value (1.3.0's Lanczos form is not correctly rounded there) | 2,441 of 3,377 |
+| downstream of lnΓ: Stirling 328, the kernel 909, ln B 505, `gamma_inc` 1,515, `beta_inc` 1,571, the three wrappers 382 | 5,210 |
+| erf, erfc, Φ and 1 − Φ, from parts b1 and b2 | 6,648 |
+
+`special.cr.tsv` falls to 203.
+
+**The result.** Every lnΓ row is within its bound: 3,250 at 0 ulp, 100 at 1 and 13 at 2, and 14 with x < 0 that pass
+on the mixed bound, up to 63 plain ulps where lnΓ is small. Every downstream row is at 0. The replay is nine modules:
+118,865 rows ok and 14,608 accepted (14,578 under ADR 9, of which 14,299 are reference rows, and 30 under ADR 7),
+warning-free, on x86_64 ELF, PE (wine) and aarch64 (qemu). Every `math::` result line is identical on the three.
+
+**Mutation checks** (the replay):
+
+| Mutant | Rows failed |
+|---|---|
+| logarithms rounded, without their low parts | 1,667 (lnΓ 37, and every downstream function) |
+| −½ dropped from the large-x form | 2,692 (lnΓ 1,566) |
+| x < 2: −ln x's low part dropped | 5,213 (lnΓ 156) |
+| the reflection's r not reduced | 674 (lnΓ 667) |
+| the overflow guard dropped | 2 (the two overflow rows, NaN) |
+| the [3, 8) product in plain double | 31, all downstream; every lnΓ row stays within its 2-ulp bound |
+
+The last is the case the exact downstream gate exists for: a change T1's own bound allows still shows, wherever its
+callers use the value.
+
+**Tests.** `tests/special.tcyr` grows to 92 checks:
+- T1's edges against MPFR: −ln(3·10⁻³⁰¹), the poles, ±∞ and NaN, and lnΓ(1) = lnΓ(2) = +0;
+- beside the roots, lnΓ(1 + 2⁻³⁰) and lnΓ(2 − 2⁻³⁰) within 2 ulp (1.3.0: about 10⁶ ulp off);
+- lnΓ(½) and lnΓ(10) within 2 ulp;
+- lnΓ(−2.5) within the mixed bound (it is 3 plain ulps off, inside 2⁻⁵¹);
+- lnΓ(2.55·10³⁰⁵) just under the overflow;
+- lnΓ(2.56·10³⁰⁵) and lnΓ(f64::MAX) at +∞.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 153–179 ns for x > 0 and 555–562 ns reflected, 5.6–11× Rust's
+Lanczos form and 12–39% over T0's, as P9 measured (72–192 and 570 ns). Stirling's remainder and the small-shape kernel
+cost 26–28% more downstream, and ln B with a small shape 3–7%. The bench's digests show the port's lnΓ equal to the
+T1 model on all 12,288 of its arguments.

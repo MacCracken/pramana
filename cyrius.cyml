@@ -45,6 +45,8 @@ modules = [
     "src/crmath_ext.cyr",
     "src/crerf_data.cyr",
     "src/crerf.cyr",
+    "src/lgamma_data.cyr",
+    "src/lgamma.cyr",
     "src/mathx.cyr",
     "src/fmtf.cyr",
     "src/pool.cyr",

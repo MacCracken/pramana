@@ -31,4 +31,4 @@ would reasonably ask *"why did we do it this way?"*
 | [006](006-cyrius-port-with-rust-oracle.md) | Port to Cyrius as 2.0.0, with Rust 1.3.0 as the oracle | Accepted |
 | [007](007-port-api-divergences.md) | API divergences in the Cyrius 2.0 port | Accepted (rows appended as milestones land) |
 | [008](008-local-stand-ins-for-library-gaps.md) | Local stand-ins for library gaps, converted through a ledger | Accepted |
-| [009](009-correct-rounding-and-fixed-accuracy-bounds.md) | Correct rounding, and fixed accuracy bounds for the special functions | Accepted |
+| [009](009-correct-rounding-and-fixed-accuracy-bounds.md) | Correct rounding, and fixed accuracy bounds for the special functions | Accepted; amended 2026-11-16 (downstream rows) |

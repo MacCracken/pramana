@@ -11,6 +11,8 @@
 #   cases. Needs CORE-MATH's erf.c, erf.wc, erfc.c and erfc.wc in build/coremath/ (scripts/vendor_coremath.py).
 # - `ncdf`: scripts/crverify/rows_ncdf.cyr, Φ (M2 part b2), whose bound is ≤ 1 ulp (ADR 009), not correct rounding:
 #   its report's max ulp is the figure to read.
+# - `lgamma`: scripts/crverify/rows_lgamma.cyr, lnΓ (M2 part b3), whose bound is ≤ 2 ulp for x > 0 and ≤ 2 ulp of
+#   max(|lnΓ|, 1) for x < 0 (its `_mixed` rows).
 # Needs gcc with MPFR (and FMA for CORE-MATH's build), wine and qemu-aarch64.
 #   bash scripts/crverify/run.sh               # every set
 #   bash scripts/crverify/run.sh erf           # one
@@ -20,7 +22,7 @@ work=$root/build/crverify
 mkdir -p "$work"
 cd "$root"
 sets=("$@")
-[ ${#sets[@]} -gt 0 ] || sets=(primitives erf ncdf)
+[ ${#sets[@]} -gt 0 ] || sets=(primitives erf ncdf lgamma)
 quiet() { grep -v -e '^note' -e '^OK' -e 'warning:lib/' -e 'unreachable fns' || true; }
 gcc -O2 -o "$work/check" scripts/port-baseline/check.c -lmpfr -lgmp -lm
 
@@ -89,8 +91,11 @@ for line in sys.stdin:
     ncdf)
         verify ncdf scripts/crverify/rows_ncdf.cyr
         ;;
+    lgamma)
+        verify lgamma scripts/crverify/rows_lgamma.cyr
+        ;;
     *)
-        echo "unknown set $s (primitives, erf, ncdf)" >&2
+        echo "unknown set $s (primitives, erf, ncdf, lgamma)" >&2
         exit 1
         ;;
     esac

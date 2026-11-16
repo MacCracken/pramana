@@ -13,6 +13,8 @@
 # - `_par_error_name(code)`: the Rust variant name of a `PMN_ERR_*` code, as a C string;
 # - `_par_dispatch(mp, ml, fp, fl)`: fill the got list for one row (1 handled, 0 pending, -1 unusable);
 # - `_par_c_bound(fp, fl)`: a class-C function's ulp bound, or -1;
+# - `_par_c_mixed(fp, fl)`: 1 when the current row's bound is ADR 009's mixed one, in ulps of max(|want|, 1) (lnΓ for
+#   x < 0, from M2 part b3), else 0;
 # - `_par_accepted(fp, fl, ip, il)`: the ADR accepting a divergent row, or 0;
 # - `_par_accepted_quiet(adr)`: 1 when that ADR's accepted rows are counted (on their function's
 #   line, as "accepted") but not printed one by one — a mapped divergence with many rows;
@@ -459,6 +461,26 @@ fn _par_print_first_diff() {
 # Returns 1 ok, 0 failed, 2 measured (class C with no bound yet). Sets _par_outlier when a
 # float is more than 16 ulp off, or a NaN / infinity disagrees.
 var _par_outlier = 0;
+# 1 when got is within `bound` ulps of max(|want|, 1) of want: for |want| < 1 that is bound·2^-52 absolute (ADR 009's
+# mixed bound). Both finite.
+fn _par_mixed_ok(gv, wv, bound): i64 {
+    var g: f64 = 0.0;
+    var w: f64 = 0.0;
+    store64(&g, gv);
+    store64(&w, wv);
+    if (_pmn_is_finite(g) != 1 || _pmn_is_finite(w) != 1) { return 0; }
+    var aw: f64 = f64_abs(w);
+    if (aw >= 1.0) { return 0; }
+    var diff: f64 = g - w;
+    var ad: f64 = f64_abs(diff);
+    var u: f64 = 0.0;
+    store64(&u, 0x3CB0000000000000);    # 2^-52, the ulp of 1
+    var bf: f64 = f64_from(bound);
+    var lim: f64 = bf * u;
+    if (ad <= lim) { return 1; }
+    return 0;
+}
+
 fn _par_compare(slot, cls, fp, fl): i64 {
     _par_outlier = 0;
     if (_par_got_n != _par_want_n) { return 0; }
@@ -488,7 +510,7 @@ fn _par_compare(slot, cls, fp, fl): i64 {
                 if (bound < 0) {
                     if (result == 1) { result = 2; }
                 } elif (d > bound) {
-                    result = 0;
+                    if (_par_c_mixed(fp, fl) != 1 || _par_mixed_ok(gv, wv, bound) != 1) { result = 0; }
                 }
             } else {
                 if (ulp_rel_match(gv, wv, 0.000000000001) != 1) { result = 0; }

@@ -300,24 +300,57 @@ fn main() {
     }
     assert(k_ok == 1, "the Stirling form agrees with a ln x - x - lnGamma(a) within 1e-11");
 
-    test_group("1.3.0's poles, cutoff and specials, pinned");
+    test_group("T1 (M2 part b3): lnGamma's poles, its tiny range and its specials");
     var gpz: f64 = _pmn_ln_gamma(0.0);
     var gnz: f64 = _pmn_ln_gamma(nz);
     assert(bits(gpz) == 0x7FF0000000000000 && bits(gnz) == 0x7FF0000000000000, "lnGamma(+0) = lnGamma(-0) = +inf");
     var cut: f64 = _PMN_MATH_LENTZ_TINY;
     var x3: f64 = cut * 0.3;
-    var x4: f64 = cut * 0.4;
     var g3: f64 = _pmn_ln_gamma(x3);
-    var g4: f64 = _pmn_ln_gamma(x4);
-    assert(bits(g3) == 0x7FF0000000000000, "lnGamma(3e-301) = +inf: 1.3.0's |sin(pi x)| < 1e-300 cutoff");
-    assert(_pmn_is_finite(g4) == 1 && g4 > 690.0, "lnGamma(4e-301) is finite, about 691");
+    assert(bits(g3) == 0x40859FD60476DE89, "lnGamma(3e-301) = -ln(3e-301), correctly rounded (1.3.0 returned +inf)");
     var gm1: f64 = _pmn_ln_gamma(-1.0);
-    assert(_pmn_is_finite(gm1) == 1 && gm1 > 30.0, "lnGamma(-1) is finite in 1.3.0: sin(-pi) rounds to -1.2e-16");
+    var gm2: f64 = _pmn_ln_gamma(-2.0);
+    assert(bits(gm1) == 0x7FF0000000000000 && bits(gm2) == 0x7FF0000000000000,
+        "lnGamma(-1) = lnGamma(-2) = +inf: poles (1.3.0 returned finite values)");
     var gin: f64 = _pmn_ln_gamma(inf);
     var gnin: f64 = _pmn_ln_gamma(ninf);
     var gnan: f64 = _pmn_ln_gamma(nan);
-    assert(_pmn_is_nan(gin) == 1 && _pmn_is_nan(gnin) == 1 && _pmn_is_nan(gnan) == 1,
-        "lnGamma(+inf), lnGamma(-inf) and lnGamma(NaN) are NaN, as in 1.3.0");
+    assert(bits(gin) == 0x7FF0000000000000 && bits(gnin) == 0x7FF0000000000000 && _pmn_is_nan(gnan) == 1,
+        "lnGamma(+inf) = lnGamma(-inf) = +inf, lnGamma(NaN) = NaN (1.3.0: NaN at +inf)");
+    var gr1: f64 = _pmn_ln_gamma(1.0);
+    var gr2: f64 = _pmn_ln_gamma(2.0);
+    assert(bits(gr1) == 0 && bits(gr2) == 0, "lnGamma(1) = lnGamma(2) = +0 exactly");
+    var xo1: f64 = of_bits(0x7F573D8E39B3A267);
+    var xo2: f64 = of_bits(0x7F5754E31CD072DA);
+    var mx: f64 = of_bits(0x7FEFFFFFFFFFFFFF);
+    var go1: f64 = _pmn_ln_gamma(xo1);
+    var go2: f64 = _pmn_ln_gamma(xo2);
+    var gmx: f64 = _pmn_ln_gamma(mx);
+    var dov = bits(go1) - 0x7FEFE001FB1FD3AF;
+    assert(dov >= 0 - 2 && dov <= 2, "lnGamma(2.55e305) = 1.79e308, within 2 ulp of MPFR, just under the overflow");
+    assert(bits(go2) == 0x7FF0000000000000 && bits(gmx) == 0x7FF0000000000000,
+        "lnGamma(2.56e305) and lnGamma(MAX) overflow to +inf (P9's prototype gave NaN past the overflow)");
+
+    test_group("T1 (M2 part b3): lnGamma within 2 ulp of MPFR, where 1.3.0 is far off");
+    var xn1: f64 = of_bits(0x3FF0000000400000);
+    var xn2: f64 = of_bits(0x3FFFFFFFFFC00000);
+    var gn1: f64 = _pmn_ln_gamma(xn1);
+    var gn2: f64 = _pmn_ln_gamma(xn2);
+    var dn1 = bits(gn1) - 0xBE02788CFC066F7F;
+    var dn2 = bits(gn2) - 0xBDFB0EE606CE069B;
+    assert(dn1 >= 0 - 2 && dn1 <= 2 && dn2 >= 0 - 2 && dn2 <= 2,
+        "lnGamma(1 + 2^-30) and lnGamma(2 - 2^-30) within 2 ulp of MPFR (1.3.0: about 10^6 ulp off)");
+    var gh2: f64 = _pmn_ln_gamma(0.5);
+    var g10b: f64 = _pmn_ln_gamma(10.0);
+    var gm25: f64 = _pmn_ln_gamma(-2.5);
+    var dh = bits(gh2) - 0x3FE250D048E7A1BD;
+    var d10 = bits(g10b) - 0x40299A8921A7F7CF;
+    assert(dh >= 0 - 2 && dh <= 2 && d10 >= 0 - 2 && d10 <= 2, "lnGamma(0.5) and lnGamma(10) within 2 ulp of MPFR");
+    # x < 0: ADR 009's bound is 2 ulp of max(|lnGamma|, 1), so 2^-51 absolute where |lnGamma| < 1.
+    var want25: f64 = of_bits(0xBFACCBF9F5ED0F16);
+    var e25: f64 = gm25 - want25;
+    var lim25: f64 = of_bits(0x3CC0000000000000);
+    assert(f64_abs(e25) <= lim25, "lnGamma(-2.5) within 2 ulp of max(|lnGamma|, 1) = 2^-51 of MPFR (the mixed bound)");
 
     test_group("bd0's identities (no 1.3.0 test)");
     var d0: f64 = _pmn_bd0(0.0, 2.5);

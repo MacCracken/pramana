@@ -1,7 +1,8 @@
 # 9. Correct rounding, and fixed accuracy bounds for the special functions
 
 Date: 2026-11-15
-Status: Accepted (the bounds are commitments; only the maintainer can narrow a domain, by amending this ADR)
+Status: Accepted (the bounds are commitments; only the maintainer can narrow a domain, by amending this ADR). Amended
+2026-11-16 (downstream rows; see Consequences)
 
 ## Context
 
@@ -73,8 +74,18 @@ complements), not from glibc. Every CDF and p-value inherits them.
   - pramana owns several thousand more lines of numerical code (kimiya's correctly rounded functions alone are about
     6,800 with their tables) until ganita ships a correctly rounded tier and special functions (ledger L1, L8).
 - **Neutral.**
-  - Downstream golden rows are generated once, after M2 part b, from Rust's formulas with the special functions
-    taken from the reference values.
+  - **Downstream rows, as amended 2026-11-16** (the maintainer, at M2 part b3). A row downstream of a T1 function is
+    Rust's formula on that T1 function's own value, as the port computes it, gated at 0 ulp. Each T1 function's own
+    rows are gated against its reference value (MPFR's true value) at its bound above.
+    - **Why:** that splits the check in two. The T1 function is held to its bound against the truth, and the formula
+      downstream is held exactly, which catches a transcription error of any size.
+    - **What it replaced:** the first wording took the downstream values from the reference values too. That works
+      for erf, erfc and Φ, which are correctly rounded on every golden row. For lnΓ (≤ 2 ulp) the callers' cancellation
+      carries a 1-ulp difference to up to 1,024 ulp (Stirling's remainder), so the gate would have had to be that loose.
+    - **The cost:** `scripts/golden/validate.py` models each T1 function that isn't correctly rounded as the port
+      computes it. For lnΓ that is P9's form with MPFR's double-double logarithms in place of kimiya's ln core.
+    - **When the rows change:** the rows are regenerated as each T1 function lands, and the distributions' rows (M3
+      on) are first generated on the finished T1.
   - Results differ from Rust 1.3.0 in the last digits wherever Rust was less accurate. ADR 007 rows 12–13 name this.
 
 ## Alternatives considered

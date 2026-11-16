@@ -1,0 +1,133 @@
+# rows_lgamma.cyr — the accuracy check of pramana's lnΓ (M2 part b3; port plan D3 = C, §3.4; ADR 009: ≤ 2 ulp for
+# x > 0, ≤ 2 ulp of max(|lnΓ|, 1) for x < 0).
+#
+# Prints `cr:lgamma/<set> x result` rows (bit patterns) for scripts/port-baseline/check.c, which compares each with
+# MPFR's lgamma at 1,024 bits. A negative-x row is printed twice, the second as `<set>_mixed`, which check.c measures
+# in ulps of max(|lnΓ|, 1). Probe P9's six seeded sets (scripts/probes/p9_lgamma.cyr), 2.5 times as many, so over 10^6
+# arguments, and the large set carried past lnΓ's overflow to f64::MAX:
+# - 250,000 beside the roots, 1 ± d or 2 ± d with d log-uniform in [2^-52, 1/4];
+# - 250,000 on [2, 8), where the product (y + 2)(y + 3)… is taken;
+# - 125,000 from 8 to f64::MAX, log-uniform (lnΓ overflows near 2.556·10³⁰⁵);
+# - 125,000 from 2^-1070 to 2, log-uniform, subnormals included;
+# - 125,000 for x < 0 out to −170, half within 2^-50 … 1/10 of a pole;
+# - 125,000 on (−8, −2), where lnΓ crosses zero and the mixed bound is absolute.
+#   bash scripts/crverify/run.sh lgamma
+
+include "tests/lib.cyr"
+
+var g_rng = 0x9E3779B97F4A7C15;
+var g_out = 0;
+
+# xorshift64*: uniform in [0, 1) from the top 53 bits. Every shift is `>>`, the logical one.
+fn cl_unit(): f64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    var top = (x * 0x2545F4914F6CDD1D) >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+fn cl_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+fn cl_row(set: cstring, suffix: cstring, x: f64, r: f64): i64 {
+    str_builder_add_cstr(g_out, "cr:lgamma/");
+    str_builder_add_cstr(g_out, set);
+    str_builder_add_cstr(g_out, suffix);
+    str_builder_putc(g_out, 32);
+    cl_hex64(g_out, x);
+    str_builder_putc(g_out, 32);
+    cl_hex64(g_out, r);
+    str_builder_putc(g_out, 10);
+    if (load64(g_out + 8) > 1048576) {
+        print(load64(g_out), load64(g_out + 8));
+        store64(g_out + 8, 0);
+    }
+    return 0;
+}
+
+# One argument: its row, and for x < 0 its mixed-bound row too.
+fn cl_lg(set: cstring, x: f64, neg): i64 {
+    var r: f64 = _pmn_ln_gamma(x);
+    cl_row(set, "", x, r);
+    if (neg == 1) { cl_row(set, "_mixed", x, r); }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    var ln2: f64 = _pmn_ln(2.0);
+    var ln8: f64 = _pmn_ln(8.0);
+    var i = 0;
+    while (i < 250000) {
+        var t: f64 = -52.0 + 50.0 * cl_unit();
+        var tl: f64 = t * ln2;
+        var d: f64 = _pmn_exp(tl);
+        var base: f64 = 1.0;
+        if (cl_unit() < 0.5) { base = 2.0; }
+        var x: f64 = base + d;
+        if (cl_unit() < 0.5) { x = base - d; }
+        cl_lg("roots", x, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 250000) {
+        var x2: f64 = 2.0 + 6.0 * cl_unit();
+        cl_lg("2to8", x2, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 125000) {
+        var e3: f64 = 1020.999 * cl_unit();
+        var t3: f64 = ln8 + e3 * ln2;
+        var x3: f64 = _pmn_exp(t3);
+        cl_lg("big", x3, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 125000) {
+        var e4: f64 = 1071.0 * cl_unit();
+        var t4: f64 = ln2 - e4 * ln2;
+        var x4: f64 = _pmn_exp(t4);
+        cl_lg("small", x4, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 125000) {
+        var k5: f64 = f64_floor(170.0 * cl_unit());
+        var f5: f64 = cl_unit();
+        if (cl_unit() < 0.5) {
+            var t5: f64 = -50.0 + 46.7 * cl_unit();
+            var tl5: f64 = t5 * ln2;
+            f5 = _pmn_exp(tl5);
+            if (cl_unit() < 0.5) { f5 = 1.0 - f5; }
+        }
+        var a5: f64 = k5 + f5;
+        var x5: f64 = -a5;
+        if (f5 > 0.0 && f5 < 1.0) { cl_lg("neg", x5, 1); }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 125000) {
+        var x6: f64 = -2.0 - 6.0 * cl_unit();
+        cl_lg("negzeros", x6, 1);
+        i = i + 1;
+    }
+    print(load64(g_out), load64(g_out + 8));
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);
