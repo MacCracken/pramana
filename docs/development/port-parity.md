@@ -1497,3 +1497,43 @@ and NaN's place in the total order.
 **Cost** (`tests/mathx.bcyr` against the Rust twin's `mathx` rows, pinned, three interleaved rounds): 8–24 ns a call
 in Cyrius against Rust's 0.8–3.4 ns. Rust inlines each into a few instructions. The Cyrius rows also pay a call and the
 bench loop's per-iteration dispatch, as probe P2 noted, so compare the rows with each other, not as bare costs.
+
+### 7.7 Part d1: serde_json's f64 text (2026-11-15)
+
+Part d is split in three, the JSON core being large: **d1** the float printer, **d2** the read core (bayan's tree,
+probe P7's pre-pass, serde's struct rules), **d3** the write core and the error codec. The `SimpleRng` codec moves to
+part e, with the RNG.
+
+**The printer.** `src/fmtf.cyr` is impetus 2.0.0's serde_json form, vendored by `scripts/vendor_fmtf.py` from its
+git tag (`4b72df7`). It takes the dependency closure of `im_fmt_f64_json`, 15 items, renamed `_pmn_im_`, with
+`_pmn_im_bits` defined in the header, and its `--check` runs in CI. The digits are Burger & Dybvig's shortest
+round-trip digits on a small bignum, ties to even as serde_json's zmij. Rust's Display form isn't vendored, because
+1.3.0 uses `{}` on an f64 only inside error messages, which D6 drops. Probe P7 had checked this printer once, on
+280,562 doubles.
+
+**The golden rows.** The generator gained a `fmt` module (`scripts/golden/src/m_fmt.rs`, with serde_json pinned at
+1.0.154): serde_json's own text for 25,200 doubles:
+- the specials;
+- every power of two and of ten, with its neighbours;
+- the integers to 1,000;
+- 5,000 short decimals;
+- a log-uniform sweep across the form switches (10⁻⁸ … 10¹⁸);
+- 5,000 seeded bit patterns, 1,000 of them also negated.
+
+`validate.py` rebuilds every row independently, from Python's `repr` digits put into serde_json's form, and all
+25,200 agree. 62 of the inputs are exact ties, where serde_json's even digit and Rust's round-up differ.
+
+**The result.** All 25,200 rows match byte for byte on x86_64 ELF, PE and aarch64; the replay is now three modules,
+60,833 rows ok. One mutation check, the printer switched to Rust's round-up tie rule, fails the 37 ties whose even
+candidate is the lower one. The other 25 are ties where both rules agree.
+
+**Cost** (`tests/fmtf.bcyr` against the Rust twin's `fmt` rows, serde_json writing into a reused buffer; pinned, three
+interleaved rounds):
+
+| Inputs | Cyrius | Rust | Ratio |
+|---|---|---|---|
+| x ∈ [0, 10⁶) | 2.82–2.85 µs | 19.2–22.4 ns | about 135× |
+| any finite bits | 13.7–13.9 µs | 20.2–23.2 ns | about 650× |
+
+The exact bignum search costs more as the decimal exponent grows; zmij and Ryu use tables. JSON writing is on no hot
+path, so this is recorded as a finding: the stdlib or bayan printer that ledger L10 asks for would replace it.

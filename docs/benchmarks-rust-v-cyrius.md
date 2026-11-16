@@ -95,3 +95,18 @@ Three rounds, interleaved, pinned to core 5, at a load average of 1.5–2.3.
 work in it: a generic loop of seven squarings and multiplies, where LLVM unrolls a literal exponent. Explicit
 products for the six exponents Rust uses (2, 3, 4, 9, 25, 49), or an `#inline` that takes, are the candidates if a
 caller's bench shows them.
+
+## M1 part d1: serde_json's f64 text (2026-11-15)
+
+**Bodies.** `tests/fmtf.bcyr` writes each value into one reused builder; the twin's `fmt` rows call
+`serde_json::to_writer` into one reused buffer. Three rounds, interleaved, pinned to core 5, at a load average of
+1.1–1.5.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `to_json`, x ∈ [0, 10⁶) | 19.2–22.4 ns | 2.82–2.85 µs | about 135× |
+| `to_json`, any finite bits | 20.2–23.2 ns | 13.7–13.9 µs | about 650× |
+
+**Finding.** impetus's printer is exact by a bignum search (Burger & Dybvig), whose cost grows with the decimal
+exponent; serde_json's zmij is table-driven. pravash measured the same digit core at 54× for `{:?}` of eight f64s.
+No hot path writes JSON. The fix is upstream: the shortest printer that ledger L10 asks of the stdlib and bayan.

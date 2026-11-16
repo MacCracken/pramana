@@ -288,6 +288,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   The 7,077 golden rows that waited on them all pass (the powi rows at 0 ulp), so the whole corpus is gated: 35,633
   rows ok and 76 accepted, with nothing failed, measured or pending, on x86_64, PE and aarch64. `tests/mathx.tcyr`
   adds 30 checks; `tests/mathx.bcyr` and its Rust twin record the costs.
+- **M1 part d1: serde_json's f64 text** (`src/fmtf.cyr`; port plan D5, ADR 007 row 7; ledger L10; results in
+  `docs/development/port-parity.md` §7.7):
+  - **the printer:** impetus 2.0.0's serde_json form, vendored from its tag by `scripts/vendor_fmtf.py` (15 items;
+    `--check` in CI). It gives the shortest round-trip digits, ties to even, in serde_json's form;
+  - **a new golden module, `fmt.tsv`:** serde_json's own text for 25,200 doubles, from the generator, which now
+    depends on serde_json 1.0.154 as `rust-old/` does. `validate.py` rebuilds every row from Python's `repr`;
+  - **the result:** all 25,200 rows match byte for byte on x86_64, PE and aarch64, and the replay is three modules,
+    60,833 rows ok. Switching the printer to Rust's round-up tie rule fails 37 rows, so the 62 exact ties in the
+    inputs are exercised;
+  - **cost:** 2.8–13.9 µs a value, 135–650× serde_json's (`tests/fmtf.bcyr` and its Rust twin). The exact bignum
+    search is slow, and no hot path writes JSON; the printer that L10 asks for upstream would replace it.
 
 ### Changed
 

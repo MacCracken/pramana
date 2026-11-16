@@ -13,6 +13,8 @@ Standard library plus ctypes: glibc's libm, and MPFR through `mpfr_ref.py`. It n
   - every `cbrt` row (compiler_builtins) is proven correctly rounded with MPFR.
 - **`constants`:** every row is re-read from `rust-old/src` by this file's own extractor, a second implementation
   beside the generator's, with Python's float parser for the literals.
+- **`fmt`:** every row's text is rebuilt from Python's own shortest digits (`repr`: the shortest that read back, the
+  closest, ties to the even digit, as serde_json's zmij), put into serde_json's form.
 - **`math.cr.tsv`:** for every class-C row whose recorded value isn't correctly rounded, the correctly rounded value.
   This is the expectation the port's correctly rounded functions are gated against at 0 ulp (ADR 009). `--write-cr`
   writes it, and a plain run checks that the committed file is exactly what it would write.
@@ -21,6 +23,8 @@ A tampered row fails this check and the generator's `--check` alike.
 """
 
 import ctypes
+from decimal import Decimal
+import urllib.parse
 import importlib.util
 import math
 import re
@@ -370,6 +374,50 @@ def expected_math(fn, ins, outs):
     return None
 
 
+# ── fmt: serde_json's f64 text, from Python's shortest digits ──
+
+
+def json_f64_text(x: float) -> str:
+    """serde_json 1.0.154's text for x: positional for decimal exponents −5 … 15 (".0" on an integer), otherwise
+    d.ddde±x; `null` for NaN and ±∞. The digits are Python's repr's, normalised to 0.D × 10^k."""
+    if math.isnan(x) or math.isinf(x):
+        return "null"
+    sign = "-" if math.copysign(1.0, x) < 0 else ""
+    if x == 0.0:
+        return sign + "0.0"
+    d = Decimal(repr(abs(x))).normalize()
+    _, digit_tuple, exp = d.as_tuple()
+    digits = "".join(str(t) for t in digit_tuple)
+    n = len(digits)
+    k = n + exp
+    ex = k - 1
+    if -5 <= ex <= 15:
+        if k <= 0:
+            body = "0." + "0" * (-k) + digits
+        elif k >= n:
+            body = digits + "0" * (k - n) + ".0"
+        else:
+            body = digits[:k] + "." + digits[k:]
+    else:
+        body = digits[0] + ("." + digits[1:] if n > 1 else "") + "e" + ("+" if ex >= 0 else "-") + str(abs(ex))
+    return sign + body
+
+
+def check_fmt(rows):
+    failures, ok = [], 0
+    for fn, _cls, ins, outs, _raw in rows:
+        if fn != "f64::to_json":
+            failures.append(f"fmt: no rule for {fn}")
+            continue
+        got = urllib.parse.unquote(outs[0][len("s:"):])
+        want = json_f64_text(ins[0])
+        if got == want:
+            ok += 1
+        else:
+            failures.append(f"fmt: {fn}({ins[0]!r}) recorded {got!r}, recomputed {want!r}")
+    return failures, ok
+
+
 def check_math(rows):
     failures, by_fn = [], {}
     for fn, cls, ins, outs, _raw in rows:
@@ -440,6 +488,10 @@ def main(argv):
         print(f"{name}: {len(rows)} rows, format ok ({provenance})")
         if module == "constants":
             failures.extend(check_constants(root, rows))
+        if module == "fmt":
+            f, ok = check_fmt(rows)
+            failures.extend(f)
+            print(f"  f64::to_json {ok:6d} ok" + (f", {len(f)} FAILED" if f else ""))
         if module == "math":
             f, by_fn = check_math(rows)
             failures.extend(f)

@@ -1,4 +1,4 @@
-//! M1 parts b and c: the Rust twin of tests/crmath.bcyr and tests/mathx.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
+//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr and tests/fmtf.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
 //! arguments, regions and loop: 4,096 values per row, cycled 250 times, ns per call. Run pinned, interleaved with
 //! `cyrius bench tests/crmath.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m1_primitives
@@ -85,7 +85,42 @@ fn mathx() {
     println!("  total_cmp, x and y in [-10, 10): {:.1} ns", t2.elapsed().as_nanos() as f64 / 1_024_000.0);
 }
 
+// tests/fmtf.bcyr's rows: serde_json's text written into one reused buffer.
+fn fmt() {
+    let mut r = Rng(0x2545F4914F6CDD1D);
+    let mut xs = vec![0.0; 4096];
+    r.fill(&mut xs, 0.0, 1000000.0);
+    let time = |name: &str, xs: &[f64]| {
+        let mut buf: Vec<u8> = Vec::with_capacity(64);
+        let mut total = 0usize;
+        let t0 = Instant::now();
+        for _ in 0..250 {
+            for x in xs {
+                buf.clear();
+                serde_json::to_writer(&mut buf, black_box(x)).expect("an f64 always writes");
+                total += buf.len();
+            }
+        }
+        black_box(total);
+        println!("  {name}: {:.1} ns", t0.elapsed().as_nanos() as f64 / 1_024_000.0);
+    };
+    time("to_json, x in [0, 1e6)", &xs);
+    for x in xs.iter_mut() {
+        r.unit();
+        let mut bits = r.0.wrapping_mul(0x2545F4914F6CDD1D);
+        if (bits >> 52) & 0x7FF == 0x7FF {
+            bits &= 0xBFFF_FFFF_FFFF_FFFF;
+        }
+        *x = f64::from_bits(bits);
+    }
+    time("to_json, any finite bits", &xs);
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("fmt") {
+        fmt();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("mathx") {
         mathx();
         return;

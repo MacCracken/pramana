@@ -51,6 +51,11 @@ files. This README records what is specific to pramana.
   | compiler_builtins (linked into the binary) | `cbrt` | platform-free; `validate.py` proves every one correctly rounded |
   | inline code | `sqrt`, `abs`, `floor`, `fract`, `min`, `max`, `clamp`, `is_nan`, `is_finite`, `total_cmp`, `powi` with a literal exponent, the casts, the fdlibm word operations | exact; `validate.py` recomputes them in Python |
 
+- **`fmt.tsv`** (M1 part d1, `src/m_fmt.rs`): serde_json 1.0.154's text for 25,200 doubles: every power of two and
+  of ten with its neighbours, the integers to 1,000, short decimals, a log-uniform sweep across the form switches,
+  and seeded bit patterns. pramana's JSON writes this text byte for byte (port plan D5). serde_json is a dependency
+  here, pinned to `rust-old/Cargo.lock`'s version. `validate.py` rebuilds every row from Python's own shortest
+  digits (`repr`, ties to even as serde_json's zmij), and 62 of the inputs are exact ties.
 - **The constants come from the source, and the tables are proven** (`src/consts.rs`, `src/p_constants.rs`).
   - **Why from the source:** pramana's constants are private, so no API exposes them. The generator reads every
     `const` item in the library code, function-local tables included, through Rust's own literal parser, and proves

@@ -70,7 +70,6 @@ pub fn b(x: bool) -> Tok {
     Tok::I(i64::from(x))
 }
 
-#[allow(dead_code)] // first used by M3's distribution names and M7's tool names
 pub fn s(x: impl Into<String>) -> Tok {
     Tok::S(x.into())
 }

@@ -70,6 +70,9 @@ jobs:
       - name: Correctly rounded constants (src/crmath_ext.cyr against their definitions)
         run: python3 -I -B scripts/crverify/consts.py .
 
+      - name: Vendored printer current (src/fmtf.cyr; unverified without ../impetus)
+        run: python3 -I -B scripts/vendor_fmtf.py . --check
+
   rust-oracle:
     # The frozen Rust 1.3.0 crate in rust-old/ is the parity oracle. It is never
     # edited; this job only proves it still builds and passes (port plan, M0
