@@ -1,0 +1,117 @@
+# pool_threads.tcyr — the work-table pool under contention (M1 part d2; port plan D11, §8.5).
+#
+# Four threads claim and release at once, each holding three claims of 64 … 2,047 bytes, so up to twelve are out
+# against eight slots: the slot hits, the growth and the overflow blocks all race. Each claim is filled with a tag
+# unique to its thread, iteration and depth, held while the thread spins, and read back before release: a slot handed
+# to two threads at once, or released before its writes landed, shows as a changed word. `thread` is a test-only
+# stdlib leaf (cyrius.cyml [test]); the library itself takes none.
+
+include "tests/lib.cyr"
+
+const WORKERS = 4;
+const ROUNDS = 10000;
+
+# A worker's record, 48 bytes: id, words checked, words changed, failed claims, overflow claims, the most slots seen
+# claimed at once.
+fn worker(rec): i64 {
+    var id = load64(rec);
+    var seed = id * 2654435761 + 1;
+    var checked = 0;
+    var changed = 0;
+    var failed = 0;
+    var over = 0;
+    var most = 0;
+    var ps[24];
+    var ss[24];
+    var ns[24];
+    for (var r = 0; r < ROUNDS; r = r + 1) {
+        for (var k = 0; k < 3; k = k + 1) {
+            seed = seed ^ (seed << 13);
+            seed = seed ^ (seed >> 7);
+            seed = seed ^ (seed << 17);
+            var n = 64 + ((seed >> 20) & 1983);
+            var p, s = _pmn_scratch_take(n);
+            store64(&ps + k * 8, p);
+            store64(&ss + k * 8, s);
+            store64(&ns + k * 8, n);
+            if (p == 0) { failed = failed + 1; }
+            if (s == _PMN_POOL_OVERFLOW) { over = over + 1; }
+            if (p != 0) {
+                var tag = (id << 48) + (r << 2) + k;
+                for (var w = 0; w + 8 <= n; w = w + 8) { store64(p + w, tag); }
+            }
+        }
+        var c = _pmn_scratch_claimed();
+        if (c > most) { most = c; }
+        for (var spin = 0; spin < 64; spin = spin + 1) { seed = seed + spin; }
+        for (var k2 = 2; k2 >= 0; k2 = k2 - 1) {
+            var q = load64(&ps + k2 * 8);
+            if (q != 0) {
+                var want = (id << 48) + (r << 2) + k2;
+                var m = load64(&ns + k2 * 8);
+                for (var w2 = 0; w2 + 8 <= m; w2 = w2 + 8) {
+                    checked = checked + 1;
+                    if (load64(q + w2) != want) { changed = changed + 1; }
+                }
+            }
+            _pmn_scratch_give(q, load64(&ss + k2 * 8));
+        }
+    }
+    store64(rec + 8, checked);
+    store64(rec + 16, changed);
+    store64(rec + 24, failed);
+    store64(rec + 32, over);
+    store64(rec + 40, most);
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var recs = alloc(WORKERS * 48);
+    var ts = alloc(WORKERS * 8);
+    test_group("four threads, three claims each, against eight slots");
+    var started = 0;
+    for (var i = 0; i < WORKERS; i = i + 1) {
+        memset(recs + i * 48, 0, 48);
+        store64(recs + i * 48, i + 1);
+        var t = thread_create(&worker, recs + i * 48);
+        store64(ts + i * 8, t);
+        if (t != 0) { started = started + 1; }
+    }
+    assert_eq(started, WORKERS, "every worker started");
+    for (var j = 0; j < WORKERS; j = j + 1) {
+        var tj = load64(ts + j * 8);
+        if (tj != 0) { thread_join(tj); }
+    }
+    var checked = 0;
+    var changed = 0;
+    var failed = 0;
+    var over = 0;
+    var most = 0;
+    for (var k = 0; k < WORKERS; k = k + 1) {
+        var rk = recs + k * 48;
+        checked = checked + load64(rk + 8);
+        changed = changed + load64(rk + 16);
+        failed = failed + load64(rk + 24);
+        over = over + load64(rk + 32);
+        if (load64(rk + 40) > most) { most = load64(rk + 40); }
+    }
+    print("  words checked: ", 17);
+    fmt_int(checked);
+    print(", overflow claims: ", 19);
+    fmt_int(over);
+    print(", most slots claimed at once: ", 30);
+    fmt_int(most);
+    println("");
+    assert(checked > 0, "every worker read its claims back");
+    assert_eq(changed, 0, "no claimed word changed under another thread");
+    assert_eq(failed, 0, "no claim failed");
+    assert_eq(_pmn_scratch_claimed(), 0, "every slot is free after the joins");
+    assert(_pmn_scratch_bytes() <= 8 * 4096, "the slots stay within twice the largest claim");
+    return assert_summary();
+}
+
+var exit_code = main();
+# Any failure at all is exit 1: a wait status is 8 bits, so a raw count of 256 would read as success.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

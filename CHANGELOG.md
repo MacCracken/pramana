@@ -299,6 +299,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     inputs are exercised;
   - **cost:** 2.8–13.9 µs a value, 135–650× serde_json's (`tests/fmtf.bcyr` and its Rust twin). The exact bignum
     search is slow, and no hot path writes JSON; the printer that L10 asks for upstream would replace it.
+- **M1 part d2: the work-table pool** (`src/pool.cyr`; port plan D11 and §8.5, kimiya ADR 0007; results in
+  `docs/development/port-parity.md` §7.8). It was moved forward from part f, because the JSON reader's value tree
+  needs it:
+  - **the pool:** eight slots claimed and released by compare-and-swap. A slot grows on the freelist and frees what it
+    outgrew; a claim past the eighth slot is a freelist block of its own, freed on release;
+  - **a bump allocator over a claim**, a stdlib Allocator for bayan's `_a` calls, kept in the caller's storage;
+  - **the harness:** the parity replay now fails a module that leaves a slot claimed (mutation-checked);
+  - **tests:** `tests/pool.tcyr` (21 checks) and `tests/pool_threads.tcyr`, in which four threads race twelve claims
+    for eight slots and read back 15.8M tagged words, on x86_64, PE and aarch64. `thread` joins the test-only stdlib
+    leaves;
+  - **fixed before it shipped:** the threaded test's first run found a growth race. A slot won in the claim's second
+    scan doubled even when it already fitted, so slots reached 64 GB and 1,323 claims failed. kimiya's pool has the
+    check; P4's prototype had lost it. No slot now exceeds twice the largest claim;
+  - **cost:** a claim and its release take 18–19 ns, where Rust allocates and drops a 256-byte `Vec` in 8.5–8.7 ns
+    (`tests/pool.bcyr` and its Rust twin).
+
+### Performance
+
+- **The pool's release** is a compare-and-swap rather than kimiya's full fence and plain store: a claim and its release
+  fall from 35–36 ns to 18–19 ns (`tests/pool.bcyr`, three pinned, interleaved rounds each way). The stdlib's CAS
+  already orders as acquire-release on x86_64 and aarch64.
 
 ### Changed
 
@@ -320,7 +341,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     leaves; `args` is dropped, since a library reads no command-line arguments;
   - **no hisab** (its four routines will be transcribed);
   - **dead-code elimination on:** the skeleton builds to 407,872 bytes, with 806,256 bytes eliminated;
-  - **the lock:** 43 files.
+  - **the lock:** 43 files, and 51 since M1 part d2 added `thread` to the test-only leaves.
 - **Toolchain pinned**: `rust-toolchain.toml` moves from `stable` to `1.100.0`, the toolchain that records the port's golden values. The CI coverage job adds `llvm-tools-preview` to the pinned toolchain
 
 ## [1.3.0] - 2026-11-14

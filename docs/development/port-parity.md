@@ -1236,8 +1236,9 @@ combinatorics → bridge):
 - **a:** `src/error.cyr`;
 - **b1–b4:** `src/crmath.cyr`, kimiya's correctly rounded primitives first, then the new log1p, tan and log2, one part
   each;
-- **c and on:** `src/mathx.cyr`, the JSON core, the RNG, combinatorics with `PmnU128`, the bridges and the work-table
-  pool.
+- **c:** `src/mathx.cyr`;
+- **d1–d4:** serde_json's f64 text, the work-table pool, the JSON read core, then the write core and the error codec;
+- **e and f:** the RNG, combinatorics with `PmnU128` and the bridges, then M1's gate.
 
 ### 7.1 Part a: the error codes (2026-11-15)
 
@@ -1500,9 +1501,9 @@ bench loop's per-iteration dispatch, as probe P2 noted, so compare the rows with
 
 ### 7.7 Part d1: serde_json's f64 text (2026-11-15)
 
-Part d is split in three, the JSON core being large: **d1** the float printer, **d2** the read core (bayan's tree,
-probe P7's pre-pass, serde's struct rules), **d3** the write core and the error codec. The `SimpleRng` codec moves to
-part e, with the RNG.
+Part d is split in four, the JSON core being large: **d1** the float printer, **d2** the work-table pool (moved
+forward from part f, §7.8), **d3** the read core (bayan's tree, probe P7's pre-pass, serde's struct rules), **d4** the
+write core and the error codec. The `SimpleRng` codec moves to part e, with the RNG.
 
 **The printer.** `src/fmtf.cyr` is impetus 2.0.0's serde_json form, vendored by `scripts/vendor_fmtf.py` from its
 git tag (`4b72df7`). It takes the dependency closure of `im_fmt_f64_json`, 15 items, renamed `_pmn_im_`, with
@@ -1537,3 +1538,65 @@ interleaved rounds):
 
 The exact bignum search costs more as the decimal exponent grows; zmij and Ryu use tables. JSON writing is on no hot
 path, so this is recorded as a finding: the stdlib or bayan printer that ledger L10 asks for would replace it.
+
+### 7.8 Part d2: the work-table pool (2026-11-15)
+
+**Why now.** The pool was planned for part f. The JSON read core (d3) needs scratch that leaves the heap as it found
+it: bayan's `_a` parse builds a document's value tree with an Allocator it is given, and the tree is dead once the
+document is decoded. So the pool comes first.
+
+**The design** (`src/pool.cyr`) is kimiya ADR 0007 as probe P4 prototyped it (§6.2):
+- **Eight slots,** each claimed by compare-and-swap. A free slot already big enough is taken first.
+- **Growth.** Otherwise a free slot grows on the freelist, to twice its size or to the claim if that is larger, and
+  frees the buffer it outgrew. A slot grows only while it is too small (the race below). When twice the slot can't be
+  had, the claim alone is tried, as kimiya does.
+- **Overflow.** Past the eighth concurrent claim, a claim is a freelist block of its own (slot −2), freed on release.
+- **The release** is a compare-and-swap 1 → 0. The stdlib's CAS orders as acquire-release on both arches (x86
+  `lock cmpxchg`, aarch64 `ldaxr`/`stlxr`), so the buffer's last writes are visible before the slot reads free.
+  kimiya releases with a full fence and a plain store. The fence alone costs 18 ns, and the CAS halves a claim's cost
+  (36 → 18 ns).
+- **A bump allocator** over a claim (`_pmn_bump_allocator`) is a stdlib Allocator for bayan's `_a` calls. Its vtable
+  (40 bytes) and state (24) are in the caller's storage, because `allocator_new` would take 40 bytes of the bump heap
+  for every document. An allocation that doesn't fit returns 0 and leaves the claim as it was.
+
+**Tests.**
+- **`tests/pool.tcyr`**, 21 checks on one thread:
+  - a claim and its release, and slot reuse;
+  - growth to 1 MiB;
+  - nine nested claims, the ninth an overflow block;
+  - a refused claim of 0 bytes;
+  - the allocator's alignment, its realloc copy, a refused allocation and its reset;
+  - a soak of 10⁴ claims that leaves `alloc_used` unchanged.
+- **`tests/pool_threads.tcyr`**, under contention. Four threads each hold three claims of 64 … 2,047 bytes at a time,
+  for 10⁴ rounds, so up to twelve claims race for eight slots. Each claim is filled with a tag unique to its thread,
+  round and depth, held through a spin, and read back before its release. Every run checks 15,772,362 words, sees all
+  eight slots claimed at once, and takes 23,000–25,500 overflow blocks. `thread` is a test-only stdlib leaf
+  (`cyrius.cyml` `[test]`); the library takes none.
+
+**The race the threaded test found.** Its first run failed 1,323 claims and left slots of up to 64 GB:
+- A slot that was busy during a claim's first scan can be released before the second scan, already big enough.
+- The second scan grew whatever slot it won, so each such race doubled a slot, without bound, until `fl_alloc` refused.
+- On one thread nothing changes between the scans, so `tests/pool.tcyr` could not see it.
+- kimiya's `_km_scratch_grow` has the check (a slot that fits is returned as it is). P4's prototype, and so this module,
+  had lost it. With the check, no slot exceeds twice the largest claim.
+
+**Mutation checks.**
+- **A claim by load-then-store** instead of CAS: 4,821,752 words changed under another thread.
+- **The growth check removed:** 1,356 failed claims, and the slot bound broken.
+- **A claim left unreleased** in the parity harness's `fmt` dispatcher: the harness fails that module and the one after
+  it, which sees the same slot ("1 work-table pool slots still claimed after the module"; 3 modules, 2 failing).
+
+**On three targets.** Both test files and the replay pass, warning-free, on x86_64 ELF, PE (wine) and aarch64 (qemu),
+with real threads on all three. Every dispatched function's digest is unchanged.
+
+**Untested:** the retry at the claim's size. It needs an allocation that fails at twice a slot's size and succeeds at
+the claim's.
+
+**Cost** (`tests/pool.bcyr` against the Rust twin's `pool` row; pinned, three interleaved rounds). Rust has no pool:
+where pramana claims scratch, a Rust function allocates a `Vec` and drops it.
+
+| Row | Cyrius | Rust |
+|---|---|---|
+| a 256-byte claim and its release (a slot hit) | 18–19 ns | 8.5–8.7 ns (a 256-byte `Vec`) |
+| a claim, a bump allocator, 4 allocations, the release | 66 ns | — |
+| nine nested 256-byte claims, the ninth an overflow block | 262–267 ns | — |

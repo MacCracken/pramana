@@ -31,8 +31,8 @@
 > rounded primitives, vendored) are committed (`1f718c6`), and so is part b2, a new correctly rounded log1p
 > (`f08f233`) and part b3, a new correctly rounded tan (`3257918`). Part b4, a new correctly rounded log2, is done
 > (`0c3f469`), so every class-C math row is at 0 ulp and the primitives are verified on 11.6M MPFR rows; and part
-> c, the Rust f64 surface (`d13fb61`), so the whole golden corpus is gated. Part d1, serde_json's f64 text, is done but
-> not committed. The maintainer took each
+> c, the Rust f64 surface (`d13fb61`), so the whole golden corpus is gated. Part d1, serde_json's f64 text, is
+> committed (`d34db7c`), and part d2, the work-table pool, is done but not committed. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -1077,10 +1077,12 @@ Every milestone, and every part of a large one, ends with pravash's gates:
   class-C math row of the golden corpus is at 0 ulp;
 - **c:** `src/mathx.cyr`, the Rust-semantics helpers, and the transcendentals' names ✅: the whole corpus is gated;
 - **d1:** `src/fmtf.cyr`, serde_json's f64 text, vendored from impetus, with the golden `fmt` module ✅;
-- **d2:** the JSON read core: bayan's tree, probe P7's pre-pass (ledger L11), serde's struct rules;
-- **d3:** the JSON write core and the error codec;
+- **d2:** `src/pool.cyr`, the work-table pool and a bump allocator over a claim, tested on one thread and on four
+  racing ones; moved forward from part f, because the JSON reader's value tree needs it ✅;
+- **d3:** the JSON read core: bayan's tree, probe P7's pre-pass (ledger L11), serde's struct rules;
+- **d4:** the JSON write core and the error codec;
 - **e:** the RNG with its `SimpleRng` codec, combinatorics with `PmnU128`, and the bridges;
-- **f:** the work-table pool, then M1's gate.
+- **f:** M1's gate.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream
@@ -1172,15 +1174,17 @@ which keeps every consumer's compile free of it.
 Probe 4 settles this, under D11:
 - **Constructors** fill caller storage.
 - **Owned objects** are freelist-allocated with `_drop`. Their buffers are sized at construction, never grown.
-- **Scratch** comes from the work-table pool: kimiya ADR 0007's eight grow-only slots, claimed by compare-and-swap. The
-  parity harness fails if a slot stays claimed. Unlike kimiya's, a slot grows on the freelist and frees the buffer it
-  outgrew, and a claim past the eighth slot is a freelist block freed on release (kimiya takes both from the bump
-  heap). P4 measured both paths flat.
+- **Scratch** comes from the work-table pool (`src/pool.cyr`, part d2): kimiya ADR 0007's eight grow-only slots,
+  claimed and released by compare-and-swap. The parity harness fails if a slot stays claimed. Unlike kimiya's, a slot
+  grows on the freelist and frees the buffer it outgrew, and a claim past the eighth slot is a freelist block freed on
+  release (kimiya takes both from the bump heap). P4 measured both paths flat. A slot grows only while it is too small,
+  so none exceeds twice the largest claim, however the claims race (`tests/pool_threads.tcyr`; port-parity §7.8).
 - **P4's soaks** (port-parity §6.2) left the bump heap, the freelist and the mapped size unchanged under every
   convention above. Two costs remain: an owned buffer over 4 KB maps and unmaps on each new/drop (the freelist's open
   large-block issue), and the pool holds its buffers for the process's lifetime.
-- **JSON** decoding allocates the decoded object, which the caller drops. The value tree goes into an arena allocator
-  that is reset for each document (P7).
+- **JSON** decoding allocates the decoded object, which the caller drops. The value tree goes into a bump allocator
+  over a pool claim (`_pmn_bump_allocator`), released when the document is decoded (P7). How an exhausted claim is
+  retried is settled with the read core (part d3).
 - **Never `alloc_reset`**: it would wipe the consumer's heap.
 - **Every buffer parameter** is checked for null and for aliasing (the gaps kimiya's 2.0.1 review found).
 

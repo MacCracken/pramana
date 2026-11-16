@@ -1,0 +1,165 @@
+# pool.cyr — the work-table pool: scratch memory that leaves the heap where it found it (port plan D11, §8.5;
+# kimiya ADR 0007; probe P4).
+#
+# A function that needs scratch claims it here and gives it back on every return path, so nothing it needed for a
+# while stays on the heap:
+# - **Eight slots,** each a buffer the pool keeps for the process's lifetime, claimed by compare-and-swap, so
+#   concurrent callers never share one. A free slot already big enough is taken first. Otherwise a free slot grows on
+#   the freelist (to at least twice its size) and frees the buffer it outgrew: unlike kimiya's, whose slots grow on the
+#   bump heap and keep every outgrown buffer. A slot grows only while it is too small, so no slot exceeds twice the
+#   largest claim, however the claims race.
+# - **Past the eighth** concurrent claim, the claim is a freelist block of its own, freed on release (kimiya takes it
+#   from the bump heap).
+# - **The bump allocator** turns a claim into a stdlib Allocator (bayan's `_a` calls take one), with its vtable and
+#   state in the caller's storage: `allocator_new` would take 40 bytes of the bump heap per use.
+# Probe P4 drove every convention in loops of 10^3 … 10^6 and found the bump heap, the freelist and the process's
+# mapped size unchanged (port-parity §6.2). The pool's own buffers are the one thing kept: at most eight, each at its
+# high-water mark. tests/pool.tcyr checks the claims, the growth, the overflow and the allocator, and
+# tests/pool_threads.tcyr the same under four racing threads; the parity harness fails a module that leaves a slot
+# claimed.
+
+const _PMN_POOL_SLOTS = 8;
+const _PMN_POOL_OVERFLOW = -2;
+
+var _pmn_pool_busy: i64[_PMN_POOL_SLOTS];
+var _pmn_pool_ptr: i64[_PMN_POOL_SLOTS];
+var _pmn_pool_cap: i64[_PMN_POOL_SLOTS];
+
+# Claims `bytes` of scratch: (buffer, slot). Give it back with `_pmn_scratch_give(buffer, slot)` on every return
+# path. (0, −1) when the memory can't be had (or bytes ≤ 0); nothing is then claimed.
+#must_use
+fn _pmn_scratch_take(bytes): (i64, i64) {
+    if (bytes <= 0) { return (0, 0 - 1); }
+    var i = 0;
+    while (i < _PMN_POOL_SLOTS) {
+        if (load64(&_pmn_pool_busy + 8 * i) == 0 && load64(&_pmn_pool_cap + 8 * i) >= bytes) {
+            if (atomic_cas(&_pmn_pool_busy + 8 * i, 0, 1) == 1) { return (load64(&_pmn_pool_ptr + 8 * i), i); }
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < _PMN_POOL_SLOTS) {
+        if (load64(&_pmn_pool_busy + 8 * i) == 0) {
+            if (atomic_cas(&_pmn_pool_busy + 8 * i, 0, 1) == 1) {
+                # A slot busy during the first scan may have been released since, already big enough. Growing it
+                # anyway would double a slot on every such race, without bound (tests/pool_threads.tcyr found
+                # capacities of 64 GB before the check, which kimiya's _km_scratch_grow has).
+                var cap = load64(&_pmn_pool_cap + 8 * i);
+                if (cap >= bytes) { return (load64(&_pmn_pool_ptr + 8 * i), i); }
+                var want = 2 * cap;
+                if (want < bytes) { want = bytes; }
+                var q = fl_alloc(want);
+                if (q == 0 && want > bytes) {
+                    want = bytes;                   # twice the slot can't be had: the claim alone, as kimiya does
+                    q = fl_alloc(want);
+                }
+                if (q == 0) {
+                    _pmn_scratch_give(0, i);
+                    return (0, 0 - 1);
+                }
+                var old = load64(&_pmn_pool_ptr + 8 * i);
+                if (old != 0) { fl_free(old); }
+                store64(&_pmn_pool_ptr + 8 * i, q);
+                store64(&_pmn_pool_cap + 8 * i, want);
+                return (q, i);
+            }
+        }
+        i = i + 1;
+    }
+    var o = fl_alloc(bytes);
+    if (o == 0) { return (0, 0 - 1); }
+    return (o, _PMN_POOL_OVERFLOW);
+}
+
+# Gives back what `_pmn_scratch_take` handed out. A slot of −1 (a failed claim) is a no-op. The release is a
+# compare-and-swap 1 → 0: the stdlib's CAS orders as acquire-release on both arches (x86 `lock cmpxchg`, aarch64
+# `stlxr`), so the caller's writes to the buffer are visible before the slot reads free. That is half the cost of a
+# full fence and a plain store (18 ns of 36 per claim, measured with tests/pool.bcyr's first row).
+fn _pmn_scratch_give(p, slot): i64 {
+    if (slot == _PMN_POOL_OVERFLOW) {
+        if (p != 0) { fl_free(p); }
+        return 0;
+    }
+    if (slot < 0 || slot >= _PMN_POOL_SLOTS) { return 0; }
+    atomic_cas(&_pmn_pool_busy + 8 * slot, 1, 0);
+    return 0;
+}
+
+# The number of slots claimed now: 0 between calls (the parity harness checks it after every module).
+#must_use
+fn _pmn_scratch_claimed(): i64 {
+    var c = 0;
+    var i = 0;
+    while (i < _PMN_POOL_SLOTS) {
+        c = c + load64(&_pmn_pool_busy + 8 * i);
+        i = i + 1;
+    }
+    return c;
+}
+
+# The bytes the slots hold for the process.
+#must_use
+fn _pmn_scratch_bytes(): i64 {
+    var bytes = 0;
+    var i = 0;
+    while (i < _PMN_POOL_SLOTS) {
+        bytes = bytes + load64(&_pmn_pool_cap + 8 * i);
+        i = i + 1;
+    }
+    return bytes;
+}
+
+# ── a bump allocator over a claim ──────────────────────────────────────────────────────────────────
+# State (24 bytes, the caller's): the next free byte, the end, the start. Allocations are 8-byte aligned; an
+# allocation that doesn't fit returns 0, and the claim stays as it was (the caller retries with a bigger claim).
+
+#must_use
+fn _pmn_bump_alloc(st, size): i64 {
+    if (size < 0) { return 0; }
+    var cur = load64(st);
+    var n = (size + 7) & (0 - 8);
+    if (n > load64(st + 8) - cur) { return 0; }
+    store64(st, cur + n);
+    return cur;
+}
+
+#must_use
+fn _pmn_bump_realloc(st, old, old_size, new_size): i64 {
+    var q = _pmn_bump_alloc(st, new_size);
+    if (q == 0) { return 0; }
+    if (old != 0) {
+        var n = old_size;
+        if (new_size < n) { n = new_size; }
+        memcpy(q, old, n);
+    }
+    return q;
+}
+
+fn _pmn_bump_free(st, p): i64 {
+    return 0;
+}
+
+fn _pmn_bump_reset(st): i64 {
+    store64(st, load64(st + 16));
+    return 0;
+}
+
+# Makes `a` (40 bytes, the caller's) an Allocator that bump-allocates in [buf, buf + cap), with its state at `st` (24
+# bytes, the caller's). Returns a. Nothing is allocated, and nothing needs releasing but the claim itself.
+fn _pmn_bump_allocator(a, st, buf, cap): i64 {
+    store64(st, buf);
+    store64(st + 8, buf + cap);
+    store64(st + 16, buf);
+    store64(a, &_pmn_bump_alloc);
+    store64(a + 8, &_pmn_bump_realloc);
+    store64(a + 16, &_pmn_bump_free);
+    store64(a + 24, &_pmn_bump_reset);
+    store64(a + 32, st);
+    return a;
+}
+
+# The bytes the bump allocator at `st` has handed out.
+#must_use
+fn _pmn_bump_used(st): i64 {
+    return load64(st) - load64(st + 16);
+}

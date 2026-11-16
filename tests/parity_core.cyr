@@ -16,7 +16,8 @@
 # - `_par_accepted(fp, fl, ip, il)`: the ADR accepting a divergent row, or 0;
 # - `_par_accepted_quiet(adr)`: 1 when that ADR's accepted rows are counted (on their function's
 #   line, as "accepted") but not printed one by one — a mapped divergence with many rows;
-# - `_par_module_done(mp, ml)`: called after a module's report, for module-specific summary lines;
+# - `_par_module_done(mp, ml)`: called after a module's report, for module-specific summary lines and checks; a
+#   nonzero return fails the module (pramana: a pool slot left claimed);
 # - `_par_skip(mp, ml)`: 1 for a module another harness replays;
 # - `_par_shadows(mp, ml, fp, fl, cls)`: optional extra, ungated comparisons of the same row
 #   against another Cyrius candidate, each recorded with `_par_shadow_record`.
@@ -1010,7 +1011,7 @@ fn _par_module(mp, ml): i64 {
         fmt_int(unmatched2);
         println(" matching no golden row");
     }
-    _par_module_done(mp, ml);
+    if (_par_module_done(mp, ml) != 0) { mod_fail = 1; }
     return mod_fail;
 }
 

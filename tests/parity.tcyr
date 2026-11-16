@@ -270,10 +270,17 @@ fn _par_accepted_quiet(adr): i64 {
     return 0;
 }
 
-# Module-specific summary lines after a module's report: the cross-target digests (M0 step 8).
+# Module-specific summary lines after a module's report: the cross-target digests (M0 step 8). Then the pool's check
+# (port plan §8.5): a module whose rows leave a work-table slot claimed fails.
 fn _par_module_done(mp, ml) {
+    var leak = _pmn_scratch_claimed();
+    if (leak != 0) {
+        print("  FAIL: ", 8);
+        fmt_int(leak);
+        println(" work-table pool slots still claimed after the module");
+    }
     if (_par_eq(mp, ml, "constants") == 1) { _par_dg_print(12, "const"); }
-    if (_par_eq(mp, ml, "math") != 1) { return 0; }
+    if (_par_eq(mp, ml, "math") != 1) { return leak; }
     _par_dg_print(0, "f64::exp (_pmn_km_cr_exp)");
     _par_dg_print(1, "f64::ln (_pmn_km_cr_ln)");
     _par_dg_print(2, "f64::ln_1p (_pmn_cr_log1p)");
@@ -290,7 +297,7 @@ fn _par_module_done(mp, ml) {
     _par_dg_print(14, "shadow: f64_ln (native)");
     _par_dg_print(15, "shadow: f64_atan (native)");
     _par_dg_print(16, "shadow: f64_log2 (native)");
-    return 0;
+    return leak;
 }
 
 # Every module is replayed here.

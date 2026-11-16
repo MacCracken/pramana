@@ -1,0 +1,56 @@
+# pool.bcyr — the work-table pool (M1 part d2; port plan D11, §8.5).
+#
+# ns per operation, 10^6 operations per row (10^5 for the nested row). The Rust twin's `pool` rows
+# (scripts/probes/rust/src/bin/m1_primitives.rs) time what a Rust function does instead: a 256-byte Vec allocated and
+# dropped. The record is docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+fn main(): i64 {
+    alloc_init();
+    var sink = 0;
+    var b = bench_new("claim and release 256 bytes (a slot hit)");
+    bench_batch_start(b);
+    for (var i = 0; i < 1000000; i = i + 1) {
+        var p, s = _pmn_scratch_take(256);
+        store64(p, i);
+        sink = sink + load64(p);
+        _pmn_scratch_give(p, s);
+    }
+    bench_batch_stop(b, 1000000);
+    bench_report(b);
+    var b2 = bench_new("claim, a bump allocator, 4 allocations, release");
+    bench_batch_start(b2);
+    for (var j = 0; j < 1000000; j = j + 1) {
+        var q, sq = _pmn_scratch_take(256);
+        var al[40];
+        var st[24];
+        _pmn_bump_allocator(&al, &st, q, 256);
+        for (var k = 0; k < 4; k = k + 1) {
+            var y = alloc_via(&al, 32);
+            sink = sink + y;
+        }
+        _pmn_scratch_give(q, sq);
+    }
+    bench_batch_stop(b2, 1000000);
+    bench_report(b2);
+    var ps[72];
+    var ss[72];
+    var b3 = bench_new("nine nested 256-byte claims, the ninth past the pool");
+    bench_batch_start(b3);
+    for (var r = 0; r < 100000; r = r + 1) {
+        for (var m = 0; m < 9; m = m + 1) {
+            var pm, sm = _pmn_scratch_take(256);
+            store64(&ps + m * 8, pm);
+            store64(&ss + m * 8, sm);
+        }
+        for (var m2 = 8; m2 >= 0; m2 = m2 - 1) { _pmn_scratch_give(load64(&ps + m2 * 8), load64(&ss + m2 * 8)); }
+    }
+    bench_batch_stop(b3, 100000);
+    bench_report(b3);
+    if (sink == 7) { println("sink"); }
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

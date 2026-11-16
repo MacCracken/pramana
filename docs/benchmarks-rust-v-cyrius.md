@@ -110,3 +110,19 @@ caller's bench shows them.
 **Finding.** impetus's printer is exact by a bignum search (Burger & Dybvig), whose cost grows with the decimal
 exponent; serde_json's zmij is table-driven. pravash measured the same digit core at 54× for `{:?}` of eight f64s.
 No hot path writes JSON. The fix is upstream: the shortest printer that ledger L10 asks of the stdlib and bayan.
+
+## M1 part d2: the work-table pool (2026-11-15)
+
+**Bodies.** `tests/pool.bcyr` claims, writes a word and releases, 10⁶ times per row (10⁵ for the nested row). Rust has
+no pool: where pramana claims scratch, a Rust function allocates, so the twin's `pool` row allocates a 256-byte `Vec`,
+pushes a word and drops it. Three rounds, interleaved, pinned to core 5, at a load average of 1.1–1.5.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| a 256-byte claim and its release (a slot hit) | 8.5–8.7 ns | 18–19 ns | 2.2× |
+| a claim, a bump allocator, 4 allocations, the release | — | 66 ns | — |
+| nine nested 256-byte claims, the ninth an overflow block | — | 262–267 ns | — |
+
+**A win inside the part.** The first release was kimiya's, a full fence then a plain store: 35–36 ns a claim, half of
+it the fence (`mfence` alone measured 18 ns). The stdlib's compare-and-swap already orders as acquire-release on both
+arches, so the release is now a CAS 1 → 0: 18–19 ns, with the same three rounds before and after.

@@ -1,0 +1,95 @@
+# pool.tcyr — the work-table pool (M1 part d2; port plan D11, §8.5; probe P4).
+#
+# Claims and releases, slot reuse, growth, the overflow past eight concurrent claims, a failed claim, the bump
+# allocator over a claim, and a soak that must leave the bump heap where it found it.
+
+include "tests/lib.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("a claim and its release");
+    var p, s = _pmn_scratch_take(256);
+    assert(p != 0 && s >= 0, "a 256-byte claim gets a slot");
+    assert_eq(_pmn_scratch_claimed(), 1, "one slot claimed");
+    _pmn_scratch_give(p, s);
+    assert_eq(_pmn_scratch_claimed(), 0, "none after its release");
+    var p2, s2 = _pmn_scratch_take(200);
+    assert(p2 == p && s2 == s, "a smaller claim reuses the slot and its buffer");
+    _pmn_scratch_give(p2, s2);
+
+    test_group("a slot grows and frees what it outgrew");
+    var held0 = _pmn_scratch_bytes();
+    var p3, s3 = _pmn_scratch_take(1048576);
+    assert(p3 != 0 && s3 >= 0, "a 1 MiB claim");
+    assert(_pmn_scratch_bytes() >= held0 + 1048576 - 256, "the pool holds the grown buffer");
+    store64(p3 + 1048576 - 8, 42);
+    assert_eq(load64(p3 + 1048576 - 8), 42, "the whole claim is writable");
+    _pmn_scratch_give(p3, s3);
+
+    test_group("past eight concurrent claims, a freelist block of its own");
+    var ps[72];
+    var ss[72];
+    for (var k = 0; k < 9; k = k + 1) {
+        var pk, sk = _pmn_scratch_take(64);
+        store64(&ps + k * 8, pk);
+        store64(&ss + k * 8, sk);
+    }
+    assert_eq(_pmn_scratch_claimed(), 8, "eight slots claimed");
+    assert_eq(load64(&ss + 64), _PMN_POOL_OVERFLOW, "the ninth is an overflow block");
+    var distinct = 1;
+    for (var a = 0; a < 9; a = a + 1) {
+        for (var b = a + 1; b < 9; b = b + 1) {
+            if (load64(&ps + a * 8) == load64(&ps + b * 8)) { distinct = 0; }
+        }
+    }
+    assert_eq(distinct, 1, "nine distinct buffers");
+    for (var k2 = 8; k2 >= 0; k2 = k2 - 1) { _pmn_scratch_give(load64(&ps + k2 * 8), load64(&ss + k2 * 8)); }
+    assert_eq(_pmn_scratch_claimed(), 0, "all released");
+
+    test_group("a failed claim");
+    var p4, s4 = _pmn_scratch_take(0);
+    assert(p4 == 0 && s4 == 0 - 1, "a zero-byte claim is refused");
+    _pmn_scratch_give(p4, s4);
+    assert_eq(_pmn_scratch_claimed(), 0, "and releasing it is a no-op");
+
+    test_group("the bump allocator over a claim");
+    var p5, s5 = _pmn_scratch_take(64);
+    var al[40];
+    var st[24];
+    _pmn_bump_allocator(&al, &st, p5, 64);
+    var x1 = alloc_via(&al, 10);
+    assert(x1 == p5, "the first allocation is the claim's start");
+    var x2 = alloc_via(&al, 8);
+    assert(x2 == p5 + 16, "allocations are 8-byte aligned");
+    assert_eq(_pmn_bump_used(&st), 24, "24 bytes handed out");
+    store64(x2, 77);
+    var x3 = realloc_via(&al, x2, 8, 16);
+    assert(x3 == p5 + 24 && load64(x3) == 77, "realloc copies the old bytes");
+    var x4 = alloc_via(&al, 64);
+    assert(x4 == 0, "an allocation past the claim returns 0");
+    reset_via(&al);
+    assert_eq(_pmn_bump_used(&st), 0, "reset rewinds");
+    _pmn_scratch_give(p5, s5);
+
+    test_group("a soak leaves the bump heap where it found it");
+    var before = alloc_used();
+    for (var i = 0; i < 10000; i = i + 1) {
+        var q, sq = _pmn_scratch_take(512 + (i % 7) * 64);
+        var al2[40];
+        var st2[24];
+        _pmn_bump_allocator(&al2, &st2, q, 512);
+        var y = alloc_via(&al2, 100);
+        if (y != 0) { store64(y, i); }
+        _pmn_scratch_give(q, sq);
+    }
+    assert_eq(alloc_used() - before, 0, "10^4 claims, allocators and releases: 0 bytes of bump heap");
+    assert_eq(_pmn_scratch_claimed(), 0, "and nothing left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+# Any failure at all is exit 1: a wait status is 8 bits, so a raw count of 256 would read as success.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

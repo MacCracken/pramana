@@ -1,4 +1,4 @@
-//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr and tests/fmtf.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
+//! M1 parts b–d: the Rust twin of tests/crmath.bcyr, tests/mathx.bcyr, tests/fmtf.bcyr and tests/pool.bcyr. Rust's f64 methods (glibc 2.44's libm) on the same seeded
 //! arguments, regions and loop: 4,096 values per row, cycled 250 times, ns per call. Run pinned, interleaved with
 //! `cyrius bench tests/crmath.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --bin m1_primitives
@@ -116,7 +116,25 @@ fn fmt() {
     time("to_json, any finite bits", &xs);
 }
 
+// tests/pool.bcyr's counterpart: what a Rust function does in place of a pool claim, a heap Vec made and dropped.
+fn pool() {
+    let mut sink = 0u64;
+    let t0 = Instant::now();
+    for i in 0..1_000_000u64 {
+        let mut v: Vec<u64> = Vec::with_capacity(black_box(32));
+        v.push(i);
+        sink = sink.wrapping_add(v[0]);
+        drop(black_box(v));
+    }
+    black_box(sink);
+    println!("  a 256-byte Vec, allocated and dropped: {:.1} ns", t0.elapsed().as_nanos() as f64 / 1_000_000.0);
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("pool") {
+        pool();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         fmt();
         return;

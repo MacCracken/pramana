@@ -31,7 +31,7 @@ stdlib = ["syscalls", "string", "alloc", "str", "fmt", "io", "vec", "math", "gan
 
 # Test / bench / fuzz compiles only.
 [test]
-stdlib = ["assert", "bench"]
+stdlib = ["assert", "bench", "thread"]
 
 # The library's modules, in dependency order (port plan §5 step 3: error → constants → crmath_data → crmath → mathx →
 # json → rng → combinatorics → bridge → special → …). `cyrius distlib` bundles them into dist/pramana.cyr; tests
@@ -45,4 +45,5 @@ modules = [
     "src/crmath_ext.cyr",
     "src/mathx.cyr",
     "src/fmtf.cyr",
+    "src/pool.cyr",
 ]
