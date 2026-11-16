@@ -244,6 +244,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     those cases instead of skipping them.
   - **Cost:** 46–136 ns a call, 8.0–14.1× glibc's (`tests/crmath.bcyr` against the Rust twin
     `scripts/probes/rust/src/bin/m1_primitives.rs`; `docs/benchmarks-rust-v-cyrius.md`, new).
+- **M1 part b2: a correctly rounded log1p** (`src/crmath_ext.cyr`, `_pmn_cr_log1p`; port plan D2; ledger L1; results
+  in `docs/development/port-parity.md` §7.3). No sibling has one, so it is new, on kimiya's ln:
+  - **|x| < 2⁻¹⁰:** ln's own core on its c = 1 interval, with r = x exactly;
+  - **otherwise:** ln s plus log1p(τ) on the exact split 1 + x = s + t, with τ = t/s;
+  - **the accurate path:** both in triple-double, rounded once;
+  - **accuracy:** `ln_1p` is at 0 ulp on all 1,013 golden rows, including the 6 where glibc misrounds. It is correctly
+    rounded on 1,300,000 MPFR rows on three targets, 200,000 of them through the accurate path alone;
+  - **fixed on the way:** the accurate path's Dekker product overflowed past 2⁹⁹⁶ (NaN, with its sign differing
+    between x86 and ARM). It now scales s and t by 2⁻⁵¹² first;
+  - **cost:** 51–96 ns a call, 9.4–13.9× glibc.
 
 ### Changed
 

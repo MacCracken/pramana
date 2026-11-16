@@ -4326,3 +4326,191 @@ fn _pmn_km_cr_atan2(y: f64, x: f64): f64 {
     if (uy < 0) { r = -r; }
     return r;
 }
+
+# --- crmath_ext.cyr ---
+
+# crmath_ext.cyr — pramana's own correctly rounded primitives, on the cores vendored in src/crmath.cyr (port plan D2,
+# §8.1; ADR 009). No sibling has a public log1p, tan or log2, so M1 parts b2–b4 write them with kimiya's method:
+# Ziv's two phases, a fast path with a proven error bound and a rounding test, then a triple-double accurate path
+# rounded once (kimiya src/mathx.cyr's header gives the argument, and src/crmath.cyr carries its ln analysis).
+# Each function has the entry points kimiya's do: `_pmn_cr_<f>(x)`, `_pmn_cr_<f>_fast(x)` → (result, 1) or (0, 0)
+# when its rounding test fails, and `_pmn_cr_<f>_acc(x)`, the whole function by the accurate path alone.
+# scripts/crverify/ checks all three against MPFR.
+# UPSTREAM(L1): ganita:docs/development/issues/2026-11-09-correctly-rounded-exp-sin-cos-hypot.md
+#   replace with ganita's correctly rounded log1p, tan and log2 once it has them; parity: every class C row at 0 ulp
+
+# ── log1p (M1 part b2) ────────────────────────────────────────────────────────────────────────────
+#
+# log1p(x) = ln(1 + x) for x > −1, with no rounding of 1 + x:
+# - |x| < 2^-60: log1p(x) = x − x²/2 + …, and x²/2 < 2^-61·|x| is below half an ulp of x on either side (also when
+#   |x| is a power of 2), so RN(log1p(x)) = x. That keeps ±0 and the subnormals exact.
+# - |x| < 2^-10: x is ln's reduced argument itself. kimiya's ln core on its interval 256 (c = 1, L = 0, E = 0)
+#   evaluates log1p(r) for the exact r = m − 1 with |r| < 2^-10; here r = x, and the arithmetic is that core's term
+#   for term, so its bound holds as it is: err = 2^-49·|p| + 2^-83·|hi|, relative to r.
+# - otherwise: 1 + x = s + t exactly (TwoSum). s ≥ 2^-53 is a normal double (x > −1 is a double, so 1 + x ≥ 2^-53),
+#   never 1 (|x| ≥ 2^-10), and never overflows (1 + DBL_MAX rounds to DBL_MAX). |t| ≤ ulp(s)/2, so τ = t/s has
+#   |τ| ≤ 2^-53, and log1p(x) = ln s + log1p(τ) = ln s + τ − τ²/2 + …. The fast path adds RN(τ) to ln's fast core
+#   at s, and widens its bound by |τ|·2^-50 + 2^-105: τ's own rounding (2^-53·|τ|), the dropped τ²/2 − … (below
+#   2^-107) and the extra rounding of lo + τ. Here |log1p(x)| ≥ ln(1 + 2^-10) > 2^-10.01, so those are below 2^-94
+#   of the result, against the core's 2^-77.
+# - the accurate path: the same split in triple-double. On |x| < 2^-10, log1p(x) by Horner on the exact x to x^16/16
+#   (ln's accurate series: truncation below 2^-160 of x). Otherwise ln s by ln's accurate path (below 2^-135 by its
+#   operation count, measured 2^-150), plus τ as a double-double minus τ²/2 (dropped: τ³/3 < 2^-159, under 2^-149 of
+#   the result). Rounded once by _pmn_km_rn3.
+# Why that is correctly rounded: the fast path returns only when both ends of its bound round alike, and the
+# accurate path's error (below 2^-135) is past the hardest case expected for 2^64 arguments, about 2^-(53 + 64), as
+# kimiya argues for its expm1 and log10, for which no worst-case table exists either. log1p is exact only at x = 0
+# (log1p(x) rational means 1 + x = e^q), so there are no ties.
+# Special values: log1p(NaN) = NaN, log1p(+∞) = +∞, log1p(−1) = −∞, NaN for x < −1 (−∞ included).
+
+# The special values, and |x| < 2^-60: (result, 1), or (0, 0) for a finite x > −1 with |x| ≥ 2^-60.
+#must_use
+fn _pmn_log1p_special(x: f64): (f64, i64) {
+    if (x != x) { return (x, 1); }
+    if (x == _PMN_KM_INF) { return (x, 1); }
+    var m1: f64 = -1.0;
+    if (x < m1) {
+        var nan: f64 = _pmn_km_nan();               # the same quiet NaN on every target
+        return (nan, 1);
+    }
+    if (x == m1) {
+        var ninf: f64 = m1 / 0.0;
+        return (ninf, 1);
+    }
+    var ax: f64 = f64_abs(x);
+    var k60: f64 = 0x3C30000000000000;              # 2^-60
+    if (ax < k60) { return (x, 1); }
+    return (0.0, 0);
+}
+
+# log1p(r) for an exact r with 2^-60 ≤ |r| < 2^-10: kimiya's ln core on interval 256 (E = 0, L = 0), r given.
+# (hi, lo, err) with |hi + lo − log1p(r)| < err minus the test's own rounding.
+#must_use
+fn _pmn_log1p_small_core(r: f64): (f64, f64, f64) {
+    var cc: f64 = r * 134217729.0;
+    var ra: f64 = cc - (cc - r);
+    var rb: f64 = r - ra;
+    var t1: f64 = -0.5 * (ra * ra);                 # −ra²/2, exact
+    var nrb: f64 = -rb;
+    var t2: f64 = nrb * (ra + (0.5 * rb));
+    var c3: f64 = _PMN_KM_CR_LN_C3;
+    var c4: f64 = _PMN_KM_CR_LN_C4;
+    var c5: f64 = _PMN_KM_CR_LN_C5;
+    var c6: f64 = _PMN_KM_CR_LN_C6;
+    var c7: f64 = _PMN_KM_CR_LN_C7;
+    var c8: f64 = _PMN_KM_CR_LN_C8;
+    var z: f64 = r * r;
+    var pz: f64 = ((c3 + (r * c4)) + (z * (c5 + (r * c6)))) + ((z * z) * (c7 + (r * c8)));   # Estrin
+    var p: f64 = (z * r) * pz;
+    var s2: f64 = r + t1;
+    var d2: f64 = t1 - (s2 - r);                    # Fast2Sum: |t1| < |r|
+    var lo: f64 = (t2 + p) + d2;
+    var ap: f64 = f64_abs(p);
+    var ah: f64 = f64_abs(s2);
+    var k49: f64 = 0x3CE0000000000000;              # 2^-49
+    var k83: f64 = 0x3AC0000000000000;              # 2^-83
+    var err: f64 = (ap * k49) + (ah * k83);
+    return (s2, lo, err);
+}
+
+# log1p(x) by the fast path: (RN(log1p(x)), 1), or (0, 0) when the rounding test fails.
+#must_use
+fn _pmn_cr_log1p_fast(x: f64): (f64, i64) {
+    var sv, sp = _pmn_log1p_special(x);
+    if (sp == 1) { return (sv, 1); }
+    var ax: f64 = f64_abs(x);
+    var k10: f64 = 0x3F50000000000000;              # 2^-10
+    if (ax < k10) {
+        var h, l, e = _pmn_log1p_small_core(x);
+        var u: f64 = h + (l - e);
+        var v: f64 = h + (l + e);
+        if (u == v) { return (u, 1); }
+        return (0.0, 0);
+    }
+    var s, t = _pmn_km_two_sum(1.0, x);
+    var tau: f64 = t / s;
+    var hi, lo, err = _pmn_km_ln_core(load64(&s), 0);
+    var lo2: f64 = lo + tau;
+    var at: f64 = f64_abs(tau);
+    var k50: f64 = 0x3CD0000000000000;              # 2^-50
+    var k105: f64 = 0x3960000000000000;             # 2^-105
+    var err2: f64 = (err + (at * k50)) + k105;
+    var u2: f64 = hi + (lo2 - err2);
+    var v2: f64 = hi + (lo2 + err2);
+    if (u2 == v2) { return (u2, 1); }
+    return (0.0, 0);
+}
+
+# log1p(r) for an exact r with |r| < 2^-9, as a triple-double at out[0..2]: ln's accurate series (Horner on
+# _PMN_KM_CR_LN_ACC to r^16/16, truncation below 2^-144·|r|).
+fn _pmn_log1p_td(r: f64, out) {
+    var sh: f64 = load64(&_PMN_KM_CR_LN_ACC + 336);   # −1/16 (index 3·(16 − 2))
+    var sm: f64 = load64(&_PMN_KM_CR_LN_ACC + 344);
+    var sl: f64 = load64(&_PMN_KM_CR_LN_ACC + 352);
+    var n = 15;
+    while (n >= 2) {
+        var th, tm, tl = _pmn_km_td_mul_d(sh, sm, sl, r);
+        var off = (n - 2) * 24;
+        var ch: f64 = load64(&_PMN_KM_CR_LN_ACC + off);
+        var cm: f64 = load64(&_PMN_KM_CR_LN_ACC + off + 8);
+        var cl: f64 = load64(&_PMN_KM_CR_LN_ACC + off + 16);
+        var uh, um, ul = _pmn_km_td_add(ch, cm, cl, th, tm, tl);
+        sh = uh;
+        sm = um;
+        sl = ul;
+        n = n - 1;
+    }
+    var vh, vm, vl = _pmn_km_td_mul_d(sh, sm, sl, r);
+    var wh, wm, wl = _pmn_km_td_add_d(vh, vm, vl, 1.0);
+    var ph, pm, pl = _pmn_km_td_mul_d(wh, wm, wl, r);
+    store64(out, ph);
+    store64(out + 8, pm);
+    store64(out + 16, pl);
+}
+
+# log1p(x), correctly rounded, by the accurate path alone (also the fast path's fallback).
+#must_use
+fn _pmn_cr_log1p_acc(x: f64): f64 {
+    var sv, sp = _pmn_log1p_special(x);
+    if (sp == 1) { return sv; }
+    var buf: f64[3];
+    var ax: f64 = f64_abs(x);
+    var k10: f64 = 0x3F50000000000000;              # 2^-10
+    if (ax < k10) {
+        _pmn_log1p_td(x, &buf);
+        var r0: f64 = _pmn_km_rn3(buf[0], buf[1], buf[2]);
+        return r0;
+    }
+    var s, t = _pmn_km_two_sum(1.0, x);
+    _pmn_km_ln_acc_td(s, &buf);
+    # τ = t/s as a double-double: t − τh·s is exact (Sterbenz: τh·s rounds to within a factor 2 of t), and so is
+    # the product's error pe (TwoProduct). Dekker's split overflows past 2^996, so a large s and its t are first
+    # scaled by 2^-512, which leaves τ as it is (t is then about 1, far from underflow).
+    var th: f64 = t / s;
+    var ss: f64 = s;
+    var ts: f64 = t;
+    var k512: f64 = 0x5FF0000000000000;            # 2^512
+    if (s > k512) {
+        var d512: f64 = 0x1FF0000000000000;        # 2^-512
+        ss = s * d512;
+        ts = t * d512;
+    }
+    var p, pe = _pmn_km_two_prod(th, ss);
+    var d: f64 = (ts - p) - pe;
+    var tl: f64 = d / ss;
+    var hh: f64 = 0.5 * th;
+    var q: f64 = hh * th;                           # τ²/2
+    var e1: f64 = tl - q;
+    var zh, zm, zl = _pmn_km_td_add(buf[0], buf[1], buf[2], th, e1, 0.0);
+    var r1: f64 = _pmn_km_rn3(zh, zm, zl);
+    return r1;
+}
+
+# log1p(x), correctly rounded. log1p(±0) = ±0, log1p(−1) = −∞, log1p(+∞) = +∞, NaN for NaN and x < −1.
+#must_use
+fn _pmn_cr_log1p(x: f64): f64 {
+    var r, ok = _pmn_cr_log1p_fast(x);
+    if (ok == 1) { return r; }
+    var a: f64 = _pmn_cr_log1p_acc(x);
+    return a;
+}

@@ -1304,3 +1304,59 @@ ns per call, pinned, three interleaved rounds. The record is `docs/benchmarks-ru
 
 These are inside the siblings' 12–62× against glibc (port plan §3.7). The price buys correct rounding and the same bits
 on every target, which glibc's results don't have.
+
+### 7.3 Part b2: a correctly rounded log1p (2026-11-15)
+
+**What it is.** `_pmn_cr_log1p` in `src/crmath_ext.cyr`, pramana's own: no sibling has a public log1p. It is kimiya's
+method on kimiya's ln, with no rounding of 1 + x:
+- **|x| < 2⁻⁶⁰:** x itself. log1p(x) − x is below half an ulp of x on either side, and ±0 and the subnormals stay
+  exact.
+- **|x| < 2⁻¹⁰:** x is ln's reduced argument itself. kimiya's ln core on its interval 256 (c = 1, L = 0) evaluates
+  log1p(r) for an exact |r| < 2⁻¹⁰, so `_pmn_log1p_small_core` is that core term for term with r = x, and its proven
+  bound (2⁻⁴⁹·|p| + 2⁻⁸³·|hi|, relative to r) holds as it is.
+- **Otherwise:** 1 + x = s + t exactly (TwoSum), and τ = t/s has |τ| ≤ 2⁻⁵³. Then log1p(x) = ln s + τ − τ²/2 + …. The fast
+  path adds RN(τ) to ln's fast core at s, and widens the bound by |τ|·2⁻⁵⁰ + 2⁻¹⁰⁵, below 2⁻⁹⁴ of a result that is
+  at least 2⁻¹⁰·⁰¹ here.
+- **The accurate path:** ln s by ln's triple-double path (below 2⁻¹³⁵ by its operation count, measured 2⁻¹⁵⁰), plus
+  τ as a double-double minus τ²/2. On |x| < 2⁻¹⁰ it is ln's triple-double series on the exact x. It is rounded once.
+
+The entry points are kimiya's three: the whole function, `_fast` (returns whether its rounding test passed) and `_acc`
+(the accurate path alone).
+
+**The golden rows.** `ln_1p` is dispatched to it with its bound at 0: all 1,013 rows at 0 ulp, the 6 where glibc
+misrounds included. The digest is the same on x86_64 ELF, PE and aarch64.
+
+**Against MPFR** (`scripts/crverify/`, now 9,000,000 rows with the part b1 functions):
+
+| Set | Rows | Max ulp | Not CR |
+|---|---|---|---|
+| \|x\| from 2⁻⁷⁰ to 2⁻¹⁰, both signs | 300,000 | 0.5 | 0 |
+| (−0.999, 1) | 200,000 | 0.5 | 0 |
+| −1 + 2⁻⁵³ … −½ | 150,000 | 0.5 | 0 |
+| every binade from 2⁻¹⁰⁷⁴ to 2¹⁰²³ | 200,000 | 0.5 | 0 |
+| within 2⁻²⁰ of ±2⁻¹⁰ and ±2⁻⁶⁰, the two switches | 100,000 | 0.5 | 0 |
+| any bits (x < −1 gives NaN, checked) | 150,000 | 0.5 | 0 |
+| the accurate path alone, 2⁻⁶⁰ … 2⁻¹¹ | 100,000 | 0.5 | 0 |
+| the accurate path alone, (−0.999, 4) and 2⁻¹⁰ … 2¹⁰²³ | 100,000 | 0.5 | 0 |
+
+The rows are byte-identical on the three targets, sha256 `bf4bdcf0…`.
+
+**A defect the accurate-path set found.** The first run had 1,328 accurate-path rows wrong (NaN) at x above 2⁹⁹⁶,
+and those were also the only rows that differed on aarch64. Dekker's product, which forms τ's low part, splits s with
+Veltkamp's constant and overflows past 2⁹⁹⁶. The NaN that follows is −NaN on x86 and +NaN on ARM. In use the fast
+path never declined there, which is why every whole-function set passed. The accurate path now scales s and t by
+2⁻⁵¹² first when s > 2⁵¹², which leaves τ as it is. This is the trap probe P9 noted for lnΓ.
+
+**The fast path** declines on 7 of 2,000,000 arguments in (−2⁻¹⁰, 2⁻¹⁰), and on none of 4,000,000 in (−0.999, 1)
+and (1, 1000).
+
+**Cost** (`tests/crmath.bcyr` and its Rust twin, pinned, three interleaved rounds):
+
+| Inputs | Cyrius | Rust (glibc 2.44) | Ratio |
+|---|---|---|---|
+| x ∈ [−0.5, 1) | 95–96 ns | 6.8–6.9 ns | 13.9× |
+| x ∈ [−1/1024, 1/1024) | 51–53 ns | 5.5–5.7 ns | 9.4× |
+
+The general path costs about 40 ns more than ln (54–55 ns). It makes a separate fast-path call with a two-value
+return, and does a TwoSum and a division; kimiya inlines ln's core for the same reason. That is a finding for later,
+not a change now.

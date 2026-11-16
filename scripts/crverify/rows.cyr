@@ -159,6 +159,19 @@ fn cv_sincos(set: cstring, x: f64): i64 {
     return 0;
 }
 
+fn cv_log1p(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_cr_log1p(x);
+    cv_row1("log1p", set, x, r);
+    return 0;
+}
+
+# The accurate path alone, under its own set names (`acc_…`), so it is verified apart from the fast path.
+fn cv_log1p_acc(set: cstring, x: f64): i64 {
+    var r: f64 = _pmn_cr_log1p_acc(x);
+    cv_row1("log1p", set, x, r);
+    return 0;
+}
+
 fn cv_atan(set: cstring, x: f64): i64 {
     var r: f64 = _pmn_km_cr_atan2(x, 1.0);
     cv_row1("atan", set, x, r);
@@ -340,9 +353,59 @@ fn rows_atan(): i64 {
     return 0;
 }
 
+# log1p (M1 part b2): 1,100,000 through the whole function, and 200,000 through the accurate path alone.
+fn rows_log1p(): i64 {
+    var i = 0;
+    while (i < 300000) { cv_log1p("small", cv_scale(0 - 70, 0 - 10, 1)); i = i + 1; }
+    i = 0;
+    while (i < 200000) { cv_log1p("unit", cv_range(-0.999, 1.0)); i = i + 1; }
+    i = 0;
+    while (i < 150000) {
+        var t: f64 = cv_scale(0 - 53, 0 - 1, 0);
+        var x: f64 = -1.0 + t;
+        cv_log1p("near_m1", x);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 200000) { cv_log1p("binades", cv_scale(0 - 1074, 1023, 0)); i = i + 1; }
+    # ±2^-10 (the switch to the split 1 + x = s + t) and ±2^-60 (the switch to x), within 2^-20 of each
+    var k10: f64 = 0x3F50000000000000;
+    var k60: f64 = 0x3C30000000000000;
+    var w: f64 = 0x3EB0000000000000;             # 2^-20
+    i = 0;
+    while (i < 50000) {
+        var j10: f64 = cv_range(-1.0, 1.0);
+        var d10: f64 = j10 * w;
+        var o10: f64 = 1.0 + d10;
+        var x10: f64 = k10 * o10;
+        if ((cv_word() & 1) == 1) { x10 = -x10; }
+        cv_log1p("edges", x10);
+        var j60: f64 = cv_range(-1.0, 1.0);
+        var d60: f64 = j60 * w;
+        var o60: f64 = 1.0 + d60;
+        var x60: f64 = k60 * o60;
+        if ((cv_word() & 1) == 1) { x60 = -x60; }
+        cv_log1p("edges", x60);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 150000) { cv_log1p("bits", cv_anybits()); i = i + 1; }
+    i = 0;
+    while (i < 100000) { cv_log1p_acc("acc_small", cv_scale(0 - 60, 0 - 11, 1)); i = i + 1; }
+    i = 0;
+    while (i < 100000) {
+        var xa: f64 = cv_range(-0.999, 4.0);
+        if ((i & 1) == 1) { xa = cv_scale(0 - 10, 1023, 0); }
+        cv_log1p_acc("acc_wide", xa);
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn main(): i64 {
     alloc_init();
     g_out = str_builder_new();
+    rows_log1p();
     rows_exp();
     rows_ln();
     rows_expm1();

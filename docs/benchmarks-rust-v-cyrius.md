@@ -36,3 +36,17 @@ glibc 2.44's libm (rustc 1.100.0). Cyrius's are kimiya 2.0.1's correctly rounded
   (Rust 1.3.0 calls it once).
 - Run: `taskset -c 5 cyrius bench tests/crmath.bcyr` and, from `scripts/probes/rust/`,
   `taskset -c 5 cargo run --release --locked --bin m1_primitives`.
+
+## M1 part b2: log1p (2026-11-15)
+
+The same bodies, two rows added. Three rounds, interleaved, pinned to core 5, at a load average of 2.0–6.0.
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `ln_1p`, x ∈ [−0.5, 1) | 6.8–6.9 ns | 95–96 ns | 13.9× |
+| `ln_1p`, x ∈ [−1/1024, 1/1024) | 5.5–5.7 ns | 51–53 ns | 9.4× |
+
+**Finding.** The general path costs about 40 ns more than `ln`: a separate fast-path call with a two-value return,
+then a TwoSum and a division before ln's core. Inlining the fast path, as kimiya inlines ln's core (about 14 ns there),
+is the first thing to measure if `ln_1p` ever matters. Rust 1.3.0 calls it at 13 sites, in the special functions'
+kernels and four densities.
