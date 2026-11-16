@@ -406,3 +406,27 @@ same range.
 
 Against the T0 port of fdlibm, T1 costs 4–16×; against Rust's fdlibm, 28–157×. Φ and 1 − Φ, and gamma_inc's
 Wilson–Hilferty branch, inherit it through erfc until part b2 replaces Φ.
+
+## M2 part b2: Φ and 1 − Φ within 1 ulp, T1 (2026-11-16)
+
+**Bodies.** As part b1: the rows b2 changes, from the copy of the bench, three rounds interleaved and pinned to core
+5, each started under a load average of 3 (2.6–2.9 throughout). erf and erfc, which b2 doesn't change, re-measured
+2–4% under their b1 record. The full bench's digests are all explained by `validate.py`'s models. The port's Φ rows
+equal MPFR's correctly rounded Φ on all 12,288 of their arguments, and 1.3.0's differ from it on 1,942, 4,033 and
+3,924 of each row's 4,096.
+
+| Row | Rust 1.3.0 | Cyrius T1 (b2) | Cyrius / Rust | Cyrius at b1 (Rust's formula on the CR erfc) |
+|---|---|---|---|---|
+| `normal_cdf`, z in [−10, 10) | 19.4–20.0 ns | 1.37–1.40 µs | 70× | 1.06–1.07 µs |
+| `normal_cdf`, z in [−38, −1.2) | 23.0–23.6 ns | 2.44–2.53 µs | 106× | 2.27–2.28 µs |
+| `normal_sf`, z in [0, 38) | 22.3–23.0 ns | 2.44–2.45 µs | 106× | 2.24–2.28 µs |
+| `gamma_inc`, Wilson–Hilferty | 58.2–58.3 ns | 1.42–1.45 µs | 25× | 1.23 µs |
+
+**Where the time goes.** On top of the correctly rounded erfc, T1 adds:
+- the argument's double-double;
+- an exp for the correction;
+- in (−4.1, −2.5), CORE-MATH's accurate path, where its fast bound misses 2⁻⁶⁰.
+
+That is 30% in the core and 8% in the tails. P9 measured 1.28–1.33 µs in (−5, 5) and 2.29–2.36 µs in (−36, −5). A
+2⁻⁵⁶ fast bound would take about 30% off the core (P9, §6.8) at a proven 0.5 + 2⁻³ ulp; the port keeps the verified
+2⁻⁶⁰.

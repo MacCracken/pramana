@@ -9,8 +9,10 @@
 # - `erf`: scripts/crverify/rows_erf.cyr, erf and erfc (CORE-MATH's, src/crerf.cyr) with their accurate paths. These
 #   rows are also compared bit for bit with CORE-MATH's own C build (hardware FMA), and include CORE-MATH's worst
 #   cases. Needs CORE-MATH's erf.c, erf.wc, erfc.c and erfc.wc in build/coremath/ (scripts/vendor_coremath.py).
+# - `ncdf`: scripts/crverify/rows_ncdf.cyr, Φ (M2 part b2), whose bound is ≤ 1 ulp (ADR 009), not correct rounding:
+#   its report's max ulp is the figure to read.
 # Needs gcc with MPFR (and FMA for CORE-MATH's build), wine and qemu-aarch64.
-#   bash scripts/crverify/run.sh               # both sets
+#   bash scripts/crverify/run.sh               # every set
 #   bash scripts/crverify/run.sh erf           # one
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -18,7 +20,7 @@ work=$root/build/crverify
 mkdir -p "$work"
 cd "$root"
 sets=("$@")
-[ ${#sets[@]} -gt 0 ] || sets=(primitives erf)
+[ ${#sets[@]} -gt 0 ] || sets=(primitives erf ncdf)
 quiet() { grep -v -e '^note' -e '^OK' -e 'warning:lib/' -e 'unreachable fns' || true; }
 gcc -O2 -o "$work/check" scripts/port-baseline/check.c -lmpfr -lgmp -lm
 
@@ -84,8 +86,11 @@ for line in sys.stdin:
             "$work/orig_erfc.o" -lm
         verify erf scripts/crverify/rows_erf.cyr
         ;;
+    ncdf)
+        verify ncdf scripts/crverify/rows_ncdf.cyr
+        ;;
     *)
-        echo "unknown set $s (primitives, erf)" >&2
+        echo "unknown set $s (primitives, erf, ncdf)" >&2
         exit 1
         ;;
     esac

@@ -702,3 +702,189 @@ fn _pmn_cm_erfc_acc(x: f64): f64 {
     var ra: f64 = _pmn_cm_erfc_accurate(x);
     return ra;
 }
+
+# ── Φ on erfc's double-double core (M2 part b2; probe P9, §5 step 9d-4) ────────────────────────────────────────
+
+# 1/√2 as a double-double: RN(1/√2) and RN(1/√2 − RN(1/√2)). scripts/crverify/consts.py checks both against their
+# definition.
+var _PMN_CM_RS2_H: f64 = 0x3FE6A09E667F3BCD;    # checked by consts.py: RN(1/sqrt 2)
+var _PMN_CM_RS2_L: f64 = 0xBC8BDD3413B26456;    # checked by consts.py: RN(1/sqrt 2 - RN(1/sqrt 2))
+
+# −z/√2 as a double-double h + l, to about 2^-104 relative, for |z| ≤ 64 (Dekker's split needs |z| < 2^996).
+#must_use
+fn _pmn_cm_ncdf_arg(z: f64): (f64, f64) {
+    var nz: f64 = -z;
+    var p, e = _pmn_km_two_prod(nz, _PMN_CM_RS2_H);
+    var t: f64 = nz * _PMN_CM_RS2_L;
+    var e2: f64 = e + t;
+    var h, l = _pmn_km_fast_two_sum(p, e2);
+    return (h, l);
+}
+
+# ρ = −l·(2/√π)·e^(−h²)/E, E ≈ erfc(h): erfc(h + l) = erfc(h)·(1 + ρ) to first order. |ρ| ≤ 2^-42.5 and needs about
+# 2^-25 of relative accuracy, so e^(−h²) of the rounded h² (relative error h²·2^-53) is plenty. For h ≤ 25.86 only,
+# where e^(−h²) is normal.
+#must_use
+fn _pmn_cm_ncdf_rho(h: f64, l: f64, e: f64): f64 {
+    var h2: f64 = h * h;
+    var nh2: f64 = -h2;
+    var t: f64 = _pmn_km_cr_exp(nh2);
+    var a: f64 = l * _PMN_CM_D_CH;                  # CH = RN(2/√π)
+    var b: f64 = a * t;
+    var r: f64 = b / e;
+    var nr: f64 = -r;
+    return nr;
+}
+
+# erfc(x) = 2^e·(rh + rl) unrounded, and w with erfc(x) = e^(−x²)·w stored at `wout`, for 0x1.b59ffb450828cp+0 < x <
+# 0x1.b39dc41e48bfdp+4: _pmn_cm_erfc_asympt_accurate without its exception table (the inputs where erfc(x) itself is
+# hard to round) or its final rounding.
+#must_use
+fn _pmn_cm_asympt_dd(x: f64, wout): (f64, f64, i64) {
+    var uh, ul = _pmn_km_two_prod(x, x);
+    var nuh: f64 = -uh;
+    var nul: f64 = -ul;
+    var eh, el, e = _pmn_cm_exp_accurate(nuh, nul);
+    var yh: f64 = 1.0 / x;
+    var nx: f64 = -x;
+    var f: f64 = _pmn_cm_fma(nx, yh, 1.0);
+    var yl: f64 = yh * f;
+    var thr = &_PMN_CM_ASACC_THR;
+    var i = 0;
+    while (yh > _pmn_cm_tab(thr, i)) { i = i + 1; }
+    var p = &_PMN_CM_TACC + i * 30 * 8;
+    var vh, vl = _pmn_km_two_prod(yh, yh);
+    var y2: f64 = 2.0 * yh;
+    vl = _pmn_cm_fma(y2, yl, vl);
+    var zh: f64 = _pmn_cm_tab(p, 14 + 6 + i);
+    var zl: f64 = 0.0;
+    var j = 27 + 2 * i;
+    while (j >= 13) {
+        var h, l = _pmn_km_two_prod(zh, vh);
+        l = _pmn_cm_fma(zh, vl, l);
+        l = _pmn_cm_fma(zl, vh, l);
+        var zh2, zl2 = _pmn_km_two_sum(_pmn_cm_tab(p, (j - 1) / 2 + 6), h);
+        zh = zh2;
+        zl = zl2 + l;
+        j = j - 2;
+    }
+    j = 11;
+    while (j >= 1) {
+        var h3, l3 = _pmn_km_two_prod(zh, vh);
+        l3 = _pmn_cm_fma(zh, vl, l3);
+        l3 = _pmn_cm_fma(zl, vh, l3);
+        var zh3, zl3 = _pmn_km_two_sum(_pmn_cm_tab(p, j - 1), h3);
+        zh = zh3;
+        var s3: f64 = l3 + _pmn_cm_tab(p, j);
+        zl = zl3 + s3;
+        j = j - 2;
+    }
+    var wh, wl = _pmn_km_two_prod(zh, yh);
+    wl = _pmn_cm_fma(zh, yl, wl);
+    wl = _pmn_cm_fma(zl, yh, wl);
+    var wh2, wl2 = _pmn_km_fast_two_sum(wh, wl);
+    var rh, rl = _pmn_km_two_prod(wh2, eh);
+    rl = _pmn_cm_fma(wh2, el, rl);
+    rl = _pmn_cm_fma(wl2, eh, rl);
+    store64(wout, wh2);
+    return (rh, rl, e);
+}
+
+# RN((rh + rl)·2^e) with one rounding, for rh > 0 and |rl| ≤ ulp(rh): a normal result is RN(rh + rl) scaled exactly;
+# a subnormal one is N·2^-1074 with N = RN(2^52 + (rh + rl)·2^(e+1074)) − 2^52 (the grid of [2^52, 2^53) is 1, and
+# both scalings are exact), as _pmn_cm_fma_tiny does.
+#must_use
+fn _pmn_cm_round_scaled(rh: f64, rl: f64, e): f64 {
+    var r: f64 = rh + rl;
+    var y: f64 = _pmn_cm_ldexp(r, e);
+    var dmin: f64 = 0x0010000000000000;            # 0x1p-1022
+    if (y >= dmin) { return y; }
+    var q = e + 1074;
+    var a: f64 = _pmn_cm_ldexp(rh, q);
+    var b: f64 = _pmn_cm_ldexp(rl, q);
+    var m: f64 = 0x4330000000000000;               # 0x1p52
+    var t: f64 = _pmn_km_rn3(m, a, b);
+    var n: f64 = t - m;
+    var tiny: f64 = _pmn_cm_bits(1);               # 0x1p-1074
+    var r2: f64 = n * tiny;
+    return r2;
+}
+
+# erfc(h) = 2^e·(rh + rl) before rounding, and ρ for h + l stored at `rout`: from CORE-MATH's fast path when its bound
+# is under 2^-60 relative, else from its accurate paths (about 2^-100). For −0x1.7744f8f74e94bp+2 < h <
+# 0x1.b39dc41e48bfdp+4. The 2^-60 bound is the speed knob P9 measured: it keeps the result within 0.5 + 2^-7 ulp, and
+# 2^-56 would keep it within 0.5 + 2^-3 at about 30% less in the core (port-parity §6.8, §8.6).
+#must_use
+fn _pmn_cm_erfc_dd(h: f64, l: f64, rout): (f64, f64, i64) {
+    var fh, fl, err = _pmn_cm_erfc_fast(h);
+    var c60: f64 = 0x3C30000000000000;             # 0x1p-60
+    var lim: f64 = fh * c60;
+    if (err <= lim) {
+        var rho: f64 = _pmn_cm_ncdf_rho(h, l, fh);
+        store64(rout, rho);
+        return (fh, fl, 0);
+    }
+    var mid: f64 = 0x3FFB59FFB450828C;             # 0x1.b59ffb450828cp+0
+    if (h <= mid) {
+        # erfc = 1 ∓ erf(|h|), as cr_erfc_accurate (in practice unused: the fast bound holds below mid)
+        if (h < 0.0) {
+            var nh: f64 = -h;
+            var a, b = _pmn_cm_erf_acc_core(nh);
+            var r, t = _pmn_km_fast_two_sum(1.0, a);
+            var rl: f64 = t + b;
+            var rho1: f64 = _pmn_cm_ncdf_rho(h, l, r);
+            store64(rout, rho1);
+            return (r, rl, 0);
+        }
+        var a2, b2 = _pmn_cm_erf_acc_core(h);
+        var na2: f64 = -a2;
+        var r2, t2 = _pmn_km_fast_two_sum(1.0, na2);
+        var rl2: f64 = t2 - b2;
+        var rho2: f64 = _pmn_cm_ncdf_rho(h, l, r2);
+        store64(rout, rho2);
+        return (r2, rl2, 0);
+    }
+    var w: f64 = 0.0;
+    var rh, rl3, e = _pmn_cm_asympt_dd(h, &w);
+    var q: f64 = l * _PMN_CM_D_CH;
+    var rho3: f64 = q / w;
+    var nrho3: f64 = -rho3;
+    store64(rout, nrho3);
+    return (rh, rl3, e);
+}
+
+# The cases with a fixed result, on the thresholds cr_erfc uses for h: Φ = 1 (erfc(h) rounds to 2), Φ = 0 (erfc(h) <
+# 2^-1075), and Φ = ½ (erfc(h) rounds to 1). Returns (1, Φ) when one applies, else (0, 0).
+#must_use
+fn _pmn_cm_ncdf_special(h: f64): (i64, f64) {
+    var lo: f64 = 0xC017744F8F74E94B;               # -0x1.7744f8f74e94bp+2
+    if (h <= lo) { return (1, 1.0); }
+    var hi: f64 = 0x403B39DC41E48BFD;               # 0x1.b39dc41e48bfdp+4
+    if (h >= hi) { return (1, 0.0); }
+    var tn: f64 = 0xBC9C5BF891B4EF6A;               # -0x1.c5bf891b4ef6ap-54
+    var tp: f64 = 0x3C8C5BF891B4EF6A;               # 0x1.c5bf891b4ef6ap-55
+    if (h >= tn && h <= tp) { return (1, 0.5); }
+    return (0, 0.0);
+}
+
+# Φ(z) = ½·erfc(−z/√2) within 0.5 + 2^-7 ulp (T1, M2 part b2): with h + l = −z/√2 as a double-double, Φ(z) =
+# 2^(e−1)·(rh + rl + rh·ρ) from erfc(h)'s double-double 2^e·(rh + rl) and the first-order correction ρ for l, rounded
+# once, on the subnormal grid too. A NaN is returned as z + z.
+#must_use
+fn _pmn_cm_normal_cdf(z: f64): f64 {
+    if (z != z) {
+        var nn: f64 = z + z;
+        return nn;
+    }
+    if (z > 16.0) { return 1.0; }
+    if (z < -40.0) { return 0.0; }
+    var h, l = _pmn_cm_ncdf_arg(z);
+    var sp, sv = _pmn_cm_ncdf_special(h);
+    if (sp == 1) { return sv; }
+    var rho: f64 = 0.0;
+    var rh, rl, e = _pmn_cm_erfc_dd(h, l, &rho);
+    var c: f64 = rh * rho;
+    var rl2: f64 = rl + c;
+    var r: f64 = _pmn_cm_round_scaled(rh, rl2, e - 1);
+    return r;
+}

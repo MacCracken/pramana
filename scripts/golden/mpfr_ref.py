@@ -78,6 +78,49 @@ def cr2(name, x, y):
     return _finish(t)
 
 
+# Φ and 1 − Φ (M2 part b2's reference rows): ½·erfc(∓z/√2) at 1,024 bits over MPFR's widest exponent range (erfc
+# reaches 2^-1140 before the halving), then rounded once to binary64 by mpfr_get_d, subnormals included. Computing
+# erfc at 53 bits on a rounded −z/√2 is exactly the error T1 removes, so this never rounds the argument.
+_m.mpfr_get_emin_min.restype = ctypes.c_long
+_m.mpfr_get_emax_max.restype = ctypes.c_long
+_m.mpfr_sqrt_ui.argtypes = [_P, ctypes.c_ulong, ctypes.c_int]
+_m.mpfr_div.argtypes = [_P, _P, _P, ctypes.c_int]
+_m.mpfr_neg.argtypes = [_P, _P, ctypes.c_int]
+_m.mpfr_div_2ui.argtypes = [_P, _P, ctypes.c_ulong, ctypes.c_int]
+_hz = _MPFR_T()
+_hs = _MPFR_T()
+_ht = _MPFR_T()
+for _v in (_hz, _hs, _ht):
+    _m.mpfr_init2(ctypes.byref(_v), 1024)
+
+
+def _phi(z, upper):
+    _m.mpfr_set_emin(_m.mpfr_get_emin_min())
+    _m.mpfr_set_emax(_m.mpfr_get_emax_max())
+    try:
+        _m.mpfr_set_d(ctypes.byref(_hz), z, _RNDN)
+        _m.mpfr_sqrt_ui(ctypes.byref(_hs), 2, _RNDN)
+        _m.mpfr_div(ctypes.byref(_ht), ctypes.byref(_hz), ctypes.byref(_hs), _RNDN)
+        if not upper:
+            _m.mpfr_neg(ctypes.byref(_ht), ctypes.byref(_ht), _RNDN)
+        _m.mpfr_erfc(ctypes.byref(_ht), ctypes.byref(_ht), _RNDN)
+        _m.mpfr_div_2ui(ctypes.byref(_ht), ctypes.byref(_ht), 1, _RNDN)
+        return _m.mpfr_get_d(ctypes.byref(_ht), _RNDN)
+    finally:
+        _m.mpfr_set_emin(-1073)
+        _m.mpfr_set_emax(1024)
+
+
+def ncdf(z):
+    """Φ(z) = ½·erfc(−z/√2), correctly rounded to binary64 (z a float)."""
+    return _phi(z, False)
+
+
+def nsf(z):
+    """1 − Φ(z) = ½·erfc(z/√2), correctly rounded to binary64 (z a float)."""
+    return _phi(z, True)
+
+
 def _self_check():
     """Known correctly rounded values, among them glibc's misrounds that port-parity §1 found."""
     import struct

@@ -2628,3 +2628,83 @@ same; ledger L12). Φ, 1 − Φ and gamma_inc's Wilson–Hilferty branch inherit
   could not see a 1-ulp change. All 26 rows' digests are explained by `validate.py`'s models, Rust's through glibc
   and the port's through the reference.
 - **The correction:** the earlier parts' "sums agree" were weaker than they read.
+
+### 8.6 Part b2: Φ and 1 − Φ within 1 ulp, T1 (2026-11-16)
+
+**The module.** `normal_cdf` and `normal_sf` are now probe P9's T1 form (§6.8), on part b1's CORE-MATH erfc:
+- **The argument** −z/√2 is carried as a double-double h + l.
+- **The correction:** the low part's first-order correction ρ = −l·(2/√π)·e^(−h²)/erfc(h) is applied to CORE-MATH's
+  unrounded double-double erfc(h).
+- **One rounding:** the ½ is folded into the single rounding, on the subnormal grid too.
+- **The bound:** proven within 0.5 + 2⁻⁷ ulp, against ADR 009's 1.
+- **1 − Φ(z) is Φ(−z)** bit for bit, as in 1.3.0, with a NaN returned as it came.
+
+**Where the code is:**
+- **The helpers** that reach into erfc's internals are in `src/crerf.cyr`, beside the port they extend. That covers
+  the double-double core with its 2⁻⁶⁰ fast-path test, the asymptotic path without its final rounding, the scaled
+  rounding, and the fixed-result thresholds.
+- **`_pmn_normal_cdf` and `_pmn_normal_sf`** in `src/special.cyr` call them.
+- **The double-double 1/√2** is pramana's own constant. `scripts/crverify/consts.py`, now also checking
+  double-doubles and `src/crerf.cyr`, verifies both words against Python's 90-digit decimal, and
+  `vendor_coremath.py --check` leaves those two lines to it.
+
+**The fast bound is 2⁻⁶⁰,** as P9 verified it. P9 found 2⁻⁵⁶ about 30% faster in the core, within 0.5 + 2⁻³ ulp.
+2⁻⁶⁰ is kept because it is the configuration verified on 1.2 million rows, it is correctly rounded nearly
+everywhere, and speed is measured here, not gated. On `crverify`'s 1,146,809 arguments, a 2⁻⁴⁰ bound changes 5
+values, each from the correctly rounded value to the neighbour 0.5001 ulp away. The constant's comment records the
+option.
+
+**Verification** (`scripts/crverify/run.sh ncdf`, a new set: P9's nine seeded T1 sets, 1,146,809 arguments):
+- **Against P9:** this copy's output equals P9's recorded T1 output byte for byte.
+- **On three targets:** the outputs are identical (sha256 `5e37569875c320a4`).
+- **Against MPFR's ½·erfc(−z/√2) at 1,024 bits:** max 0.5 ulp in all nine sets, and correctly rounded on all but
+  4 rows: one in the core, one in (−4.1, −2.5) and two at the branch points, as P9 found. The bound is 1 ulp.
+
+**The reference rows.** `mpfr_ref.py` gains the true Φ and 1 − Φ: ½·erfc(∓z/√2) at 1,024 bits over MPFR's widest
+exponent range, rounded once to binary64. The model's Φ is 1.3.0's formula in its glibc and correctly rounded modes,
+and MPFR's true value in its reference mode, and the gamma_inc Wilson–Hilferty branch takes Φ from it too.
+
+`special.ref.tsv` grows to 7,158 rows:
+
+| Function | Reference rows |
+|---|---|
+| `normal_cdf` | 2,781 of 7,899: 1.3.0's value is not the correctly rounded Φ |
+| `normal_sf` | 2,793 of 7,899 |
+| `gamma_inc` | 510, the Wilson–Hilferty rows, whose outputs are Φ and 1 − Φ |
+| erf, erfc | 226 and 848, unchanged from b1 |
+
+`special.cr.tsv` falls to 213 rows: part a1's last 6 Φ and 1 − Φ rows there, and 2 Wilson–Hilferty `gamma_inc` rows,
+are now reference rows.
+
+**The result.** `_par_c_bound` gives Φ and 1 − Φ ADR 009's 1 ulp. Every one of their 15,798 golden rows is at 0 ulp
+from the true value: on the golden grid, T1's Φ is correctly rounded. The Wilson–Hilferty rows match at 0. The replay
+is nine modules: 125,996 rows ok and 7,477 accepted (7,447 under ADR 9, of which 7,158 are reference rows, and 30
+under ADR 7), warning-free, on x86_64 ELF, PE (wine) and aarch64 (qemu). Every `math::` result line is identical on
+the three.
+
+**Mutation checks:**
+
+| Mutant | The replay |
+|---|---|
+| no correction for l (ρ = 0, Rust's rounded argument) | 4,799 rows fail; up to 759 ulp |
+| 1/√2's low word dropped | 5,266 rows fail; up to 840 ulp |
+| 1 − Φ as 1 − Φ(z), by subtraction | 2,891 rows fail |
+| the ½ as a second rounding (§3.4's sketch) | passes: 30 rows at 1 ulp, within ADR 009's bound, which the histogram shows |
+| the fast bound 2⁻⁴⁰ for 2⁻⁶⁰ | passes, all at 0 ulp: the bound is the proof's margin; on `crverify`'s rows it misrounds 5 |
+
+The gate is the ADR's bound, so a change that stays within 1 ulp passes. The histogram of ulp distances, printed per
+function, shows each move to 1.
+
+**Tests.** `tests/special.tcyr` grows to 87 checks:
+- Φ at −1, −6 and −37 to MPFR's correctly rounded values (1.3.0's glibc-based Φ(−1) is 1 ulp off);
+- Φ(−38.4), a subnormal 13·2⁻¹⁰⁷⁴ from the folded ½;
+- a point where the fast path can't prove the rounding;
+- Φ(±0) = ½ exactly;
+- 1 − Φ(z) = Φ(−z) bit for bit over 400 points;
+- a NaN returned as it came.
+
+1.3.0's own `normal_cdf_tails` test still passes within its tolerances.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 1.37–1.40 µs in the core and 2.44–2.53 µs in the tails, 70–106× Rust's
+Φ. That is 8–30% over Rust's formula on b1's correctly rounded erfc: the argument's double-double, the correction's
+exp, and CORE-MATH's accurate path where its fast bound misses 2⁻⁶⁰. P9 measured the same.

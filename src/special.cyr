@@ -10,7 +10,7 @@
 # Now:
 # - erf and erfc are T1 (part b1): CORE-MATH's, correctly rounded (src/crerf.cyr). 1.3.0's fdlibm transcription, which
 #   part a1 proved at 0 ulp, is retired;
-# - Φ and 1 − Φ are still 1.3.0's formulas, now on the correctly rounded erfc (until part b2);
+# - Φ and 1 − Φ are T1 (part b2): within 0.5 + 2^-7 ulp, on erfc's double-double core (src/crerf.cyr);
 # - a2: the Lanczos lnΓ (g = 7, n = 9, reflection below ½), the Stirling remainder, Loader's bd0, the incomplete
 #   gamma's prefactor kernel, and ln B (T0);
 # - a3: the regularized incomplete gamma P and Q: the series below x = a + 1, Lentz's continued fraction above, and
@@ -39,23 +39,26 @@ fn _pmn_erfc(x: f64): f64 {
     return r;
 }
 
-# Rust's `normal_cdf`: Φ(z) = 0.5 · erfc(−z / √2), accurate in both tails.
+# Φ(z) = ½·erfc(−z/√2) within 0.5 + 2^-7 ulp (T1, M2 part b2; ADR 009's bound is 1 ulp), and correctly rounded
+# almost everywhere: −z/√2 is carried as a double-double, and its low part's first-order correction is applied to
+# CORE-MATH's unrounded double-double erfc, with the ½ folded into one rounding (src/crerf.cyr). 1.3.0 rounded −z/√2
+# first, which costs up to 1,688 ulp in the tail. A NaN is returned as z + z.
 #must_use
 fn _pmn_normal_cdf(z: f64): f64 {
-    var nz: f64 = -z;
-    var s2: f64 = _PMN_F64_SQRT_2;
-    var a: f64 = nz / s2;
-    var e: f64 = _pmn_erfc(a);
-    return 0.5 * e;
+    var r: f64 = _pmn_cm_normal_cdf(z);
+    return r;
 }
 
-# Rust's `normal_sf`: 1 − Φ(z) = 0.5 · erfc(z / √2), accurate in the upper tail.
+# 1 − Φ(z) = ½·erfc(z/√2) = Φ(−z), bit for bit, as in 1.3.0 (T1, M2 part b2). A NaN is returned as z + z.
 #must_use
 fn _pmn_normal_sf(z: f64): f64 {
-    var s2: f64 = _PMN_F64_SQRT_2;
-    var a: f64 = z / s2;
-    var e: f64 = _pmn_erfc(a);
-    return 0.5 * e;
+    if (z != z) {
+        var nn: f64 = z + z;
+        return nn;
+    }
+    var nz: f64 = -z;
+    var r: f64 = _pmn_cm_normal_cdf(nz);
+    return r;
 }
 
 # ── part a2: lnΓ and its relatives ──────────────────────────────────────────────────────────────────────────────

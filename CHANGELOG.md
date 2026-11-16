@@ -538,6 +538,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     (Rust's through glibc, the port's through the reference), and the earlier parts' "sums agree" are corrected in
     the benchmark record.
 
+- **M2 part b2: Φ and 1 − Φ within 1 ulp (T1)** (`src/crerf.cyr`, `src/special.cyr`; port plan D3 = C, ADR 009;
+  results in `docs/development/port-parity.md` §8.6):
+  - **the functions:** `normal_cdf` is probe P9's T1 form. −z/√2 is carried as a double-double, the low part's
+    first-order correction is applied to CORE-MATH's unrounded double-double erfc, and the ½ is folded into one
+    rounding, so the result is proven within 0.5 + 2⁻⁷ ulp. `normal_sf(z)` is `normal_cdf(−z)` bit for bit, as in
+    1.3.0. The fast-path bound stays P9's verified 2⁻⁶⁰; 2⁻⁵⁶ would be about 30% faster in the core and is
+    recorded as the option;
+  - **constants:** the double-double 1/√2 is checked by `scripts/crverify/consts.py`, extended to double-doubles and
+    `src/crerf.cyr`;
+  - **verified:** `scripts/crverify/run.sh ncdf` (a new set) runs P9's nine seeded sets, 1,146,809 arguments. Its
+    output equals P9's byte for byte and is identical on three targets. Against MPFR's ½·erfc(−z/√2) at 1,024 bits
+    every row is within 0.5 ulp, and all but 4 are correctly rounded;
+  - **reference rows:** `mpfr_ref.py` gains the true Φ and 1 − Φ, rounded once from 1,024 bits. `special.ref.tsv`
+    grows to 7,158 rows (Φ 2,781 and 1 − Φ 2,793 where 1.3.0's value isn't the correctly rounded one, and 510
+    Wilson–Hilferty `gamma_inc` rows). Every Φ and 1 − Φ golden row is correctly rounded, against ADR 009's 1-ulp
+    bound, on x86_64, PE and aarch64;
+  - **mutation checks:** dropping the correction fails 4,799 rows (to 759 ulp), dropping 1/√2's low word 5,266, and
+    1 − Φ by subtraction 2,891. A second rounding for the ½ stays within the bound (30 rows at 1 ulp, shown in the
+    histogram), and so does a looser fast bound (5 of `crverify`'s rows misrounded);
+  - **tests:** `tests/special.tcyr` has 87 checks: Φ at points in the core, the tail and the subnormal tail, a point
+    the fast path can't prove, Φ(±0), the 1 − Φ symmetry over 400 points, and NaNs;
+  - **cost:** 1.37–1.40 µs in the core and 2.44–2.53 µs in the tails, 70–106× Rust's Φ and 8–30% over b1's Φ on
+    the correctly rounded erfc; the bench's digests show the port's Φ equal to MPFR's on all 12,288 arguments.
+
 ### Performance
 
 - **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),

@@ -19,7 +19,9 @@ What it writes and checks:
   sits in, since both files reuse names. The tables erfc.c copies from erf.c are checked identical and written once.
 - **The inline constants:** src/crerf.cyr writes a few thresholds inline as bit patterns. Each such 16-digit hex word
   carries a comment citing the C literal it encodes (`0x3C90000000000000   # 0x1p-54`). `--check` requires that
-  comment on every one, the bits equal to float.fromhex of the literal, and the literal present in the sources.
+  comment on every one, the bits equal to float.fromhex of the literal, and the literal present in the sources. The
+  constants that are pramana's own (the double-double 1/√2 that Φ uses, M2 part b2) are marked `checked by
+  consts.py` and checked there, against their definitions.
 
 Without build/coremath/ (CI checks out pramana alone), `--check` reports "unverified" and exits 0. Adapted from probe
 P9's scripts/probes/p9_coremath_tables.py. Stdlib only.
@@ -174,6 +176,8 @@ def inline_failures(port: str, sources: str) -> list:
     words_in_src = {int(w, 16) for w in re.findall(r"0x([0-9a-fA-F]{16})(?![0-9a-fA-F.p])", sources)}
     for n, line in enumerate(port.splitlines(), 1):
         code, _, comment = line.partition("#")
+        if "checked by consts.py" in comment:
+            continue                    # pramana's own constants (1/√2 for Φ): scripts/crverify/consts.py checks them
         for word in re.findall(r"0x([0-9A-Fa-f]{16})\b", code):
             w = int(word, 16)
             if w in words_in_src:

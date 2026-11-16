@@ -1330,8 +1330,9 @@ class Prims:
     """The primitives 1.3.0's math.rs calls, and its erf and erfc, in one of three modes:
     - "glibc": glibc's primitives (ctypes) and 1.3.0's fdlibm erf and erfc on them: 1.3.0's own bits;
     - "cr": every primitive correctly rounded (MPFR) under 1.3.0's fdlibm erf and erfc: the T0 model (`*.cr.tsv`);
-    - "ref": as "cr", with erf and erfc at their true values (MPFR), as T1 computes them since M2 part b1: the
-      reference model (`*.ref.tsv`). Each later T1 function joins it as its part lands."""
+    - "ref": as "cr", with the T1 functions landed so far at their true values (MPFR), as T1 computes them: erf and
+      erfc since M2 part b1, Φ and 1 − Φ since b2. The reference model (`*.ref.tsv`); each later T1 function joins it
+      as its part lands."""
 
     def __init__(self, mode, F):
         if mode == "glibc":
@@ -1344,9 +1345,13 @@ class Prims:
         if mode == "ref":
             self.erf = lambda x: mpfr_ref.cr("erf", x)
             self.erfc = lambda x: mpfr_ref.cr("erfc", x)
+            self.ncdf, self.nsf = mpfr_ref.ncdf, mpfr_ref.nsf
         else:
             self.erf = lambda x: sp_erf(F, self.exp, x)
             self.erfc = lambda x: sp_erfc(F, self.exp, x)
+            # 1.3.0's formulas, on whichever erfc: Φ(z) = 0.5·erfc(−z/SQRT_2), 1 − Φ(z) = 0.5·erfc(z/SQRT_2)
+            self.ncdf = lambda z: 0.5 * self.erfc(-z / math.sqrt(2.0))
+            self.nsf = lambda z: 0.5 * self.erfc(z / math.sqrt(2.0))
 
 
 def sp_ln_gamma(K, L, x):
@@ -1471,7 +1476,7 @@ def sp_gamma_inc(K, L, a, x):
     if a > K["WH"]:
         v = 1.0 / (9.0 * a)
         z = fdiv(mpfr_ref.cr("cbrt", x / a) - (1.0 - v), math.sqrt(v))
-        return (0.5 * L.erfc(-z / math.sqrt(2.0)), 0.5 * L.erfc(z / math.sqrt(2.0)))
+        return (L.ncdf(z), L.nsf(z))
     if x < a + 1.0:
         p = sp_series_p(K, L, a, x)
         return (p, 1.0 - p)
@@ -1546,8 +1551,8 @@ def sp_beta_inc(K, L, a, b, x, y):
 SPECIAL = {  # name: (inputs, model(K, L, *inputs))
     "math::erf": (1, lambda K, L, x: L.erf(x)),
     "math::erfc": (1, lambda K, L, x: L.erfc(x)),
-    "math::normal_cdf": (1, lambda K, L, z: 0.5 * L.erfc(-z / math.sqrt(2.0))),
-    "math::normal_sf": (1, lambda K, L, z: 0.5 * L.erfc(z / math.sqrt(2.0))),
+    "math::normal_cdf": (1, lambda K, L, z: L.ncdf(z)),
+    "math::normal_sf": (1, lambda K, L, z: L.nsf(z)),
     "math::ln_gamma": (1, sp_ln_gamma),
     "math::stirling_error": (1, sp_stirling),
     "math::bd0": (2, sp_bd0),
@@ -1562,7 +1567,9 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
 
 
 # The T1 functions landed so far (M2 part b), each at its true value in the reference model.
-T1_SO_FAR = {"math::erf": "MPFR's correctly rounded erf", "math::erfc": "MPFR's correctly rounded erfc"}
+T1_SO_FAR = {"math::erf": "MPFR's correctly rounded erf", "math::erfc": "MPFR's correctly rounded erfc",
+             "math::normal_cdf": "MPFR's ½·erfc(−z/√2), correctly rounded",
+             "math::normal_sf": "MPFR's ½·erfc(z/√2), correctly rounded"}
 
 
 def check_special(root, rows):

@@ -926,8 +926,8 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "bridge::response_times_to_hick_params") == 1) { return 0; }     # log2
     if (_par_eq(fp, fl, "math::erf") == 1) { return 0; }          # T0 on the correctly rounded exp (M2 part a1)
     if (_par_eq(fp, fl, "math::erfc") == 1) { return 0; }
-    if (_par_eq(fp, fl, "math::normal_cdf") == 1) { return 0; }
-    if (_par_eq(fp, fl, "math::normal_sf") == 1) { return 0; }
+    if (_par_eq(fp, fl, "math::normal_cdf") == 1) { return 1; }   # T1 (part b2): ADR 009's ≤ 1 ulp
+    if (_par_eq(fp, fl, "math::normal_sf") == 1) { return 1; }
     if (_par_eq(fp, fl, "math::ln_gamma") == 1) { return 0; }    # T0 on correctly rounded ln and sin (part a2)
     if (_par_eq(fp, fl, "math::stirling_error") == 1) { return 0; }
     if (_par_eq(fp, fl, "math::bd0") == 1) { return 0; }         # ln_1p

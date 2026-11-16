@@ -36,7 +36,7 @@
 > progress** (its parts are in §7): part a1, fdlibm's erf and erfc and Φ and 1 − Φ at T0, is committed (`569dfa5`),
 > part a2, lnΓ and its relatives, is committed (`acdbbee`), part a3, the incomplete gamma, is committed
 > (`7729f5c`), and part a4, the incomplete beta (`f5f006f`), completes T0. T1 has begun: part b1, erf and erfc
-> correctly rounded, is done and not committed.
+> correctly rounded, is committed (`6a0a201`), and part b2, Φ and 1 − Φ within 1 ulp, is done and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1123,7 +1123,9 @@ operation order on the correctly rounded primitives, at 0 ulp against `special.c
   `scripts/crverify/`'s rows against MPFR on three targets, and CORE-MATH's own bits; `special.ref.tsv` and the
   harness's reference comparator, 3,546 rows moved (erf and erfc to their true values, and Rust's formulas on them
   downstream) ✅;
-- **b2:** `normal_cdf` and `normal_sf` ≤ 1 ulp, P9's prototype on b1 (step 9d-4);
+- **b2:** `normal_cdf` and `normal_sf` ≤ 1 ulp, P9's prototype on b1 (step 9d-4), at its verified 2⁻⁶⁰ fast bound;
+  within 0.5 ulp and correctly rounded on all but 4 of `crverify`'s 1,146,809 rows against MPFR, identical on three
+  targets; every golden Φ and 1 − Φ row correctly rounded; `special.ref.tsv` 7,158 rows ✅;
 - **b3:** `ln_gamma` ≤ 2 ulp (step 9d-1);
 - **b4:** `gamma_inc` ≤ 4 ulp (step 9d-2);
 - **b5:** `beta_inc` ≤ 8 ulp (step 9d-3);
