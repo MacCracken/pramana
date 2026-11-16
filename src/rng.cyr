@@ -9,8 +9,8 @@
 # It is integer code, so its streams are class A on every target (`>>` is the logical shift Rust's u64 shift is). It
 # is for reproducible simulations and tests, not cryptographically secure.
 #
-# JSON: `{"state":N}`, as serde derived it. Reading goes through `SimpleRngRepr` and `SimpleRng::new`, so a state of
-# 0, xorshift's one fixed point, becomes 1 (port plan D5).
+# Debug: `SimpleRng { state: N }` (D12). JSON: `{"state":N}`, as serde derived it. Reading goes through
+# `SimpleRngRepr` and `SimpleRng::new`, so a state of 0, xorshift's one fixed point, becomes 1 (port plan D5).
 
 trait PmnRng {
     fn next_f64(self): f64;
@@ -45,6 +45,19 @@ impl PmnRng for PmnSimpleRng {
 }
 
 impl PmnSimpleRng {
+    # Appends Rust's Debug of the generator (D12): `SimpleRng { state: 42 }` for `{:?}` (alternate 0), or
+    # `SimpleRng {\n    state: 42,\n}` for `{:#?}` (1). PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "SimpleRng", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "state", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.state); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
     # Appends serde_json's text for the generator, `{"state":N}`: PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't
     # grow.
     #must_use

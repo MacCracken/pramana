@@ -27,17 +27,12 @@
 > `2f572be`), and so is part 9d-3, `beta_inc` (`121e182`). Part 9e, the FMA-free CORE-MATH erf/erfc port, is
 > committed (`ea7f1a0`): it is correctly rounded, so D3 = C holds without the fallback. So is part 9d-4, the
 > `normal_cdf` prototype on it, within 0.5 ulp (`26f04f2`), and step 10, the upstream requests and the ledger
-> (`aa5df35`): **M0 is complete.** **M1** is in progress: part a (the error codes) and part b1 (kimiya's correctly
-> rounded primitives, vendored) are committed (`1f718c6`), and so is part b2, a new correctly rounded log1p
-> (`f08f233`) and part b3, a new correctly rounded tan (`3257918`). Part b4, a new correctly rounded log2, is done
-> (`0c3f469`), so every class-C math row is at 0 ulp and the primitives are verified on 11.6M MPFR rows; and part
-> c, the Rust f64 surface (`d13fb61`), so the whole golden corpus is gated. Part d1, serde_json's f64 text, is
-> committed (`d34db7c`), and so is part d2, the work-table pool (`c302838`), and part d3a, the JSON read core's
-> value readers (`c61f76b`), part d3b, serde's struct rules and the two enum forms (`18c4e70`), and part d4, the JSON
-> write core and the error codec (`daf9084`), and part e1, the RNG and its codec (`5d80e5a`). Part e2, combinatorics with
-> `PmnU128`, is committed (`a49d23d`), and part e3, the bridges, is done but not committed. The maintainer took each
-> recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
-> tool, `scripts/port-baseline/`, which produced §3.2.
+> (`aa5df35`): **M0 is complete.** **M1 is complete:** its parts are committed, a and b1 (`1f718c6`), b2
+> (`f08f233`), b3 (`3257918`), b4 (`0c3f469`), c (`d13fb61`), d1 (`d34db7c`), d2 (`c302838`), d3a (`c61f76b`), d3b
+> (`18c4e70`), d4 (`daf9084`), e1 (`5d80e5a`), e2 (`a49d23d`) and e3 (`74eea07`), and part f, its gate, is done but
+> not committed. The foundation is ported: the error codes, every primitive correctly rounded, the Rust f64 surface,
+> the JSON core, the work-table pool, the RNG, combinatorics and the bridges, gated by 75,266 golden rows on three
+> targets. The maintainer took each recommendation and chose option C for D3. M2, the special functions, is next.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1098,7 +1093,10 @@ Every milestone, and every part of a large one, ends with pravash's gates:
   `stirling_approx`, against 1.3.0 on 2,405 rows (probe P1's grid, seeded pairs, Stirling's overflow edge) ✅;
 - **e3:** `src/bridge.cyr`: the 11 bridge functions, against 1.3.0 on 5,553 rows (special-value grids, the 1e-15
   floors and their neighbours, empty and NaN-bearing slices, the two fits' skipped records) ✅;
-- **f:** M1's gate.
+- **f:** M1's gate ✅: the derived `Debug` of `SimpleRng` and `PramanaError` (D12, `src/debug.cyr`) with a golden
+  `debug` module, the surface-parity check (`scripts/surface_parity.py`, 30 items in four modules, in CI), the
+  allocation soak (`tests/soak.tcyr`: bump heap, freelist arena and mapped size unchanged after 10⁴ rounds of every
+  allocating path), and an audit of `src/` against the library rules.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

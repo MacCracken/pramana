@@ -2096,3 +2096,65 @@ pinned, three interleaved rounds, at a load average of 1.3):
 
 The likelihood's cost is the correctly rounded exp, and the power law's its 40 correctly rounded logarithms. The
 rest is the per-element call and memory traffic of Cyrius's code generation.
+
+### 7.15 Part f: M1's gate (2026-11-15)
+
+Every part ran the per-part gates: `build`; `test` and `test --bounds` warning-free; `bench`, recorded against Rust;
+`vet`, `lint` and `fmt --check`; `distlib`; `deps --locked`; `audit`; the ledger; the three targets. The plan's §7
+list adds what a milestone's gate covers across its parts.
+
+**Debug (D12).** 1.3.0 derives `Debug` on M1's two types, and no part had ported it.
+- **`src/debug.cyr`** holds the derive's two shapes as builders over the JSON writers' non-aborting appends: a struct,
+  `Name { a: 1 }` or `Name {\n    a: 1,\n}`, and a tuple, `Name(x)` or `Name(\n    x,\n)`.
+- **`g.debug(sb, alternate)`** writes `SimpleRng { state: N }`.
+- **`pmn_err_debug(code, sb, alternate)`** writes the variant with an empty message, `InvalidParameter("")`, as
+  `pmn_err_to_json` does. It refuses the codes 1.3.0 has no variant for, as the JSON writer does (ADR 007 row 8).
+- **A golden `debug` module**, 60 rows: Rust's own `{:?}` and `{:#?}` of SimpleRng from 25 seeds and of each error
+  variant. `validate.py` models the derive's text, and all 60 match on three targets.
+
+M3 adds nested values' indentation and the f64 Debug form with its first type that has either.
+
+**Surface parity.** `scripts/surface_parity.py --check`, now in CI:
+- **What it lists:** every public item of 1.3.0's ported modules, from `rust-old/src/`: functions, types, traits,
+  their methods, and their derives.
+- **What it checks:** each item maps, in its table, to the Cyrius symbols `src/` defines, or to a note for a form with
+  no symbol (a plain value's Clone).
+- **M1's result:** 30 items in error, rng, combinatorics and bridge, all ported.
+- **Mutation checks:** a renamed function and an unmapped derive each fail it.
+
+Each later milestone adds its modules to the table. M8's full diff adds lib.rs, whose `pub use hisab` plan §8.2
+drops.
+
+**The soak** (`tests/soak.tcyr`, probe P4's measures). After a warm-up, 10⁴ rounds of every M1 path that allocates:
+- JSON decodes, small and large; the large document is 367,879 bytes (20,000 values), so its arena is a block that is
+  mapped and unmapped each time;
+- a refused decode, JSON writes, the error codec both ways, Debug;
+- SimpleRng's codec both ways;
+- both bridge fits;
+- nine nested pool claims.
+
+The bump heap, the freelist's arena cursor and the mapped size (`/proc/self/statm`) were unchanged, and nothing was
+left claimed. All eight checks ran and passed on x86_64 ELF, PE and aarch64; wine and qemu both expose
+`/proc/self/statm`, so the mapped size was measured on each. One mutation, `_pmn_json_decode` skipping its close, makes the mapped size grow by 2.4 GB and leaves 7
+slots claimed.
+
+**The audit of `src/`** against CLAUDE.md's library rules:
+- **No aborts.** Nothing aborts outside `fmtf.cyr`, whose `str_builder` writers can't grow the builder after ledger
+  L14's reservation.
+- **No heap resets or hashmap iteration:** no `alloc_reset`, no hashmap iteration, no `vec_get`.
+- **Names:** every top-level name in pramana's own modules carries a pmn prefix.
+- **`#must_use`** now marks the four functions whose result a caller must read (`_pmn_json_open`,
+  `_pmn_json_decode`, `_pmn_json_lift`, `_pmn_json_neg_complement`). Three ignored results in `tests/json.tcyr` are now
+  asserted. The functions still without it return a constant 0 or only fill storage.
+- **Null and aliasing:** every public buffer parameter is checked for null, and the bridges' `out`, written last,
+  may alias an input.
+
+**The plan's minimum grid for M1** (§7):
+- every primitive's correctly rounded rows at 0 ulp: 76 corrections, and every class-C row at bound 0;
+- 10⁶ RNG words: six 10⁶-draw digests, besides the 40 streams;
+- factorial 0–35 and the overflow edges: 0–40, 2³², 2⁶³ and u64::MAX;
+- the bridges' inputs over their ranges, NaN, ±∞ and empty slices among them.
+
+**M1's result.** Eight golden modules: 75,266 rows ok and 106 accepted (76 under ADR 9, 30 under ADR 7). They pass
+on x86_64 ELF, PE (wine) and aarch64 (qemu), warning-free, with identical digests. There are eleven test files and
+nine bench files with their Rust twins. The ledger has 14 rows, all open, with 11 notes in `src/`.

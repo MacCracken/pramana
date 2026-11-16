@@ -47,6 +47,7 @@ modules = [
     "src/fmtf.cyr",
     "src/pool.cyr",
     "src/json.cyr",
+    "src/debug.cyr",
     "src/rng.cyr",
     "src/combinatorics.cyr",
     "src/bridge.cyr",

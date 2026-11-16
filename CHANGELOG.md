@@ -418,6 +418,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **tests:** `tests/bridge.tcyr` has 44 checks, all 19 of 1.3.0's tests among them, and the −0.0 sums, which class B's tolerance can't see;
   - **cost:** 4–8.5× 1.3.0 (`tests/bridge.bcyr` and its twin, the same outputs).
 
+- **M1 part f: the gate, and M1 complete** (results in `docs/development/port-parity.md` §7.15):
+  - **Debug (D12):** `src/debug.cyr`'s builders for the derive's struct and tuple shapes, `g.debug(sb, alternate)` for
+    `PmnSimpleRng`, and `pmn_err_debug(code, sb, alternate)` (the variant with an empty message, refusing the codes
+    1.3.0 has no variant for, as the JSON writer does). A golden `debug` module records Rust's own `{:?}` and `{:#?}`,
+    60 rows, all matching;
+  - **surface parity:** `scripts/surface_parity.py --check`, in CI, maps every public item of a ported 1.3.0 module
+    to the Cyrius symbols `src/` defines. That is 30 items in error, rng, combinatorics and bridge, all ported;
+  - **the soak:** `tests/soak.tcyr` runs 10⁴ rounds of every allocating M1 path. The bump heap, the freelist's arena
+    and the mapped size stay unchanged, and nothing is left claimed;
+  - **the audit:** `src/` checked against the library rules. The four functions whose result a caller must read are
+    now `#must_use`, and the three test sites that ignored one now assert it;
+  - **M1's result:** eight golden modules, 75,266 rows ok and 106 accepted, on x86_64, PE and aarch64, warning-free.
+
 ### Performance
 
 - **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),

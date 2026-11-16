@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Check the port's public surface against Rust 1.3.0's, module by module (port plan §7: every milestone's gate).
+
+    python3 -I -B scripts/surface_parity.py [--check]
+
+For each ported module of `rust-old/src/` (PORTED), this lists every public item:
+- each `pub fn`, `pub struct`, `pub enum`, `pub trait` and `pub type` outside the tests;
+- each `pub fn` in an inherent `impl T` block, and each method of a `pub trait` and of an `impl Trait for T`;
+- each derive on a public type (`Debug`, `Clone`, `Serialize`, `Deserialize`, and `thiserror::Error` as `Error`).
+
+SURFACE maps each one, by key, to the Cyrius symbols that port it (`fn f`, `struct S`, `enum E`, `trait T`, `method
+S.m`), or to a note naming the decision that ports it without a symbol. It checks that every listed Rust item has an
+entry, that every entry is for an item 1.3.0 has, and that `src/` defines every symbol named. It prints the table;
+with `--check` (the gate) it exits 1 on any failure. Stdlib only.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+RUST = ROOT / "rust-old" / "src"
+SRC = ROOT / "src"
+
+# The modules ported so far, in the plan's order. A milestone adds its modules here with their SURFACE entries.
+PORTED = ["error", "rng", "combinatorics", "bridge"]
+
+SURFACE = {
+    # error.rs (M1 part a; D6, ADR 007 rows 1 and 8)
+    "error::PramanaError": ["enum PmnError", "fn pmn_err_name"],
+    "error::PramanaError#Debug": ["fn pmn_err_debug"],
+    "error::PramanaError#Clone": "a code is a word: copying it clones it (D6)",
+    "error::PramanaError#Serialize": ["fn pmn_err_to_json"],
+    "error::PramanaError#Deserialize": ["fn pmn_err_from_json"],
+    "error::PramanaError#Error": ["fn pmn_err_message"],
+    # rng.rs (M1 part e1; D7 as amended)
+    "rng::Rng": ["trait PmnRng"],
+    "rng::Rng.next_f64": ["method PmnRng.next_f64"],
+    "rng::SimpleRng": ["struct PmnSimpleRng"],
+    "rng::SimpleRng.new": ["fn PmnSimpleRng_new"],
+    "rng::SimpleRng.next_f64": ["method PmnSimpleRng.next_f64"],
+    "rng::SimpleRng#Debug": ["method PmnSimpleRng.debug"],
+    "rng::SimpleRng#Clone": "a one-word struct: copying it clones it",
+    "rng::SimpleRng#Serialize": ["method PmnSimpleRng.to_json"],
+    "rng::SimpleRng#Deserialize": ["fn PmnSimpleRng_from_json"],
+    # combinatorics.rs (M1 part e2; D10)
+    "combinatorics::factorial": ["fn pmn_factorial", "struct PmnU128"],
+    "combinatorics::permutations": ["fn pmn_permutations"],
+    "combinatorics::combinations": ["fn pmn_combinations"],
+    "combinatorics::stirling_approx": ["fn pmn_stirling_approx"],
+    # bridge.rs (M1 part e3)
+    "bridge::ensemble_spread_to_confidence": ["fn pmn_ensemble_spread_to_confidence"],
+    "bridge::observation_error_to_likelihood": ["fn pmn_observation_error_to_likelihood"],
+    "bridge::yields_to_mean_variance": ["fn pmn_yields_to_mean_variance"],
+    "bridge::replicates_to_t_statistic": ["fn pmn_replicates_to_t_statistic"],
+    "bridge::uncertainty_to_gaussian": ["fn pmn_uncertainty_to_gaussian"],
+    "bridge::sensor_noise_to_std_dev": ["fn pmn_sensor_noise_to_std_dev"],
+    "bridge::item_variances_to_alpha": ["fn pmn_item_variances_to_alpha"],
+    "bridge::z_rates_to_d_prime": ["fn pmn_z_rates_to_d_prime"],
+    "bridge::trait_scores_to_correlation": ["fn pmn_trait_scores_to_correlation"],
+    "bridge::learning_trials_to_power_law": ["fn pmn_learning_trials_to_power_law"],
+    "bridge::response_times_to_hick_params": ["fn pmn_response_times_to_hick_params"],
+}
+
+DERIVES = {"Debug", "Clone", "Serialize", "Deserialize", "Error"}
+
+
+def library_part(text):
+    """The module's code before its `#[cfg(test)]` block."""
+    at = text.find("#[cfg(test)]")
+    return text if at < 0 else text[:at]
+
+
+def block_end(text, at):
+    """The index just past the `}` matching the first `{` at or after at."""
+    i = text.index("{", at)
+    depth = 0
+    while True:
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+
+
+def rust_items(module):
+    """The public items of rust-old/src/<module>.rs, as SURFACE keys."""
+    text = library_part((RUST / f"{module}.rs").read_text(encoding="utf-8"))
+    text = re.sub(r"//[^\n]*", "", text)
+    items = []
+    public_types = set()
+    for m in re.finditer(r"((?:#\[[^\]]*\]\s*)*)pub (struct|enum|trait|type) (\w+)", text):
+        attrs, kind, name = m.groups()
+        items.append(f"{module}::{name}")
+        public_types.add(name)
+        for d in re.findall(r"#\[derive\(([^)]*)\)\]", attrs):
+            for word in re.split(r"[,\s]+", d):
+                word = word.split("::")[-1]
+                if word in DERIVES:
+                    items.append(f"{module}::{name}#{word}")
+        if kind == "trait":
+            body = text[m.end():block_end(text, m.end())]
+            items.extend(f"{module}::{name}.{f}" for f in re.findall(r"\bfn (\w+)", body))
+    for m in re.finditer(r"^impl(?:<[^>]*>)?\s+(?:(\w+)(?:<[^>]*>)?\s+for\s+)?(\w+)\s*\{", text, re.M):
+        trait, name = m.groups()
+        if name not in public_types:
+            continue
+        body = text[m.end() - 1:block_end(text, m.end() - 1)]
+        if trait is None:
+            items.extend(f"{module}::{name}.{f}" for f in re.findall(r"\bpub fn (\w+)", body))
+        elif trait in public_types or (RUST / f"{module}.rs").read_text(encoding="utf-8").count(f"pub trait {trait}"):
+            items.extend(f"{module}::{name}.{f}" for f in re.findall(r"\bfn (\w+)", body))
+    depth = 0
+    for line in text.splitlines():
+        if depth == 0:
+            m = re.match(r"pub fn (\w+)", line.strip())
+            if m:
+                items.append(f"{module}::{m.group(1)}")
+        depth += line.count("{") - line.count("}")
+    return sorted(set(items))
+
+
+def cyrius_symbols():
+    """Every symbol src/*.cyr defines: `fn f`, `struct S`, `enum E`, `trait T`, `method S.m` (impl blocks)."""
+    syms = set()
+    for path in sorted(SRC.glob("*.cyr")):
+        text = re.sub(r"#[^\n]*", "", path.read_text(encoding="utf-8"))
+        for m in re.finditer(r"^(fn|struct|enum|trait) (\w+)", text, re.M):
+            syms.add(f"{m.group(1)} {m.group(2)}")
+        for m in re.finditer(r"^impl (?:(\w+) for )?(\w+)\s*\{", text, re.M):
+            body = text[m.end() - 1:block_end(text, m.end() - 1)]
+            for f in re.findall(r"^\s+fn (\w+)\(", body, re.M):
+                syms.add(f"method {m.group(2)}.{f}")
+        for m in re.finditer(r"^trait (\w+)\s*\{", text, re.M):
+            body = text[m.end() - 1:block_end(text, m.end() - 1)]
+            for f in re.findall(r"\bfn (\w+)\(", body):
+                syms.add(f"method {m.group(1)}.{f}")
+    return syms
+
+
+def main(argv):
+    check = "--check" in argv
+    syms = cyrius_symbols()
+    failures = []
+    seen = set()
+    for module in PORTED:
+        print(f"== {module}.rs")
+        for item in rust_items(module):
+            seen.add(item)
+            port = SURFACE.get(item)
+            if port is None:
+                failures.append(f"{item}: no SURFACE entry")
+                print(f"  {item:48s} UNMAPPED")
+            elif isinstance(port, str):
+                print(f"  {item:48s} {port}")
+            else:
+                missing = [s for s in port if s not in syms]
+                failures.extend(f"{item}: src/ defines no {s}" for s in missing)
+                status = "MISSING " + ", ".join(missing) if missing else ", ".join(port)
+                print(f"  {item:48s} {status}")
+    for key in sorted(set(SURFACE) - seen):
+        failures.append(f"{key}: SURFACE lists an item 1.3.0 doesn't have")
+    for msg in failures:
+        print("FAILED:", msg)
+    print(f"surface parity: {len(seen)} items in {len(PORTED)} modules, {len(failures)} failures")
+    return 1 if check and failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

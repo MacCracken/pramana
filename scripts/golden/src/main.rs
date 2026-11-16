@@ -32,6 +32,7 @@ mod grids;
 mod m_bridge;
 mod m_combinatorics;
 mod m_constants;
+mod m_debug;
 mod m_fmt;
 mod m_json;
 mod m_math;
@@ -51,6 +52,7 @@ fn golden_modules(constants: &[consts::Const]) -> Vec<tsv::Module> {
         m_bridge::emit(),
         m_combinatorics::emit(),
         m_constants::emit(constants),
+        m_debug::emit(),
         m_fmt::emit(),
         m_json::emit(),
         m_math::emit(),

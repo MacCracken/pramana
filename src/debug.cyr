@@ -1,0 +1,70 @@
+# debug.cyr — Rust's derived `Debug`, `{:?}` and `{:#?}`, into a str_builder (port plan D12; M1 part f).
+#
+# Every public type of 1.3.0 derives Debug, and the port writes its text byte for byte: each type's
+# `x.debug(sb, alternate)` (alternate 0 for `{:?}`, 1 for `{:#?}`) returns PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when
+# the builder can't grow. These builders give the two shapes a derive prints, over the JSON writers' non-aborting
+# appends (src/json.cyr):
+# - a struct: `Name { a: 1, b: 2 }`, or `Name {\n    a: 1,\n    b: 2,\n}`;
+# - a tuple (a newtype variant): `Name(x)`, or `Name(\n    x,\n)`.
+# M1's types hold integers and strings at one level. A nested value's alternate form indents its own lines, which
+# arrives with the first type that nests one (M3, with the f64 Debug form D12 adds to src/fmtf.cyr).
+
+# Opens a struct (`braces` 1) or a tuple (0) named `name`.
+#must_use
+fn _pmn_dbg_open(sb, name: cstring, braces, alternate): i64 {
+    var e = _pmn_json_w_lit(sb, name);
+    if (e != PMN_ERR_NONE) { return e; }
+    if (braces == 1 && alternate == 1) { return _pmn_json_w_lit(sb, " {\n"); }
+    if (braces == 1) { return _pmn_json_w_lit(sb, " { "); }
+    if (alternate == 1) { return _pmn_json_w_lit(sb, "(\n"); }
+    return _pmn_json_w_lit(sb, "(");
+}
+
+# Starts an item: a struct field's `name: ` (name 0 for a tuple item), after `, ` unless first; indented in the
+# alternate form.
+#must_use
+fn _pmn_dbg_item(sb, name, first, alternate): i64 {
+    var e = PMN_ERR_NONE;
+    if (alternate == 1) {
+        e = _pmn_json_w_lit(sb, "    ");
+    } elif (first == 0) {
+        e = _pmn_json_w_lit(sb, ", ");
+    }
+    if (e == PMN_ERR_NONE && name != 0) {
+        e = _pmn_json_w_lit(sb, name);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ": "); }
+    }
+    return e;
+}
+
+# Ends an item: `,\n` in the alternate form, nothing otherwise.
+#must_use
+fn _pmn_dbg_item_end(sb, alternate): i64 {
+    if (alternate == 1) { return _pmn_json_w_lit(sb, ",\n"); }
+    return PMN_ERR_NONE;
+}
+
+# Closes what _pmn_dbg_open opened.
+#must_use
+fn _pmn_dbg_close(sb, braces, alternate): i64 {
+    if (braces == 1 && alternate == 1) { return _pmn_json_w_lit(sb, "}"); }
+    if (braces == 1) { return _pmn_json_w_lit(sb, " }"); }
+    return _pmn_json_w_lit(sb, ")");
+}
+
+# Rust's Debug of a PramanaError as pramana writes it: the variant with an empty message, `InvalidParameter("")` or
+# `InvalidParameter(\n    "",\n)`, as `pmn_err_to_json` writes the same message (ADR 007 row 8).
+# PMN_ERR_INVALID_PARAMETER, writing nothing, for a code 1.3.0 has no variant for (PMN_ERR_NONE, OUT_OF_MEMORY,
+# DESERIALIZE, or no code): `pmn_err_name` names those.
+#must_use
+fn pmn_err_debug(code, sb, alternate): i64 {
+    if (sb == 0 || code < PMN_ERR_INVALID_PARAMETER || code > PMN_ERR_COMPUTATION_ERROR) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    var e = _pmn_dbg_open(sb, pmn_err_name(code), 0, alternate);
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, 0, 1, alternate); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "\"\""); }
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 0, alternate); }
+    return e;
+}

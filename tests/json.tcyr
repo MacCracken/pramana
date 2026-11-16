@@ -223,13 +223,13 @@ fn main() {
     var bn = text("\"a?b\"");
     store8(g_buf + 2, 0xFF);
     _pmn_json_close(g_doc);
-    _pmn_json_open(g_doc, g_buf, bn);
+    assert_eq(_pmn_json_open(g_doc, g_buf, bn), PMN_ERR_NONE, "bayan reads a string that is not UTF-8");
     assert_eq(_pmn_json_str(_pmn_json_root(g_doc), &sv), PMN_ERR_DESERIALIZE, "invalid UTF-8 refuses when read");
     var on = text("\"??\"");
     store8(g_buf + 1, 0xC0);
     store8(g_buf + 2, 0xAF);
     _pmn_json_close(g_doc);
-    _pmn_json_open(g_doc, g_buf, on);
+    assert_eq(_pmn_json_open(g_doc, g_buf, on), PMN_ERR_NONE, "and one with an overlong form");
     assert_eq(_pmn_json_str(_pmn_json_root(g_doc), &sv), PMN_ERR_DESERIALIZE, "so does an overlong form");
 
     test_group("vectors and matrices");
@@ -503,11 +503,17 @@ fn main() {
 
     test_group("a soak leaves the heap where it found it");
     var before = alloc_used();
+    var wrong = 0;
     for (var i = 0; i < 10000; i = i + 1) {
         var t = text("[0.1, -0, 18446744073709551615, 1e-3]");
-        if (i % 3 == 0) { t = text("[0.1, x]"); }
-        _pmn_json_decode(g_buf, t, &dec_sum, &sum);
+        var want = PMN_ERR_NONE;
+        if (i % 3 == 0) {
+            t = text("[0.1, x]");
+            want = PMN_ERR_DESERIALIZE;
+        }
+        if (_pmn_json_decode(g_buf, t, &dec_sum, &sum) != want) { wrong = wrong + 1; }
     }
+    assert_eq(wrong, 0, "10^4 decodes, each with its verdict");
     assert_eq(alloc_used() - before, 0, "10^4 decodes: 0 bytes of bump heap");
     assert_eq(_pmn_scratch_claimed(), 0, "and nothing left claimed");
 

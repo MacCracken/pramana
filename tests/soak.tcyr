@@ -1,0 +1,160 @@
+# soak.tcyr — M1's allocation soak (port plan §7's gate, D11; probe P4's measures).
+#
+# Every M1 path that allocates, run 10^4 times after a warm-up: JSON decodes small and large (a large document's
+# arena is a freelist block over 4 KB, mapped and unmapped each time), JSON writes, the error codec and SimpleRng's
+# codec both ways, both bridge fits, and nine nested pool claims (the ninth an overflow block). Afterwards the bump
+# heap, the freelist's arena cursor, the process's mapped size (/proc/self/statm, where the target has it) and the
+# pool's claimed slots must all be where they were: nothing an M1 call took stays taken.
+
+include "tests/lib.cyr"
+
+var g_doc = 0;
+var g_doc_n = 0;
+var g_big = 0;
+var g_big_n = 0;
+var g_vals = 0;
+
+# The process's mapped size in KB, from /proc/self/statm's first field (4 KB pages); −1 where it can't be read.
+fn vm_kb(): i64 {
+    var buf[64];
+    var n = file_read_all("/proc/self/statm", &buf, 63);
+    if (n <= 0) { return 0 - 1; }
+    var v = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(&buf + i);
+        if (c < 48 || c > 57) { break; }
+        v = v * 10 + (c - 48);
+        i = i + 1;
+    }
+    return v * 4;
+}
+
+fn dec_vec(root, ctx): i64 {
+    var n = _pmn_json_arr_len(root);
+    if (n < 0 || n > 20000) { return PMN_ERR_DESERIALIZE; }
+    return _pmn_json_vec_f64(root, g_vals, 20000);
+}
+
+fn dec_pair(root, ctx): i64 {
+    var names[16];
+    store64(&names, "mean");
+    store64(&names + 8, "std_dev");
+    var sl[16];
+    var e = _pmn_json_struct(root, &names, 2, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var w[16];
+    e = _pmn_json_f64(load64(&sl), &w);
+    if (e == PMN_ERR_NONE) { e = _pmn_json_f64(load64(&sl + 8), &w + 8); }
+    return e;
+}
+
+# One round of every allocating M1 path; the count of calls that failed.
+fn round(sb, big): i64 {
+    var bad = 0;
+    var pair = "{\"mean\": 0.5, \"std_dev\": 2.25, \"zz\": [1, {\"a\": null}]}";
+    if (_pmn_json_decode(pair, strlen(pair), &dec_pair, 0) != PMN_ERR_NONE) { bad = bad + 1; }
+    if (_pmn_json_decode(g_doc, g_doc_n, &dec_vec, 0) != PMN_ERR_NONE) { bad = bad + 1; }
+    if (big == 1 && _pmn_json_decode(g_big, g_big_n, &dec_vec, 0) != PMN_ERR_NONE) { bad = bad + 1; }
+    var bad_doc = "[1, 2,";
+    if (_pmn_json_decode(bad_doc, strlen(bad_doc), &dec_vec, 0) != PMN_ERR_DESERIALIZE) { bad = bad + 1; }
+    store64(sb + 8, 0);
+    if (_pmn_json_w_mat_f64(sb, g_vals, 10, 10) != PMN_ERR_NONE) { bad = bad + 1; }
+    store64(sb + 8, 0);
+    if (pmn_err_to_json(PMN_ERR_COMPUTATION_ERROR, sb) != PMN_ERR_NONE) { bad = bad + 1; }
+    var et, ev = pmn_err_from_json(load64(sb), load64(sb + 8));
+    if (is_err_result(et) == 1 || ev != PMN_ERR_COMPUTATION_ERROR) { bad = bad + 1; }
+    store64(sb + 8, 0);
+    if (pmn_err_debug(PMN_ERR_INVALID_SAMPLE, sb, 1) != PMN_ERR_NONE) { bad = bad + 1; }
+    var g: PmnSimpleRng;
+    var h: PmnSimpleRng;
+    if (PmnSimpleRng_new(&g, 42) != PMN_ERR_NONE) { bad = bad + 1; }
+    store64(sb + 8, 0);
+    if (g.to_json(sb) != PMN_ERR_NONE || PmnSimpleRng_from_json(&h, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) {
+        bad = bad + 1;
+    }
+    store64(sb + 8, 0);
+    if (g.debug(sb, 0) != PMN_ERR_NONE) { bad = bad + 1; }
+    var recs[320];
+    for (var k = 0; k < 20; k = k + 1) {
+        var kf: f64 = f64_from(k + 1);
+        var t: f64 = 50.0 / kf;
+        store64(&recs + k * 16, k + 1);
+        store64(&recs + k * 16 + 8, t);
+    }
+    var out[16];
+    if (pmn_learning_trials_to_power_law(&recs, 20, &out) != PMN_ERR_NONE) { bad = bad + 1; }
+    if (pmn_response_times_to_hick_params(&recs, 20, &out) != PMN_ERR_NONE) { bad = bad + 1; }
+    var ps[72];
+    var ss[72];
+    for (var m = 0; m < 9; m = m + 1) {
+        var p, s = _pmn_scratch_take(256 + m);
+        if (p == 0) { bad = bad + 1; }
+        store64(&ps + m * 8, p);
+        store64(&ss + m * 8, s);
+    }
+    for (var m2 = 8; m2 >= 0; m2 = m2 - 1) { _pmn_scratch_give(load64(&ps + m2 * 8), load64(&ss + m2 * 8)); }
+    return bad;
+}
+
+# Writes `[x0,x1,…]` of n seeded values into a new buffer; its pointer, the length at *lenp.
+fn doc_of(n, lenp): i64 {
+    var sb = str_builder_new();
+    var x: f64 = 0.125;
+    var e = _pmn_json_w_lit(sb, "[");
+    for (var i = 0; i < n; i = i + 1) {
+        if (i > 0) { e = e | _pmn_json_w_lit(sb, ","); }
+        x = x * 1.0001 + 0.37;
+        e = e | _pmn_json_w_f64(sb, x);
+    }
+    e = e | _pmn_json_w_lit(sb, "]");
+    if (e != PMN_ERR_NONE) { return 0; }
+    store64(lenp, load64(sb + 8));
+    return load64(sb);
+}
+
+fn main() {
+    alloc_init();
+    g_vals = alloc(20000 * 8);
+    var n = 0;
+    g_doc = doc_of(100, &n);
+    g_doc_n = n;
+    g_big = doc_of(20000, &n);
+    g_big_n = n;
+    var sb = str_builder_new();
+
+    test_group("a warm-up fills the pool's slots and the freelist's classes");
+    var warm = 0;
+    for (var w = 0; w < 50; w = w + 1) { warm = warm + round(sb, 1); }
+    assert_eq(warm, 0, "every call succeeds");
+    assert(g_big_n > 300000, "the large document is over 300 KB, so its arena is a block of its own");
+
+    test_group("10^4 rounds of every M1 path that allocates, 200 of them with the large document");
+    var b0 = alloc_used();
+    var f0 = _fl_arena_pos;
+    var v0 = vm_kb();
+    var bad = 0;
+    for (var r = 0; r < 10000; r = r + 1) {
+        var with_big = 0;
+        if (r % 50 == 0) { with_big = 1; }
+        bad = bad + round(sb, with_big);
+    }
+    assert_eq(bad, 0, "every call succeeds");
+    assert_eq(alloc_used() - b0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - f0, 0, "the freelist's arena: 0 bytes carved, every block reused");
+    var v1 = vm_kb();
+    if (v0 >= 0) {
+        assert_eq(v1 - v0, 0, "the mapped size: unchanged, every large block unmapped");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing left claimed");
+    assert(_pmn_scratch_bytes() <= 8 * 2 * 1048576, "and no slot over 2 MiB");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+# Any failure at all is exit 1: a wait status is 8 bits, so a raw count of 256 would read as success.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

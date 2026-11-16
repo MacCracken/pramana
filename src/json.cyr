@@ -87,6 +87,7 @@ fn _pmn_json_digits_le(p, n, bound: cstring): i64 {
 # Anything else is copied as it is, for bayan to judge. Returns the new length, −1 for a refusal, or −2 when cap is
 # below 2n + 32. That bound always suffices, so it is checked once: a number grows by at most 2 bytes, and every
 # number but the last is followed by a byte that is no number's, so the text grows to at most 2n + 1.
+#must_use
 fn _pmn_json_lift(src, n, dst, cap): i64 {
     if (n < 0 || cap < 2 * n + 32) { return 0 - 2; }
     var i = 0;
@@ -165,6 +166,7 @@ fn _pmn_json_lift(src, n, dst, cap): i64 {
 
 # Writes `-` and the decimal of 2^64 − v at out, for the 19 or 20 digits of v in [2^63, 2^64): the negative integer
 # with v's bits, by decimal subtraction (no division). Returns the bytes written.
+#must_use
 fn _pmn_json_neg_complement(p, nd, out): i64 {
     var t[24];
     var two64 = "18446744073709551616";
@@ -195,6 +197,7 @@ fn _pmn_json_neg_complement(p, nd, out): i64 {
 
 # Parses text[0, n) into the document `doc` (_PMN_JSON_DOC_SIZE bytes, the caller's): PMN_ERR_NONE with the tree at
 # `_pmn_json_root(doc)`, or an error code with nothing held. Close it with `_pmn_json_close(doc)` either way.
+#must_use
 fn _pmn_json_open(doc, text, n): i64 {
     if (doc == 0) { return PMN_ERR_INVALID_PARAMETER; }
     store64(doc, 0);
@@ -266,6 +269,7 @@ fn _pmn_json_close(doc): i64 {
 
 # Decodes text[0, n): opens it, calls `fp(root, ctx)` (a decoder returning an error code), and closes it on every
 # path. Returns the open's error or the decoder's.
+#must_use
 fn _pmn_json_decode(text, n, fp, ctx): i64 {
     if (fp == 0) { return PMN_ERR_INVALID_PARAMETER; }
     var doc[_PMN_JSON_DOC_SIZE];

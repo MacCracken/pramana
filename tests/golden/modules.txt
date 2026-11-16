@@ -2,6 +2,7 @@
 bridge
 combinatorics
 constants
+debug
 fmt
 json
 math

@@ -548,6 +548,39 @@ fn _par_rng(fp, fl): i64 {
     return 0;
 }
 
+# `debug` rows (M1 part f; D12): Rust's derived Debug, the second input 0 for `{:?}` and 1 for `{:#?}`.
+var _par_dbg_sb = 0;
+
+fn _par_debug(fp, fl): i64 {
+    if (_par_in_n != 2) { return 0 - 1; }
+    if (_par_dbg_sb == 0) { _par_dbg_sb = str_builder_new(); }
+    var sb = _par_dbg_sb;
+    store64(sb + 8, 0);
+    var alt = _par_in(1);
+    var e = 0 - 1;
+    if (_par_eq(fp, fl, "debug::SimpleRng") == 1) {
+        var g: PmnSimpleRng;
+        if (PmnSimpleRng_new(&g, _par_in(0)) != PMN_ERR_NONE) { return 0 - 1; }
+        e = g.debug(sb, alt);
+    } elif (_par_eq(fp, fl, "debug::PramanaError") == 1) {
+        var en[40];
+        store64(&en, "InvalidParameter");
+        store64(&en + 8, "InvalidSample");
+        store64(&en + 16, "ConvergenceFailure");
+        store64(&en + 24, "DimensionMismatch");
+        store64(&en + 32, "ComputationError");
+        _par_json_k = 0;
+        var v = _par_jw_variant(&en, 5);
+        if (v < 0) { return 0 - 1; }
+        e = pmn_err_debug(PMN_ERR_INVALID_PARAMETER + v, sb, alt);
+    } else {
+        return 0;
+    }
+    if (e != PMN_ERR_NONE) { return 0 - 1; }
+    _par_got_text(load64(sb), load64(sb + 8));
+    return 1;
+}
+
 # `bridge` rows (M1 part e3): src/bridge.cyr. A slice is `v:n` and its values, read into a buffer; a slice of pairs
 # is `v:n` then each pair's integer and f64, read into 16-byte records; a tuple's elements come back in order.
 var _par_br_a = 0;
@@ -734,6 +767,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
     if (_par_eq(mp, ml, "combinatorics") == 1) { return _par_combinatorics(fp, fl); }
     if (_par_eq(mp, ml, "constants") == 1) { return _par_constants(fp, fl); }
+    if (_par_eq(mp, ml, "debug") == 1) { return _par_debug(fp, fl); }
     if (_par_eq(mp, ml, "fmt") == 1) { return _par_fmt(fp, fl); }
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }

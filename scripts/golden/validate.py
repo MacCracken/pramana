@@ -1245,6 +1245,39 @@ def cr_file(gdir, module, provenance, crs, write_cr, failures):
         print(f"  {cr_path.name}: {len(crs)} rows, as MPFR gives")
 
 
+# ── debug: Rust's derived Debug, modelled ──
+
+ERROR_VARIANTS = ["InvalidParameter", "InvalidSample", "ConvergenceFailure", "DimensionMismatch", "ComputationError"]
+
+
+def debug_text(fn, ins):
+    """The derive's text: a struct `Name { f: v }` / `Name {\\n    f: v,\\n}`, a tuple `Name(v)` / `Name(\\n    v,\\n)`."""
+    alt = ins[1] == 1
+    if fn == "debug::SimpleRng":
+        seed = ins[0] % (1 << 64)
+        state = str(seed or 1)
+        return "SimpleRng {\n    state: " + state + ",\n}" if alt else "SimpleRng { state: " + state + " }"
+    if fn == "debug::PramanaError":
+        name = ins[0].split(".", 1)[1]
+        if name not in ERROR_VARIANTS:
+            raise ValueError(name)
+        return name + '(\n    "",\n)' if alt else name + '("")'
+    raise ValueError(f"no debug model for {fn}")
+
+
+def check_debug(rows):
+    failures, by_fn = [], {}
+    for fn, _cls, ins, outs, _raw in rows:
+        want = debug_text(fn, ins)
+        got = urllib.parse.unquote(outs[0][len("s:"):])
+        ok = got == want
+        stat = by_fn.setdefault(fn, [0, 0])
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"debug: {fn}{tuple(ins)} recorded {got!r}, modelled {want!r}")
+    return failures, by_fn
+
+
 def check_math(rows):
     failures, by_fn = [], {}
     for fn, cls, ins, outs, _raw in rows:
@@ -1343,6 +1376,12 @@ def main(argv):
                 ok, bad = by_fn[fn]
                 print(f"  {fn:32s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
             cr_file(gdir, module, provenance, crs, write_cr, failures)
+        if module == "debug":
+            f, by_fn = check_debug(rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
         if module == "bridge":
             f, by_fn, crs = check_bridge(rows)
             failures.extend(f)
