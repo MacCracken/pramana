@@ -468,3 +468,31 @@ P9 measured 72–192 ns for x > 0 (by branch) and 570 ns for x < 0. Downstream, 
 - 26–28% on Stirling's remainder and the small-shape kernel, which call it once or twice around a few flops;
 - 3–7% on ln B with a small shape;
 - within the noise on the incomplete functions, whose loops dominate.
+
+## M2 part b4: the incomplete gamma within 4 ulp, T1 (2026-11-16)
+
+**Bodies.** The whole of `tests/special.bcyr` and its twin. Three rounds, interleaved and pinned to core 5, each started
+under a load average of 3 (1.6–1.9 throughout).
+- **The digests:** all 26 are explained by `validate.py`'s models. The port's two T1 `gamma_inc` rows equal the T1
+  model (`t1_gamma_inc`) on all 8,192 of their arguments. 1.3.0's P − Q differs from T1's on 1,651 and 239 of each
+  row's 4,096.
+- **The rows b4 leaves alone,** the Wilson–Hilferty row included, re-measured within 5% of their b3 record.
+
+| Row | Rust 1.3.0 | Cyrius T1 (b4) | Cyrius / Rust | Cyrius T0 (part a3) |
+|---|---|---|---|---|
+| `gamma_inc`, a in [0.5, 10), x in [0.1, 20) | 116.8–122.4 ns | 7.24–7.50 µs | 61× | 549–573 ns |
+| `gamma_inc`, a in [10, 1000), x in [5, 1500) | 119.5–124.3 ns | 5.82–5.97 µs | 48× | 585–614 ns |
+
+**Where the time goes.** T1 costs 10–13× T0, the 10–17× P9 measured (§6.5):
+- **every series and continued-fraction step is double-double:** a double-double division and product, and a
+  TwoSum, where Rust takes a division and a multiply-add;
+- **the prefactor** is a double-double exponent through kimiya's exp core, with lnΓ below a = 10 from a ζ series of
+  up to 64 terms;
+- **the tail-aware stop** adds about 9% more series terms near x = a, and almost none elsewhere.
+
+P9 found that plain-double loops miss the bound, by up to 79 ulp, so the cost has to come down through better
+algorithms rather than less precision:
+- Temme's uniform expansion near x = a for large a;
+- the direct small-shape form carried further than x = 1.1.
+
+Both are findings to measure, not changes for this part.

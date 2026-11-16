@@ -13,6 +13,8 @@
 # - `_par_error_name(code)`: the Rust variant name of a `PMN_ERR_*` code, as a C string;
 # - `_par_dispatch(mp, ml, fp, fl)`: fill the got list for one row (1 handled, 0 pending, -1 unusable);
 # - `_par_c_bound(fp, fl)`: a class-C function's ulp bound, or -1;
+# - `_par_c_vs_rust(fp, fl)`: 1 when the current row is outside its T1 function's committed domain, where ADR 009's rule
+#   is "no row less accurate than Rust": the bound then grows to 1.3.0's own distance from the reference (M2 part b4);
 # - `_par_c_mixed(fp, fl)`: 1 when the current row's bound is ADR 009's mixed one, in ulps of max(|want|, 1) (lnΓ for
 #   x < 0, from M2 part b3), else 0;
 # - `_par_accepted(fp, fl, ip, il)`: the ADR accepting a divergent row, or 0;
@@ -69,6 +71,9 @@ var _par_alt_k = 0;
 var _par_alt_v = 0;
 var _par_alt_l = 0;
 var _par_alt_n = 0;
+# 1 while the current row has a corrected or reference entry, so _par_alt_* holds this row's 1.3.0 outputs (from M2
+# part b4, for ADR 009's "no row less accurate than Rust", `_par_c_vs_rust`).
+var _par_has_alt = 0;
 
 # 1 if text [p, p + len) equals the C string `s`.
 #must_use
@@ -507,6 +512,13 @@ fn _par_compare(slot, cls, fp, fl): i64 {
                 # Class C, and class S (a single step: per field, the class of the path that produced it), use the
                 # function's bound from the `_par_c_bound` hook (pravash's addition: the S class, port plan §5).
                 var bound = _par_c_bound(fp, fl);
+                if (bound >= 0 && _par_c_vs_rust(fp, fl) == 1) {
+                    # ADR 009 outside a T1 function's committed domain: no row less accurate than Rust. The bound is
+                    # 1.3.0's own distance from the reference (0 when the row has none: 1.3.0 is the reference).
+                    var rust = 0;
+                    if (_par_has_alt == 1 && k < _par_alt_n) { rust = ulp_distance(load64(_par_alt_v + at), wv); }
+                    if (rust > bound) { bound = rust; }
+                }
                 if (bound < 0) {
                     if (result == 1) { result = 2; }
                 } elif (d > bound) {
@@ -904,9 +916,11 @@ fn _par_module(mp, ml): i64 {
             var cr = 0 - 1;
             var crbad = 0;
             var tag = 0;
+            _par_has_alt = 0;
             if (bad == 0) {
                 cr = _par_cr_find(fp, fl, buf + t2 + 1, t3 - t2 - 1);
                 if (cr >= 0) {
+                    _par_has_alt = 1;
                     _par_swap_want();
                     var cat = _par_cr_t + cr * 64;
                     tag = load64(cat + 56);

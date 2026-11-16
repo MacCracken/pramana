@@ -4755,6 +4755,133 @@ fn _pmn_cr_log2(x: f64): f64 {
     return a;
 }
 
+# --- dd.cyr ---
+
+# dd.cyr — double-double arithmetic for the T1 special functions (M2 part b; port plan §5 step 9d, ADR 009).
+#
+# Probe P9's toolkit (scripts/probes/p9_lgamma_impl.cyr, p9_gamma_impl.cyr), moved here unchanged but for names, so
+# lnΓ (src/lgamma.cyr), the incomplete gamma (src/gammainc.cyr) and the incomplete beta share it. A double-double
+# (h, l) is the unevaluated sum h + l with |l| at most about ulp(h)/2. Sums and products use the error-free
+# transformations of src/crmath.cyr (kimiya's TwoSum, Fast2Sum and Dekker's product), so each operation is near 2^-104
+# relative. The logarithm and the exponential are kimiya's double-double cores, near 2^-80 and 2^-70 relative.
+#
+# UPSTREAM(L8): ganita:docs/development/issues/2026-11-15-special-functions-scope-request.md
+#   replace with ganita's double-double type if it takes the special functions on; parity: every *.ref.tsv row
+
+# (ah + al) + (bh + bl) as a double-double.
+fn _pmn_dd_add(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var s, e = _pmn_km_two_sum(ah, bh);
+    var t: f64 = al + bl;
+    var e2: f64 = e + t;
+    var h, l = _pmn_km_fast_two_sum(s, e2);
+    return (h, l);
+}
+
+# (ah + al)·(bh + bl) as a double-double.
+fn _pmn_dd_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var p, e = _pmn_km_two_prod(ah, bh);
+    var c1: f64 = ah * bl;
+    var c2: f64 = al * bh;
+    var c: f64 = c1 + c2;
+    var e2: f64 = e + c;
+    var h, l = _pmn_km_fast_two_sum(p, e2);
+    return (h, l);
+}
+
+# (ah + al)·b for a double b, as a double-double.
+fn _pmn_dd_mul_d(ah: f64, al: f64, b: f64): (f64, f64) {
+    var p, e = _pmn_km_two_prod(ah, b);
+    var c: f64 = al * b;
+    var e2: f64 = e + c;
+    var h, l = _pmn_km_fast_two_sum(p, e2);
+    return (h, l);
+}
+
+# (ah + al)/(bh + bl) as a double-double: a first quotient, then one correction from its exact remainder.
+fn _pmn_dd_div(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var q1: f64 = ah / bh;
+    var p, pe = _pmn_km_two_prod(q1, bh);
+    var r0: f64 = ah - p;
+    var r1: f64 = r0 - pe;
+    var r2: f64 = r1 + al;
+    var qb: f64 = q1 * bl;
+    var r3: f64 = r2 - qb;
+    var q2: f64 = r3 / bh;
+    var h, l = _pmn_km_fast_two_sum(q1, q2);
+    return (h, l);
+}
+
+# ln x as a double-double, for a positive normal x: kimiya's fast core, |h + l − ln x| below about 2^-80·|ln x|.
+fn _pmn_dd_ln(x: f64): (f64, f64) {
+    var ui = load64(&x);
+    var h, l, err = _pmn_km_ln_core(ui, 0);
+    return (h, l);
+}
+
+# ln x as a double-double for any positive finite x: a subnormal x is scaled by 2^54 first, as kimiya's core expects.
+fn _pmn_dd_ln_any(x: f64): (f64, f64) {
+    var floor: f64 = 0x0010000000000000;    # 0x1p-1022, the least normal
+    var eb = 0;
+    var xs: f64 = x;
+    if (x < floor) {
+        var p54: f64 = 0x4350000000000000;  # 0x1p54
+        xs = x * p54;
+        eb = 0 - 54;
+    }
+    var ui = load64(&xs);
+    var h, l, err = _pmn_km_ln_core(ui, eb);
+    return (h, l);
+}
+
+# e^t − 1 for a double-double t: the Taylor sum below |t| = 1/8, stopped under 2^-62 of the value, else kimiya's exp
+# core minus 1. −1 below t = −700.
+fn _pmn_dd_expm1(th: f64, tl: f64): (f64, f64) {
+    var at: f64 = f64_abs(th);
+    if (at < 0.125) {
+        var sh: f64 = th;
+        var sl: f64 = tl;
+        var ph: f64 = th;
+        var pl: f64 = tl;
+        var thr: f64 = 0x3C10000000000000;  # 0x1p-62
+        var k = 2;
+        while (k < 40) {
+            var mh, ml = _pmn_dd_mul(ph, pl, th, tl);
+            var fk: f64 = f64_from(k);
+            var qh, ql = _pmn_dd_div(mh, ml, fk, 0.0);
+            ph = qh;
+            pl = ql;
+            var nh, nl = _pmn_dd_add(sh, sl, ph, pl);
+            sh = nh;
+            sl = nl;
+            var ap: f64 = f64_abs(ph);
+            var as: f64 = f64_abs(sh);
+            var lim: f64 = as * thr;
+            if (ap < lim) { break; }
+            k = k + 1;
+        }
+        return (sh, sl);
+    }
+    var lo: f64 = -700.0;
+    if (th < lo) { return (-1.0, 0.0); }
+    var eh, el, e = _pmn_km_exp_core(th, tl);
+    var s: f64 = _pmn_km_cr_pow2(e);
+    var xh: f64 = eh * s;
+    var xl: f64 = el * s;
+    var rh, rl = _pmn_dd_add(xh, xl, -1.0, 0.0);
+    return (rh, rl);
+}
+
+# 2^e·r for any integer e: two exact scalings, so only a subnormal result rounds a second time (by at most 2^-1074).
+#must_use
+fn _pmn_dd_scale(r: f64, e): f64 {
+    var e1 = e / 2;
+    var e2 = e - e1;
+    var s1: f64 = _pmn_km_cr_pow2(e1);
+    var s2: f64 = _pmn_km_cr_pow2(e2);
+    var y: f64 = r * s1;
+    return y * s2;
+}
+
 # --- crerf_data.cyr ---
 
 # crerf_data.cyr — CORE-MATH's binary64 erf and erfc tables and constants (M2 part b1; port plan §3.4, ADR 009).
@@ -6869,24 +6996,6 @@ var _PMN_LG_W6: f64 = 0xBF5AB89D0B9E43E4;   # -1.63092934096575273989e-03
 # is preserved.
 # ====================================================
 
-# ln x as a double-double, for a positive normal x: kimiya's fast core, |h + l − ln x| below about 2^-80·|ln x|.
-fn _pmn_lg_ln_dd(x: f64): (f64, f64) {
-    var ui = load64(&x);
-    var h, l, err = _pmn_km_ln_core(ui, 0);
-    return (h, l);
-}
-
-# (ah + al)·(bh + bl) as a double-double (relative error near 2^-104).
-fn _pmn_lg_dd_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
-    var p, e = _pmn_km_two_prod(ah, bh);
-    var c1: f64 = ah * bl;
-    var c2: f64 = al * bh;
-    var c: f64 = c1 + c2;
-    var e2: f64 = e + c;
-    var h, l = _pmn_km_fast_two_sum(p, e2);
-    return (h, l);
-}
-
 # fdlibm's polynomial for lnΓ near 1 and 2 (x < 2), case i of e_lgamma_r, in its operation order: the value r adds.
 fn _pmn_lg_poly12(y: f64, i): f64 {
     if (i == 0) {
@@ -6993,7 +7102,7 @@ fn _pmn_lg_pos_dd(x: f64): (f64, f64) {
         var i = 0;
         var tc: f64 = _PMN_LG_TC;
         if (ix <= 0x3FECCCCC) {
-            var lh, ll = _pmn_lg_ln_dd(x);
+            var lh, ll = _pmn_dd_ln(x);
             rh = -lh;
             rl = -ll;
             if (ix >= 0x3FE76944) {
@@ -7034,12 +7143,12 @@ fn _pmn_lg_pos_dd(x: f64): (f64, f64) {
         while (j < k) {
             var fj: f64 = f64_from(j);
             var fh, fl = _pmn_km_two_sum(y2, fj);
-            var mh, ml = _pmn_lg_dd_mul(zh, zl, fh, fl);
+            var mh, ml = _pmn_dd_mul(zh, zl, fh, fl);
             zh = mh;
             zl = ml;
             j = j + 1;
         }
-        var lzh, lzl = _pmn_lg_ln_dd(zh);
+        var lzh, lzl = _pmn_dd_ln(zh);
         var cz: f64 = zl / zh;
         var lzl2: f64 = lzl + cz;
         var s2, e2 = _pmn_km_two_sum(lzh, r0);
@@ -7047,7 +7156,7 @@ fn _pmn_lg_pos_dd(x: f64): (f64, f64) {
         return (s2, lo2);
     }
     # x ≥ 8: (x − ½)(ln x − 1) + w(1/x), with x·(ln x − 1) a double-double at every magnitude.
-    var th, tl = _pmn_lg_ln_dd(x);
+    var th, tl = _pmn_dd_ln(x);
     var sh, sl0 = _pmn_km_two_sum(th, -1.0);
     var sl: f64 = sl0 + tl;
     var ph: f64 = 0.0;
@@ -7127,11 +7236,11 @@ fn _pmn_lg_ln_gamma(x: f64): f64 {
     var sn: f64 = _pmn_km_cr_sin(qh);
     var cs: f64 = _pmn_km_cr_cos(qh);
     var sc: f64 = ql * cs;
-    var lsh, lsl0 = _pmn_lg_ln_dd(sn);
+    var lsh, lsl0 = _pmn_dd_ln(sn);
     var csn: f64 = sc / sn;
     var lsl: f64 = lsl0 + csn;
-    var lah, lal = _pmn_lg_ln_dd(a);
-    var lph, lpl0 = _pmn_lg_ln_dd(pih);
+    var lah, lal = _pmn_dd_ln(a);
+    var lph, lpl0 = _pmn_dd_ln(pih);
     var cpi: f64 = pim / pih;
     var lpl: f64 = lpl0 + cpi;
     var gh, gl = _pmn_lg_pos_dd(a);
@@ -7144,6 +7253,481 @@ fn _pmn_lg_ln_gamma(x: f64): f64 {
     var lo: f64 = ((e1 + e2) + e3) + (((lpl - lal) - lsl) - gl);
     var res: f64 = s3 + lo;
     return res;
+}
+
+# --- zeta_data.cyr ---
+
+# zeta_data.cyr — Euler's γ and ζ(k), k = 2 … 64, as double-doubles, for the T1 incomplete gamma's lnΓ below
+# a = 10 (M2 part b4; port plan §5 step 9d-2, ADR 009).
+#
+# GENERATED by scripts/gen_zeta.py from MPFR 4.x at 320 bits. Do not edit. Each constant is a
+# double-double, hi = RN(v) and lo = RN(v − hi), checked to 2^-104, held as bit patterns: γ as two typed
+# globals, and ζ(k) (ZH, ZL) and ζ(k) − 1 (MH, ML, taken in MPFR before the split) as tables indexed by k, with
+# k = 0 and 1 unused.
+
+var _PMN_ZT_EULER_H: f64 = 0x3FE2788CFC6FB619;   # 0.5772156649015329
+var _PMN_ZT_EULER_L: f64 = 0xBC56CB90701FBFAB;
+var _PMN_ZT_ZH: i64[65] = {
+    0x0000000000000000, 0x0000000000000000, 0x3FFA51A6625307D3, 0x3FF33BA004F00621,
+    0x3FF151322AC7D848, 0x3FF097418ECA7CCE, 0x3FF0470984C09245, 0x3FF02232DA14CF39,
+    0x3FF010B36AF86397, 0x3FF00839F3D816B5, 0x3FF00412E33A5BB9, 0x3FF0020631BE48B3,
+    0x3FF001020A5B2CD3, 0x3FF00080AC9D08BC, 0x3FF00040392BCAD4, 0x3FF0002012F797E2,
+    0x3FF00010064CDEB2, 0x3FF00008021839B4, 0x3FF0000400B2654E, 0x3FF00002003B611F,
+    0x3FF000010013C594, 0x3FF00000800695D6, 0x3FF000004002319B, 0x3FF000002000BB1E,
+    0x3FF0000010003E5A, 0x3FF00000080014C7, 0x3FF00000040006ED, 0x3FF000000200024F,
+    0x3FF00000010000C5, 0x3FF0000000800042, 0x3FF0000000400016, 0x3FF0000000200007,
+    0x3FF0000000100002, 0x3FF0000000080001, 0x3FF0000000040000, 0x3FF0000000020000,
+    0x3FF0000000010000, 0x3FF0000000008000, 0x3FF0000000004000, 0x3FF0000000002000,
+    0x3FF0000000001000, 0x3FF0000000000800, 0x3FF0000000000400, 0x3FF0000000000200,
+    0x3FF0000000000100, 0x3FF0000000000080, 0x3FF0000000000040, 0x3FF0000000000020,
+    0x3FF0000000000010, 0x3FF0000000000008, 0x3FF0000000000004, 0x3FF0000000000002,
+    0x3FF0000000000001, 0x3FF0000000000001, 0x3FF0000000000000, 0x3FF0000000000000,
+    0x3FF0000000000000, 0x3FF0000000000000, 0x3FF0000000000000, 0x3FF0000000000000,
+    0x3FF0000000000000, 0x3FF0000000000000, 0x3FF0000000000000, 0x3FF0000000000000,
+    0x3FF0000000000000
+};
+var _PMN_ZT_ZL: i64[65] = {
+    0x0000000000000000, 0x0000000000000000, 0x3C81873D8912200C, 0x3C8C1B8B8AE2CF35,
+    0x3C8B5F91211196E5, 0xBC921773EC70B998, 0xBC9C209343D2BFC4, 0xBC9C95902995DE95,
+    0xBC7741A635B224A6, 0x3C9C0BFE83EEC736, 0x3C9F86047CC150C0, 0x3C8544704E316139,
+    0x3C5066E420BC2E16, 0xBC80A7CE669B825D, 0xBC9EA9E1E7BC7595, 0x3C8BED0AAF45D7F5,
+    0x3C87879D0156AFFE, 0x3C89A034DE24813E, 0xBC87668DACA3C667, 0x3C8BA49E441F1ECA,
+    0x3C919BA621F86DED, 0xBC9AFDBDB136DF19, 0x3C8D8EF97539F490, 0x3C83858C5A6C3536,
+    0xBC00F704AF898EBA, 0x3C94AAC6645EF170, 0xBC8D2664CDFCC62C, 0xBC846F7BB580AD02,
+    0xBC72FA51D46AE36E, 0xBC973FCAF2A81052, 0xBC7F554507AA9318, 0x3C92B38CDCB36E80,
+    0x3C9B8FD913D3546A, 0xBC884B6F7FB47E9C, 0x3C9148AD65290E5A, 0x3C770B7C82703C44,
+    0x3C5EB9E5FFB2F6BE, 0x3C447BE3FE61081F, 0x3C2B4FCFFCB3E803, 0x3C12352FFD58FA7B,
+    0x3BF846E5516EF4D6, 0x3BE02F40E0CF7020, 0x3BC59453D64C2971, 0x3BACC5C272F86A10,
+    0x3B932E804C9C1701, 0x3B799354661DD68A, 0x3B610CE24410D8A0, 0x3B46BBD7B014066A,
+    0x3B2E4FC9956E1593, 0x3B143530B8F346CD, 0x3AFAF195F6991412, 0x3AE1F663CF10782F,
+    0x3AC7F32F9415C27E, 0xBC9FFFFFFFC0222C, 0x3C900000001549F1, 0x3C800000000E314B,
+    0x3C70000000097632, 0x3C60000000064ECC, 0x3C50000000043488, 0x3C4000000002CDB0,
+    0x3C3000000001DE75, 0x3C20000000013EF9, 0x3C1000000000D4A6, 0x3C00000000008DC4,
+    0x3BF0000000005E83
+};
+var _PMN_ZT_MH: i64[65] = {
+    0x0000000000000000, 0x0000000000000000, 0x3FE4A34CC4A60FA6, 0x3FC9DD002780310A,
+    0x3FB51322AC7D8483, 0x3FA2E831D94F99B7, 0x3F91C26130249124, 0x3F81196D0A679C47,
+    0x3F70B36AF86396E9, 0x3F6073E7B02D6AE0, 0x3F504B8CE96EE5F8, 0x3F40318DF2459954,
+    0x3F3020A5B2CD3042, 0x3F201593A1177BD6, 0x3F100E4AF2B4E156, 0x3F00097BCBF11BED,
+    0x3EF0064CDEB22F0F, 0x3EE0043073686681, 0x3ED002C9953744CC, 0x3EC001DB08F9BA4A,
+    0x3EB0013C594466EA, 0x3EA000D2BAB28121, 0x3E90008C66CEC77D, 0x3E80005D8F13858C,
+    0x3E70003E59FFDE12, 0x3E6000298EA55633, 0x3E50001BB316CCDA, 0x3E40001276B90845,
+    0x3E30000C4ED05AE3, 0x3E20000834601A87, 0x3E100005782AAEBE, 0x3E000003A56719B9,
+    0x3DF000026E3F644F, 0x3DE000019ED24201, 0x3DD00001148AD653, 0x3DC00000B85BE414,
+    0x3DB000007AE797FF, 0x3DA0000051EF8FFA, 0x3D900000369F9FF9, 0x3D800000246A5FFB,
+    0x3D7000001846E551, 0x3D600000102F40E1, 0x3D5000000ACA29EB, 0x3D4000000731709D,
+    0x3D30000004CBA013, 0x3D20000003326A8D, 0x3D10000002219C49, 0x3D000000016BBD7B,
+    0x3CF0000000F27E4D, 0x3CE0000000A1A986, 0x3CD00000006BC658, 0x3CC000000047D98F,
+    0x3CB00000002FE65F, 0x3CA00000001FEEEA, 0x3C900000001549F1, 0x3C800000000E314B,
+    0x3C70000000097632, 0x3C60000000064ECC, 0x3C50000000043488, 0x3C4000000002CDB0,
+    0x3C3000000001DE75, 0x3C20000000013EF9, 0x3C1000000000D4A6, 0x3C00000000008DC4,
+    0x3BF0000000005E83
+};
+var _PMN_ZT_ML: i64[65] = {
+    0x0000000000000000, 0x0000000000000000, 0x3C81873D8912200C, 0xBC5F23A3A8E9865C,
+    0x3C5AFC89088CB729, 0xBC1773EC70B99803, 0xBC2049A1E95FE1F7, 0xBC15902995DE94EF,
+    0xBC10698D6C892967, 0x3C07FD07DD8E6B43, 0x3BF811F3054300C0, 0x3BE1C138C584E5D8,
+    0xBBD91BDF43D1EA35, 0x3B98CCB23ED16378, 0x3B9E18438A6B48BE, 0x3B755E8BAFEA33AC,
+    0x3B8D0156AFFDBC11, 0xBB7643B6FD841D17, 0xBB7B59478CCD48A2, 0xBB4BBE0E1359BE6C,
+    0xBB5DE0792137E167, 0x3B33B24839A5D1E2, 0xBB3158C16E0E2054, 0x3B269B0D4D854AC3,
+    0xBAE2BE263AE7D962, 0x3AF17BC5BF6B04A4, 0xBAFBF98C5790F889, 0xBAE602B4076A885C,
+    0xBAD1AB8DB7603983, 0xBAC5020A4144EBBC, 0x3A955B39E2ADA0D7, 0x3AA9B7402FEA75CE,
+    0x3A93546A6054C889, 0x3A7702C8E88DFB2D, 0xBA7BC696EF5C5F41, 0xBA6F8778B18E28E8,
+    0xBA4A12830516DA70, 0xBA4EF7E0DA52D749, 0x3A39F401BC2B3D47, 0xBA2382C27A3837C4,
+    0x3A1BBD35645D5E6B, 0xB9F847EFCFFEC60C, 0x39E30A5C43949674, 0xB9E0795F00482CD6,
+    0x39C382E028127AE0, 0xB9BE229766CDD426, 0xB9BF793B0201B061, 0x39440669DE861CFC,
+    0xB99523D4DA4741C2, 0xB97C32E4CD8DC1AD, 0xB962CDD7DB9C7BB2, 0x395E20F05E872CFF,
+    0x394415C27D8F2836, 0xB91FC64B1982DA8B, 0x392AB440A48C4063, 0x392B91693F03C85B,
+    0x39110B9AD7F1CED4, 0x38F564CDEF577D05, 0x38DB311229528611, 0x38C1760BF0B1F7E0,
+    0x38D82901F929F664, 0xB8A512A56E6B5809, 0xB88C43874360A5FC, 0xB872ED04D9C77096,
+    0xB896EA6B12420976
+};
+
+# --- gammainc.cyr ---
+
+# gammainc.cyr — the regularized incomplete gamma P(a, x) and Q(a, x) within 4 ulp (T1, M2 part b4; port plan
+# D3 = C, §3.4; ADR 009: ≤ 4 ulp for a in [1e-3, 1e5] and x > 0; for any other a up to 1e9, no row less accurate
+# than Rust's).
+#
+# Probe P9's prototype (§5 step 9d-2), moved here unchanged but for names. It keeps Rust's two expansions, the series
+# for P and Legendre's continued fraction for Q, with four changes:
+# - the prefactor's exponent a ln x − x − lnΓ(a) is a double-double. Below a = 10, lnΓ(a) comes from the ζ series of
+#   lnΓ(1 + f) (src/zeta_data.cyr) and an exact recurrence. From a = 10 it is Rust's cancellation-free kernel, with
+#   u − ln(1 + u) as an exact series, or with ln(1 + u) taken as ln x − ln a so that u's rounding never enters.
+#   kimiya's exp core takes the double-double;
+# - the series and the continued fraction run in double-double and stop under 2^-62;
+# - the split is at x = a, so a complement is taken only where it can't cancel: Q = 1 − P where P ≤ 0.64, and
+#   P = 1 − Q where Q ≤ 1/2;
+# - for a < 1 and x < 1.1, Q comes directly from (Γ(1 + a) − x^a − a·x^a·Σ (−x)^n/(n!(a + n)))/Γ(1 + a), not as
+#   1 − P (Rust's 246-ulp row).
+# Three fixes to P9's form, each found past its sets (a from 1e-3 to 1e5, x to 50a): the series stops on a bound of
+# its tail, not on its last term; below a = 2^-512 its Σ/a is formed as Σ/(a·2^600), as Dekker's split overflowed into
+# a NaN; and past x = 2^990 the result is (1, 0) directly, where the kernel overflowed the same way.
+# Each result is rounded once; a subnormal one is rounded twice, by the final scaling, by at most 2^-1074. P9 measured
+# it within 1.0 ulp (mean ≤ 0.25) on 360,400 rows against a 320-bit reference, where 1.3.0 is off by up to 485 ulp on
+# §3.2's pairs and by 2.9×10⁹ in the deep lower tail. It costs 10–17× 1.3.0's form: every loop step is double-double.
+#
+# UPSTREAM(L8): ganita:docs/development/issues/2026-11-15-special-functions-scope-request.md
+#   replace with ganita's incomplete gamma if it takes the special functions on, at ADR 009's bound; parity: every
+#   gamma_inc row of special.ref.tsv
+
+# lnΓ(1 + f) for 0 ≤ f < 1 as a double-double: −γf + Σ (−1)^k ζ(k)/k·f^k up to f = 1/2, and with y = f − 1,
+# (1 − γ)y + Σ (−1)^k (ζ(k) − 1)/k·y^k above (terms below 2^-k and 4^-k: the sums stop under 2^-62 of the value).
+fn _pmn_gi_lngamma1p_dd(f: f64): (f64, f64) {
+    if (f == 0.0) { return (0.0, 0.0); }
+    var gh: f64 = _PMN_ZT_EULER_H;
+    var gl: f64 = _PMN_ZT_EULER_L;
+    var thr: f64 = 0x3C10000000000000;          # 0x1p-62
+    var y: f64 = f;
+    var ch: f64 = 0.0;
+    var cl: f64 = 0.0;
+    var useh = 1;
+    if (f > 0.5) {
+        y = f - 1.0;
+        var oh, ol = _pmn_km_two_sum(1.0, -gh);
+        var ol2: f64 = ol - gl;
+        ch = oh;
+        cl = ol2;
+        useh = 0;
+    } else {
+        ch = -gh;
+        cl = -gl;
+    }
+    var acc, accl = _pmn_dd_mul_d(ch, cl, y);
+    var ph: f64 = y;
+    var pl: f64 = 0.0;
+    var k = 2;
+    while (k <= 64) {
+        var nh, nl = _pmn_dd_mul_d(ph, pl, y);
+        ph = nh;
+        pl = nl;
+        var zh: f64 = load64(&_PMN_ZT_ZH + k * 8);
+        var zl: f64 = load64(&_PMN_ZT_ZL + k * 8);
+        if (useh == 0) {
+            zh = load64(&_PMN_ZT_MH + k * 8);
+            zl = load64(&_PMN_ZT_ML + k * 8);
+        }
+        var th, tl = _pmn_dd_mul(zh, zl, ph, pl);
+        var fk: f64 = f64_from(k);
+        var uh, ul = _pmn_dd_div(th, tl, fk, 0.0);
+        if ((k & 1) == 1) {
+            uh = -uh;
+            ul = -ul;
+        }
+        var sh, sl = _pmn_dd_add(acc, accl, uh, ul);
+        acc = sh;
+        accl = sl;
+        var au: f64 = f64_abs(uh);
+        var aa: f64 = f64_abs(acc);
+        var lim: f64 = aa * thr;
+        if (au < lim) { break; }
+        k = k + 1;
+    }
+    return (acc, accl);
+}
+
+# lnΓ(a) for 0 < a < 20 as a double-double: lnΓ(1 + f) − ln a below 1, else lnΓ(1 + f) + ln((1 + f)…(m − 1 + f))
+# with a = m + f and the product a double-double (the incomplete gamma calls it below 10).
+fn _pmn_gi_lngamma_small_dd(a: f64): (f64, f64) {
+    if (a < 1.0) {
+        var gh, gl = _pmn_gi_lngamma1p_dd(a);
+        var lh, ll = _pmn_dd_ln_any(a);
+        var rh, rl = _pmn_dd_add(gh, gl, -lh, -ll);
+        return (rh, rl);
+    }
+    var mf: f64 = f64_floor(a);
+    var f: f64 = a - mf;
+    var m = f64_to(mf);
+    var g2h, g2l = _pmn_gi_lngamma1p_dd(f);
+    if (m < 2) { return (g2h, g2l); }
+    var zh, zl = _pmn_km_two_sum(1.0, f);
+    var j = 2;
+    while (j < m) {
+        var fj: f64 = f64_from(j);
+        var th, tl = _pmn_km_two_sum(fj, f);
+        var nh, nl = _pmn_dd_mul(zh, zl, th, tl);
+        zh = nh;
+        zl = nl;
+        j = j + 1;
+    }
+    var lzh, lzl = _pmn_dd_ln(zh);
+    var cz: f64 = zl / zh;
+    var lzl2: f64 = lzl + cz;
+    var sh, sl = _pmn_dd_add(g2h, g2l, lzh, lzl2);
+    return (sh, sl);
+}
+
+# The prefactor's exponent M = a ln x − x − lnΓ(a) as a double-double.
+fn _pmn_gi_lnpre(a: f64, x: f64): (f64, f64) {
+    if (a < 10.0) {
+        var lh, ll = _pmn_dd_ln_any(x);
+        var th, tl = _pmn_dd_mul_d(lh, ll, a);
+        var sh, sl = _pmn_dd_add(th, tl, -x, 0.0);
+        var gh, gl = _pmn_gi_lngamma_small_dd(a);
+        var mh, ml = _pmn_dd_add(sh, sl, -gh, -gl);
+        return (mh, ml);
+    }
+    # a ≥ 10: −a·φ(u) + ½ ln a − ln √(2π) − stirling(a), u = (x − a)/a, φ(u) = u − ln(1 + u).
+    var dh, dl = _pmn_km_two_sum(x, -a);
+    var uh, ul = _pmn_dd_div(dh, dl, a, 0.0);
+    var fh: f64 = 0.0;
+    var fl: f64 = 0.0;
+    var lah, lal = _pmn_dd_ln(a);
+    var au: f64 = f64_abs(uh);
+    if (au <= 0.25) {
+        # φ(u) = Σ_{k≥2} (−u)^k/k, exactly enough: terms fall by 4 or more.
+        var wh: f64 = -uh;
+        var wl: f64 = -ul;
+        var ph, pl = _pmn_dd_mul(wh, wl, wh, wl);
+        var thr: f64 = 0x3C10000000000000;      # 0x1p-62
+        var k = 2;
+        while (k < 200) {
+            var fk: f64 = f64_from(k);
+            var th2, tl2 = _pmn_dd_div(ph, pl, fk, 0.0);
+            var sh2, sl2 = _pmn_dd_add(fh, fl, th2, tl2);
+            fh = sh2;
+            fl = sl2;
+            var at: f64 = f64_abs(th2);
+            var af: f64 = f64_abs(fh);
+            var lim: f64 = af * thr;
+            if (at < lim) { break; }
+            var nh, nl = _pmn_dd_mul(ph, pl, wh, wl);
+            ph = nh;
+            pl = nl;
+            k = k + 1;
+        }
+    } else {
+        # ln(1 + u) = ln x − ln a exactly, so u's rounding never enters the logarithm.
+        var lxh, lxl = _pmn_dd_ln_any(x);
+        var l1h, l1l = _pmn_dd_add(lxh, lxl, -lah, -lal);
+        var ph2, pl2 = _pmn_dd_add(uh, ul, -l1h, -l1l);
+        fh = ph2;
+        fl = pl2;
+    }
+    var ah, al = _pmn_dd_mul_d(fh, fl, a);
+    var hh: f64 = 0.5 * lah;
+    var hl: f64 = 0.5 * lal;
+    var pih: f64 = _PMN_KM_CR_SC_PIH;
+    var pim: f64 = _PMN_KM_CR_SC_PIM;
+    var tph: f64 = 2.0 * pih;
+    var tpm: f64 = 2.0 * pim;
+    var lph, lpl = _pmn_dd_ln(tph);
+    var cp: f64 = tpm / tph;
+    var lpl2: f64 = lpl + cp;
+    var sph: f64 = 0.5 * lph;
+    var spl: f64 = 0.5 * lpl2;
+    var st: f64 = _pmn_stirling_error(a);       # Rust's series, as a ≥ 10
+    var r1h, r1l = _pmn_dd_add(hh, hl, -ah, -al);
+    var r2h, r2l = _pmn_dd_add(r1h, r1l, -sph, -spl);
+    var r3h, r3l = _pmn_dd_add(r2h, r2l, -st, 0.0);
+    return (r3h, r3l);
+}
+
+# e^M for a double-double M, as (h, l, E) with h + l = e^M/2^E near 2^-70; E = −100000 when e^M underflows.
+fn _pmn_gi_exp_dd(mh: f64, ml: f64): (f64, f64, i64) {
+    var lo: f64 = -1100.0;
+    if (mh < lo) { return (0.0, 0.0, 0 - 100000); }
+    var h, l, e = _pmn_km_exp_core(mh, ml);
+    return (h, l, e);
+}
+
+# The series Σ_{n≥0} Π_{k=1..n} x/(a + k) as a double-double, stopping once the tail is under 2^-62 of the sum: the
+# terms after t_n are below t_n·r/(1 − r) with r = x/(a + n + 1), so the test is t_n·x < 2^-62·S·(a + n + 1 − x). P9
+# stopped at t_n < 2^-62·S, which near x = a leaves a tail of t_n/(1 − r), about √a/9 terms' worth: 7 ulp at a = 1e9
+# (M2 part b4's crverify set), 0.07 at 1e5.
+fn _pmn_gi_series(a: f64, x: f64): (f64, f64) {
+    var sh: f64 = 1.0;
+    var sl: f64 = 0.0;
+    var th: f64 = 1.0;
+    var tl: f64 = 0.0;
+    var thr: f64 = 0x3C10000000000000;          # 0x1p-62
+    var n = 1;
+    var cap = 2000 + 100 * f64_to(f64_sqrt(a));
+    while (n < cap) {
+        var fnn: f64 = f64_from(n);
+        var dh, dl = _pmn_km_two_sum(a, fnn);
+        var qh, ql = _pmn_dd_div(x, 0.0, dh, dl);
+        var mh, ml = _pmn_dd_mul(th, tl, qh, ql);
+        th = mh;
+        tl = ml;
+        var nh, nl = _pmn_dd_add(sh, sl, th, tl);
+        sh = nh;
+        sl = nl;
+        var axn: f64 = a - x;
+        var gap: f64 = axn + (fnn + 1.0);
+        var tx: f64 = th * x;
+        var lim: f64 = sh * thr;
+        var lim2: f64 = lim * gap;
+        if (tx < lim2) { break; }
+        n = n + 1;
+    }
+    return (sh, sl);
+}
+
+# Legendre's continued fraction for Γ(a, x)·e^x·x^-a by modified Lentz, in double-double, stopping when a step
+# changes the value by under 2^-62.
+fn _pmn_gi_cf(a: f64, x: f64): (f64, f64) {
+    var tiny: f64 = 0x0010000000000000;         # 0x1p-1022
+    var bh, bl0 = _pmn_km_two_sum(x, -a);
+    var b1h, b1l = _pmn_dd_add(bh, bl0, 1.0, 0.0);
+    bh = b1h;
+    var bl: f64 = b1l;
+    var dh, dl = _pmn_dd_div(1.0, 0.0, bh, bl);
+    var hh: f64 = dh;
+    var hl: f64 = dl;
+    var ch: f64 = 0.0;
+    var cl: f64 = 0.0;
+    var thr: f64 = 0x3C10000000000000;          # 0x1p-62
+    var cap = 2000 + 100 * f64_to(f64_sqrt(a));
+    var i = 1;
+    while (i < cap) {
+        var fi: f64 = f64_from(i);
+        var ih, il = _pmn_km_two_sum(fi, -a);
+        var anh, anl = _pmn_dd_mul_d(ih, il, fi);
+        anh = -anh;
+        anl = -anl;
+        var b2h, b2l = _pmn_dd_add(bh, bl, 2.0, 0.0);
+        bh = b2h;
+        bl = b2l;
+        var adh, adl = _pmn_dd_mul(anh, anl, dh, dl);
+        var d2h, d2l = _pmn_dd_add(adh, adl, bh, bl);
+        var dab: f64 = f64_abs(d2h);
+        if (dab < tiny) {
+            d2h = tiny;
+            d2l = 0.0;
+        }
+        if (i == 1) {
+            # c starts at "infinity", so the first c is b itself.
+            ch = bh;
+            cl = bl;
+        } else {
+            var qh, ql = _pmn_dd_div(anh, anl, ch, cl);
+            var c2h, c2l = _pmn_dd_add(bh, bl, qh, ql);
+            ch = c2h;
+            cl = c2l;
+        }
+        var cab: f64 = f64_abs(ch);
+        if (cab < tiny) {
+            ch = tiny;
+            cl = 0.0;
+        }
+        var rdh, rdl = _pmn_dd_div(1.0, 0.0, d2h, d2l);
+        dh = rdh;
+        dl = rdl;
+        var delh, dell = _pmn_dd_mul(dh, dl, ch, cl);
+        var nhh, nhl = _pmn_dd_mul(hh, hl, delh, dell);
+        hh = nhh;
+        hl = nhl;
+        var dm1h, dm1l = _pmn_dd_add(delh, dell, -1.0, 0.0);
+        var dev: f64 = f64_abs(dm1h);
+        if (dev < thr) { break; }
+        i = i + 1;
+    }
+    return (hh, hl);
+}
+
+# Q for a < 1 and x < 1.1, directly: (Γ(1 + a) − x^a − a·x^a·T)/Γ(1 + a), T = Σ_{n≥1} (−x)^n/(n!(a + n)),
+# with Γ(1 + a) − 1 = expm1(lnΓ(1 + a)) and x^a − 1 = expm1(a ln x), all in double-double.
+#must_use
+fn _pmn_gi_small_q(a: f64, x: f64): f64 {
+    var lgh, lgl = _pmn_gi_lngamma1p_dd(a);
+    var g1h, g1l = _pmn_dd_expm1(lgh, lgl);
+    var lxh, lxl = _pmn_dd_ln_any(x);
+    var alh, all = _pmn_dd_mul_d(lxh, lxl, a);
+    var p1h, p1l = _pmn_dd_expm1(alh, all);
+    var th: f64 = 0.0;
+    var tl: f64 = 0.0;
+    var ch: f64 = 1.0;
+    var cl: f64 = 0.0;
+    var nx: f64 = -x;
+    var thr: f64 = 0x3C10000000000000;          # 0x1p-62
+    var n = 1;
+    while (n < 80) {
+        var fnn: f64 = f64_from(n);
+        var mh, ml = _pmn_dd_mul_d(ch, cl, nx);
+        var qh, ql = _pmn_dd_div(mh, ml, fnn, 0.0);
+        ch = qh;
+        cl = ql;
+        var dh, dl = _pmn_km_two_sum(a, fnn);
+        var uh, ul = _pmn_dd_div(ch, cl, dh, dl);
+        var sh, sl = _pmn_dd_add(th, tl, uh, ul);
+        th = sh;
+        tl = sl;
+        var au: f64 = f64_abs(uh);
+        var as: f64 = f64_abs(th);
+        var lim: f64 = as * thr;
+        if (au < lim) { break; }
+        n = n + 1;
+    }
+    var xah, xal = _pmn_dd_add(1.0, 0.0, p1h, p1l);
+    var axh, axl = _pmn_dd_mul_d(xah, xal, a);
+    var wh, wl = _pmn_dd_mul(axh, axl, th, tl);
+    var dfh, dfl = _pmn_dd_add(g1h, g1l, -p1h, -p1l);
+    var nmh, nml = _pmn_dd_add(dfh, dfl, -wh, -wl);
+    var gmh, gml = _pmn_dd_add(1.0, 0.0, g1h, g1l);
+    var qh2, ql2 = _pmn_dd_div(nmh, nml, gmh, gml);
+    var r: f64 = qh2 + ql2;
+    return r;
+}
+
+# T1 (P, Q) for 0 < a ≤ 1e9 (special.cyr's gamma_inc keeps Rust's Wilson–Hilferty form past 1e9). (NaN, NaN) for a NaN
+# argument or a ≤ 0; (0, 1) for x ≤ 0 or a = +∞; (1, 0) for x = +∞; each as Rust's.
+fn _pmn_gi_gamma_inc(a: f64, x: f64): (f64, f64) {
+    var nan: f64 = _PMN_F64_NAN;
+    if (x != x || a != a || a <= 0.0) { return (nan, nan); }
+    if (x <= 0.0) { return (0.0, 1.0); }
+    var inf: f64 = _PMN_F64_INFINITY;
+    if (x == inf) { return (1.0, 0.0); }
+    if (a == inf) { return (0.0, 1.0); }
+    # Past x = 2^990, Q is far below 2^-1075 for every a up to 1e9 (the exponent is about −x), and from a = 10 the
+    # kernel's (x − a)/a and a·φ(u) would overflow Dekker's split near x = 2^996·a: (1, 0), which the underflowed
+    # prefactor gives below (M2 part b4 found the NaN at x = f64::MAX; P9's sets stopped at 50a).
+    var huge: f64 = 0x7DD0000000000000;         # 0x1p990
+    if (x > huge) { return (1.0, 0.0); }
+    var mh, ml = _pmn_gi_lnpre(a, x);
+    var eh, el, e = _pmn_gi_exp_dd(mh, ml);
+    if (x < a || (a < 1.0 && x < 1.1)) {
+        var sh, sl = _pmn_gi_series(a, x);
+        # Σ/a passes 2^996, where Dekker's split overflows, once a is below about 2^-995: below 2^-512 the sum is
+        # divided by a·2^600 and the scale takes the 600 back, both exactly (M2 part b4 found the NaN at a = 1e-300;
+        # P9's sets stopped at 1e-3).
+        var ad: f64 = a;
+        var es = e;
+        var t512: f64 = 0x1FF0000000000000;    # 0x1p-512
+        if (a < t512) {
+            var p600: f64 = 0x6570000000000000; # 0x1p600
+            ad = a * p600;
+            es = e + 600;
+        }
+        var s2h, s2l = _pmn_dd_div(sh, sl, ad, 0.0);
+        var ph, pl = _pmn_dd_mul(eh, el, s2h, s2l);
+        var pr: f64 = ph + pl;
+        var p: f64 = _pmn_dd_scale(pr, es);
+        if (a < 1.0 && x < 1.1) {
+            var qs: f64 = _pmn_gi_small_q(a, x);
+            return (p, qs);
+        }
+        # Q = 1 − P, with P ≤ 0.64 here (x < a, a ≥ 1): the scaled double-double, then one rounding.
+        var s: f64 = _pmn_km_cr_pow2(e);
+        if (e < 0 - 1000) { s = 0.0; }
+        var psh: f64 = ph * s;
+        var psl: f64 = pl * s;
+        var qh, ql = _pmn_dd_add(1.0, 0.0, -psh, -psl);
+        var q: f64 = qh + ql;
+        return (p, q);
+    }
+    var hh, hl = _pmn_gi_cf(a, x);
+    var qqh, qql = _pmn_dd_mul(eh, el, hh, hl);
+    var qr: f64 = qqh + qql;
+    var q2: f64 = _pmn_dd_scale(qr, e);
+    var s2: f64 = _pmn_km_cr_pow2(e);
+    if (e < 0 - 1000) { s2 = 0.0; }
+    var qsh: f64 = qqh * s2;
+    var qsl: f64 = qql * s2;
+    var p2h, p2l = _pmn_dd_add(1.0, 0.0, -qsh, -qsl);
+    var p2: f64 = p2h + p2l;
+    return (p2, q2);
 }
 
 # --- mathx.cyr ---
@@ -9456,8 +10040,8 @@ fn pmn_response_times_to_hick_params(data, n, out): i64 {
 # - Φ and 1 − Φ are T1 (part b2): within 0.5 + 2^-7 ulp, on erfc's double-double core (src/crerf.cyr);
 # - lnΓ is T1 (part b3): fdlibm's layout with double-double logarithms (src/lgamma.cyr), within 2 ulp;
 # - a2: the Stirling remainder, Loader's bd0, the incomplete gamma's prefactor kernel, and ln B (T0, on T1's lnΓ);
-# - a3: the regularized incomplete gamma P and Q: the series below x = a + 1, Lentz's continued fraction above, and
-#   Wilson–Hilferty's normal approximation past a = 10⁹ (T0);
+# - the regularized incomplete gamma P and Q are T1 (part b4): Rust's two expansions in double-double, split at x = a
+#   (src/gammainc.cyr), within 4 ulp; Rust's Wilson–Hilferty form past a = 10⁹, on T1's Φ;
 # - a4: the regularized incomplete beta I_x(a, b) and its complement, by Lentz's continued fraction on the side where
 #   it converges fastest (T0).
 # The coefficients are src/constants.cyr's, generated from rust-old/src and proven against the oracle (M0 step 6). The
@@ -9637,7 +10221,7 @@ fn _pmn_ln_beta(a: f64, b: f64): f64 {
     return g1 - gab;
 }
 
-# ── part a3: the regularized incomplete gamma ───────────────────────────────────────────────────────────────────
+# ── parts a3 and b4: the regularized incomplete gamma ───────────────────────────────────────────────────────────
 
 # Rust's `iteration_budget`: min(200 + 20·√shape, 10⁶) iterations, truncated as `as usize` truncates; √shape is 0
 # for a shape that is not finite and positive. Bounds every series and continued fraction's worst-case time.
@@ -9652,75 +10236,12 @@ fn _pmn_iteration_budget(shape: f64): i64 {
     return _pmn_sat_usize(m);
 }
 
-# Rust's `gamma_series_p`: P(a, x) = e^kernel · Σ xⁿ / (a(a + 1)…(a + n)), stopped when a term falls below 1e-15 of
-# the sum or the budget runs out, then clamped to [0, 1]. 0 when the prefactor underflows.
-#must_use
-fn _pmn_gamma_series_p(a: f64, x: f64): f64 {
-    var k: f64 = _pmn_ln_gamma_kernel(a, x);
-    var prefix: f64 = _pmn_exp(k);
-    if (prefix == 0.0) { return 0.0; }
-    var eps: f64 = _PMN_MATH_CONVERGENCE_EPS;
-    var ap: f64 = a;
-    var sum: f64 = 1.0 / a;
-    var del: f64 = sum;
-    var n = _pmn_iteration_budget(a);
-    for (var i = 0; i < n; i = i + 1) {
-        ap = ap + 1.0;
-        var q: f64 = x / ap;
-        del = del * q;
-        sum = sum + del;
-        var adel: f64 = f64_abs(del);
-        var asum: f64 = f64_abs(sum);
-        var lim: f64 = asum * eps;
-        if (adel < lim) { break; }
-    }
-    var r: f64 = sum * prefix;
-    return _pmn_clamp(r, 0.0, 1.0);
-}
-
-# Rust's `gamma_cf_q`: Q(a, x) by the modified Lentz continued fraction, each denominator kept from 0 by 1e-300,
-# stopped when a factor is within 1e-15 of 1 or the budget runs out, then clamped. 0 when the prefactor underflows.
-#must_use
-fn _pmn_gamma_cf_q(a: f64, x: f64): f64 {
-    var k: f64 = _pmn_ln_gamma_kernel(a, x);
-    var prefix: f64 = _pmn_exp(k);
-    if (prefix == 0.0) { return 0.0; }
-    var tiny: f64 = _PMN_MATH_LENTZ_TINY;
-    var eps: f64 = _PMN_MATH_CONVERGENCE_EPS;
-    var x1: f64 = x + 1.0;
-    var b: f64 = x1 - a;
-    var c: f64 = 1.0 / tiny;
-    var d: f64 = 1.0 / b;
-    var h: f64 = d;
-    var n = _pmn_iteration_budget(a);
-    for (var i = 1; i <= n; i = i + 1) {
-        var fi: f64 = f64_from(i);
-        var nfi: f64 = -fi;
-        var ima: f64 = fi - a;
-        var an: f64 = nfi * ima;
-        b = b + 2.0;
-        var ad: f64 = an * d;
-        d = ad + b;
-        var dabs: f64 = f64_abs(d);
-        if (dabs < tiny) { d = tiny; }
-        var ac: f64 = an / c;
-        c = b + ac;
-        var cabs: f64 = f64_abs(c);
-        if (cabs < tiny) { c = tiny; }
-        d = 1.0 / d;
-        var del: f64 = d * c;
-        h = h * del;
-        var dm: f64 = del - 1.0;
-        var dma: f64 = f64_abs(dm);
-        if (dma < eps) { break; }
-    }
-    var r: f64 = h * prefix;
-    return _pmn_clamp(r, 0.0, 1.0);
-}
-
-# Rust's `gamma_inc`: (P(a, x), Q(a, x)), each computed without cancellation: the series for P below x = a + 1 and the
-# continued fraction for Q from there, the other as 1 − it. Past a = 10⁹, Wilson–Hilferty: (x/a)^⅓ is close to
-# N(1 − 1/(9a), 1/(9a)). (NaN, NaN) for a NaN argument or a ≤ 0; (0, 1) for x ≤ 0 or a = +∞; (1, 0) for x = +∞.
+# (P(a, x), Q(a, x)) within 4 ulp for a in [1e-3, 1e5] (T1, M2 part b4; ADR 009): probe P9's form up to a = 10⁹,
+# Rust's two expansions with a double-double prefactor, double-double loops and the split at x = a (src/gammainc.cyr).
+# 1.3.0's double-precision series and continued fraction, which part a3 proved at 0 ulp, are retired: they are off by
+# up to 485 ulp on §3.2's pairs and 2.9×10⁹ in the deep lower tail. Past a = 10⁹, Rust's Wilson–Hilferty form as it
+# is (ADR 009): (x/a)^⅓ is close to N(1 − 1/(9a), 1/(9a)), on T1's Φ. (NaN, NaN) for a NaN argument or a ≤ 0; (0, 1)
+# for x ≤ 0 or a = +∞; (1, 0) for x = +∞.
 #must_use
 fn _pmn_gamma_inc(a: f64, x: f64): (f64, f64) {
     if (x != x || a != a || a <= 0.0) {
@@ -9745,15 +10266,8 @@ fn _pmn_gamma_inc(a: f64, x: f64): (f64, f64) {
         var qz: f64 = _pmn_normal_sf(z);
         return (pz, qz);
     }
-    var a1: f64 = a + 1.0;
-    if (x < a1) {
-        var p: f64 = _pmn_gamma_series_p(a, x);
-        var q: f64 = 1.0 - p;
-        return (p, q);
-    }
-    var q2: f64 = _pmn_gamma_cf_q(a, x);
-    var p2: f64 = 1.0 - q2;
-    return (p2, q2);
+    var p, q = _pmn_gi_gamma_inc(a, x);
+    return (p, q);
 }
 
 # Rust's `regularized_lower_incomplete_gamma`: P(a, x) = γ(a, x)/Γ(a), gamma_inc's first value.

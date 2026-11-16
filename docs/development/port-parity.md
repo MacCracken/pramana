@@ -2802,3 +2802,141 @@ callers use the value.
 Lanczos form and 12–39% over T0's, as P9 measured (72–192 and 570 ns). Stirling's remainder and the small-shape kernel
 cost 26–28% more downstream, and ln B with a small shape 3–7%. The bench's digests show the port's lnΓ equal to the
 T1 model on all 12,288 of its arguments.
+
+### 8.8 Part b4: the incomplete gamma within 4 ulp, T1 (2026-11-16)
+
+**The module.** `gamma_inc` up to a = 10⁹ is now probe P9's T1 form (§6.5), in `src/gammainc.cyr`. It keeps Rust's
+series and Legendre's continued fraction, with four changes:
+- a double-double prefactor;
+- double-double loops;
+- the split at x = a;
+- a direct Q for small shapes.
+
+Rust's Wilson–Hilferty form past 10⁹ stays, on T1's Φ (ADR 009). 1.3.0's double-precision series and continued
+fraction, which part a3 proved at 0 ulp, are retired.
+- **The double-double toolkit** (add, multiply, divide, the logarithm, expm1 and the scaling) moved from the two
+  modules into `src/dd.cyr`. P9 (§6.5) put it in `src/crmath.cyr`, but that file is kimiya's, vendored and
+  regenerated. `src/lgamma.cyr` now uses it, and its `crverify` output is unchanged (sha256 `b9b77d894d78127f`).
+- **The ζ(k) table** below a = 10 is `src/zeta_data.cyr`, written by a new `scripts/gen_zeta.py` from MPFR at 320
+  bits. All 262 words equal P9's table. Its `--check`, now in CI, also proves the inline hex words of `src/dd.cyr`
+  and `src/gammainc.cyr`: each is a power of two its comment cites.
+- **Against P9:** the port's output on P9's five seeded sets equalled P9's own T1 rows byte for byte, all 120,000 of
+  them, until the first fix below.
+
+**Three fixes to P9's form**, each found past P9's sets, which covered a ∈ [10⁻³, 10⁵] with x up to 50a:
+- **The series stops on a bound of its tail.** P9 stopped once a term fell under 2⁻⁶² of the sum. Near x = a the
+  terms fall by a ratio r = x/(a + n + 1) close to 1, so the dropped tail is about the last term times 1/(1 − r),
+  some √a/9 terms' worth. That is 0.07 ulp at a = 10⁵ but 7 ulp at 10⁹: `crverify`'s new large-shape set measured
+  P at 6.96 ulp near a = 9.8·10⁸. The test is now tₙ·x < 2⁻⁶²·S·(a + n + 1 − x), which costs about 9% more terms
+  near x = a. It moved 95 of P9's 120,000 rows, each closer to the truth.
+- **Below a = 2⁻⁵¹²,** the series' Σ/a is formed as Σ/(a·2⁶⁰⁰), and the 600 is taken back in the final scaling,
+  both exactly. Σ/a passes 2⁹⁹⁶ near a = 2⁻⁹⁹⁵, where Dekker's split overflows, so P(10⁻³⁰⁰, 0.5) was NaN.
+- **Past x = 2⁹⁹⁰ the result is (1, 0).** From a = 10, the kernel's (x − a)/a and a·φ(u) overflowed the split in the
+  same way, so P(30, f64::MAX), a golden row, was NaN. (1, 0) is exactly what the underflowed prefactor gives below
+  the guard.
+
+**The reference** (`mpfr_ref.gamma_pq`, and `check.c`'s `gref`, which it follows) is P9's 320-bit series and
+continued fraction, with three changes:
+- **The series below x = 1 as well as below x = a.** The continued fraction converges too slowly there for small
+  shapes, and in practice never for a tiny shape with a small x: `validate.py`'s first run spent an hour on six such
+  rows before it was stopped.
+- **More precision for tiny shapes.** Below a = 2⁻¹⁰, Q = 1 − P loses about log₂(1/a) bits, so the working precision
+  grows by that, plus 64.
+- **A NaN result now fails.** `check.c` had skipped a `gref` row whose result was NaN; it now counts it as ∞ ulp, as
+  its `cr:` rows do.
+
+A large shape takes up to 10 s a pair through ctypes, so `validate.py` computes the 5,252 golden pairs in a process
+pool. It caches them in `build/golden/`, keyed by a hash of the reference's source, and appends each pair as it lands.
+
+**Verification** (`scripts/crverify/run.sh gamma`, a new set): 148,000 rows against `gref`.
+- **The sets:** P9's five sets (120,000 rows), then two sets beyond them: 8,000 rows with a ∈ [10⁵, 10⁹], and 20,000
+  with a and x down to the least subnormal.
+- **Pairs stay together:** a pair's P and Q rows now go to one chunk, so each reference is computed once.
+- **The tiny set reaches the overflow:** without the 2⁻⁵¹² scaling, 686 of its rows are NaN.
+
+| Set | P, max (mean) | Q, max (mean) | Not correctly rounded |
+|---|---|---|---|
+| x near a, a ∈ [10⁻³, 10⁵] | 0.59 (0.250) | 0.60 (0.246) | 0.07%, 0.08% |
+| lower tail | 1.00 (0.162) | 0.50 (0.120) | 0.11%, 0% |
+| upper tail | 0.50 (0.127) | 0.59 (0.209) | 0.02%, 0.14% |
+| small shapes, a ∈ [10⁻³, 1] | 0.50 (0.244) | 0.50 (0.248) | 0%, 0.01% |
+| the switches | 0.58 (0.249) | 0.55 (0.251) | 0.09%, 0.30% |
+| a ∈ [10⁵, 10⁹] | 0.50 (0.122) | 0.50 (0.126) | 0.05%, 0.05% |
+| a and x down to 2⁻¹⁰⁷⁴ | 0.50 (0.012) | 2 units of 2⁻¹⁰⁷⁴ (0.256) | 0%, 1.65% |
+
+- **The worst row** is 1.0 ulp: a P near 10⁻³⁰⁷, where the final scaling rounds a second time, as P9 found.
+- **Against ADR 009:** within its 4 ulp on the committed domain, and within 1 ulp beyond it.
+- **On three targets:** identical outputs (sha256 `0714f60026574372`).
+
+**The model and the rows.** `validate.py` carries `t1_gamma_inc`, src/gammainc.cyr step for step:
+- **Its steps:** the double-double steps are the port's, now on kimiya's Dekker product rather than `math.fma`.
+  b3's lnΓ model uses that product too, and every downstream lnΓ row still matches.
+- **Its cores:** kimiya's ln and exp cores are MPFR's double-doubles of the same values, with the exp core's
+  exponent taken as the port takes it.
+- **Its constants:** γ and ζ(k) are MPFR's.
+- **The result:** it equals the port bit for bit on all 3,799 golden rows with a ≤ 10⁵, tiny shapes included.
+
+The rows:
+- `gamma_inc`'s own rows expect the true P and Q;
+- the two wrappers, downstream, expect Rust's projection of T1's value, at 0 ulp (ADR 009 as amended at b3);
+- the Wilson–Hilferty rows and the edges keep Rust's values.
+
+`special.ref.tsv` grows to 17,230 rows. `gamma_inc` has 4,179 of them: 3,669 at the true P and Q, and part b2's 510
+Wilson–Hilferty rows. The wrappers have 534 (lower 224, upper 310). `special.cr.tsv` falls to 172; its one `gamma_inc`
+row is a Wilson–Hilferty row. The ref file's note for a downstream row, and its header, now say "the T1 functions'
+values as the port computes them"; b3's amendment had left them saying "true values".
+
+**The harness.**
+- **`_par_c_gamma_bound`:** ADR 009's 4 ulp for a ∈ [10⁻³, 10⁵], and 0 for the edges and past a = 10⁹.
+- **`_par_c_vs_rust`, a new hook,** implements ADR 009's rule outside the domain, "no row less accurate than Rust",
+  row by row. For a below 10⁻³, or a in (10⁵, 10⁹], each output's bound is 1.3.0's own distance from the truth,
+  read from the alternate list. The driver's new `_par_has_alt` says when that list holds this row's 1.3.0 outputs.
+  A row with no reference entry has bound 0, since 1.3.0 is the truth there.
+
+**The result.** The port is within 1 ulp of the truth on every golden row, and never further from it than 1.3.0:
+
+| Shapes | Rows | Port, max | 1.3.0, max | Port worse than 1.3.0 |
+|---|---|---|---|---|
+| a ∈ [10⁻³, 10⁵] | 3,697 | 1 ulp | 872,342 ulp | 0 outputs |
+| a ∈ (10⁵, 10⁹] | 1,479 | 1 ulp | 72,131 ulp | 0 |
+| a < 10⁻³ | 76 | 1 ulp | far off (wrong values) | 0 |
+
+Of `gamma_inc`'s 11,942 outputs, 11,928 are at 0 ulp and 14 at 1; the wrappers' 800 rows are all at 0. The replay is
+nine modules: 115,965 rows ok and 17,508 accepted (17,478 under ADR 9, of which 17,230 are reference rows, and 30
+under ADR 7), warning-free, on x86_64 ELF, PE (wine) and aarch64 (qemu). Every `math::` result line is identical on the
+three.
+
+**Mutation checks** (the replay):
+
+| Mutant | Rows failed |
+|---|---|
+| the series' terms in plain double | 30 (`gamma_inc` 2, the wrappers 28) |
+| Q as 1 − P for small shapes | 22 |
+| ζ(k)'s low words dropped | 3, the wrappers only |
+| γ's low word dropped | 2, the wrappers only |
+| the continued fraction stopped at 2⁻⁴⁰ | 1,481 |
+| the tiny-shape scaling dropped | 9 (NaN) |
+| the huge-x guard dropped | 3 (NaN) |
+| the prefactor's lnΓ low part dropped (a < 10) | 158 |
+| Rust's split at x = a + 1 | 0: within the bound, as the double-double complement doesn't cancel |
+| ln(1 + u) as ln x − ln a for \|u\| ≤ ¼ too | 0: within the bound |
+| P9's last-term stop | 0 in the replay, where 1.3.0 is further off still; `crverify` measures it at 6.96 ulp, and a new unit test fails |
+
+The exact downstream gate catches three of these alone: ζ's and γ's low words, and part of the plain-double series.
+
+**Tests.** `tests/special.tcyr` grows to 105 checks:
+- P(1, x) and Q(1, x) against the correctly rounded 1 − e⁻ˣ and e⁻ˣ within 4 ulp, from x = 0.05 to 300. Part a3 had
+  checked 10⁻¹³ relative.
+- 13 points against MPFR within 4 ulp:
+  - the deep lower tail, P(38, 4.6·10⁻⁷) = 2.93·10⁻²⁸⁶;
+  - a subnormal P;
+  - Q directly at a = 0.01, x = 1.05;
+  - erf and erfc of √1.09;
+  - a = 10⁻³ at x = 60;
+  - a = 10⁵ and 10⁹ at x = a;
+  - P9's 7-ulp large-shape point;
+  - three tiny and two subnormal shapes.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 7.24–7.50 µs a call on small shapes and 5.82–5.97 µs on large ones,
+48–61× Rust and 10–13× T0, as P9 measured (10–17×). The bench's digests show the port equal to the T1 model on all
+8,192 arguments of its two T1 rows.

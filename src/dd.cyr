@@ -1,0 +1,124 @@
+# dd.cyr — double-double arithmetic for the T1 special functions (M2 part b; port plan §5 step 9d, ADR 009).
+#
+# Probe P9's toolkit (scripts/probes/p9_lgamma_impl.cyr, p9_gamma_impl.cyr), moved here unchanged but for names, so
+# lnΓ (src/lgamma.cyr), the incomplete gamma (src/gammainc.cyr) and the incomplete beta share it. A double-double
+# (h, l) is the unevaluated sum h + l with |l| at most about ulp(h)/2. Sums and products use the error-free
+# transformations of src/crmath.cyr (kimiya's TwoSum, Fast2Sum and Dekker's product), so each operation is near 2^-104
+# relative. The logarithm and the exponential are kimiya's double-double cores, near 2^-80 and 2^-70 relative.
+#
+# UPSTREAM(L8): ganita:docs/development/issues/2026-11-15-special-functions-scope-request.md
+#   replace with ganita's double-double type if it takes the special functions on; parity: every *.ref.tsv row
+
+# (ah + al) + (bh + bl) as a double-double.
+fn _pmn_dd_add(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var s, e = _pmn_km_two_sum(ah, bh);
+    var t: f64 = al + bl;
+    var e2: f64 = e + t;
+    var h, l = _pmn_km_fast_two_sum(s, e2);
+    return (h, l);
+}
+
+# (ah + al)·(bh + bl) as a double-double.
+fn _pmn_dd_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var p, e = _pmn_km_two_prod(ah, bh);
+    var c1: f64 = ah * bl;
+    var c2: f64 = al * bh;
+    var c: f64 = c1 + c2;
+    var e2: f64 = e + c;
+    var h, l = _pmn_km_fast_two_sum(p, e2);
+    return (h, l);
+}
+
+# (ah + al)·b for a double b, as a double-double.
+fn _pmn_dd_mul_d(ah: f64, al: f64, b: f64): (f64, f64) {
+    var p, e = _pmn_km_two_prod(ah, b);
+    var c: f64 = al * b;
+    var e2: f64 = e + c;
+    var h, l = _pmn_km_fast_two_sum(p, e2);
+    return (h, l);
+}
+
+# (ah + al)/(bh + bl) as a double-double: a first quotient, then one correction from its exact remainder.
+fn _pmn_dd_div(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
+    var q1: f64 = ah / bh;
+    var p, pe = _pmn_km_two_prod(q1, bh);
+    var r0: f64 = ah - p;
+    var r1: f64 = r0 - pe;
+    var r2: f64 = r1 + al;
+    var qb: f64 = q1 * bl;
+    var r3: f64 = r2 - qb;
+    var q2: f64 = r3 / bh;
+    var h, l = _pmn_km_fast_two_sum(q1, q2);
+    return (h, l);
+}
+
+# ln x as a double-double, for a positive normal x: kimiya's fast core, |h + l − ln x| below about 2^-80·|ln x|.
+fn _pmn_dd_ln(x: f64): (f64, f64) {
+    var ui = load64(&x);
+    var h, l, err = _pmn_km_ln_core(ui, 0);
+    return (h, l);
+}
+
+# ln x as a double-double for any positive finite x: a subnormal x is scaled by 2^54 first, as kimiya's core expects.
+fn _pmn_dd_ln_any(x: f64): (f64, f64) {
+    var floor: f64 = 0x0010000000000000;    # 0x1p-1022, the least normal
+    var eb = 0;
+    var xs: f64 = x;
+    if (x < floor) {
+        var p54: f64 = 0x4350000000000000;  # 0x1p54
+        xs = x * p54;
+        eb = 0 - 54;
+    }
+    var ui = load64(&xs);
+    var h, l, err = _pmn_km_ln_core(ui, eb);
+    return (h, l);
+}
+
+# e^t − 1 for a double-double t: the Taylor sum below |t| = 1/8, stopped under 2^-62 of the value, else kimiya's exp
+# core minus 1. −1 below t = −700.
+fn _pmn_dd_expm1(th: f64, tl: f64): (f64, f64) {
+    var at: f64 = f64_abs(th);
+    if (at < 0.125) {
+        var sh: f64 = th;
+        var sl: f64 = tl;
+        var ph: f64 = th;
+        var pl: f64 = tl;
+        var thr: f64 = 0x3C10000000000000;  # 0x1p-62
+        var k = 2;
+        while (k < 40) {
+            var mh, ml = _pmn_dd_mul(ph, pl, th, tl);
+            var fk: f64 = f64_from(k);
+            var qh, ql = _pmn_dd_div(mh, ml, fk, 0.0);
+            ph = qh;
+            pl = ql;
+            var nh, nl = _pmn_dd_add(sh, sl, ph, pl);
+            sh = nh;
+            sl = nl;
+            var ap: f64 = f64_abs(ph);
+            var as: f64 = f64_abs(sh);
+            var lim: f64 = as * thr;
+            if (ap < lim) { break; }
+            k = k + 1;
+        }
+        return (sh, sl);
+    }
+    var lo: f64 = -700.0;
+    if (th < lo) { return (-1.0, 0.0); }
+    var eh, el, e = _pmn_km_exp_core(th, tl);
+    var s: f64 = _pmn_km_cr_pow2(e);
+    var xh: f64 = eh * s;
+    var xl: f64 = el * s;
+    var rh, rl = _pmn_dd_add(xh, xl, -1.0, 0.0);
+    return (rh, rl);
+}
+
+# 2^e·r for any integer e: two exact scalings, so only a subnormal result rounds a second time (by at most 2^-1074).
+#must_use
+fn _pmn_dd_scale(r: f64, e): f64 {
+    var e1 = e / 2;
+    var e2 = e - e1;
+    var s1: f64 = _pmn_km_cr_pow2(e1);
+    var s2: f64 = _pmn_km_cr_pow2(e2);
+    var y: f64 = r * s1;
+    return y * s2;
+}

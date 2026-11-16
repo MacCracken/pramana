@@ -1363,8 +1363,16 @@ def t_fast_two_sum(a, b):
 
 
 def t_two_prod(a, b):
+    """kimiya's Dekker product with Veltkamp's 2^27 + 1 split, step for step: exact as the fma form is, and like the
+    port's where a tiny product's error term rounds (M2 part b4's tiny shapes)."""
     p = a * b
-    return p, math.fma(a, b, -p)
+    ca = 134217729.0 * a
+    ah = ca - (ca - a)
+    al = a - ah
+    cb = 134217729.0 * b
+    bh = cb - (cb - b)
+    bl = b - bh
+    return p, (al * bl) - (((p - (ah * bh)) - (al * bh)) - (ah * bl))
 
 
 def t_dd_mul(ah, al, bh, bl):
@@ -1504,6 +1512,302 @@ def t1_ln_gamma(x):
     return s3 + lo
 
 
+# ── the T1 incomplete gamma (M2 part b4), as src/gammainc.cyr and src/dd.cyr compute it ──
+# Every double-double step is the port's, in its order. kimiya's double-double ln and exp cores are MPFR's
+# double-doubles of the same values (mpfr_ref.ln_dd, mpfr_ref.exp_dd: within 2^-80 and 2^-70 of the port's), with the
+# exp core's exponent E taken as the port takes it, ⌊RN(RN(M·512/ln 2))/512⌋; γ and ζ(k) are MPFR's (zeta_table).
+INVLN2N = mpfr_ref.inv_ln2(512)     # kimiya's _KM_CR_EXP_INVLN2N, 0x40871547652B82FE
+ZETA = []
+
+
+def t_dd_add(ah, al, bh, bl):
+    s, e = t_two_sum(ah, bh)
+    return t_fast_two_sum(s, e + (al + bl))
+
+
+def t_dd_mul_d(ah, al, b):
+    p, e = t_two_prod(ah, b)
+    return t_fast_two_sum(p, e + al * b)
+
+
+def t_dd_div(ah, al, bh, bl):
+    q1 = ah / bh
+    p, pe = t_two_prod(q1, bh)
+    r3 = (((ah - p) - pe) + al) - q1 * bl
+    return t_fast_two_sum(q1, r3 / bh)
+
+
+def t_exp_core(mh, ml):
+    """kimiya's exp core: (h, l, E) with h + l = e^(mh + ml)/2^E."""
+    tt = (mh * INVLN2N) + 6755399441055744.0
+    e = int(tt - 6755399441055744.0) >> 9
+    h, l = mpfr_ref.exp_dd(mh, ml, e)
+    return h, l, e
+
+
+def t_dd_expm1(th, tl):
+    if abs(th) < 0.125:
+        sh, sl, ph, pl = th, tl, th, tl
+        k = 2
+        while k < 40:
+            mh, ml = t_dd_mul(ph, pl, th, tl)
+            ph, pl = t_dd_div(mh, ml, float(k), 0.0)
+            sh, sl = t_dd_add(sh, sl, ph, pl)
+            if abs(ph) < abs(sh) * 2.0 ** -62:
+                break
+            k += 1
+        return sh, sl
+    if th < -700.0:
+        return -1.0, 0.0
+    eh, el, e = t_exp_core(th, tl)
+    s = math.ldexp(1.0, e)
+    return t_dd_add(eh * s, el * s, -1.0, 0.0)
+
+
+def t_scale(r, e):
+    """_pmn_dd_scale: 2^e·r in two exact steps (e/2 truncated, as the port's integer division)."""
+    e1 = -((-e) // 2) if e < 0 else e // 2
+    return (r * math.ldexp(1.0, e1)) * math.ldexp(1.0, e - e1)
+
+
+def t_lngamma1p_dd(f):
+    if f == 0.0:
+        return 0.0, 0.0
+    if not ZETA:
+        ZETA.extend(mpfr_ref.zeta_table())
+    (gh, gl), zt, zm = ZETA
+    y, table = f, zt
+    if f > 0.5:
+        y, table = f - 1.0, zm
+        oh, ol = t_two_sum(1.0, -gh)
+        ch, cl = oh, ol - gl
+    else:
+        ch, cl = -gh, -gl
+    acc, accl = t_dd_mul_d(ch, cl, y)
+    ph, pl = y, 0.0
+    for k in range(2, 65):
+        ph, pl = t_dd_mul_d(ph, pl, y)
+        th, tl = t_dd_mul(table[k][0], table[k][1], ph, pl)
+        uh, ul = t_dd_div(th, tl, float(k), 0.0)
+        if k & 1:
+            uh, ul = -uh, -ul
+        acc, accl = t_dd_add(acc, accl, uh, ul)
+        if abs(uh) < abs(acc) * 2.0 ** -62:
+            break
+    return acc, accl
+
+
+def t_lngamma_small_dd(a):
+    if a < 1.0:
+        gh, gl = t_lngamma1p_dd(a)
+        lh, ll = mpfr_ref.ln_dd(a)
+        return t_dd_add(gh, gl, -lh, -ll)
+    mf = math.floor(a)
+    f, m = a - mf, int(mf)
+    g2h, g2l = t_lngamma1p_dd(f)
+    if m < 2:
+        return g2h, g2l
+    zh, zl = t_two_sum(1.0, f)
+    for j in range(2, m):
+        th, tl = t_two_sum(float(j), f)
+        zh, zl = t_dd_mul(zh, zl, th, tl)
+    lzh, lzl = mpfr_ref.ln_dd(zh)
+    return t_dd_add(g2h, g2l, lzh, lzl + zl / zh)
+
+
+def t_lnpre(a, x):
+    """The prefactor's exponent a ln x − x − lnΓ(a) as a double-double."""
+    if a < 10.0:
+        lh, ll = mpfr_ref.ln_dd(x)
+        th, tl = t_dd_mul_d(lh, ll, a)
+        sh, sl = t_dd_add(th, tl, -x, 0.0)
+        gh, gl = t_lngamma_small_dd(a)
+        return t_dd_add(sh, sl, -gh, -gl)
+    dh, dl = t_two_sum(x, -a)
+    uh, ul = t_dd_div(dh, dl, a, 0.0)
+    fh = fl = 0.0
+    lah, lal = mpfr_ref.ln_dd(a)
+    if abs(uh) <= 0.25:
+        wh, wl = -uh, -ul
+        ph, pl = t_dd_mul(wh, wl, wh, wl)
+        for k in range(2, 200):
+            th2, tl2 = t_dd_div(ph, pl, float(k), 0.0)
+            fh, fl = t_dd_add(fh, fl, th2, tl2)
+            if abs(th2) < abs(fh) * 2.0 ** -62:
+                break
+            ph, pl = t_dd_mul(ph, pl, wh, wl)
+    else:
+        lxh, lxl = mpfr_ref.ln_dd(x)
+        l1h, l1l = t_dd_add(lxh, lxl, -lah, -lal)
+        fh, fl = t_dd_add(uh, ul, -l1h, -l1l)
+    ah, al = t_dd_mul_d(fh, fl, a)
+    tph, tpm = 2.0 * math.pi, 2.0 * PI_L
+    lph, lpl = mpfr_ref.ln_dd(tph)
+    r1h, r1l = t_dd_add(0.5 * lah, 0.5 * lal, -ah, -al)
+    r2h, r2l = t_dd_add(r1h, r1l, -(0.5 * lph), -(0.5 * (lpl + tpm / tph)))
+    return t_dd_add(r2h, r2l, -sp_stirling(None, None, a), 0.0)
+
+
+def t_gi_series(a, x):
+    sh, sl, th, tl = 1.0, 0.0, 1.0, 0.0
+    cap = 2000 + 100 * int(math.sqrt(a))
+    for n in range(1, cap):
+        dh, dl = t_two_sum(a, float(n))
+        qh, ql = t_dd_div(x, 0.0, dh, dl)
+        th, tl = t_dd_mul(th, tl, qh, ql)
+        sh, sl = t_dd_add(sh, sl, th, tl)
+        if th * x < (sh * 2.0 ** -62) * ((a - x) + (float(n) + 1.0)):
+            break
+    return sh, sl
+
+
+def t_gi_cf(a, x):
+    tiny = 2.0 ** -1022
+    bh, bl0 = t_two_sum(x, -a)
+    bh, bl = t_dd_add(bh, bl0, 1.0, 0.0)
+    dh, dl = t_dd_div(1.0, 0.0, bh, bl)
+    hh, hl = dh, dl
+    ch = cl = 0.0
+    cap = 2000 + 100 * int(math.sqrt(a))
+    for i in range(1, cap):
+        fi = float(i)
+        ih, il = t_two_sum(fi, -a)
+        anh, anl = t_dd_mul_d(ih, il, fi)
+        anh, anl = -anh, -anl
+        bh, bl = t_dd_add(bh, bl, 2.0, 0.0)
+        adh, adl = t_dd_mul(anh, anl, dh, dl)
+        d2h, d2l = t_dd_add(adh, adl, bh, bl)
+        if abs(d2h) < tiny:
+            d2h, d2l = tiny, 0.0
+        if i == 1:
+            ch, cl = bh, bl
+        else:
+            qh, ql = t_dd_div(anh, anl, ch, cl)
+            ch, cl = t_dd_add(bh, bl, qh, ql)
+        if abs(ch) < tiny:
+            ch, cl = tiny, 0.0
+        dh, dl = t_dd_div(1.0, 0.0, d2h, d2l)
+        delh, dell = t_dd_mul(dh, dl, ch, cl)
+        hh, hl = t_dd_mul(hh, hl, delh, dell)
+        if abs(t_dd_add(delh, dell, -1.0, 0.0)[0]) < 2.0 ** -62:
+            break
+    return hh, hl
+
+
+def t_gi_small_q(a, x):
+    lgh, lgl = t_lngamma1p_dd(a)
+    g1h, g1l = t_dd_expm1(lgh, lgl)
+    lxh, lxl = mpfr_ref.ln_dd(x)
+    alh, all_ = t_dd_mul_d(lxh, lxl, a)
+    p1h, p1l = t_dd_expm1(alh, all_)
+    th = tl = 0.0
+    ch, cl = 1.0, 0.0
+    for n in range(1, 80):
+        fnn = float(n)
+        mh, ml = t_dd_mul_d(ch, cl, -x)
+        ch, cl = t_dd_div(mh, ml, fnn, 0.0)
+        dh, dl = t_two_sum(a, fnn)
+        uh, ul = t_dd_div(ch, cl, dh, dl)
+        th, tl = t_dd_add(th, tl, uh, ul)
+        if abs(uh) < abs(th) * 2.0 ** -62:
+            break
+    xah, xal = t_dd_add(1.0, 0.0, p1h, p1l)
+    axh, axl = t_dd_mul_d(xah, xal, a)
+    wh, wl = t_dd_mul(axh, axl, th, tl)
+    dfh, dfl = t_dd_add(g1h, g1l, -p1h, -p1l)
+    nmh, nml = t_dd_add(dfh, dfl, -wh, -wl)
+    gmh, gml = t_dd_add(1.0, 0.0, g1h, g1l)
+    qh, ql = t_dd_div(nmh, nml, gmh, gml)
+    return qh + ql
+
+
+def t1_gamma_core(a, x):
+    """src/gammainc.cyr's (P, Q) for finite 0 < a ≤ 1e9 and finite x > 0, as the port computes them."""
+    if x > 2.0 ** 990:
+        return 1.0, 0.0
+    mh, ml = t_lnpre(a, x)
+    if mh < -1100.0:
+        eh, el, e = 0.0, 0.0, -100000
+    else:
+        eh, el, e = t_exp_core(mh, ml)
+    if x < a or (a < 1.0 and x < 1.1):
+        sh, sl = t_gi_series(a, x)
+        ad, es = (a * 2.0 ** 600, e + 600) if a < 2.0 ** -512 else (a, e)
+        s2h, s2l = t_dd_div(sh, sl, ad, 0.0)
+        ph, pl = t_dd_mul(eh, el, s2h, s2l)
+        p = t_scale(ph + pl, es)
+        if a < 1.0 and x < 1.1:
+            return p, t_gi_small_q(a, x)
+        s = 0.0 if e < -1000 else math.ldexp(1.0, e)
+        qh, ql = t_dd_add(1.0, 0.0, -(ph * s), -(pl * s))
+        return p, qh + ql
+    hh, hl = t_gi_cf(a, x)
+    qqh, qql = t_dd_mul(eh, el, hh, hl)
+    q2 = t_scale(qqh + qql, e)
+    s2 = 0.0 if e < -1000 else math.ldexp(1.0, e)
+    p2h, p2l = t_dd_add(1.0, 0.0, -(qqh * s2), -(qql * s2))
+    return p2h + p2l, q2
+
+
+def t1_gamma_inc(K, L, a, x):
+    """The port's gamma_inc: Rust's edges, and its Wilson–Hilferty form past a = 1e9 (sp_gamma_inc, on L's Φ); T1
+    (t1_gamma_core) between."""
+    if not (0.0 < a <= K["WH"] and 0.0 < x < math.inf):
+        return sp_gamma_inc(K, L, a, x)
+    return t1_gamma_core(a, x)
+
+
+# The true (P, Q) of every golden gamma_inc row in T1's range (mpfr_ref.gamma_pq), keyed by the inputs' bits.
+GAMMA_REF = {}
+
+
+def ref_gamma_inc(K, L, a, x):
+    """gamma_inc's own rows in the reference model: the true P and Q where T1 computes them, Rust's edges and its
+    Wilson–Hilferty form elsewhere."""
+    if not (0.0 < a <= K["WH"] and 0.0 < x < math.inf):
+        return sp_gamma_inc(K, L, a, x)
+    return GAMMA_REF[(bits(a), bits(x))]
+
+
+def _gamma_ref_one(key):
+    p, q = mpfr_ref.gamma_pq(from_bits(key[0]), from_bits(key[1]))
+    return key, (bits(p), bits(q))
+
+
+def gamma_reference(root, rows, wh):
+    """Fills GAMMA_REF. mpfr_ref.gamma_pq takes up to about 10 s a pair at a = 1e9 through ctypes, so the pairs run in
+    a process pool, largest shape first, and the results are cached in build/golden/ under a hash of gamma_pq's source
+    and the MPFR version (a cache from another reference is never read)."""
+    import hashlib
+    import inspect
+    import multiprocessing
+    import os
+    keys = set()
+    for fn, cls, ins, outs, raw in rows:
+        if fn == "math::gamma_inc" and len(ins) == 2 and 0.0 < ins[0] <= wh and 0.0 < ins[1] < math.inf:
+            keys.add((bits(ins[0]), bits(ins[1])))
+    tag = hashlib.sha256((inspect.getsource(mpfr_ref.gamma_pq) + mpfr_ref.VERSION).encode()).hexdigest()[:16]
+    cache = root / "build" / "golden" / f"gamma_ref.{tag}.tsv"
+    known = {}
+    if cache.exists():
+        for line in cache.read_text(encoding="utf-8").splitlines():
+            ab, xb, pb, qb = (int(t, 16) for t in line.split())
+            known[(ab, xb)] = (pb, qb)
+    todo = sorted(keys - known.keys(), key=lambda k: -from_bits(k[0]))
+    if todo:
+        print(f"  gamma_inc reference: {len(todo)} pairs at 320 bits or more (cached in build/golden/)", flush=True)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        # Each pair is appended as it lands, so an interrupted run keeps what it computed.
+        with multiprocessing.get_context("fork").Pool(os.cpu_count()) as pool, \
+                open(cache, "a", encoding="utf-8") as out:
+            for (a, x), (p, q) in pool.imap_unordered(_gamma_ref_one, todo):
+                known[(a, x)] = (p, q)
+                out.write(f"{a:016x} {x:016x} {p:016x} {q:016x}\n")
+                out.flush()
+    GAMMA_REF.clear()
+    GAMMA_REF.update({k: (from_bits(v[0]), from_bits(v[1])) for k, v in known.items() if k in keys})
+
+
 class Prims:
     """The primitives 1.3.0's math.rs calls, and its erf and erfc, in one of three modes:
     - "glibc": glibc's primitives (ctypes) and 1.3.0's fdlibm erf and erfc on them: 1.3.0's own bits;
@@ -1511,8 +1815,9 @@ class Prims:
     - "ref": as "cr", with the T1 functions landed so far: each T1 function's own rows expect its true value (MPFR),
       and the formulas downstream of it take T1's own value (the maintainer, 2026-11-16), as the port computes them.
       erf and erfc (b1) are correctly rounded, and Φ (b2) is on every golden row, so for them the two are the same;
-      lnΓ (b3) is within 2 ulp, so the model carries T1's lnΓ (t1_ln_gamma) for its callers. The reference model
-      (`*.ref.tsv`); each later T1 function joins it as its part lands."""
+      lnΓ (b3) is within 2 ulp, so the model carries T1's lnΓ (t1_ln_gamma) for its callers, and the incomplete
+      gamma (b4), within 4, carries T1's P and Q (t1_gamma_inc) for its wrappers. The reference model (`*.ref.tsv`);
+      each later T1 function joins it as its part lands."""
 
     def __init__(self, mode, F):
         if mode == "glibc":
@@ -1531,6 +1836,9 @@ class Prims:
             if LG is None:
                 raise SystemExit("the reference model needs libm 0.2.16's lgamma_r.rs in the cargo registry")
             self.lgamma, self.lgamma_row = t1_ln_gamma, mpfr_ref.lgamma
+            # The incomplete gamma (part b4) likewise: its own rows expect the true P and Q (gamma_row), and the
+            # wrappers downstream take T1's (gamma, src/gammainc.cyr as the port computes it).
+            self.gamma, self.gamma_row = t1_gamma_inc, ref_gamma_inc
         else:
             self.erf = lambda x: sp_erf(F, self.exp, x)
             self.erfc = lambda x: sp_erfc(F, self.exp, x)
@@ -1538,6 +1846,7 @@ class Prims:
             self.ncdf = lambda z: 0.5 * self.erfc(-z / math.sqrt(2.0))
             self.nsf = lambda z: 0.5 * self.erfc(z / math.sqrt(2.0))
             self.lgamma = self.lgamma_row = None   # 1.3.0's Lanczos form, sp_ln_gamma
+            self.gamma = self.gamma_row = None     # 1.3.0's series and continued fraction, sp_gamma_inc
 
 
 def sp_ln_gamma(K, L, x):
@@ -1747,9 +2056,9 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
     "math::bd0": (2, sp_bd0),
     "math::ln_gamma_kernel": (2, sp_kernel),
     "math::ln_beta": (2, sp_ln_beta),
-    "math::gamma_inc": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)),
-    "math::regularized_lower_incomplete_gamma": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)[0]),
-    "math::regularized_upper_incomplete_gamma": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)[1]),
+    "math::gamma_inc": (2, lambda K, L, a, x: (L.gamma_row or sp_gamma_inc)(K, L, a, x)),
+    "math::regularized_lower_incomplete_gamma": (2, lambda K, L, a, x: (L.gamma or sp_gamma_inc)(K, L, a, x)[0]),
+    "math::regularized_upper_incomplete_gamma": (2, lambda K, L, a, x: (L.gamma or sp_gamma_inc)(K, L, a, x)[1]),
     "math::beta_inc": (4, sp_beta_inc),
     "math::regularized_incomplete_beta": (3, lambda K, L, x, a, b: sp_beta_inc(K, L, a, b, x, 1.0 - x)[0]),
 }
@@ -1759,7 +2068,16 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
 T1_SO_FAR = {"math::erf": "MPFR's correctly rounded erf", "math::erfc": "MPFR's correctly rounded erfc",
              "math::normal_cdf": "MPFR's ½·erfc(−z/√2), correctly rounded",
              "math::normal_sf": "MPFR's ½·erfc(z/√2), correctly rounded",
-             "math::ln_gamma": "MPFR's ln|Γ(x)|, correctly rounded"}
+             "math::ln_gamma": "MPFR's ln|Γ(x)|, correctly rounded",
+             "math::gamma_inc": "the true P and Q (MPFR: a 320-bit series or continued fraction), correctly rounded"}
+
+
+def t1_own(fn, ins, K):
+    """1 for a row of a T1 function's own, at its true value: not gamma_inc's edges or its Wilson–Hilferty rows past
+    a = 1e9, which keep Rust's form (on T1's Φ)."""
+    if fn != "math::gamma_inc":
+        return fn in T1_SO_FAR
+    return 0.0 < ins[0] <= K["WH"] and 0.0 < ins[1] < math.inf
 
 
 def check_special(root, rows):
@@ -1782,6 +2100,7 @@ def check_special(root, rows):
         "WH": consts["math::GAMMA_WILSON_HILFERTY_SHAPE"],
     }
     glibc, cr, ref = Prims("glibc", F), Prims("cr", F), Prims("ref", F)
+    gamma_reference(root, rows, K["WH"])
     failures, by_fn, crs, refs = [], {}, [], []
 
     def shown(v):
@@ -1811,12 +2130,13 @@ def check_special(root, rows):
         if all(same(a, b) for a, b in zip(crv, refv)):
             crs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {shown(outs)} through glibc; {shown(refv)} with every "
                        f"primitive correctly rounded, {ulps} ulp apart")
-        elif fn in T1_SO_FAR:
+        elif t1_own(fn, ins, K):
             refs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {shown(outs)}; {T1_SO_FAR[fn]} {shown(refv)}, {ulps} ulp "
                         f"apart")
         else:
             refs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {shown(outs)}; {shown(refv)} by Rust's formula on the T1 "
-                        f"functions' true values and correctly rounded primitives, {ulps} ulp apart")
+                        f"functions' values as the port computes them and correctly rounded primitives, {ulps} ulp "
+                        f"apart")
     return failures, by_fn, crs, refs
 
 
@@ -1828,7 +2148,8 @@ def ref_file(gdir, module, provenance, refs, write_cr, failures):
         "Generated by scripts/golden/validate.py; do not edit.",
         "# regenerate: python3 -I -B scripts/golden/validate.py . --write-cr",
         "# columns: fn<TAB>inputs<TAB>outputs<TAB>note (fn, inputs: the golden row's, byte for byte; outputs: a T1 "
-        "function's true value, or Rust's formula on the T1 functions' true values and correctly rounded primitives)",
+        "function's true value, or Rust's formula on the T1 functions' values as the port computes them and correctly "
+        "rounded primitives)",
         f"# rows: {len(refs)}",
     ]
     text = "\n".join(head + refs) + "\n"

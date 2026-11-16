@@ -13,8 +13,8 @@
 # - Φ and 1 − Φ are T1 (part b2): within 0.5 + 2^-7 ulp, on erfc's double-double core (src/crerf.cyr);
 # - lnΓ is T1 (part b3): fdlibm's layout with double-double logarithms (src/lgamma.cyr), within 2 ulp;
 # - a2: the Stirling remainder, Loader's bd0, the incomplete gamma's prefactor kernel, and ln B (T0, on T1's lnΓ);
-# - a3: the regularized incomplete gamma P and Q: the series below x = a + 1, Lentz's continued fraction above, and
-#   Wilson–Hilferty's normal approximation past a = 10⁹ (T0);
+# - the regularized incomplete gamma P and Q are T1 (part b4): Rust's two expansions in double-double, split at x = a
+#   (src/gammainc.cyr), within 4 ulp; Rust's Wilson–Hilferty form past a = 10⁹, on T1's Φ;
 # - a4: the regularized incomplete beta I_x(a, b) and its complement, by Lentz's continued fraction on the side where
 #   it converges fastest (T0).
 # The coefficients are src/constants.cyr's, generated from rust-old/src and proven against the oracle (M0 step 6). The
@@ -194,7 +194,7 @@ fn _pmn_ln_beta(a: f64, b: f64): f64 {
     return g1 - gab;
 }
 
-# ── part a3: the regularized incomplete gamma ───────────────────────────────────────────────────────────────────
+# ── parts a3 and b4: the regularized incomplete gamma ───────────────────────────────────────────────────────────
 
 # Rust's `iteration_budget`: min(200 + 20·√shape, 10⁶) iterations, truncated as `as usize` truncates; √shape is 0
 # for a shape that is not finite and positive. Bounds every series and continued fraction's worst-case time.
@@ -209,75 +209,12 @@ fn _pmn_iteration_budget(shape: f64): i64 {
     return _pmn_sat_usize(m);
 }
 
-# Rust's `gamma_series_p`: P(a, x) = e^kernel · Σ xⁿ / (a(a + 1)…(a + n)), stopped when a term falls below 1e-15 of
-# the sum or the budget runs out, then clamped to [0, 1]. 0 when the prefactor underflows.
-#must_use
-fn _pmn_gamma_series_p(a: f64, x: f64): f64 {
-    var k: f64 = _pmn_ln_gamma_kernel(a, x);
-    var prefix: f64 = _pmn_exp(k);
-    if (prefix == 0.0) { return 0.0; }
-    var eps: f64 = _PMN_MATH_CONVERGENCE_EPS;
-    var ap: f64 = a;
-    var sum: f64 = 1.0 / a;
-    var del: f64 = sum;
-    var n = _pmn_iteration_budget(a);
-    for (var i = 0; i < n; i = i + 1) {
-        ap = ap + 1.0;
-        var q: f64 = x / ap;
-        del = del * q;
-        sum = sum + del;
-        var adel: f64 = f64_abs(del);
-        var asum: f64 = f64_abs(sum);
-        var lim: f64 = asum * eps;
-        if (adel < lim) { break; }
-    }
-    var r: f64 = sum * prefix;
-    return _pmn_clamp(r, 0.0, 1.0);
-}
-
-# Rust's `gamma_cf_q`: Q(a, x) by the modified Lentz continued fraction, each denominator kept from 0 by 1e-300,
-# stopped when a factor is within 1e-15 of 1 or the budget runs out, then clamped. 0 when the prefactor underflows.
-#must_use
-fn _pmn_gamma_cf_q(a: f64, x: f64): f64 {
-    var k: f64 = _pmn_ln_gamma_kernel(a, x);
-    var prefix: f64 = _pmn_exp(k);
-    if (prefix == 0.0) { return 0.0; }
-    var tiny: f64 = _PMN_MATH_LENTZ_TINY;
-    var eps: f64 = _PMN_MATH_CONVERGENCE_EPS;
-    var x1: f64 = x + 1.0;
-    var b: f64 = x1 - a;
-    var c: f64 = 1.0 / tiny;
-    var d: f64 = 1.0 / b;
-    var h: f64 = d;
-    var n = _pmn_iteration_budget(a);
-    for (var i = 1; i <= n; i = i + 1) {
-        var fi: f64 = f64_from(i);
-        var nfi: f64 = -fi;
-        var ima: f64 = fi - a;
-        var an: f64 = nfi * ima;
-        b = b + 2.0;
-        var ad: f64 = an * d;
-        d = ad + b;
-        var dabs: f64 = f64_abs(d);
-        if (dabs < tiny) { d = tiny; }
-        var ac: f64 = an / c;
-        c = b + ac;
-        var cabs: f64 = f64_abs(c);
-        if (cabs < tiny) { c = tiny; }
-        d = 1.0 / d;
-        var del: f64 = d * c;
-        h = h * del;
-        var dm: f64 = del - 1.0;
-        var dma: f64 = f64_abs(dm);
-        if (dma < eps) { break; }
-    }
-    var r: f64 = h * prefix;
-    return _pmn_clamp(r, 0.0, 1.0);
-}
-
-# Rust's `gamma_inc`: (P(a, x), Q(a, x)), each computed without cancellation: the series for P below x = a + 1 and the
-# continued fraction for Q from there, the other as 1 − it. Past a = 10⁹, Wilson–Hilferty: (x/a)^⅓ is close to
-# N(1 − 1/(9a), 1/(9a)). (NaN, NaN) for a NaN argument or a ≤ 0; (0, 1) for x ≤ 0 or a = +∞; (1, 0) for x = +∞.
+# (P(a, x), Q(a, x)) within 4 ulp for a in [1e-3, 1e5] (T1, M2 part b4; ADR 009): probe P9's form up to a = 10⁹,
+# Rust's two expansions with a double-double prefactor, double-double loops and the split at x = a (src/gammainc.cyr).
+# 1.3.0's double-precision series and continued fraction, which part a3 proved at 0 ulp, are retired: they are off by
+# up to 485 ulp on §3.2's pairs and 2.9×10⁹ in the deep lower tail. Past a = 10⁹, Rust's Wilson–Hilferty form as it
+# is (ADR 009): (x/a)^⅓ is close to N(1 − 1/(9a), 1/(9a)), on T1's Φ. (NaN, NaN) for a NaN argument or a ≤ 0; (0, 1)
+# for x ≤ 0 or a = +∞; (1, 0) for x = +∞.
 #must_use
 fn _pmn_gamma_inc(a: f64, x: f64): (f64, f64) {
     if (x != x || a != a || a <= 0.0) {
@@ -302,15 +239,8 @@ fn _pmn_gamma_inc(a: f64, x: f64): (f64, f64) {
         var qz: f64 = _pmn_normal_sf(z);
         return (pz, qz);
     }
-    var a1: f64 = a + 1.0;
-    if (x < a1) {
-        var p: f64 = _pmn_gamma_series_p(a, x);
-        var q: f64 = 1.0 - p;
-        return (p, q);
-    }
-    var q2: f64 = _pmn_gamma_cf_q(a, x);
-    var p2: f64 = 1.0 - q2;
-    return (p2, q2);
+    var p, q = _pmn_gi_gamma_inc(a, x);
+    return (p, q);
 }
 
 # Rust's `regularized_lower_incomplete_gamma`: P(a, x) = γ(a, x)/Γ(a), gamma_inc's first value.

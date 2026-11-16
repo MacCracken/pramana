@@ -156,6 +156,174 @@ def ln_dd(x):
         _m.mpfr_set_emax(1024)
 
 
+# e^(h + l)·2^-e as a double-double (M2 part b4: validate.py's model of the T1 incomplete gamma): (RN(v), RN(v − RN(v)))
+# from v at 1,024 bits over MPFR's widest exponent range. kimiya's exp core, which the port uses with the same e, is
+# within 2^-70 of v, so the model's single final rounding matches the port's except within about that of a tie.
+_m.mpfr_add_d.argtypes = [_P, _P, ctypes.c_double, ctypes.c_int]
+_m.mpfr_mul_2si.argtypes = [_P, _P, ctypes.c_long, ctypes.c_int]
+
+
+def exp_dd(h, l, e):
+    """(RN(v), RN(v − RN(v))) for v = e^(h + l)·2^-e (floats h, l; an integer e)."""
+    _m.mpfr_set_emin(_m.mpfr_get_emin_min())
+    _m.mpfr_set_emax(_m.mpfr_get_emax_max())
+    try:
+        _m.mpfr_set_d(ctypes.byref(_hz), h, _RNDN)
+        _m.mpfr_add_d(ctypes.byref(_hz), ctypes.byref(_hz), l, _RNDN)
+        _m.mpfr_exp(ctypes.byref(_ht), ctypes.byref(_hz), _RNDN)
+        _m.mpfr_mul_2si(ctypes.byref(_ht), ctypes.byref(_ht), -e, _RNDN)
+        hi = _m.mpfr_get_d(ctypes.byref(_ht), _RNDN)
+        _m.mpfr_sub_d(ctypes.byref(_ht), ctypes.byref(_ht), hi, _RNDN)
+        return hi, _m.mpfr_get_d(ctypes.byref(_ht), _RNDN)
+    finally:
+        _m.mpfr_set_emin(-1073)
+        _m.mpfr_set_emax(1024)
+
+
+def inv_ln2(n):
+    """RN(n/ln 2) for an integer n (kimiya's exp core takes K = RN(x·512/ln 2))."""
+    _m.mpfr_set_d(ctypes.byref(_hz), 2.0, _RNDN)
+    _m.mpfr_log(ctypes.byref(_ht), ctypes.byref(_hz), _RNDN)
+    _m.mpfr_ui_div(ctypes.byref(_ht), n, ctypes.byref(_ht), _RNDN)
+    return _m.mpfr_get_d(ctypes.byref(_ht), _RNDN)
+
+
+# Euler's γ and ζ(k), k = 2 … 64, as double-doubles (RN(v), RN(v − RN(v))) from 320 bits, with ζ(k) − 1 taken before
+# the split: the T1 incomplete gamma's lnΓ series (M2 part b4). src/zeta_data.cyr holds the same values, which
+# scripts/gen_zeta.py writes the same way.
+_m.mpfr_const_euler.argtypes = [_P, ctypes.c_int]
+_m.mpfr_zeta_ui.argtypes = [_P, ctypes.c_ulong, ctypes.c_int]
+
+
+def zeta_table():
+    """(γ, ζ, ζ − 1): γ as (hi, lo), and ζ(k) and ζ(k) − 1 as lists of (hi, lo) indexed by k, k = 0 and 1 unused."""
+    v, r = _MPFR_T(), _MPFR_T()
+    for x in (v, r):
+        _m.mpfr_init2(ctypes.byref(x), 320)
+
+    def split():
+        hi = _m.mpfr_get_d(ctypes.byref(v), _RNDN)
+        _m.mpfr_sub_d(ctypes.byref(r), ctypes.byref(v), hi, _RNDN)
+        return hi, _m.mpfr_get_d(ctypes.byref(r), _RNDN)
+
+    _m.mpfr_const_euler(ctypes.byref(v), _RNDN)
+    euler = split()
+    zeta, zm1 = [(0.0, 0.0)] * 2, [(0.0, 0.0)] * 2
+    for k in range(2, 65):
+        _m.mpfr_zeta_ui(ctypes.byref(v), k, _RNDN)
+        zeta.append(split())
+        _m.mpfr_sub_ui(ctypes.byref(v), ctypes.byref(v), 1, _RNDN)
+        zm1.append(split())
+    for x in (v, r):
+        _m.mpfr_clear(ctypes.byref(x))
+    return euler, zeta, zm1
+
+
+# P(a, x) and Q(a, x) (M2 part b4's reference rows): scripts/port-baseline/check.c's `gref`, through ctypes. pre =
+# x^a e^-x / Γ(a) at prec = 320 bits. For x <= a or x < 1, P = pre·Σ_{n>=0} x^n/(a(a+1)…(a+n)), positive and falling
+# terms stopped under 2^-(prec + 10) of the sum (tested every 16th term, as the ctypes calls are the cost; the few more
+# only add accuracy), and Q = 1 − P; otherwise Q = pre·(Legendre's continued fraction by modified Lentz, stopped when
+# a step changes it by under 2^-310), and P = 1 − Q. The fraction converges too slowly below x = 1 for a small shape.
+# The complement is taken from the exact product (2·prec bits). It is at least about 0.3 where x <= a and about 0.2a
+# where x < 1, so below a = 2^-10 prec grows by log2(1/a) + 64. Each of P and Q is then rounded once to binary64 by
+# mpfr_get_d, subnormals included. mpfr_gamma_inc itself takes up to 0.8 s a call near a = 1e5 (port-parity §6.5).
+for _name in ("mpfr_add_ui", "mpfr_sub_ui", "mpfr_mul_ui"):
+    getattr(_m, _name).argtypes = [_P, _P, ctypes.c_ulong, ctypes.c_int]
+for _name in ("mpfr_mul", "mpfr_add", "mpfr_sub"):
+    getattr(_m, _name).argtypes = [_P, _P, _P, ctypes.c_int]
+_m.mpfr_ui_div.argtypes = [_P, ctypes.c_ulong, _P, ctypes.c_int]
+_m.mpfr_ui_sub.argtypes = [_P, ctypes.c_ulong, _P, ctypes.c_int]
+_m.mpfr_mul_2si.argtypes = [_P, _P, ctypes.c_long, ctypes.c_int]
+_m.mpfr_set_ui_2exp.argtypes = [_P, ctypes.c_ulong, ctypes.c_long, ctypes.c_int]
+_m.mpfr_set.argtypes = [_P, _P, ctypes.c_int]
+_m.mpfr_abs.argtypes = [_P, _P, ctypes.c_int]
+_m.mpfr_exp.argtypes = [_P, _P, ctypes.c_int]
+_m.mpfr_cmp.argtypes = [_P, _P]
+_m.mpfr_cmp_d.argtypes = [_P, ctypes.c_double]
+_m.mpfr_clear.argtypes = [_P]
+
+
+def gamma_pq(a, x):
+    """(P(a, x), Q(a, x)), each correctly rounded to binary64, for finite 0 < a and 0 < x (floats)."""
+    prec = 320
+    if a < 2.0 ** -10:
+        prec += 64 + math.ceil(-math.log2(a))
+    regs = [_MPFR_T() for _ in range(15)]
+    for r in regs[:14]:
+        _m.mpfr_init2(ctypes.byref(r), prec)
+    _m.mpfr_init2(ctypes.byref(regs[14]), 2 * prec)
+    A, X, pre, t, s, term, h, b, c, d, an, dl, tiny, lim, w = (ctypes.byref(r) for r in regs)
+    _m.mpfr_set_emin(_m.mpfr_get_emin_min())
+    _m.mpfr_set_emax(_m.mpfr_get_emax_max())
+    try:
+        sign = ctypes.c_int(0)
+        _m.mpfr_set_d(A, a, _RNDN)
+        _m.mpfr_set_d(X, x, _RNDN)
+        _m.mpfr_log(t, X, _RNDN)
+        _m.mpfr_mul(pre, t, A, _RNDN)
+        _m.mpfr_sub(pre, pre, X, _RNDN)
+        _m.mpfr_lgamma(t, ctypes.byref(sign), A, _RNDN)
+        _m.mpfr_sub(pre, pre, t, _RNDN)
+        _m.mpfr_exp(pre, pre, _RNDN)
+        if x <= a or x < 1.0:
+            _m.mpfr_ui_div(term, 1, A, _RNDN)
+            _m.mpfr_set(s, term, _RNDN)
+            n = 1
+            while True:
+                _m.mpfr_add_ui(t, A, n, _RNDN)
+                _m.mpfr_div(t, X, t, _RNDN)
+                _m.mpfr_mul(term, term, t, _RNDN)
+                _m.mpfr_add(s, s, term, _RNDN)
+                if n % 16 == 0:
+                    _m.mpfr_mul_2si(lim, s, -(prec + 10), _RNDN)
+                    if _m.mpfr_cmp(term, lim) < 0:
+                        break
+                n += 1
+            _m.mpfr_mul(w, s, pre, _RNDN)
+            p = _m.mpfr_get_d(w, _RNDN)
+            _m.mpfr_ui_sub(w, 1, w, _RNDN)
+            return p, _m.mpfr_get_d(w, _RNDN)
+        _m.mpfr_set_ui_2exp(tiny, 1, -20000, _RNDN)
+        _m.mpfr_add_ui(b, X, 1, _RNDN)
+        _m.mpfr_sub(b, b, A, _RNDN)
+        _m.mpfr_set_ui_2exp(c, 1, 20000, _RNDN)
+        _m.mpfr_ui_div(d, 1, b, _RNDN)
+        _m.mpfr_set(h, d, _RNDN)
+        i = 1
+        while True:
+            _m.mpfr_ui_sub(an, i, A, _RNDN)
+            _m.mpfr_mul_ui(an, an, i, _RNDN)
+            _m.mpfr_neg(an, an, _RNDN)
+            _m.mpfr_add_ui(b, b, 2, _RNDN)
+            _m.mpfr_mul(d, an, d, _RNDN)
+            _m.mpfr_add(d, d, b, _RNDN)
+            _m.mpfr_abs(t, d, _RNDN)
+            if _m.mpfr_cmp(t, tiny) < 0:
+                _m.mpfr_set(d, tiny, _RNDN)
+            _m.mpfr_div(t, an, c, _RNDN)
+            _m.mpfr_add(c, b, t, _RNDN)
+            _m.mpfr_abs(t, c, _RNDN)
+            if _m.mpfr_cmp(t, tiny) < 0:
+                _m.mpfr_set(c, tiny, _RNDN)
+            _m.mpfr_ui_div(d, 1, d, _RNDN)
+            _m.mpfr_mul(dl, d, c, _RNDN)
+            _m.mpfr_mul(h, h, dl, _RNDN)
+            _m.mpfr_sub_ui(t, dl, 1, _RNDN)
+            _m.mpfr_abs(t, t, _RNDN)
+            if _m.mpfr_cmp_d(t, 2.0 ** -310) < 0:
+                break
+            i += 1
+        _m.mpfr_mul(w, h, pre, _RNDN)
+        q = _m.mpfr_get_d(w, _RNDN)
+        _m.mpfr_ui_sub(w, 1, w, _RNDN)
+        return _m.mpfr_get_d(w, _RNDN), q
+    finally:
+        _m.mpfr_set_emin(-1073)
+        _m.mpfr_set_emax(1024)
+        for r in regs:
+            _m.mpfr_clear(ctypes.byref(r))
+
+
 def _self_check():
     """Known correctly rounded values, among them glibc's misrounds that port-parity §1 found."""
     import struct

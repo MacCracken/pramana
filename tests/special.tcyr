@@ -31,6 +31,28 @@ fn rel_ok(actual: f64, expected: f64, tol: f64): i64 {
     return 0;
 }
 
+# The distance between two finite doubles in ulps, or in units of 2^-1074 for zero and subnormal results (ADR 009).
+fn ulps(a: f64, b: f64): i64 {
+    var ua = bits(a);
+    var ub = bits(b);
+    if (ua < 0) { ua = 0 - (ua & 0x7FFFFFFFFFFFFFFF); }
+    if (ub < 0) { ub = 0 - (ub & 0x7FFFFFFFFFFFFFFF); }
+    var d = ua - ub;
+    if (d < 0) { d = 0 - d; }
+    return d;
+}
+
+# 1 when gamma_inc(a, x) is within ADR 009's 4 ulp of MPFR's P and Q (all four as bit patterns).
+fn gi_ok(ab, xb, pb, qb): i64 {
+    var a: f64 = of_bits(ab);
+    var x: f64 = of_bits(xb);
+    var p, q = _pmn_gamma_inc(a, x);
+    var wp: f64 = of_bits(pb);
+    var wq: f64 = of_bits(qb);
+    if (ulps(p, wp) <= 4 && ulps(q, wq) <= 4) { return 1; }
+    return 0;
+}
+
 fn main() {
     alloc_init();
     var t7: f64 = 0.0000001;
@@ -199,23 +221,23 @@ fn main() {
     var nwx: f64 = -wx;
     var nwe: f64 = _pmn_erf(nwx);
     assert(bits(we) == 0x3C224D1863C5B5B5 && bits(nwe) == 0xBC224D1863C5B5B5,
-        "erf(0x1.0380ebd7a8f91p-61) = 0x1.24d1863c5b5b5p-61, a worst case its fast path can't round");
+      "erf(0x1.0380ebd7a8f91p-61) = 0x1.24d1863c5b5b5p-61, a worst case its fast path can't round");
     var cx: f64 = of_bits(0x3C8C5BF891B4EF6B);
     var ce1: f64 = _pmn_erfc(cx);
     var ncx: f64 = -cx;
     var ce2: f64 = _pmn_erfc(ncx);
     assert(bits(ce1) == 0x3FEFFFFFFFFFFFFF && bits(ce2) == 0x3FF0000000000000,
-        "erfc(±0x1.c5bf891b4ef6bp-55) = 1 - 2^-53 and 1: worst cases beside 1");
+      "erfc(±0x1.c5bf891b4ef6bp-55) = 1 - 2^-53 and 1: worst cases beside 1");
     var sx: f64 = of_bits(0x403A8F7BFBD15495);
     var se: f64 = _pmn_erfc(sx);
     assert(bits(se) == 0x000667BD620FD95B,
-        "erfc(0x1.a8f7bfbd15495p+4) = 0x1.99ef5883f656cp-1024, a subnormal exception");
+      "erfc(0x1.a8f7bfbd15495p+4) = 0x1.99ef5883f656cp-1024, a subnormal exception");
     var ux: f64 = of_bits(0x403B39DC41E48BFD);
     var ue: f64 = _pmn_erfc(ux);
     var ux1: f64 = of_bits(0x403B39DC41E48BFC);
     var ue1: f64 = _pmn_erfc(ux1);
     assert(bits(ue) == 0 && bits(ue1) == 1,
-        "erfc underflows to +0 from 0x1.b39dc41e48bfdp+4, and is the smallest subnormal just below");
+      "erfc underflows to +0 from 0x1.b39dc41e48bfdp+4, and is the smallest subnormal just below");
     var pt: f64 = _pmn_normal_cdf(-40.0);
     var st: f64 = _pmn_normal_sf(40.0);
     assert(bits(pt) == 0 && bits(st) == 0, "Phi(-40) and 1 - Phi(40) underflow to +0");
@@ -311,12 +333,12 @@ fn main() {
     var gm1: f64 = _pmn_ln_gamma(-1.0);
     var gm2: f64 = _pmn_ln_gamma(-2.0);
     assert(bits(gm1) == 0x7FF0000000000000 && bits(gm2) == 0x7FF0000000000000,
-        "lnGamma(-1) = lnGamma(-2) = +inf: poles (1.3.0 returned finite values)");
+      "lnGamma(-1) = lnGamma(-2) = +inf: poles (1.3.0 returned finite values)");
     var gin: f64 = _pmn_ln_gamma(inf);
     var gnin: f64 = _pmn_ln_gamma(ninf);
     var gnan: f64 = _pmn_ln_gamma(nan);
     assert(bits(gin) == 0x7FF0000000000000 && bits(gnin) == 0x7FF0000000000000 && _pmn_is_nan(gnan) == 1,
-        "lnGamma(+inf) = lnGamma(-inf) = +inf, lnGamma(NaN) = NaN (1.3.0: NaN at +inf)");
+      "lnGamma(+inf) = lnGamma(-inf) = +inf, lnGamma(NaN) = NaN (1.3.0: NaN at +inf)");
     var gr1: f64 = _pmn_ln_gamma(1.0);
     var gr2: f64 = _pmn_ln_gamma(2.0);
     assert(bits(gr1) == 0 && bits(gr2) == 0, "lnGamma(1) = lnGamma(2) = +0 exactly");
@@ -329,7 +351,7 @@ fn main() {
     var dov = bits(go1) - 0x7FEFE001FB1FD3AF;
     assert(dov >= 0 - 2 && dov <= 2, "lnGamma(2.55e305) = 1.79e308, within 2 ulp of MPFR, just under the overflow");
     assert(bits(go2) == 0x7FF0000000000000 && bits(gmx) == 0x7FF0000000000000,
-        "lnGamma(2.56e305) and lnGamma(MAX) overflow to +inf (P9's prototype gave NaN past the overflow)");
+      "lnGamma(2.56e305) and lnGamma(MAX) overflow to +inf (P9's prototype gave NaN past the overflow)");
 
     test_group("T1 (M2 part b3): lnGamma within 2 ulp of MPFR, where 1.3.0 is far off");
     var xn1: f64 = of_bits(0x3FF0000000400000);
@@ -339,7 +361,7 @@ fn main() {
     var dn1 = bits(gn1) - 0xBE02788CFC066F7F;
     var dn2 = bits(gn2) - 0xBDFB0EE606CE069B;
     assert(dn1 >= 0 - 2 && dn1 <= 2 && dn2 >= 0 - 2 && dn2 <= 2,
-        "lnGamma(1 + 2^-30) and lnGamma(2 - 2^-30) within 2 ulp of MPFR (1.3.0: about 10^6 ulp off)");
+      "lnGamma(1 + 2^-30) and lnGamma(2 - 2^-30) within 2 ulp of MPFR (1.3.0: about 10^6 ulp off)");
     var gh2: f64 = _pmn_ln_gamma(0.5);
     var g10b: f64 = _pmn_ln_gamma(10.0);
     var gm25: f64 = _pmn_ln_gamma(-2.5);
@@ -376,7 +398,7 @@ fn main() {
     var lbn2: f64 = _pmn_ln_beta(15.0, nan);
     var lb15: f64 = _pmn_ln_beta(15.0, 15.0);
     assert(bits(lbn1) == bits(lb15) && bits(lbn2) == bits(lb15),
-        "ln B(NaN, 15) = ln B(15, NaN) = ln B(15, 15), as 1.3.0's min and max read it");
+      "ln B(NaN, 15) = ln B(15, NaN) = ln B(15, 15), as 1.3.0's min and max read it");
     var sym = 1;
     var sa: f64 = 0.013;
     for (var j3 = 0; j3 < 40; j3 = j3 + 1) {
@@ -488,13 +510,42 @@ fn main() {
         var em: f64 = _pmn_exp_m1(nxe);
         var want_p: f64 = -em;
         var want_q: f64 = _pmn_exp(nxe);
-        var t13: f64 = 0.0000000000001;
-        if (rel_ok(pe, want_p, t13) == 0 || rel_ok(qe, want_q, t13) == 0) { ex_ok = 0; }
+        if (ulps(pe, want_p) > 4 || ulps(qe, want_q) > 4) { ex_ok = 0; }
         xe = xe * 1.25;
     }
-    # 1.3.0's own error grows with x here: exp(kernel) turns the kernel's absolute rounding into relative error, and
-    # MPFR puts Q(1, 300) 1.4e-14 off with every primitive correctly rounded. T1 (part b4) removes it.
-    assert(ex_ok == 1, "P(1, x) = 1 - e^-x and Q(1, x) = e^-x within 1e-13, x from 0.05 to 300");
+    # 1.3.0's error grew with x here (exp(kernel) turned the kernel's absolute rounding into relative error: Q(1, 300)
+    # 1.4e-14 off with every primitive correctly rounded), so part a3 checked 1e-13. T1 meets ADR 009's 4 ulp.
+    assert(ex_ok == 1, "P(1, x) and Q(1, x) within 4 ulp of the correctly rounded 1 - e^-x and e^-x, x 0.05 to 300");
+
+    test_group("the T1 incomplete gamma (part b4) against MPFR: ADR 009's 4 ulp");
+    # Expected P and Q: MPFR (scripts/golden/mpfr_ref.gamma_pq: a series or continued fraction at 320 bits or more),
+    # as bit patterns: a, x, P, Q.
+    assert(gi_ok(0x4008000000000000, 0x4008000000000000, 0x3FE2753A13323223, 0x3FDB158BD99B9BBA) == 1,
+      "P(3, 3) and Q(3, 3) (1.3.0's Poisson-sum test)");
+    assert(gi_ok(0x4043000000000000, 0x3E9EDEBD6525C993, 0x04A646FDFC751C00, 0x3FF0000000000000) == 1,
+      "P(38, 4.6e-7) = 2.93e-286, the deep lower tail (1.3.0's u = (x - a)/a rounds near -1 there)");
+    assert(gi_ok(0x4034000000000000, 0x3CD203AF9EE75616, 0x00000000000144FA, 0x3FF0000000000000) == 1,
+      "P(20, 1e-15) = 4.11e-319, a subnormal P (2^-1074 units)");
+    assert(gi_ok(0x3F847AE147AE147B, 0x3FF0CCCCCCCCCCCD, 0x3FEFEF49A3927722, 0x3F60B65C6D88DE4E) == 1,
+      "Q(0.01, 1.05) = 0.00204, small a just under x = 1.1: Q directly, not 1 - P");
+    assert(gi_ok(0x3FE0000000000000, 0x3FF170A3D70A3D71, 0x3FEB86A3D2618611, 0x3FC1E570B679E7BB) == 1,
+      "P(0.5, 1.09) and Q(0.5, 1.09): erf and erfc of sqrt(1.09)");
+    assert(gi_ok(0x3F50624DD2F1A9FC, 0x404E000000000000, 0x3FF0000000000000, 0x398768615FFD1853) == 1,
+      "Q(0.001, 60) = 1.44e-31, the continued fraction at the domain's smallest shape");
+    assert(gi_ok(0x40F86A0000000000, 0x40F86A0000000000, 0x3FE00371E616C2AB, 0x3FDFF91C33D27AA9) == 1,
+      "P(1e5, 1e5) and Q(1e5, 1e5), the domain's largest shape at x = a");
+    assert(gi_ok(0x41CD3B5B82E8D18C, 0x41CD3B5A7056C9DB, 0x3FDF8D77F3BC170E, 0x3FE039440621F479) == 1,
+      "P(9.81e8, a - 549) = 0.4930: the series' tail-aware stop (P9's last-term stop was 7 ulp off here)");
+    assert(gi_ok(0x41CDCD6500000000, 0x41CDCD6500000000, 0x3FE00008D1A927CF, 0x3FDFFFEE5CADB062) == 1,
+      "P(1e9, 1e9) and Q(1e9, 1e9), the last shape before Wilson-Hilferty");
+    assert(gi_ok(0x01A56E1FC2F8F359, 0x01A56E1FC2F8F359, 0x3FF0000000000000, 0x023CE388C95789CB) == 1,
+      "Q(1e-300, 1e-300) = 6.90e-298, a tiny shape: Q is about a(-ln x - gamma)");
+    assert(gi_ok(0x01A56E1FC2F8F359, 0x3FE0000000000000, 0x3FF0000000000000, 0x0197FDF98B5CCE39) == 1,
+      "P(1e-300, 0.5) = 1 and Q = 5.60e-301: the series' sum over a passes 2^996 (P9's form gave a NaN P)");
+    assert(gi_ok(0x000012688B70E62B, 0x3FE0000000000000, 0x3FF0000000000000, 0x00000A4DF544E4AF) == 1,
+      "P(1e-310, 0.5) = 1 and Q = 5.60e-311: a subnormal shape, the series scaled by 2^600");
+    assert(gi_ok(0x000012688B70E62B, 0x4000000000000000, 0x3FF0000000000000, 0x000000E67222B5FF) == 1,
+      "P(1e-310, 2) = 1 and Q = 4.89e-312: a subnormal shape, the continued fraction");
 
     test_group("incomplete_beta_known_values (1.3.0's test)");
     var i05: f64 = _pmn_regularized_incomplete_beta(0.5, 1.0, 1.0);
@@ -558,7 +609,7 @@ fn main() {
     assert(zp == 1.0 && zq == 0.0, "y <= 0 gives (1, 0) whatever x is");
     var ip6, iq6 = _pmn_beta_inc(3.0, inf, 0.7, 0.3);
     assert(_pmn_is_nan(ip6) == 1 && _pmn_is_nan(iq6) == 1,
-        "an infinite shape gives NaN, after 1.3.0's whole 1e6-iteration budget (its prefactor is NaN, not 0)");
+      "an infinite shape gives NaN, after 1.3.0's whole 1e6-iteration budget (its prefactor is NaN, not 0)");
     var sym_ok = 1;
     var wr2_ok = 1;
     var sa2: f64 = 0.03;

@@ -18,24 +18,30 @@ typedef struct { char name[48]; long n, ncr, skipped; double maxu, sumu, worst_x
 static Stat st[128]; static int nst;
 static Stat *get(const char *nm){ for(int i=0;i<nst;i++) if(!strcmp(st[i].name,nm)) return &st[i]; strcpy(st[nst].name,nm); return &st[nst++]; }
 static double fromh(const char *s){ uint64_t u; sscanf(s,"%lx",&u); double d; memcpy(&d,&u,8); return d; }
-// P(a, x) and Q(a, x) at 320 bits: pre = x^a e^-x / Γ(a); for x <= a, P = pre·Σ_{n>=0} x^n/(a(a+1)…(a+n)) (positive
-// terms, stopped under 2^-330 of the sum) and Q = 1 - P; for x > a, Q = pre·(Legendre's continued fraction by modified
-// Lentz, stopped when a step changes it by under 2^-310) and P = 1 - Q. The complement is taken only where it is at
-// least about 0.3, so it keeps ~318 bits.
+// P(a, x) and Q(a, x) at prec = 320 bits: pre = x^a e^-x / Γ(a); for x <= a or x < 1, P = pre·Σ_{n>=0}
+// x^n/(a(a+1)…(a+n)) (positive terms, stopped under 2^-(prec + 10) of the sum) and Q = 1 - P; otherwise Q =
+// pre·(Legendre's continued fraction by modified Lentz, stopped when a step changes it by under 2^-310) and P = 1 - Q.
+// The complement is taken from the exact product (2·prec bits). Where x <= a, Q is at least about 0.3, so it keeps
+// ~318 bits. For x < 1 (M2 part b4: the fraction converges too slowly there for a small shape, and never in practice
+// for a tiny one), Q is at least about 0.2a, and below a = 2^-10, where that loses more than 12 bits, prec grows by
+// log2(1/a) + 64.
 static void gref(mpfr_t P, mpfr_t Q, double ad, double xd){
-  mpfr_t a,x,pre,t,s,term,h,b,c,d,an,del,tiny,lim; int sg;
-  mpfr_inits2(320,a,x,pre,t,s,term,h,b,c,d,an,del,tiny,lim,(mpfr_ptr)0);
+  mpfr_t a,x,pre,t,s,term,h,b,c,d,an,del,tiny,lim,w; int sg;
+  long prec=320;
+  if(ad<0x1p-10) prec+=64+(long)ceil(-log2(ad));
+  mpfr_inits2(prec,a,x,pre,t,s,term,h,b,c,d,an,del,tiny,lim,(mpfr_ptr)0);
+  mpfr_init2(w,2*prec);
   mpfr_set_d(a,ad,MPFR_RNDN); mpfr_set_d(x,xd,MPFR_RNDN);
   mpfr_log(t,x,MPFR_RNDN); mpfr_mul(pre,t,a,MPFR_RNDN); mpfr_sub(pre,pre,x,MPFR_RNDN);
   mpfr_lgamma(t,&sg,a,MPFR_RNDN); mpfr_sub(pre,pre,t,MPFR_RNDN); mpfr_exp(pre,pre,MPFR_RNDN);
-  if(xd<=ad){
+  if(xd<=ad || xd<1.0){
     mpfr_ui_div(term,1,a,MPFR_RNDN); mpfr_set(s,term,MPFR_RNDN);
     for(unsigned long n=1;;n++){
       mpfr_add_ui(t,a,n,MPFR_RNDN); mpfr_div(t,x,t,MPFR_RNDN);
       mpfr_mul(term,term,t,MPFR_RNDN); mpfr_add(s,s,term,MPFR_RNDN);
-      mpfr_mul_2si(lim,s,-330,MPFR_RNDN); if(mpfr_cmp(term,lim)<0) break;
+      mpfr_mul_2si(lim,s,-(prec+10),MPFR_RNDN); if(mpfr_cmp(term,lim)<0) break;
     }
-    mpfr_mul(P,s,pre,MPFR_RNDN); mpfr_ui_sub(Q,1,P,MPFR_RNDN);
+    mpfr_mul(w,s,pre,MPFR_RNDN); mpfr_set(P,w,MPFR_RNDN); mpfr_ui_sub(Q,1,w,MPFR_RNDN);
   } else {
     mpfr_set_ui_2exp(tiny,1,-20000,MPFR_RNDN);
     mpfr_add_ui(b,x,1,MPFR_RNDN); mpfr_sub(b,b,a,MPFR_RNDN);
@@ -50,9 +56,9 @@ static void gref(mpfr_t P, mpfr_t Q, double ad, double xd){
       mpfr_ui_div(d,1,d,MPFR_RNDN); mpfr_mul(del,d,c,MPFR_RNDN); mpfr_mul(h,h,del,MPFR_RNDN);
       mpfr_sub_ui(t,del,1,MPFR_RNDN); mpfr_abs(t,t,MPFR_RNDN); if(mpfr_cmp_d(t,0x1p-310)<0) break;
     }
-    mpfr_mul(Q,h,pre,MPFR_RNDN); mpfr_ui_sub(P,1,Q,MPFR_RNDN);
+    mpfr_mul(w,h,pre,MPFR_RNDN); mpfr_set(Q,w,MPFR_RNDN); mpfr_ui_sub(P,1,w,MPFR_RNDN);
   }
-  mpfr_clears(a,x,pre,t,s,term,h,b,c,d,an,del,tiny,lim,(mpfr_ptr)0);
+  mpfr_clears(a,x,pre,t,s,term,h,b,c,d,an,del,tiny,lim,w,(mpfr_ptr)0);
 }
 // x^a y^b / (a B(a, b)) times Lentz's continued fraction (Rust's even and odd steps), at 320 bits, stopped when a
 // step changes it by under 2^-310: I_x(a, b) for x < (a+1)/(a+b+2).
@@ -190,7 +196,8 @@ int main(void){
     int p9e=crv || (strchr(nm,'/')!=NULL && (!strncmp(nm,"erf",3) || !strncmp(nm,"ncdf",4)));
     // A cr: row with a non-finite reference or result is compared too: right when both are the same infinity or both
     // NaN (0 ulp), wrong otherwise (counted as +∞ ulp), so overflow and the invalid cases are checked, not skipped.
-    if(crv && (!isfinite(cr) || !isfinite(r))){
+    // So is a gref row (M2 part b4, whose first run skipped a NaN P at a = 1e-300): P and Q are always finite.
+    if((crv || gr) && (!isfinite(cr) || !isfinite(r))){
       int same=(isnan(cr) && isnan(r)) || (isinf(cr) && cr==r);
       s->n++;
       if(!same){ s->ncr++; if(INFINITY>s->maxu){ s->maxu=INFINITY; s->worst_x=x; s->worst_y=y; } }

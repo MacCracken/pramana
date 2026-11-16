@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run.sh — the correct-rounding check of pramana's primitives (M1 part b; port plan D2, ADR 009) and of its erf and
-# erfc (M2 part b1; D3 = C).
+# erfc (M2 part b1; D3 = C), and of the T1 special functions that follow.
 #
 # For each row set, builds its generator for x86_64, PE and aarch64, compares the three outputs (sha256), and checks
 # every row against MPFR at 1,024 bits (scripts/port-baseline/check.c, ten interleaved chunks merged by merge.py). A
@@ -13,6 +13,10 @@
 #   its report's max ulp is the figure to read.
 # - `lgamma`: scripts/crverify/rows_lgamma.cyr, lnΓ (M2 part b3), whose bound is ≤ 2 ulp for x > 0 and ≤ 2 ulp of
 #   max(|lnΓ|, 1) for x < 0 (its `_mixed` rows).
+# - `gamma`: scripts/crverify/rows_gamma.cyr, the incomplete gamma's P and Q (M2 part b4), against check.c's 320-bit
+#   `gref`; the bound is ≤ 4 ulp for a in [1e-3, 1e5]. Its first 120,000 rows are probe P9's five sets; when P9's own
+#   output is at hand (build/p9/gamma_rows.txt, from scripts/probes/p9_gamma.sh), the rows that differ from its T1 rows
+#   are counted (the port was byte for byte P9 until M2 part b4 made the series' stop tail-aware).
 # Needs gcc with MPFR (and FMA for CORE-MATH's build), wine and qemu-aarch64.
 #   bash scripts/crverify/run.sh               # every set
 #   bash scripts/crverify/run.sh erf           # one
@@ -22,7 +26,7 @@ work=$root/build/crverify
 mkdir -p "$work"
 cd "$root"
 sets=("$@")
-[ ${#sets[@]} -gt 0 ] || sets=(primitives erf ncdf lgamma)
+[ ${#sets[@]} -gt 0 ] || sets=(primitives erf ncdf lgamma gamma)
 quiet() { grep -v -e '^note' -e '^OK' -e 'warning:lib/' -e 'unreachable fns' || true; }
 gcc -O2 -o "$work/check" scripts/port-baseline/check.c -lmpfr -lgmp -lm
 
@@ -41,9 +45,18 @@ verify() {
     if [ "$name" = erf ]; then
         "$work/cmp_coremath" < "$out/rows.txt"
     fi
+    if [ "$name" = gamma ] && [ -f "$root/build/p9/gamma_rows.txt" ]; then
+        local moved
+        moved=$(paste -d'|' <(grep '/t1 ' "$root/build/p9/gamma_rows.txt" | grep -v '/base/') \
+            <(head -120000 "$out/rows.txt") | awk -F'|' '$1 != $2' | wc -l)
+        echo "P9's five sets: $moved of 120,000 rows differ from probe P9's T1 rows (the series' tail-aware stop)"
+    fi
     local pids=()
+    # A gamma pair's P and Q rows stay in one chunk, so check.c computes its reference once.
+    local per=1
+    [ "$name" = gamma ] && per=2
     for k in 0 1 2 3 4 5 6 7 8 9; do
-        awk -v k="$k" 'NR % 10 == k' "$out/rows.txt" > "$out/chunks/rows$k.txt"
+        awk -v k="$k" -v per="$per" 'int((NR - 1) / per) % 10 == k' "$out/rows.txt" > "$out/chunks/rows$k.txt"
         "$work/check" < "$out/chunks/rows$k.txt" > "$out/chunks/report$k.txt" &
         pids+=($!)
     done
@@ -94,8 +107,11 @@ for line in sys.stdin:
     lgamma)
         verify lgamma scripts/crverify/rows_lgamma.cyr
         ;;
+    gamma)
+        verify gamma scripts/crverify/rows_gamma.cyr
+        ;;
     *)
-        echo "unknown set $s (primitives, erf, ncdf, lgamma)" >&2
+        echo "unknown set $s (primitives, erf, ncdf, lgamma, gamma)" >&2
         exit 1
         ;;
     esac

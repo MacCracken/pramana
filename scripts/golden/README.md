@@ -137,15 +137,24 @@ files. This README records what is specific to pramana.
   The special-function rows (`special.tsv`) arrive with M2 part a, and their reference rows (`special.ref.tsv`) with
   part b.
 - **`special.ref.tsv`** (M2 part b, ADR 009's T1), written by `validate.py --write-cr`: for each `special` row a T1
-  function moves, its true value (MPFR), or Rust's formula on the T1 functions' true values and correctly rounded
-  primitives downstream. `validate.py` models every row three ways (glibc, correctly rounded primitives, and the
+  function moves, its true value (MPFR), or downstream Rust's formula on the T1 functions' values as the port computes
+  them, and correctly rounded primitives. `validate.py` models every row three ways (glibc, correctly rounded primitives, and the
   reference) and writes a moved row to `.cr.tsv` when only a primitive's rounding moves it, else here. The harness
   compares a reference row under the function's `_par_c_bound`, ADR 009's bound for a T1 function (0 for erf and
   erfc, from part b1; 1 for Φ and 1 − Φ, from part b2, whose true values are `mpfr_ref.py`'s `ncdf` and `nsf`:
   ½·erfc(∓z/√2) at 1,024 bits, rounded once; 2 for lnΓ, from part b3, mixed for x < 0 through `_par_c_mixed`).
   A row downstream of a T1 function is Rust's formula on the T1 function's own value (ADR 009 as amended
   2026-11-16), so `validate.py` models the T1 functions that aren't correctly rounded as the port computes them:
-  `t1_ln_gamma`, P9's lnΓ on MPFR's double-double logarithms (`mpfr_ref.ln_dd`) and libm 0.2.16's coefficients.
+  - `t1_ln_gamma`, P9's lnΓ on MPFR's double-double logarithms (`mpfr_ref.ln_dd`) and libm 0.2.16's coefficients;
+  - `t1_gamma_inc` (part b4), src/gammainc.cyr step for step, on kimiya's Dekker product, MPFR's double-double
+    logarithms and exponentials (`mpfr_ref.ln_dd`, `mpfr_ref.exp_dd`, with the exp core's exponent taken as the port
+    takes it) and MPFR's γ and ζ(k) (`mpfr_ref.zeta_table`). It feeds the two regularized wrappers.
+
+  The incomplete gamma's own rows (part b4) take their true P and Q from `mpfr_ref.gamma_pq`: check.c's 320-bit
+  series or continued fraction through ctypes, wider below a = 2^-10. A row at a = 1e9 takes about 10 s, so
+  `validate.py` runs them in a process pool and caches them in `build/golden/`, under a hash of the reference's source
+  and the MPFR version. The first run takes a few minutes; later ones read the cache. The harness's bound for them is
+  `_par_c_gamma_bound`: 4 ulp for a in [1e-3, 1e5], 0 for the edges and the Wilson–Hilferty rows past 1e9.
 
 | Module | Milestone | Golden rows | Golden emitter | Generated Cyrius / correctly rounded rows |
 |---|---|---|---|---|
@@ -157,7 +166,7 @@ files. This README records what is specific to pramana.
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `debug` | M1 f | 60 | `src/m_debug.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
-| `special` | M2 a1–a4, b1–b3 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 14,299 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; and the rows downstream of them on T1's values, 5,210); `special.cr.tsv`, 203 rows (exp misrounded in the incomplete gamma's and beta's prefactors, 12; log1p in bd0, the kernel, ln B and the two incomplete functions, 199; ln in ln B, 1; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
+| `special` | M2 a1–a4, b1–b4 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 17,230 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; and the rows downstream of them on T1's values, 4,472, among them gamma_inc's 510 Wilson–Hilferty rows and the two wrappers' 534); `special.cr.tsv`, 172 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel, ln B and the incomplete beta, 170; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
 
 ## Format 1
 

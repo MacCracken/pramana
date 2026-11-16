@@ -29,24 +29,6 @@
 # is preserved.
 # ====================================================
 
-# ln x as a double-double, for a positive normal x: kimiya's fast core, |h + l − ln x| below about 2^-80·|ln x|.
-fn _pmn_lg_ln_dd(x: f64): (f64, f64) {
-    var ui = load64(&x);
-    var h, l, err = _pmn_km_ln_core(ui, 0);
-    return (h, l);
-}
-
-# (ah + al)·(bh + bl) as a double-double (relative error near 2^-104).
-fn _pmn_lg_dd_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
-    var p, e = _pmn_km_two_prod(ah, bh);
-    var c1: f64 = ah * bl;
-    var c2: f64 = al * bh;
-    var c: f64 = c1 + c2;
-    var e2: f64 = e + c;
-    var h, l = _pmn_km_fast_two_sum(p, e2);
-    return (h, l);
-}
-
 # fdlibm's polynomial for lnΓ near 1 and 2 (x < 2), case i of e_lgamma_r, in its operation order: the value r adds.
 fn _pmn_lg_poly12(y: f64, i): f64 {
     if (i == 0) {
@@ -153,7 +135,7 @@ fn _pmn_lg_pos_dd(x: f64): (f64, f64) {
         var i = 0;
         var tc: f64 = _PMN_LG_TC;
         if (ix <= 0x3FECCCCC) {
-            var lh, ll = _pmn_lg_ln_dd(x);
+            var lh, ll = _pmn_dd_ln(x);
             rh = -lh;
             rl = -ll;
             if (ix >= 0x3FE76944) {
@@ -194,12 +176,12 @@ fn _pmn_lg_pos_dd(x: f64): (f64, f64) {
         while (j < k) {
             var fj: f64 = f64_from(j);
             var fh, fl = _pmn_km_two_sum(y2, fj);
-            var mh, ml = _pmn_lg_dd_mul(zh, zl, fh, fl);
+            var mh, ml = _pmn_dd_mul(zh, zl, fh, fl);
             zh = mh;
             zl = ml;
             j = j + 1;
         }
-        var lzh, lzl = _pmn_lg_ln_dd(zh);
+        var lzh, lzl = _pmn_dd_ln(zh);
         var cz: f64 = zl / zh;
         var lzl2: f64 = lzl + cz;
         var s2, e2 = _pmn_km_two_sum(lzh, r0);
@@ -207,7 +189,7 @@ fn _pmn_lg_pos_dd(x: f64): (f64, f64) {
         return (s2, lo2);
     }
     # x ≥ 8: (x − ½)(ln x − 1) + w(1/x), with x·(ln x − 1) a double-double at every magnitude.
-    var th, tl = _pmn_lg_ln_dd(x);
+    var th, tl = _pmn_dd_ln(x);
     var sh, sl0 = _pmn_km_two_sum(th, -1.0);
     var sl: f64 = sl0 + tl;
     var ph: f64 = 0.0;
@@ -287,11 +269,11 @@ fn _pmn_lg_ln_gamma(x: f64): f64 {
     var sn: f64 = _pmn_km_cr_sin(qh);
     var cs: f64 = _pmn_km_cr_cos(qh);
     var sc: f64 = ql * cs;
-    var lsh, lsl0 = _pmn_lg_ln_dd(sn);
+    var lsh, lsl0 = _pmn_dd_ln(sn);
     var csn: f64 = sc / sn;
     var lsl: f64 = lsl0 + csn;
-    var lah, lal = _pmn_lg_ln_dd(a);
-    var lph, lpl0 = _pmn_lg_ln_dd(pih);
+    var lah, lal = _pmn_dd_ln(a);
+    var lph, lpl0 = _pmn_dd_ln(pih);
     var cpi: f64 = pim / pih;
     var lpl: f64 = lpl0 + cpi;
     var gh, gl = _pmn_lg_pos_dd(a);
