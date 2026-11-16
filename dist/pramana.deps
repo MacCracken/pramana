@@ -8,3 +8,5 @@ freelist
 string
 bayan
 fnptr
+alloc
+result

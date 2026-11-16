@@ -357,6 +357,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** a `Normal` document decodes in 1.65–1.68 µs against serde_json's 79–81 ns (21×), and a `Kernel` in
     518–523 ns against 35 ns (15×).
 
+- **M1 part d4: the JSON write core and the error codec** (`src/json.cyr`; port plan D5 and §8.3; ADR 007 rows 7
+  and 8; ledger L14; results in `docs/development/port-parity.md` §7.11):
+  - **the writers** append serde_json's compact text to the caller's builder: fmtf's f64s (`null` for NaN and ±∞),
+    unsigned decimals, strings with serde_json's escape table, vectors, row-major matrices, struct members in field
+    order, and both enum forms. Each returns `OUT_OF_MEMORY` when the builder can't grow, never aborting;
+  - **a guard** (ledger L14): five stdlib builder writers end the process on a failed grow, and `putc` and
+    `add_json_str` have no form that returns −1. pramana reserves the room first, 32 bytes per f64 and the exact
+    escaped length per string, so they never grow. pramana's numbers were added to the open cyrius str_builder
+    issue;
+  - **the error codec:** `pmn_err_to_json(code, sb)` writes 1.3.0's variant with an empty message
+    (`{"InvalidParameter":""}`) and refuses `NONE`, `OUT_OF_MEMORY` and `DESERIALIZE`, which no 1.3.0 reader takes.
+    `pmn_err_from_json(buf, len)` returns `Ok(code)`, reading the message and dropping it. ADR 007 row 8 is amended
+    with the maintainer's choice;
+  - **1,484 more golden rows** (6,209 in all): 1,382 `serde_json::to_vec` writes of every shape and 102 code-only
+    error reads. `validate.py` re-writes each with its own model of serde_json's writing. All match on x86_64, PE and
+    aarch64;
+  - **checks:** five mutation checks each fail their rows. `tests/json.tcyr` grows to 137 checks, with round trips of
+    6,300 seeded values;
+  - **cost:** writing 100 f64s takes 291 µs against serde_json's 1.9 µs, fmtf's exact printer (ledger L10). A `Normal`
+    takes 1.2 µs (19×), a string 0.7 µs (22×), an error code 0.22 µs (13×).
+
 ### Performance
 
 - **The pool's release** is a compare-and-swap rather than kimiya's full fence and plain store: a claim and its release

@@ -1,8 +1,9 @@
-# json.tcyr — the JSON read core (M1 part d3a; port plan D5, §8.3 and §8.5).
+# json.tcyr — the JSON core (M1 parts d3a, d3b and d4; port plan D5, §8.3 and §8.5).
 #
-# tests/parity.tcyr replays serde_json's own verdicts on every reader (tests/golden/json.tsv). These tests name what
-# the read core does on its own: the pre-pass's rewrites, the document's claims on every path, the arena's growth past
-# its first claim, the readers' caller-error codes, and a soak that leaves the heap where it found it.
+# tests/parity.tcyr replays serde_json's own verdicts and text on every reader and writer (tests/golden/json.tsv).
+# These tests name what the core does on its own: the pre-pass's rewrites, the document's claims on every path, the
+# arena's growth past its first claim, the readers' and writers' caller-error codes, the error codec's refusals, round
+# trips of seeded values, and soaks that leave the heap where they found it.
 
 include "tests/lib.cyr"
 
@@ -30,6 +31,42 @@ fn lifts_to(src: cstring, want: cstring): i64 {
 fn open(s: cstring): i64 {
     _pmn_json_close(g_doc);
     var n = text(s);
+    return _pmn_json_open(g_doc, g_buf, n);
+}
+
+var g_rng = 0x9E3779B97F4A7C15;
+
+fn next(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+# A finite double from seeded bits.
+fn finite(): i64 {
+    var b = next();
+    while (((b >> 52) & 0x7FF) == 0x7FF) { b = next(); }
+    return b;
+}
+
+# 1 when the builder holds exactly the C string want; it is then cleared.
+fn wrote(sb, want: cstring): i64 {
+    var n = strlen(want);
+    var ok = 0;
+    if (load64(sb + 8) == n && memeq(load64(sb), want, n) == 1) { ok = 1; }
+    store64(sb + 8, 0);
+    return ok;
+}
+
+# Opens the builder's text as g_doc (the text is copied to g_buf first); the error code.
+fn reopen(sb): i64 {
+    _pmn_json_close(g_doc);
+    var n = load64(sb + 8);
+    memcpy(g_buf, load64(sb), n);
+    store64(sb + 8, 0);
     return _pmn_json_open(g_doc, g_buf, n);
 }
 
@@ -291,6 +328,164 @@ fn main() {
     open("{\"Nope\": \"m\"}");
     assert_eq(_pmn_json_newtype_variant(_pmn_json_root(g_doc), &ev, 2, &sv), PMN_ERR_DESERIALIZE, "unknown refuses");
     _pmn_json_close(g_doc);
+
+    test_group("the writers: serde_json's compact text");
+    var sb = str_builder_new();
+    var x15: f64 = 1.5;
+    var nanv: f64 = 0x7FF8000000000000;
+    var nz: f64 = -0.0;
+    assert(_pmn_json_w_f64(sb, x15) == PMN_ERR_NONE && wrote(sb, "1.5") == 1, "1.5");
+    assert(_pmn_json_w_f64(sb, nanv) == PMN_ERR_NONE && wrote(sb, "null") == 1, "NaN is null");
+    assert(_pmn_json_w_f64(sb, nz) == PMN_ERR_NONE && wrote(sb, "-0.0") == 1, "-0.0");
+    assert(_pmn_json_w_u64(sb, 0) == PMN_ERR_NONE && wrote(sb, "0") == 1, "u64 0");
+    assert(_pmn_json_w_u64(sb, 0 - 1) == PMN_ERR_NONE && wrote(sb, "18446744073709551615") == 1, "u64::MAX");
+    assert(_pmn_json_w_bool(sb, 1) == PMN_ERR_NONE && wrote(sb, "true") == 1, "true");
+    var wsn = text("a\"b\\c\n??é/");
+    store8(g_buf + 6, 1);
+    store8(g_buf + 7, 0x7F);
+    assert(_pmn_json_w_str(sb, g_buf, wsn) == PMN_ERR_NONE, "a string writes");
+    var want[64];
+    var wn = strlen("\"a\\\"b\\\\c\\n\\u0001?é/\"");
+    memcpy(&want, "\"a\\\"b\\\\c\\n\\u0001?é/\"", wn);
+    store8(&want + 16, 0x7F);
+    assert(load64(sb + 8) == wn && memeq(load64(sb), &want, wn) == 1,
+        "quote, backslash and newline escaped, 0x01 as \\u0001, DEL, é and / as they are");
+    store64(sb + 8, 0);
+    var vv[24];
+    store64(&vv, 0x3FF8000000000000);
+    store64(&vv + 8, 0x7FF0000000000000);
+    store64(&vv + 16, 0x8000000000000000);
+    assert(_pmn_json_w_vec_f64(sb, &vv, 3) == PMN_ERR_NONE && wrote(sb, "[1.5,null,-0.0]") == 1, "a Vec<f64>");
+    assert(_pmn_json_w_vec_f64(sb, 0, 0) == PMN_ERR_NONE && wrote(sb, "[]") == 1, "an empty one");
+    store64(&vv, 7);
+    store64(&vv + 8, 0 - 1);
+    assert(_pmn_json_w_vec_u64(sb, &vv, 2) == PMN_ERR_NONE && wrote(sb, "[7,18446744073709551615]") == 1,
+        "a Vec<u64>");
+    var mv[32];
+    store64(&mv, 0x3FF0000000000000);
+    store64(&mv + 8, 0x4000000000000000);
+    store64(&mv + 16, 0x4008000000000000);
+    store64(&mv + 24, 0x4010000000000000);
+    assert(_pmn_json_w_mat_f64(sb, &mv, 2, 2) == PMN_ERR_NONE && wrote(sb, "[[1.0,2.0],[3.0,4.0]]") == 1,
+        "a 2 x 2 matrix, row-major");
+    assert(_pmn_json_w_mat_f64(sb, 0, 0, 3) == PMN_ERR_NONE && wrote(sb, "[]") == 1, "no rows is []");
+    assert(_pmn_json_w_mat_f64(sb, &mv, 1, 0) == PMN_ERR_NONE && wrote(sb, "[[]]") == 1, "one empty row is [[]]");
+    var m05: f64 = 0.5;
+    var s225: f64 = 2.25;
+    var es = _pmn_json_w_key(sb, "mean", 1);
+    es = es | _pmn_json_w_f64(sb, m05);
+    es = es | _pmn_json_w_key(sb, "std_dev", 0);
+    es = es | _pmn_json_w_f64(sb, s225);
+    es = es | _pmn_json_w_lit(sb, "}");
+    assert(es == PMN_ERR_NONE && wrote(sb, "{\"mean\":0.5,\"std_dev\":2.25}") == 1, "a struct, in field order");
+    assert(_pmn_json_w_unit_variant(sb, "Gaussian") == PMN_ERR_NONE && wrote(sb, "\"Gaussian\"") == 1,
+        "a unit variant");
+    assert_eq(_pmn_json_w_f64(0, x15), PMN_ERR_INVALID_PARAMETER, "a null builder is the caller's error");
+    assert_eq(_pmn_json_w_reserve(sb, 4611686018427387904), PMN_ERR_OUT_OF_MEMORY,
+        "room that can't be had is OUT_OF_MEMORY, not an abort (ledger L14)");
+
+    test_group("the error codec (ADR 007 row 8)");
+    assert(pmn_err_to_json(PMN_ERR_INVALID_SAMPLE, sb) == PMN_ERR_NONE && wrote(sb, "{\"InvalidSample\":\"\"}") == 1,
+        "a code is its variant with an empty message");
+    var trips = 0;
+    for (var c = PMN_ERR_INVALID_PARAMETER; c <= PMN_ERR_COMPUTATION_ERROR; c = c + 1) {
+        if (pmn_err_to_json(c, sb) == PMN_ERR_NONE) {
+            var et, ev = pmn_err_from_json(load64(sb), load64(sb + 8));
+            if (is_err_result(et) == 0 && ev == c) { trips = trips + 1; }
+        }
+        store64(sb + 8, 0);
+    }
+    assert_eq(trips, 5, "all five round-trip to their code");
+    assert(pmn_err_to_json(PMN_ERR_OUT_OF_MEMORY, sb) == PMN_ERR_INVALID_PARAMETER && load64(sb + 8) == 0,
+        "OUT_OF_MEMORY has no 1.3.0 variant: refused, nothing written");
+    assert(pmn_err_to_json(PMN_ERR_DESERIALIZE, sb) == PMN_ERR_INVALID_PARAMETER && load64(sb + 8) == 0,
+        "nor DESERIALIZE");
+    assert(pmn_err_to_json(PMN_ERR_NONE, sb) == PMN_ERR_INVALID_PARAMETER && load64(sb + 8) == 0, "nor NONE");
+    assert_eq(pmn_err_to_json(99, sb), PMN_ERR_INVALID_PARAMETER, "nor a value that is no code");
+    var dn = text("{\"DimensionMismatch\": \"rows differ\"}");
+    var dt, dv = pmn_err_from_json(g_buf, dn);
+    assert(is_err_result(dt) == 0 && dv == PMN_ERR_DIMENSION_MISMATCH, "1.3.0's document reads to its code");
+    var un = text("\"InvalidParameter\"");
+    var ut, uv = pmn_err_from_json(g_buf, un);
+    assert(is_err_result(ut) == 1 && uv == PMN_ERR_DESERIALIZE, "the bare name refuses");
+    var bn2 = text("{\"InvalidParameter\": \"a?\"}");
+    store8(g_buf + 22, 0xFF);
+    var bt, bv = pmn_err_from_json(g_buf, bn2);
+    assert(is_err_result(bt) == 1 && bv == PMN_ERR_DESERIALIZE, "a message that is not UTF-8 refuses, dropped or not");
+    assert_eq(_pmn_scratch_claimed(), 0, "nothing claimed");
+
+    test_group("round trips: what pramana writes, it reads back to the same bits");
+    var fbad = 0;
+    for (var r = 0; r < 2000; r = r + 1) {
+        var fb = finite();
+        var fx: f64 = fb;
+        var fw = _pmn_json_w_f64(sb, fx);
+        var fo = reopen(sb);
+        var got[8];
+        if (fw != PMN_ERR_NONE || fo != PMN_ERR_NONE || _pmn_json_f64(_pmn_json_root(g_doc), &got) != PMN_ERR_NONE) {
+            fbad = fbad + 1;
+        } elif (load64(&got) != fb) {
+            fbad = fbad + 1;
+        }
+    }
+    assert_eq(fbad, 0, "2,000 seeded finite f64s");
+    var ubad = 0;
+    for (var r2 = 0; r2 < 2000; r2 = r2 + 1) {
+        var uw = next() >> (r2 % 64);
+        var uo = _pmn_json_w_u64(sb, uw) | reopen(sb);
+        var ug[8];
+        if (uo != PMN_ERR_NONE || _pmn_json_u64(_pmn_json_root(g_doc), &ug) != PMN_ERR_NONE || load64(&ug) != uw) {
+            ubad = ubad + 1;
+        }
+    }
+    assert_eq(ubad, 0, "2,000 seeded u64s");
+    var sbad = 0;
+    var src[64];
+    for (var r3 = 0; r3 < 2000; r3 = r3 + 1) {
+        var len = next() & 31;
+        for (var j = 0; j < len; j = j + 1) { store8(&src + j, next() & 0x7F); }
+        var so = _pmn_json_w_str(sb, &src, len) | reopen(sb);
+        var sg[16];
+        if (so != PMN_ERR_NONE || _pmn_json_str(_pmn_json_root(g_doc), &sg) != PMN_ERR_NONE) {
+            sbad = sbad + 1;
+        } elif (load64(&sg + 8) != len || memeq(load64(&sg), &src, len) != 1) {
+            sbad = sbad + 1;
+        }
+    }
+    assert_eq(sbad, 0, "2,000 seeded ASCII strings, every control byte among them");
+    var mbad = 0;
+    var mm[200];
+    var mo[200];
+    for (var r4 = 0; r4 < 300; r4 = r4 + 1) {
+        var rows = next() & 3;
+        var cols = next() & 3;
+        for (var q = 0; q < rows * cols; q = q + 1) { store64(&mm + q * 8, finite()); }
+        var mw = _pmn_json_w_mat_f64(sb, &mm, rows, cols) | reopen(sb);
+        var msh[24];
+        if (mw != PMN_ERR_NONE || _pmn_json_mat_shape(_pmn_json_root(g_doc), &msh) != PMN_ERR_NONE) {
+            mbad = mbad + 1;
+        } elif (load64(&msh) != rows || (rows > 0 && load64(&msh + 8) != cols)) {
+            mbad = mbad + 1;
+        } elif (_pmn_json_mat_f64(_pmn_json_root(g_doc), &mo, rows, cols) != PMN_ERR_NONE) {
+            mbad = mbad + 1;
+        } elif (rows * cols > 0 && memeq(&mo, &mm, rows * cols * 8) != 1) {
+            mbad = mbad + 1;
+        }
+    }
+    assert_eq(mbad, 0, "300 seeded matrices up to 3 x 3, empty ones included");
+    _pmn_json_close(g_doc);
+
+    test_group("a write soak leaves the heap where it found it, once the builder holds the longest text");
+    for (var w0 = 0; w0 < 10; w0 = w0 + 1) {
+        if (_pmn_json_w_mat_f64(sb, &mm, 3, 3) != PMN_ERR_NONE) { println("write failed"); }
+        store64(sb + 8, 0);
+    }
+    var wbefore = alloc_used();
+    for (var w1 = 0; w1 < 10000; w1 = w1 + 1) {
+        if (_pmn_json_w_mat_f64(sb, &mm, 3, 3) != PMN_ERR_NONE) { println("write failed"); }
+        store64(sb + 8, 0);
+    }
+    assert_eq(alloc_used() - wbefore, 0, "10^4 writes into one cleared builder: 0 bytes of bump heap");
 
     test_group("decode closes on every path");
     var sum[8];

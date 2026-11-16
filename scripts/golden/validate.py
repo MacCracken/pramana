@@ -886,6 +886,43 @@ def pct_bytes(x: bytes) -> str:
     return "".join(chr(c) if 0x21 <= c <= 0x7E and c != 0x25 else f"%{c:02X}" for c in x)
 
 
+def serde_escape(x: bytes) -> bytes:
+    """serde_json's format_escaped_str: quoted; `"` and `\\` escaped; \\b \\t \\n \\f \\r named; the other bytes
+    below 0x20 as \\u00xx in lowercase hex; every other byte as it is."""
+    named = {0x22: b'\\"', 0x5C: b"\\\\", 0x08: b"\\b", 0x09: b"\\t", 0x0A: b"\\n", 0x0C: b"\\f", 0x0D: b"\\r"}
+    out = bytearray(b'"')
+    for c in x:
+        if c in named:
+            out += named[c]
+        elif c < 0x20:
+            out += f"\\u{c:04x}".encode()
+        else:
+            out.append(c)
+    return bytes(out + b'"')
+
+
+def serde_write(ty: str, toks) -> bytes:
+    """serde_json::to_vec of the value whose golden tokens `toks` (an iterator) hold, for the shape ty."""
+    if ty == "f64":
+        return json_f64_text(next(toks)).encode()
+    if ty in ("u64", "usize"):
+        return str(next(toks) % (1 << 64)).encode()
+    if ty == "bool":
+        return b"true" if next(toks) else b"false"
+    if ty == "String":
+        return serde_escape(urllib.parse.unquote_to_bytes(next(toks)[len("s:"):]))
+    if ty in JSON_STRUCTS:
+        return b"{" + b",".join(b'"' + name.encode() + b'":' + serde_write(t, toks)
+                                for name, t in JSON_STRUCTS[ty]) + b"}"
+    if ty in JSON_ENUMS:
+        name = next(toks).split(".", 1)[1].encode()
+        return b'"' + name + b'"' if JSON_ENUMS[ty][1] is None else b'{"' + name + b'":""}'
+    if ty.startswith("Vec<") and ty.endswith(">"):
+        n = int(next(toks)[len("v:"):])
+        return b"[" + b",".join(serde_write(ty[4:-1], toks) for _ in range(n)) + b"]"
+    raise ValueError(f"no writer model for {ty}")
+
+
 def serde_read(ty: str, doc: bytes):
     """serde_json::from_slice::<ty>(doc) as golden tokens: the value's, or ["E:Deserialize"]."""
     m = SerdeModel(doc)
@@ -902,10 +939,22 @@ def check_json(rows):
     unchecked, which bayan refuses whole (ADR 007 row 16)."""
     failures, by_fn, mapped = [], {}, []
     for fn, _cls, ins, outs, raw in rows:
-        ty = fn[len("json::"):] if fn.startswith("json::") else None
+        stat = by_fn.setdefault(fn, [0, 0])
+        if fn.startswith("json::write::"):
+            got = urllib.parse.unquote_to_bytes(outs[0][len("s:"):])
+            toks = iter(ins)
+            want_text = serde_write(fn[len("json::write::"):], toks)
+            ok = got == want_text and next(toks, None) is None and len(outs) == 1
+            stat[0 if ok else 1] += 1
+            if not ok:
+                failures.append(f"json: {fn}{tuple(ins[:6])} recorded {got[:80]!r}, modelled {want_text[:80]!r}")
+            continue
+        code_only = fn == "json::PramanaError::code"
+        ty = "PramanaError" if code_only else fn[len("json::"):]
         doc = urllib.parse.unquote_to_bytes(ins[0][len("s:"):])
         want = serde_read(ty, doc)
-        stat = by_fn.setdefault(fn, [0, 0])
+        if code_only and want != ["E:Deserialize"]:
+            want = want[:1]                          # the codec keeps the variant (ADR 007 row 8)
         ok = len(want) == len(outs) and all(
             same(g, w) if isinstance(w, float) else g == w for g, w in zip(outs, want))
         stat[0 if ok else 1] += 1
@@ -1012,7 +1061,7 @@ def main(argv):
             failures.extend(f)
             for fn in sorted(by_fn):
                 ok, bad = by_fn[fn]
-                print(f"  {fn:20s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
+                print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
             text = render_map(module, provenance, mapped)
             map_path = gdir / f"{module}.map.tsv"
             if write_cr:

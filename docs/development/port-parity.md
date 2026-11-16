@@ -1821,3 +1821,81 @@ are accepted (ADR 7). The replay is four modules, 65,538 rows ok and 96 accepted
 
 A small document pays mostly fixed costs: the pre-pass's two claims, an arena of 24 bytes per byte of text plus
 4 KiB, bayan's 176 bytes per container, and the call chain. This is recorded with part d3a's finding.
+
+### 7.11 Part d4: the write core and the error codec (2026-11-15)
+
+**The writers** (`src/json.cyr`) append serde_json's compact text to the caller's str_builder:
+- f64s through `fmtf.cyr`'s serde_json form (`null` for NaN and ±∞);
+- u64s and usizes in unsigned decimal, and bools;
+- strings with serde_json's escapes (`format_escaped_str`'s table: `\"` and `\\`, `\b \t \n \f \r` named, the other
+  bytes below 0x20 as `\u00xx` in lowercase hex, DEL and every other byte as it is), which the stdlib's
+  `str_builder_add_json_str` writes exactly;
+- vectors, row-major matrices (`[]` for no rows, `[[]]` for one empty row);
+- struct members in field order (`_pmn_json_w_key`), unit variants and newtype variants.
+
+Each writer returns `PMN_ERR_NONE`, or `OUT_OF_MEMORY` when the builder can't grow.
+
+**A guard for the stdlib's aborting writers (ledger L14).** `str_builder_putc`, `_add`, `_add_cstr`, `_add_int` and
+`_add_json_str` end the process when a grow fails. Three of them have `_a` forms that return −1, but `putc` and
+`add_json_str` have none, and `fmtf.cyr`'s printer writes through `putc`. So `_pmn_json_w_reserve` makes room first
+with `_sb_grow_a`, which returns −1:
+- 32 bytes before each f64 (serde_json's longest f64 text in `fmt.tsv`'s 25,200 rows is 24);
+- the exact escaped length before each string.
+
+The aborting writers then never grow the builder. A reservation of 2^62 bytes comes back as `OUT_OF_MEMORY`.
+pramana's numbers were added to the open cyrius str_builder issue.
+
+**The error codec** (ADR 007 row 8, amended 2026-11-15 by the maintainer's choice):
+- **`pmn_err_to_json(code, sb)`** writes a code as its 1.3.0 variant with an empty message, `{"InvalidParameter":""}`,
+  which 1.x reads as `InvalidParameter("")`. It refuses `PMN_ERR_NONE` and the Cyrius-only `OUT_OF_MEMORY` and
+  `DESERIALIZE` with `INVALID_PARAMETER`, writing nothing, because no 1.3.0 reader takes them.
+- **`pmn_err_from_json(buf, len)`** returns `Ok(code)` for a 1.3.0 error document. The message is read as serde reads
+  a String, so one that is not UTF-8 still refuses, and then dropped.
+
+**The golden rows.** The `json` module gains 1,484 rows, for 6,209 in all:
+- **`json::write::<T>`**, 1,382 rows: `serde_json::to_vec` of seeded values for every shape.
+  - f64: 208, the specials among them;
+  - u64: 210, the boundaries among them;
+  - bool: 2;
+  - String: 343, every byte below 0x20 among them;
+  - Vec<f64>, Vec<u64>, Vec<String>: 150, 100 and 100, with NaN and ∞ elements;
+  - Vec<Vec<f64>>: 100 rectangular matrices, empty ones included;
+  - the two test structs: 100 and 60;
+  - `Kernel`: its 4 variants;
+  - `PramanaError`: its 5 variants, each with an empty message.
+- **`json::PramanaError::code`**, 102 rows: the codec's reading of every error document, the variant alone.
+
+`validate.py` models serde_json's writing independently: the escape table, `json_f64_text` (already checked on
+`fmt.tsv`), and the struct and enum forms. All 1,484 agree, and the 4,725 earlier rows are unchanged.
+
+**The result.** All 6,209 rows pass on x86_64 ELF, PE and aarch64, warning-free. The replay is four modules, 67,022
+rows ok and 96 accepted.
+
+**Mutation checks:**
+- **u64 written as a signed integer:** 103 rows fail;
+- **strings written without escapes:** 394 rows fail;
+- **a space after a vector's commas:** 224 rows fail;
+- **the error codec writing the next variant:** its 5 rows fail;
+- **the matrix stride taken from the row count:** 59 rows fail.
+
+**Tests.** `tests/json.tcyr` gains 33 checks, for 137:
+- each writer's text, its caller errors, and the reservation's `OUT_OF_MEMORY`;
+- the error codec: the empty message, all five codes round-tripping, the four refusals writing nothing, 1.3.0's
+  document reading to its code, the bare name and a non-UTF-8 message refused;
+- round trips of 2,000 seeded finite f64s, 2,000 u64s, 2,000 ASCII strings (every control byte among them) and 300
+  matrices, each read back to the same bits;
+- a soak of 10⁴ writes into one cleared builder that leaves the bump heap unchanged.
+
+**Cost** (`tests/json.bcyr`'s write rows against the twin's, serde_json `to_writer` into one cleared `Vec`; the texts
+are byte-identical, as both sides print each one's length and FNV-1a hash; pinned, three interleaved rounds, run once
+the shared box's load had fallen below 2.5):
+
+| Write | Cyrius | serde_json | Ratio |
+|---|---|---|---|
+| Vec<f64>, 100 values in [−10⁶, 10⁶), 1,880 bytes | 290.7–292.0 µs | 1.90 µs | 153× |
+| a `Normal`, 27 bytes | 1.21–1.23 µs | 63.7–65.3 ns | 19× |
+| a String, 5 escapes in 24 bytes | 688–711 ns | 30.9–33.0 ns | 22× |
+| an error code, 24 bytes | 215–218 ns | 16.7–17.4 ns | 13× |
+
+The vector's cost is `fmtf.cyr`'s exact digit search, about 2.9 µs a value (part d1's finding, ledger L10). The rest
+is the call chain: a reservation, then the stdlib writer byte by byte. No hot path writes JSON.

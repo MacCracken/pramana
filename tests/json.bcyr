@@ -1,4 +1,4 @@
-# json.bcyr — the JSON read core (M1 parts d3a and d3b): a whole decode per document, µs or ns per document.
+# json.bcyr — the JSON core (M1 parts d3a, d3b and d4): a whole decode, or a whole write, per document.
 #
 # Each row decodes one document 10^4 times through _pmn_json_decode (the pre-pass, a pool claim, bayan's parse, the
 # reader, the release). The documents are built from mathx.bcyr's xorshift with src/fmtf.cyr, which writes
@@ -133,15 +133,51 @@ fn row(name: cstring, sb, fp): i64 {
     return 0;
 }
 
+# Writes one value 10^4 times into one cleared builder (`which`: 0 the Vec<f64>, 1 a Normal, 2 the string, 3 an error
+# code) and prints the text's length and FNV-1a hash.
+fn wrow(name: cstring, which, vals, sp, sn): i64 {
+    var out = str_builder_new();
+    var bad = 0;
+    var m05: f64 = 0.5;
+    var s225: f64 = 2.25;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    for (var i = 0; i < 10000; i = i + 1) {
+        store64(out + 8, 0);
+        var e = PMN_ERR_NONE;
+        if (which == 0) { e = _pmn_json_w_vec_f64(out, vals, 100); }
+        if (which == 1) {
+            e = _pmn_json_w_key(out, "mean", 1) | _pmn_json_w_f64(out, m05) | _pmn_json_w_key(out, "std_dev", 0);
+            e = e | _pmn_json_w_f64(out, s225) | _pmn_json_w_lit(out, "}");
+        }
+        if (which == 2) { e = _pmn_json_w_str(out, sp, sn); }
+        if (which == 3) { e = pmn_err_to_json(PMN_ERR_DIMENSION_MISMATCH, out); }
+        if (e != PMN_ERR_NONE) { bad = bad + 1; }
+    }
+    bench_batch_stop(b, 10000);
+    print("  ", 2);
+    print(name, strlen(name));
+    print(": ", 2);
+    fmt_int(load64(out + 8));
+    print(" bytes, fnv ", 12);
+    fmt_hex(fnv(load64(out), load64(out + 8)));
+    println("");
+    bench_report(b);
+    if (bad != 0) { println("  WRITE FAILED"); }
+    return 0;
+}
+
 fn main(): i64 {
     alloc_init();
     g_out = alloc(4096 * 8);
     var sb = str_builder_new();
+    var vals = alloc(800);
     str_builder_putc(sb, 91);
     for (var i = 0; i < 100; i = i + 1) {
         if (i > 0) { str_builder_putc(sb, 44); }
         var u: f64 = unit();
         var x: f64 = 2000000.0 * u - 1000000.0;
+        store64(vals + i * 8, x);
         _pmn_fmt_f64_json(sb, x);
     }
     str_builder_putc(sb, 93);
@@ -184,6 +220,11 @@ fn main(): i64 {
     store64(sb + 8, 0);
     str_builder_add_cstr(sb, "\"Epanechnikov\"");
     row("Kernel, a unit variant", sb, &dec_kernel);
+    wrow("write a Vec<f64>, the 100 values", 0, vals, 0, 0);
+    wrow("write a Normal", 1, 0, 0, 0);
+    var raw = "abc\ndef\"ghi\\jkl\tmn\u00e9o\u0001pq";
+    wrow("write a String, 5 escapes in 24 bytes", 2, 0, raw, strlen(raw));
+    wrow("write an error code", 3, 0, 0, 0);
     return 0;
 }
 

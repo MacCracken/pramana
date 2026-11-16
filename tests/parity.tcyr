@@ -123,16 +123,17 @@ var _PAR_JSON_CAP = 65536;
 
 # The shapes, by code: 0 f64, 1 u64 or usize, 2 bool, 3 String, 4 Vec<f64>, 5 Vec<u64>, 6 Vec<String>,
 # 7 Vec<Vec<f64>>, 8 Kernel.
-fn _par_json_code(fp, fl): i64 {
-    if (_par_eq(fp, fl, "json::f64") == 1) { return 0; }
-    if (_par_eq(fp, fl, "json::u64") == 1 || _par_eq(fp, fl, "json::usize") == 1) { return 1; }
-    if (_par_eq(fp, fl, "json::bool") == 1) { return 2; }
-    if (_par_eq(fp, fl, "json::String") == 1) { return 3; }
-    if (_par_eq(fp, fl, "json::Vec<f64>") == 1) { return 4; }
-    if (_par_eq(fp, fl, "json::Vec<u64>") == 1) { return 5; }
-    if (_par_eq(fp, fl, "json::Vec<String>") == 1) { return 6; }
-    if (_par_eq(fp, fl, "json::Vec<Vec<f64>>") == 1) { return 7; }
-    if (_par_eq(fp, fl, "json::Kernel") == 1) { return 8; }
+# The shape code of the type named by tp[0, tl) ("f64", "Vec<u64>", ...), or -1.
+fn _par_json_code(tp, tl): i64 {
+    if (_par_eq(tp, tl, "f64") == 1) { return 0; }
+    if (_par_eq(tp, tl, "u64") == 1 || _par_eq(tp, tl, "usize") == 1) { return 1; }
+    if (_par_eq(tp, tl, "bool") == 1) { return 2; }
+    if (_par_eq(tp, tl, "String") == 1) { return 3; }
+    if (_par_eq(tp, tl, "Vec<f64>") == 1) { return 4; }
+    if (_par_eq(tp, tl, "Vec<u64>") == 1) { return 5; }
+    if (_par_eq(tp, tl, "Vec<String>") == 1) { return 6; }
+    if (_par_eq(tp, tl, "Vec<Vec<f64>>") == 1) { return 7; }
+    if (_par_eq(tp, tl, "Kernel") == 1) { return 8; }
     return 0 - 1;
 }
 
@@ -281,16 +282,195 @@ fn _par_json_error(root): i64 {
     return _par_json_emit(3, load64(&w + 8));
 }
 
+# ── json::write::<T> rows (part d4): the value's tokens in, serde_json's text out, through src/json.cyr's writers into
+# one reused builder. _par_json_k is the cursor over the input tokens.
+var _par_json_sb = 0;
+var _par_json_k = 0;
+
+# The variant index of an `e:<Enum>.<Name>` input token at the cursor among names[0, n), or -1; it advances.
+fn _par_jw_variant(names, n): i64 {
+    var k = _par_json_k;
+    _par_json_k = k + 1;
+    if (k >= _par_in_n || load64(_par_in_k + k * 8) != 101) { return 0 - 1; }
+    var p = _par_in(k);
+    var len = load64(_par_in_l + k * 8);
+    var dot = 0;
+    while (dot < len && load8(p + dot) != 46) { dot = dot + 1; }
+    for (var j = 0; j < n; j = j + 1) {
+        var name = load64(names + j * 8);
+        if (strlen(name) == len - dot - 1 && memeq(p + dot + 1, name, len - dot - 1) == 1) { return j; }
+    }
+    return 0 - 1;
+}
+
+# Writes the value at the cursor as shape `code` (_par_json_code's numbering): a PMN_ERR_* code, or -1 for a defect.
+fn _par_jw(code): i64 {
+    var sb = _par_json_sb;
+    var k = _par_json_k;
+    if (k >= _par_in_n) { return 0 - 1; }
+    if (code == 0) {
+        _par_json_k = k + 1;
+        var x: f64 = _par_in(k);
+        return _pmn_json_w_f64(sb, x);
+    }
+    if (code == 1) {
+        _par_json_k = k + 1;
+        return _pmn_json_w_u64(sb, _par_in(k));
+    }
+    if (code == 2) {
+        _par_json_k = k + 1;
+        return _pmn_json_w_bool(sb, _par_in(k));
+    }
+    if (code == 3) {
+        _par_json_k = k + 1;
+        var n = 0;
+        var p = _par_in_bytes(k, &n);
+        if (p == 0) { return 0 - 1; }
+        return _pmn_json_w_str(sb, p, n);
+    }
+    var cnt = _par_in(k);
+    _par_json_k = k + 1;
+    if (code == 4 || code == 5) {
+        if (cnt > _PAR_JSON_CAP || _par_json_k + cnt > _par_in_n) { return 0 - 1; }
+        for (var i = 0; i < cnt; i = i + 1) { store64(_par_json_buf + i * 8, _par_in(_par_json_k + i)); }
+        _par_json_k = _par_json_k + cnt;
+        if (code == 4) { return _pmn_json_w_vec_f64(sb, _par_json_buf, cnt); }
+        return _pmn_json_w_vec_u64(sb, _par_json_buf, cnt);
+    }
+    if (code == 6) {
+        var e = _pmn_json_w_lit(sb, "[");
+        for (var a = 0; a < cnt; a = a + 1) {
+            if (a > 0 && e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ","); }
+            if (e == PMN_ERR_NONE) { e = _par_jw(3); }
+        }
+        if (e != PMN_ERR_NONE) { return e; }
+        return _pmn_json_w_lit(sb, "]");
+    }
+    if (code == 7) {
+        var cols = 0;
+        var at = 0;
+        for (var r = 0; r < cnt; r = r + 1) {
+            var c = _par_in(_par_json_k);
+            _par_json_k = _par_json_k + 1;
+            if (r == 0) { cols = c; }
+            if (c != cols || at + c > _PAR_JSON_CAP) { return 0 - 1; }   # the rows are rectangular
+            for (var j = 0; j < c; j = j + 1) { store64(_par_json_buf + (at + j) * 8, _par_in(_par_json_k + j)); }
+            _par_json_k = _par_json_k + c;
+            at = at + c;
+        }
+        return _pmn_json_w_mat_f64(sb, _par_json_buf, cnt, cols);
+    }
+    if (code == 8) {
+        _par_json_k = k;
+        var kn[32];
+        store64(&kn, "Gaussian");
+        store64(&kn + 8, "Epanechnikov");
+        store64(&kn + 16, "Uniform");
+        store64(&kn + 24, "Triangular");
+        var v = _par_jw_variant(&kn, 4);
+        if (v < 0) { return 0 - 1; }
+        return _pmn_json_w_unit_variant(sb, load64(&kn + v * 8));
+    }
+    return 0 - 1;
+}
+
+# A json::write row: the shape's text into the builder, then one `s:` token, or the writer's error.
+fn _par_json_write(fp, fl): i64 {
+    if (_par_json_sb == 0) {
+        _par_json_sb = str_builder_new();
+        if (_par_json_buf == 0) { _par_json_buf = alloc(_PAR_JSON_CAP * 8); }
+    }
+    var sb = _par_json_sb;
+    store64(sb + 8, 0);
+    _par_json_k = 0;
+    var e = 0 - 2;
+    if (_par_eq(fp, fl, "json::write::Pair") == 1) {
+        e = _pmn_json_w_key(sb, "mean", 1);
+        if (e == PMN_ERR_NONE) { e = _par_jw(0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "std_dev", 0); }
+        if (e == PMN_ERR_NONE) { e = _par_jw(0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+    } elif (_par_eq(fp, fl, "json::write::Shapes") == 1) {
+        var names[80];
+        store64(&names, "x");
+        store64(&names + 8, "n");
+        store64(&names + 16, "k");
+        store64(&names + 24, "flag");
+        store64(&names + 32, "name");
+        store64(&names + 40, "xs");
+        store64(&names + 48, "ns");
+        store64(&names + 56, "labels");
+        store64(&names + 64, "m");
+        store64(&names + 72, "kernel");
+        var codes[80];
+        var cv = 0;
+        for (var f = 0; f < 10; f = f + 1) {
+            cv = f;
+            if (f == 2) { cv = 1; }
+            if (f > 2) { cv = f - 1; }
+            store64(&codes + f * 8, cv);
+        }
+        e = PMN_ERR_NONE;
+        for (var g = 0; g < 10; g = g + 1) {
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, load64(&names + g * 8), 1 - (g > 0)); }
+            if (e == PMN_ERR_NONE) { e = _par_jw(load64(&codes + g * 8)); }
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+    } elif (_par_eq(fp, fl, "json::write::PramanaError") == 1) {
+        var en[40];
+        store64(&en, "InvalidParameter");
+        store64(&en + 8, "InvalidSample");
+        store64(&en + 16, "ConvergenceFailure");
+        store64(&en + 24, "DimensionMismatch");
+        store64(&en + 32, "ComputationError");
+        var v = _par_jw_variant(&en, 5);
+        if (v < 0) { return 0 - 1; }
+        e = pmn_err_to_json(PMN_ERR_INVALID_PARAMETER + v, sb);
+    } else {
+        var code = _par_json_code(fp + 13, fl - 13);     # the T of json::write::T
+        if (code >= 0) { e = _par_jw(code); }
+    }
+    if (e == 0 - 2) { return 0; }
+    if (e == 0 - 1 || _par_json_k != _par_in_n) { return 0 - 1; }
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_text(load64(sb), load64(sb + 8));
+    return 1;
+}
+
+# json::PramanaError::code rows: the error codec's reading, pmn_err_from_json, the variant alone.
+fn _par_json_err_code(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var t, v = pmn_err_from_json(doc, n);
+    if (is_err_result(t) == 1) {
+        _par_got_err(v);
+        return 1;
+    }
+    if (v == PMN_ERR_INVALID_PARAMETER) { _par_got_e("PramanaError.InvalidParameter"); }
+    if (v == PMN_ERR_INVALID_SAMPLE) { _par_got_e("PramanaError.InvalidSample"); }
+    if (v == PMN_ERR_CONVERGENCE_FAILURE) { _par_got_e("PramanaError.ConvergenceFailure"); }
+    if (v == PMN_ERR_DIMENSION_MISMATCH) { _par_got_e("PramanaError.DimensionMismatch"); }
+    if (v == PMN_ERR_COMPUTATION_ERROR) { _par_got_e("PramanaError.ComputationError"); }
+    return 1;
+}
+
 fn _par_json_value(fp, fl, root): i64 {
     if (_par_eq(fp, fl, "json::Pair") == 1) { return _par_json_pair(root); }
     if (_par_eq(fp, fl, "json::Shapes") == 1) { return _par_json_shapes(root); }
     if (_par_eq(fp, fl, "json::PramanaError") == 1) { return _par_json_error(root); }
-    var code = _par_json_code(fp, fl);
+    if (fl <= 6) { return 0 - 2; }
+    var code = _par_json_code(fp + 6, fl - 6);           # the T of json::T
     if (code < 0) { return 0 - 2; }
     return _par_json_emit(code, root);
 }
 
 fn _par_json(fp, fl): i64 {
+    if (fl > 13 && memeq(fp, "json::write::", 13) == 1) { return _par_json_write(fp, fl); }
+    if (_par_eq(fp, fl, "json::PramanaError::code") == 1) { return _par_json_err_code(); }
     if (_par_in_n != 1) { return 0 - 1; }
     if (_par_json_doc == 0) {
         _par_json_doc = alloc(_PMN_JSON_DOC_SIZE);

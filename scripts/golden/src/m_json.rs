@@ -5,10 +5,16 @@
 //! - serde derive's struct rules (d3b), on two test structs: `Pair`, `Normal`'s two f64 fields, and `Shapes`, one
 //!   field of every kind 1.3.0's types hold, `Kernel` included;
 //! - the two enum forms (d3b), on 1.3.0's own enums: `Kernel` (unit variants) and `PramanaError` (newtype variants
-//!   holding a String).
+//!   holding a String);
+//! - the error codec's reading (d4, `json::PramanaError::code`): the variant alone, the message dropped (ADR 007
+//!   row 8).
 //!
-//! Each row is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse, as
-//! probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
+//! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
+//! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
+//!
+//! The `json::write::<T>` rows (d4) are `serde_json::to_vec(&value)`: the value as tokens in, serde_json's text out,
+//! for the same shapes. `json::write::PramanaError` writes each variant with an empty message, the document pramana
+//! writes for a code (ADR 007 row 8, amended 2026-11-15).
 //!
 //! The documents:
 //! - for every type: the other JSON types, and syntax faults (truncation, trailing content, a byte-order mark,
@@ -580,6 +586,7 @@ pub fn emit() -> Module {
     }
     structs(&mut m, &mut g, &numbers, &strings);
     enums(&mut m, &strings);
+    writes(&mut m, &mut g);
     m
 }
 
@@ -877,17 +884,123 @@ fn enums(m: &mut Module, strings: &[Vec<u8>]) {
     }
     docs.extend(common());
     for d in &docs {
+        row(m, "json::PramanaError::code", d, serde_json::from_slice::<PramanaError>(d), |e| {
+            vec![Tok::E("PramanaError", error_parts(e).0.to_string())]
+        });
+    }
+    for d in &docs {
         row(m, "json::PramanaError", d, serde_json::from_slice::<PramanaError>(d), |e| {
-            let (v, msg) = match e {
-                PramanaError::InvalidParameter(x) => ("InvalidParameter", x),
-                PramanaError::InvalidSample(x) => ("InvalidSample", x),
-                PramanaError::ConvergenceFailure(x) => ("ConvergenceFailure", x),
-                PramanaError::DimensionMismatch(x) => ("DimensionMismatch", x),
-                PramanaError::ComputationError(x) => ("ComputationError", x),
-                _ => unreachable!("1.3.0 has five variants"),
-            };
+            let (v, msg) = error_parts(e);
             vec![Tok::E("PramanaError", v.to_string()), sb(msg.as_bytes())]
         });
+    }
+}
+
+/// A PramanaError's variant name and message.
+fn error_parts(e: &PramanaError) -> (&'static str, &str) {
+    match e {
+        PramanaError::InvalidParameter(x) => ("InvalidParameter", x),
+        PramanaError::InvalidSample(x) => ("InvalidSample", x),
+        PramanaError::ConvergenceFailure(x) => ("ConvergenceFailure", x),
+        PramanaError::DimensionMismatch(x) => ("DimensionMismatch", x),
+        PramanaError::ComputationError(x) => ("ComputationError", x),
+        _ => unreachable!("1.3.0 has five variants"),
+    }
+}
+
+// ── d4: serde_json's writing ──
+
+fn text(x: &impl Serialize) -> Tok {
+    sb(&serde_json::to_vec(x).expect("serde_json writes every value here"))
+}
+
+/// A seeded double: finite, or one of the values serde_json writes as `null` one time in eight.
+fn any_f64(g: &mut Rng) -> f64 {
+    match g.int(0, 15) {
+        0 => f64::NAN,
+        1 => f64::INFINITY,
+        _ => finite(g),
+    }
+}
+
+/// A rectangular matrix, as every type that holds one has it.
+fn rect(g: &mut Rng, rows: usize, cols: usize) -> Vec<Vec<f64>> {
+    (0..rows).map(|_| (0..cols).map(|_| any_f64(g)).collect()).collect()
+}
+
+fn mat_toks(x: &[Vec<f64>]) -> Vec<Tok> {
+    let mut t = vec![Tok::V(x.len())];
+    for r in x {
+        t.extend(f64s(r));
+    }
+    t
+}
+
+#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn writes(m: &mut Module, g: &mut Rng) {
+    let mut xs: Vec<f64> = vec![0.0, -0.0, 1.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX, 5e-324];
+    xs.extend((0..200).map(|_| finite(g)));
+    for x in &xs {
+        m.row("json::write::f64", Class::A, &[f(*x)], &[text(x)]);
+    }
+    let mut ws: Vec<u64> = vec![0, 1, 9, 10, 99, 100, (1 << 53) + 1, (1 << 63) - 1, 1 << 63, u64::MAX];
+    ws.extend((0..200).map(|k| g.word() >> (k % 64)));
+    for w in &ws {
+        m.row("json::write::u64", Class::A, &[i(*w as i64)], &[text(w)]);
+    }
+    for x in [false, true] {
+        m.row("json::write::bool", Class::A, &[b(x)], &[text(&x)]);
+    }
+    let mut texts: Vec<String> = vec![String::new()];
+    texts.extend((0u8..0x20).map(|c| format!("a{}b", char::from(c))));
+    texts.extend(["\"", "\\", "/", "\u{7f}", "é", "😀", "\u{2028}", "\u{ffff}", "\u{10ffff}", "%"].map(String::from));
+    texts.extend((0..300).map(|_| random_string(g)));
+    for t in &texts {
+        m.row("json::write::String", Class::A, &[s(t.clone())], &[text(t)]);
+    }
+    for _ in 0..150 {
+        let x: Vec<f64> = (0..g.int(0, 10)).map(|_| any_f64(g)).collect();
+        m.row("json::write::Vec<f64>", Class::A, &f64s(&x), &[text(&x)]);
+    }
+    for _ in 0..100 {
+        let x: Vec<u64> = (0..g.int(0, 10)).map(|k| g.word() >> (k * 7 % 64)).collect();
+        m.row("json::write::Vec<u64>", Class::A, &u64s(&x), &[text(&x)]);
+    }
+    for _ in 0..100 {
+        let x: Vec<String> = (0..g.int(0, 5)).map(|_| random_string(g)).collect();
+        let mut t = vec![Tok::V(x.len())];
+        t.extend(x.iter().map(|e| s(e.clone())));
+        m.row("json::write::Vec<String>", Class::A, &t, &[text(&x)]);
+    }
+    for k in 0..100 {
+        let rows = g.int(0, 4) as usize;
+        let cols = if k % 10 == 0 { 0 } else { g.int(1, 4) as usize };
+        let x = rect(g, rows, cols);
+        m.row("json::write::Vec<Vec<f64>>", Class::A, &mat_toks(&x), &[text(&x)]);
+    }
+    for _ in 0..100 {
+        let p = Pair { mean: any_f64(g), std_dev: any_f64(g) };
+        m.row("json::write::Pair", Class::A, &[f(p.mean), f(p.std_dev)], &[text(&p)]);
+    }
+    for _ in 0..60 {
+        let mut x = random_shapes(g);
+        let rows = x.m.len();
+        let cols = g.int(0, 3) as usize;
+        x.m = rect(g, rows, cols);
+        m.row("json::write::Shapes", Class::A, &shapes_toks(&x), &[text(&x)]);
+    }
+    for k in KERNELS {
+        m.row("json::write::Kernel", Class::A, &[Tok::E("Kernel", format!("{k:?}"))], &[text(&k)]);
+    }
+    for e in [
+        PramanaError::InvalidParameter(String::new()),
+        PramanaError::InvalidSample(String::new()),
+        PramanaError::ConvergenceFailure(String::new()),
+        PramanaError::DimensionMismatch(String::new()),
+        PramanaError::ComputationError(String::new()),
+    ] {
+        let v = error_parts(&e).0.to_string();
+        m.row("json::write::PramanaError", Class::A, &[Tok::E("PramanaError", v)], &[text(&e)]);
     }
 }
 

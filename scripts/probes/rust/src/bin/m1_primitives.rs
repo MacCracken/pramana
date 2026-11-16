@@ -171,7 +171,30 @@ fn json() {
     let doc = serde_json::to_vec(&pramana::descriptive::Kernel::Epanechnikov).unwrap();
     json_row("Kernel, a unit variant", &doc, |d: &[u8]| {
         serde_json::from_slice::<pramana::descriptive::Kernel>(d)
-    });
+    });    let normal = pramana::distribution::Normal::new(0.5, 2.25).unwrap();
+    let text = String::from("abc\ndef\"ghi\\jkl\tmn\u{e9}o\u{1}pq");
+    let err = pramana::PramanaError::DimensionMismatch(String::new());
+    write_row("write a Vec<f64>, the 100 values", |b| serde_json::to_writer(b, &xs));
+    write_row("write a Normal", |b| serde_json::to_writer(b, &normal));
+    write_row("write a String, 5 escapes in 24 bytes", |b| serde_json::to_writer(b, &text));
+    write_row("write an error code", |b| serde_json::to_writer(b, &err));
+}
+
+// tests/json.bcyr's write rows: serde_json::to_writer into one cleared Vec, 10^4 times.
+fn write_row(name: &str, f: impl Fn(&mut Vec<u8>) -> serde_json::Result<()>) {
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let t0 = Instant::now();
+    for _ in 0..10_000 {
+        buf.clear();
+        f(black_box(&mut buf)).expect("serde_json writes it");
+    }
+    let ns = t0.elapsed().as_nanos() as f64 / 10_000.0;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &c in &buf {
+        h = (h ^ u64::from(c)).wrapping_mul(0x100_0000_01b3);
+    }
+    println!("  {name}: {} bytes, fnv 0x{h:x}", buf.len());
+    println!("  {name}: {ns:.1} ns");
 }
 
 fn main() {

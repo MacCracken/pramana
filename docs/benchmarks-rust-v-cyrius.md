@@ -171,3 +171,22 @@ The documents are byte-identical. Three rounds, interleaved, pinned to core 5, a
 
 The rounds also re-ran part d3a's rows, within 3% of their record (Vec<f64> 64.9–65.1 µs, the string 2.75 µs). Small
 documents pay mostly the fixed costs of the pre-pass, the claims and bayan's containers. This is part d3a's finding.
+
+## M1 part d4: the write core and the error codec (2026-11-15)
+
+**Bodies.** `tests/json.bcyr`'s write rows write one value 10⁴ times into one cleared builder; the twin's call
+`serde_json::to_writer` into one cleared `Vec`. Both sides print each text's length and FNV-1a hash, and all four
+match. Three rounds, interleaved, pinned to core 5. The first attempt ran at a load average of 9–12 (another
+project's processes) and was discarded; these ran once it had fallen below 2.5 (1.5–1.7).
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| write a Vec<f64>, 100 values in [−10⁶, 10⁶) | 1.90 µs | 290.7–292.0 µs | 153× |
+| write a Normal | 63.7–65.3 ns | 1.21–1.23 µs | 19× |
+| write a String, 5 escapes in 24 bytes | 30.9–33.0 ns | 688–711 ns | 22× |
+| write an error code | 16.7–17.4 ns | 215–218 ns | 13× |
+
+The same rounds re-ran the read rows within 6% of their record (Vec<f64> 62.0–62.9 µs, Normal 1.59–1.60 µs).
+
+**Finding.** Writing f64s costs what part d1 measured for `fmtf.cyr`'s exact printer, about 2.9 µs a value here,
+which the printer ledger L10 asks for would replace. The other rows are call overhead around the stdlib writers.

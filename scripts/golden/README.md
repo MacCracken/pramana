@@ -56,8 +56,8 @@ files. This README records what is specific to pramana.
   and seeded bit patterns. pramana's JSON writes this text byte for byte (port plan D5). serde_json is a dependency
   here, pinned to `rust-old/Cargo.lock`'s version. `validate.py` rebuilds every row from Python's own shortest
   digits (`repr`, ties to even as serde_json's zmij), and 62 of the inputs are exact ties.
-- **`json.tsv`** (M1 parts d3a and d3b, `src/m_json.rs`): `serde_json::from_slice::<T>`, with `float_roundtrip`
-  on, on 4,725 documents. T is one of:
+- **`json.tsv`** (M1 parts d3a, d3b and d4, `src/m_json.rs`), 6,209 rows. The reading rows are
+  `serde_json::from_slice::<T>`, with `float_roundtrip` on, on 4,725 documents. T is one of:
   - each value type 1.3.0's serialized types are made of (`f64`, `u64`, `usize`, `bool`, `String`, `Vec<f64>`,
     `Vec<u64>`, `Vec<String>`, `Vec<Vec<f64>>`);
   - two test structs, `Pair` and `Shapes` (serde derive, with `serde` pinned to `rust-old/Cargo.lock`'s version), for
@@ -67,6 +67,14 @@ files. This README records what is specific to pramana.
   The input is the document's bytes (`s:`, which need not be UTF-8), and the output the value's tokens or
   `E:Deserialize`, serde_json's refusal. `validate.py` re-reads every document with its own model of serde_json's
   reading, written from serde_json's source.
+
+  Part d4 adds:
+  - **the error codec's reading** (`json::PramanaError::code`, 102 rows): the variant alone, the message dropped
+    (ADR 007 row 8);
+  - **the writing rows** (`json::write::<T>`, 1,382 rows): `serde_json::to_vec` of seeded values of every shape, the
+    value's tokens in and serde_json's text out. `PramanaError`'s variants are written with an empty message, as
+    pramana writes a code (ADR 007 row 8, amended). `validate.py` re-writes each with its own model of serde_json's
+    writing: the escape table, the f64 text model it checks `fmt.tsv` with, and the struct and enum forms.
 - **`json.map.tsv`** (ADR 007 row 16), written by `validate.py --write-cr`. These are the rows serde_json reads only
   by skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
   surrogate. `validate.py` finds them with its own model of bayan's three whole-document refusals. They map to
@@ -99,7 +107,7 @@ files. This README records what is specific to pramana.
 | `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
 | `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
-| `json` | M1 d3a, d3b | 4,725 | `src/m_json.rs` | `json.map.tsv`, 20 rows (ADR 007 row 16) |
+| `json` | M1 d3a, d3b, d4 | 6,209 | `src/m_json.rs` | `json.map.tsv`, 20 rows (ADR 007 row 16) |
 
 ## Format 1
 

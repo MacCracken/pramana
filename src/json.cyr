@@ -1,7 +1,7 @@
-# json.cyr — JSON as serde_json 1.0.154 reads it: the read core (port plan D5, §8.3 and §8.5; ADR 007 rows 7 and 16).
+# json.cyr — JSON as serde_json 1.0.154 reads and writes it (port plan D5, §8.3 and §8.5; ADR 007 rows 7, 8 and 16).
 #
-# M1 parts d3a and d3b. A type's decoder reads a document the way 1.3.0's serde derive and its `try_from` validation
-# did:
+# **Reading** (M1 parts d3a and d3b). A type's decoder reads a document the way 1.3.0's serde derive and its
+# `try_from` validation did:
 # 1. **The pre-pass** (`_pmn_json_lift`) rewrites the text so that bayan's tree reads every number as serde_json does,
 #    and refuses a raw control byte in a string, as serde_json does anywhere (probe P7, port-parity §6.3).
 # 2. **The tree.** bayan parses the rewritten text into an arena: a bump allocator over a work-table pool claim (part
@@ -23,6 +23,16 @@
 #
 # Every serde_json refusal is PMN_ERR_DESERIALIZE (D6). Memory that can't be had is PMN_ERR_OUT_OF_MEMORY, and a
 # caller's own bad argument (a null buffer, one too small) is PMN_ERR_INVALID_PARAMETER.
+#
+# **Writing** (M1 part d4). A type's encoder appends serde_json's compact text to the caller's str_builder, byte for
+# byte (ADR 007 row 7): f64s through src/fmtf.cyr's serde_json form (`null` for NaN and ±∞), integers in decimal,
+# strings with serde_json's escapes, `[a,b]`, `{"name":value}` in field order, `"Name"` for a unit variant and
+# `{"Name":value}` for a newtype variant. A writer returns PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when the builder
+# can't grow (its text is then incomplete). It grows the builder through `default_alloc()`, which never frees an
+# outgrown buffer, so reuse one cleared builder for repeated writes.
+#
+# **The error codec** (part d4; ADR 007 row 8, amended): `pmn_err_to_json` writes a code as 1.3.0's PramanaError with
+# an empty message, and `pmn_err_from_json` reads one back to its code, dropping the message.
 # UPSTREAM(L7): cyrius:docs/development/issues/2026-11-11-derive-json-no-vector-array-or-tagged-variant-shapes.md
 #   the hand readers here and the codecs on them give way to #derive(Deserialize) once it can validate and read
 #   matrices and u64s; parity: every JSON row
@@ -32,6 +42,9 @@
 # UPSTREAM(L13): cyrius:docs/development/issues/2026-11-11-vec-keeps-outgrown-buffer-and-aborts.md
 #   the document-size guard in _pmn_json_open goes once vec_push_a returns -1 past VEC_CAP_MAX; parity: the json
 #   rows
+# UPSTREAM(L14): cyrius:docs/development/issues/2026-11-13-str-builder-grow-never-frees-the-outgrown-buffer.md
+#   (pramana's section) the reservations before fmtf's printer and str_builder_add_json_str go once both have
+#   non-aborting forms; parity: the json::write rows
 
 # A document's state, in the caller's storage: the root node, the arena and its pool slot (24 bytes), the arena's
 # Allocator (40) and its bump state (32).
@@ -567,4 +580,214 @@ fn _pmn_json_newtype_variant(v, names, n, out): i64 {
     store64(out, j);
     store64(out + 8, bayan_json_v_obj_val(v, 0));
     return PMN_ERR_NONE;
+}
+
+# ── 4. the writers ──────────────────────────────────────────────────────────────────────────────
+
+# STAND-IN (ledger L14): makes room for n more bytes in sb, so that the stdlib writers with no non-aborting form
+# (`str_builder_putc`, `_add_cstr`, `_add_int`, `_add_json_str`, which fmtf.cyr's printer and the string writer use)
+# never have to grow it: they end the process when a grow fails. PMN_ERR_OUT_OF_MEMORY when the room can't be had.
+#must_use
+fn _pmn_json_w_reserve(sb, n): i64 {
+    if (sb == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_sb_grow_a(default_alloc(), sb, n) != 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    return PMN_ERR_NONE;
+}
+
+# Appends the n bytes at p.
+#must_use
+fn _pmn_json_w_bytes(sb, p, n): i64 {
+    if (sb == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n <= 0) { return PMN_ERR_NONE; }
+    var t[16];
+    store64(&t, p);
+    store64(&t + 8, n);
+    if (str_builder_add_a(default_alloc(), sb, &t) != 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    return PMN_ERR_NONE;
+}
+
+# Appends the C string s.
+#must_use
+fn _pmn_json_w_lit(sb, s: cstring): i64 {
+    return _pmn_json_w_bytes(sb, s, strlen(s));
+}
+
+# Appends x as serde_json writes an f64: its shortest round-trip digits, or `null` for NaN and ±∞ (at most 24 bytes).
+#must_use
+fn _pmn_json_w_f64(sb, x: f64): i64 {
+    var e = _pmn_json_w_reserve(sb, 32);
+    if (e != PMN_ERR_NONE) { return e; }
+    _pmn_fmt_f64_json(sb, x);
+    return PMN_ERR_NONE;
+}
+
+# Appends the word x, read as unsigned, in decimal: a u64 or a usize.
+#must_use
+fn _pmn_json_w_u64(sb, x): i64 {
+    var tmp[24];
+    var k = 24;
+    var r = x;
+    while (k == 24 || r != 0) {
+        var q = (r >> 1) / 5;                   # r / 10, unsigned
+        k = k - 1;
+        store8(&tmp + k, 48 + r - q * 10);
+        r = q;
+    }
+    return _pmn_json_w_bytes(sb, &tmp + k, 24 - k);
+}
+
+# Appends `true` or `false`.
+#must_use
+fn _pmn_json_w_bool(sb, b): i64 {
+    if (b != 0) { return _pmn_json_w_lit(sb, "true"); }
+    return _pmn_json_w_lit(sb, "false");
+}
+
+# Appends the n bytes at p as serde_json writes a string: quoted, `"` and `\` escaped, \b \f \n \r \t named, the other
+# bytes below 0x20 as \u00xx in lowercase hex, every other byte as it is (str_builder_add_json_str, which writes
+# exactly this, after a reservation of the exact length).
+#must_use
+fn _pmn_json_w_str(sb, p, n): i64 {
+    if (n < 0 || (p == 0 && n > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    var need = 2;
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c == 34 || c == 92 || c == 8 || c == 9 || c == 10 || c == 12 || c == 13) {
+            need = need + 2;
+        } elif (c < 32) {
+            need = need + 6;
+        } else {
+            need = need + 1;
+        }
+        i = i + 1;
+    }
+    var e = _pmn_json_w_reserve(sb, need);
+    if (e != PMN_ERR_NONE) { return e; }
+    var t[16];
+    store64(&t, p);
+    store64(&t + 8, n);
+    str_builder_add_json_str(sb, &t);
+    return PMN_ERR_NONE;
+}
+
+# Appends the n f64s at p as a JSON array.
+#must_use
+fn _pmn_json_w_vec_f64(sb, p, n): i64 {
+    if (n < 0 || (p == 0 && n > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_json_w_lit(sb, "[");
+    var i = 0;
+    while (e == PMN_ERR_NONE && i < n) {
+        if (i > 0) { e = _pmn_json_w_lit(sb, ","); }
+        var x: f64 = load64(p + i * 8);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, x); }
+        i = i + 1;
+    }
+    if (e != PMN_ERR_NONE) { return e; }
+    return _pmn_json_w_lit(sb, "]");
+}
+
+# Appends the n u64s (or usizes) at p as a JSON array.
+#must_use
+fn _pmn_json_w_vec_u64(sb, p, n): i64 {
+    if (n < 0 || (p == 0 && n > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_json_w_lit(sb, "[");
+    var i = 0;
+    while (e == PMN_ERR_NONE && i < n) {
+        if (i > 0) { e = _pmn_json_w_lit(sb, ","); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, load64(p + i * 8)); }
+        i = i + 1;
+    }
+    if (e != PMN_ERR_NONE) { return e; }
+    return _pmn_json_w_lit(sb, "]");
+}
+
+# Appends the rows × cols f64s at p (row-major) as a Vec<Vec<f64>>: `[[a,b],[c,d]]`, or `[]` for no rows.
+#must_use
+fn _pmn_json_w_mat_f64(sb, p, rows, cols): i64 {
+    if (rows < 0 || cols < 0 || (p == 0 && rows > 0 && cols > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_json_w_lit(sb, "[");
+    var i = 0;
+    while (e == PMN_ERR_NONE && i < rows) {
+        if (i > 0) { e = _pmn_json_w_lit(sb, ","); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, p + i * cols * 8, cols); }
+        i = i + 1;
+    }
+    if (e != PMN_ERR_NONE) { return e; }
+    return _pmn_json_w_lit(sb, "]");
+}
+
+# Opens a struct's member: `{"name":` for the first (first = 1), `,"name":` after. A field name is a plain ASCII
+# identifier, written as it is. Close the struct with `_pmn_json_w_lit(sb, "}")`.
+#must_use
+fn _pmn_json_w_key(sb, name: cstring, first): i64 {
+    var e = PMN_ERR_NONE;
+    if (first == 1) {
+        e = _pmn_json_w_lit(sb, "{\"");
+    } else {
+        e = _pmn_json_w_lit(sb, ",\"");
+    }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, name); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "\":"); }
+    return e;
+}
+
+# Appends a unit variant: `"Name"`.
+#must_use
+fn _pmn_json_w_unit_variant(sb, name: cstring): i64 {
+    var e = _pmn_json_w_lit(sb, "\"");
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, name); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "\""); }
+    return e;
+}
+
+# Opens a newtype variant: `{"Name":`. Append its value, then close it with `_pmn_json_w_lit(sb, "}")`.
+#must_use
+fn _pmn_json_w_newtype_open(sb, name: cstring): i64 {
+    return _pmn_json_w_key(sb, name, 1);
+}
+
+# ── 5. the error codec ──────────────────────────────────────────────────────────────────────────
+
+# Writes the code as 1.3.0's PramanaError document with an empty message: `{"InvalidParameter":""}`, which a Rust 1.x
+# consumer reads as InvalidParameter(""). PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow;
+# PMN_ERR_INVALID_PARAMETER, writing nothing, for a code 1.3.0 has no variant for: PMN_ERR_NONE, the Cyrius-only
+# PMN_ERR_OUT_OF_MEMORY and PMN_ERR_DESERIALIZE, or a value that is no code (ADR 007 row 8, amended 2026-11-15).
+#must_use
+fn pmn_err_to_json(code, sb): i64 {
+    if (sb == 0 || code < PMN_ERR_INVALID_PARAMETER || code > PMN_ERR_COMPUTATION_ERROR) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    var e = _pmn_json_w_newtype_open(sb, pmn_err_name(code));
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "\"\"}"); }
+    return e;
+}
+
+# The decoder for pmn_err_from_json: the newtype variant, its message read as serde reads a String, then dropped.
+fn _pmn_err_from_root(root, out): i64 {
+    var names[40];
+    store64(&names, "InvalidParameter");
+    store64(&names + 8, "InvalidSample");
+    store64(&names + 16, "ConvergenceFailure");
+    store64(&names + 24, "DimensionMismatch");
+    store64(&names + 32, "ComputationError");
+    var w[16];
+    var e = _pmn_json_newtype_variant(root, &names, 5, &w);
+    if (e != PMN_ERR_NONE) { return e; }
+    var msg[16];
+    e = _pmn_json_str(load64(&w + 8), &msg);
+    if (e != PMN_ERR_NONE) { return e; }
+    store64(out, PMN_ERR_INVALID_PARAMETER + load64(&w));   # the variants in 1.3.0's order are the codes 1 … 5
+    return PMN_ERR_NONE;
+}
+
+# Reads a PramanaError document, buf[0, len), to its code: Ok(PMN_ERR_INVALID_PARAMETER … PMN_ERR_COMPUTATION_ERROR),
+# the message read and dropped (ADR 007 row 8). Err(PMN_ERR_DESERIALIZE) for any document serde_json refuses,
+# Err(PMN_ERR_OUT_OF_MEMORY) when the tree can't be had.
+#must_use
+fn pmn_err_from_json(buf, len): Result {
+    var code[8];
+    var e = _pmn_json_decode(buf, len, &_pmn_err_from_root, &code);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    return Ok(load64(&code));
 }
