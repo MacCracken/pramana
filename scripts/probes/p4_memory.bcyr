@@ -1,0 +1,1163 @@
+# p4_memory.bcyr — M0 step 9, probe P4: the flat heap (port plan §5 step 9, D11, §8.5).
+#
+# Prototypes of D11's conventions, each driven in a loop that must leave the heap where it found it:
+# - constructors fill caller storage and return a value-form Result (PmnNormal_new);
+# - owned objects keep their buffers in one freelist block and free it in `_drop` (the MVN, the HMM, the MCMC result);
+# - scratch comes from a work-table pool: kimiya ADR 0007's eight grow-only slots claimed by compare-and-swap, except
+#   that a slot grows on the freelist and frees the buffer it outgrew, and an overflow claim is a freelist block freed
+#   on release (kimiya takes both from the bump heap, which never frees);
+# - a result whose length follows from the inputs goes into a caller buffer (out, cap), checked for null, size and
+#   aliasing.
+# Each soak runs its body once to warm up (slots grow, the freelist's classes fill), snapshots the heap, runs the rest,
+# and compares: the bump heap's bytes, the freelist blocks the probe holds, the process's mapped size
+# (/proc/self/statm) and the pool slots still claimed must all be unchanged. A row ends "FLAT" or "GREW".
+#   cyrius bench scripts/probes/p4_memory.bcyr
+
+# cyrius lint compiles the file without the manifest's stdlib, and a capturing closure needs the allocator
+# by name there (include-once makes this a no-op in the build).
+include "lib/alloc.cyr"
+
+const P4_ERR_NULL = 1;
+const P4_ERR_PARAM = 2;
+const P4_ERR_CAP = 3;
+const P4_ERR_ALIAS = 4;
+const P4_ERR_NAN = 5;
+const P4_ERR_ALLOC = 6;
+
+# ---- accounting ----
+
+var g_fl_live = 0;
+
+# A freelist block the probe counts, so a leak shows as a live block.
+fn fl_take(bytes): i64 {
+    var p = fl_alloc(bytes);
+    if (p != 0) { g_fl_live = g_fl_live + 1; }
+    return p;
+}
+
+fn fl_give(p): i64 {
+    if (p != 0) {
+        fl_free(p);
+        g_fl_live = g_fl_live - 1;
+    }
+    return 0;
+}
+
+# The process's mapped size in KB, from the first field of /proc/self/statm (pages of 4 KB).
+fn vm_kb(): i64 {
+    var buf[64];
+    var n = file_read_all("/proc/self/statm", &buf, 63);
+    if (n <= 0) { return -1; }
+    var v = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(&buf + i);
+        if (c < 48 || c > 57) { break; }
+        v = v * 10 + (c - 48);
+        i = i + 1;
+    }
+    return v * 4;
+}
+
+# ---- the work-table pool ----
+
+const _P4_SLOTS = 8;
+const _P4_OVERFLOW = -2;
+var _p4_busy: i64[_P4_SLOTS];
+var _p4_ptr: i64[_P4_SLOTS];
+var _p4_cap: i64[_P4_SLOTS];
+
+# Claims scratch of `bytes`: (buffer, slot). A slot already big enough is preferred; else a free slot grows (to at
+# least twice its size) and frees what it outgrew; when all are claimed, a freelist block with slot _P4_OVERFLOW.
+# (0, −1) when the memory can't be had.
+fn scratch_take(bytes): (i64, i64) {
+    if (bytes <= 0) { return (0, -1); }
+    var i = 0;
+    while (i < _P4_SLOTS) {
+        if (load64(&_p4_busy + 8 * i) == 0 && load64(&_p4_cap + 8 * i) >= bytes) {
+            if (atomic_cas(&_p4_busy + 8 * i, 0, 1) == 1) { return (load64(&_p4_ptr + 8 * i), i); }
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < _P4_SLOTS) {
+        if (load64(&_p4_busy + 8 * i) == 0) {
+            if (atomic_cas(&_p4_busy + 8 * i, 0, 1) == 1) {
+                var want = 2 * load64(&_p4_cap + 8 * i);
+                if (want < bytes) { want = bytes; }
+                var q = fl_take(want);
+                if (q == 0) {
+                    atomic_store(&_p4_busy + 8 * i, 0);
+                    return (0, -1);
+                }
+                fl_give(load64(&_p4_ptr + 8 * i));
+                store64(&_p4_ptr + 8 * i, q);
+                store64(&_p4_cap + 8 * i, want);
+                return (q, i);
+            }
+        }
+        i = i + 1;
+    }
+    var o = fl_take(bytes);
+    if (o == 0) { return (0, -1); }
+    return (o, _P4_OVERFLOW);
+}
+
+# Gives back what scratch_take handed out, on every return path.
+fn scratch_give(p, slot): i64 {
+    if (slot == _P4_OVERFLOW) {
+        fl_give(p);
+        return 0;
+    }
+    if (slot < 0) { return 0; }
+    atomic_fence();
+    atomic_store(&_p4_busy + 8 * slot, 0);
+    return 0;
+}
+
+fn scratch_claimed(): i64 {
+    var c = 0;
+    var i = 0;
+    while (i < _P4_SLOTS) {
+        c = c + load64(&_p4_busy + 8 * i);
+        i = i + 1;
+    }
+    return c;
+}
+
+# ---- the RNG ----
+
+var g_rng = 88172645463325252;
+
+fn unif(): f64 {
+    var x = g_rng;
+    x = x ^ (x << 13);
+    x = x ^ (x >> 7);
+    x = x ^ (x << 17);
+    g_rng = x;
+    var a: f64 = f64_from(x >> 11);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# A standard normal draw by the polar method.
+fn rnorm(): f64 {
+    while (1 == 1) {
+        var a: f64 = unif();
+        var b: f64 = unif();
+        var u: f64 = 2.0 * a - 1.0;
+        var v: f64 = 2.0 * b - 1.0;
+        var s: f64 = u * u + v * v;
+        if (s > 0.0 && s < 1.0) {
+            var l: f64 = _f64_ln_polyfill(s);
+            var m: f64 = -2.0 * l / s;
+            var r: f64 = f64_sqrt(m);
+            return u * r;
+        }
+    }
+    return 0.0;
+}
+
+# ---- constructors into caller storage ----
+
+struct PmnNormal {
+    mean: f64;
+    sd: f64;
+}
+
+# x is finite: x − x is 0 for a finite x and NaN for NaN or ±∞.
+fn finite(x: f64): i64 {
+    var z: f64 = x - x;
+    if (z == 0.0) { return 1; }
+    return 0;
+}
+
+fn PmnNormal_new(out: *PmnNormal, mean: f64, sd: f64): Result {
+    if (out == 0) { return Err(P4_ERR_NULL); }
+    if (finite(mean) == 0 || finite(sd) == 0) { return Err(P4_ERR_PARAM); }
+    if (sd > 0.0) {
+        out.mean = mean;
+        out.sd = sd;
+        return Ok(0);
+    }
+    return Err(P4_ERR_PARAM);
+}
+
+fn PmnNormal_pdf(d: *PmnNormal, x: f64): f64 {
+    var z: f64 = (x - d.mean) / d.sd;
+    var e: f64 = _f64_exp_polyfill(-0.5 * z * z);
+    var r: f64 = e / (d.sd * 2.5066282746310002);
+    return r;
+}
+
+struct PmnExponential {
+    rate: f64;
+}
+
+fn PmnExponential_new(out: *PmnExponential, rate: f64): Result {
+    if (out == 0) { return Err(P4_ERR_NULL); }
+    if (finite(rate) == 0) { return Err(P4_ERR_PARAM); }
+    if (rate > 0.0) {
+        out.rate = rate;
+        return Ok(0);
+    }
+    return Err(P4_ERR_PARAM);
+}
+
+fn PmnExponential_cdf(d: *PmnExponential, x: f64): f64 {
+    if (x < 0.0) { return 0.0; }
+    var e: f64 = _f64_exp_polyfill(-d.rate * x);
+    return 1.0 - e;
+}
+
+# ---- an owned object: the multivariate normal ----
+
+struct PmnMvn {
+    d;
+    buf;
+    log_norm: f64;
+}
+
+# Fills `out`; its mean (d words) and Cholesky factor (d × d) live in one freelist block, freed by PmnMvn_drop.
+fn PmnMvn_new(out: *PmnMvn, mean, cov, d): Result {
+    if (out == 0 || mean == 0 || cov == 0) { return Err(P4_ERR_NULL); }
+    if (d <= 0) { return Err(P4_ERR_PARAM); }
+    var buf = fl_take((d + d * d) * 8);
+    if (buf == 0) { return Err(P4_ERR_ALLOC); }
+    var l = buf + d * 8;
+    var i = 0;
+    while (i < d) {
+        store64(buf + i * 8, load64(mean + i * 8));
+        i = i + 1;
+    }
+    var logdet: f64 = 0.0;
+    i = 0;
+    while (i < d) {
+        var j = 0;
+        while (j <= i) {
+            var s: f64 = load64(cov + (i * d + j) * 8);
+            var k = 0;
+            while (k < j) {
+                var lik: f64 = load64(l + (i * d + k) * 8);
+                var ljk: f64 = load64(l + (j * d + k) * 8);
+                s = s - lik * ljk;
+                k = k + 1;
+            }
+            if (i == j) {
+                if (s > 0.0) {
+                    var r: f64 = f64_sqrt(s);
+                    store64(l + (i * d + i) * 8, r);
+                    var lr: f64 = _f64_ln_polyfill(r);
+                    logdet = logdet + 2.0 * lr;
+                } else {
+                    fl_give(buf);
+                    return Err(P4_ERR_PARAM);
+                }
+            } else {
+                var ljj: f64 = load64(l + (j * d + j) * 8);
+                var v: f64 = s / ljj;
+                store64(l + (i * d + j) * 8, v);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    var df: f64 = f64_from(d);
+    out.d = d;
+    out.buf = buf;
+    out.log_norm = -0.5 * (df * 1.8378770664093453 + logdet);
+    return Ok(0);
+}
+
+fn PmnMvn_drop(m: *PmnMvn): i64 {
+    if (m == 0) { return 0; }
+    fl_give(m.buf);
+    m.buf = 0;
+    return 0;
+}
+
+# ln pdf(x): solves L z = x − mean into pool scratch, so a call allocates nothing.
+fn PmnMvn_ln_pdf(m: *PmnMvn, x): f64 {
+    var d = m.d;
+    var z, slot = scratch_take(d * 8);
+    if (z == 0) { return 0.0; }
+    var l = m.buf + d * 8;
+    var q: f64 = 0.0;
+    var i = 0;
+    while (i < d) {
+        var xi: f64 = load64(x + i * 8);
+        var mi: f64 = load64(m.buf + i * 8);
+        var s: f64 = xi - mi;
+        var k = 0;
+        while (k < i) {
+            var lik: f64 = load64(l + (i * d + k) * 8);
+            var zk: f64 = load64(z + k * 8);
+            s = s - lik * zk;
+            k = k + 1;
+        }
+        var lii: f64 = load64(l + (i * d + i) * 8);
+        var zi: f64 = s / lii;
+        store64(z + i * 8, zi);
+        q = q + zi * zi;
+        i = i + 1;
+    }
+    scratch_give(z, slot);
+    var r: f64 = m.log_norm - 0.5 * q;
+    return r;
+}
+
+# ---- an owned result: Metropolis–Hastings ----
+
+struct PmnMcmc {
+    samples;
+    n;
+    d;
+    accepted;
+}
+
+fn PmnMcmc_drop(r: *PmnMcmc): i64 {
+    if (r == 0) { return 0; }
+    fl_give(r.samples);
+    r.samples = 0;
+    return 0;
+}
+
+# n samples after `burn` steps, a Gaussian random-walk proposal of scale sd. The chain's current point and the
+# proposal come from the pool; the samples are the result's one freelist block.
+fn p4_mh(log_target: *fn, initial, d, n, sd: f64, burn, out: *PmnMcmc): Result {
+    if (out == 0 || initial == 0) { return Err(P4_ERR_NULL); }
+    if (d <= 0 || n <= 0) { return Err(P4_ERR_PARAM); }
+    var samples = fl_take(n * d * 8);
+    if (samples == 0) { return Err(P4_ERR_ALLOC); }
+    var cur, slot = scratch_take(2 * d * 8);
+    if (cur == 0) {
+        fl_give(samples);
+        return Err(P4_ERR_ALLOC);
+    }
+    var prop = cur + d * 8;
+    var i = 0;
+    while (i < d) {
+        store64(cur + i * 8, load64(initial + i * 8));
+        i = i + 1;
+    }
+    var lc: f64 = callptr(log_target, cur, d);
+    var acc = 0;
+    var step = 0;
+    while (step < burn + n) {
+        i = 0;
+        while (i < d) {
+            var c: f64 = load64(cur + i * 8);
+            var g: f64 = rnorm();
+            var p: f64 = c + sd * g;
+            store64(prop + i * 8, p);
+            i = i + 1;
+        }
+        var lp: f64 = callptr(log_target, prop, d);
+        var u: f64 = unif();
+        var lu: f64 = _f64_ln_polyfill(u);
+        if (lu < lp - lc) {
+            i = 0;
+            while (i < d) {
+                store64(cur + i * 8, load64(prop + i * 8));
+                i = i + 1;
+            }
+            lc = lp;
+            if (step >= burn) { acc = acc + 1; }
+        }
+        if (step >= burn) {
+            var row = samples + (step - burn) * d * 8;
+            i = 0;
+            while (i < d) {
+                store64(row + i * 8, load64(cur + i * 8));
+                i = i + 1;
+            }
+        }
+        step = step + 1;
+    }
+    scratch_give(cur, slot);
+    out.samples = samples;
+    out.n = n;
+    out.d = d;
+    out.accepted = acc;
+    return Ok(0);
+}
+
+# ---- an owned model: the HMM and one Baum–Welch iteration ----
+
+struct PmnHmm {
+    n;
+    m;
+    buf;
+}
+
+# n states, m symbols; π (n), A (n × n) and B (n × m) in one freelist block, rows filled with a perturbed uniform.
+fn PmnHmm_new(out: *PmnHmm, n, m): Result {
+    if (out == 0) { return Err(P4_ERR_NULL); }
+    if (n <= 0 || m <= 0) { return Err(P4_ERR_PARAM); }
+    var buf = fl_take((n + n * n + n * m) * 8);
+    if (buf == 0) { return Err(P4_ERR_ALLOC); }
+    out.n = n;
+    out.m = m;
+    out.buf = buf;
+    _hmm_fill_row(buf, n);
+    var i = 0;
+    while (i < n) {
+        _hmm_fill_row(buf + (n + i * n) * 8, n);
+        _hmm_fill_row(buf + (n + n * n + i * m) * 8, m);
+        i = i + 1;
+    }
+    return Ok(0);
+}
+
+fn _hmm_fill_row(p, k): i64 {
+    var s: f64 = 0.0;
+    var j = 0;
+    while (j < k) {
+        var u: f64 = unif();
+        var v: f64 = 1.0 + 0.5 * u;
+        store64(p + j * 8, v);
+        s = s + v;
+        j = j + 1;
+    }
+    j = 0;
+    while (j < k) {
+        var v: f64 = load64(p + j * 8);
+        var w: f64 = v / s;
+        store64(p + j * 8, w);
+        j = j + 1;
+    }
+    return 0;
+}
+
+fn PmnHmm_drop(h: *PmnHmm): i64 {
+    if (h == 0) { return 0; }
+    fl_give(h.buf);
+    h.buf = 0;
+    return 0;
+}
+
+# One scaled Baum–Welch iteration over obs (t symbols): re-estimates h in place and returns the log-likelihood of
+# the parameters it started from. α, β, the scales and the accumulators are one pool claim.
+fn PmnHmm_baum_welch_step(h: *PmnHmm, obs, t): f64 {
+    var n = h.n;
+    var m = h.m;
+    var pi = h.buf;
+    var a = pi + n * 8;
+    var b = a + n * n * 8;
+    var w, slot = scratch_take((2 * t * n + t + n * n + n * m + 2 * n) * 8);
+    if (w == 0) { return 0.0; }
+    var al = w;
+    var be = al + t * n * 8;
+    var sc = be + t * n * 8;
+    var xa = sc + t * 8;
+    var gb = xa + n * n * 8;
+    var ga = gb + n * m * 8;
+    var gt = ga + n * 8;
+    # forward
+    var ll: f64 = 0.0;
+    var tt = 0;
+    while (tt < t) {
+        var o = load64(obs + tt * 8);
+        var s: f64 = 0.0;
+        var j = 0;
+        while (j < n) {
+            var v: f64 = 0.0;
+            if (tt == 0) {
+                v = load64(pi + j * 8);
+            } else {
+                var i = 0;
+                while (i < n) {
+                    var ap: f64 = load64(al + ((tt - 1) * n + i) * 8);
+                    var aij: f64 = load64(a + (i * n + j) * 8);
+                    v = v + ap * aij;
+                    i = i + 1;
+                }
+            }
+            var bj: f64 = load64(b + (j * m + o) * 8);
+            v = v * bj;
+            store64(al + (tt * n + j) * 8, v);
+            s = s + v;
+            j = j + 1;
+        }
+        j = 0;
+        while (j < n) {
+            var v: f64 = load64(al + (tt * n + j) * 8);
+            var q: f64 = v / s;
+            store64(al + (tt * n + j) * 8, q);
+            j = j + 1;
+        }
+        store64(sc + tt * 8, s);
+        var ls: f64 = _f64_ln_polyfill(s);
+        ll = ll + ls;
+        tt = tt + 1;
+    }
+    # backward
+    var i = 0;
+    while (i < n) {
+        var one: f64 = 1.0;
+        store64(be + ((t - 1) * n + i) * 8, one);
+        i = i + 1;
+    }
+    tt = t - 2;
+    while (tt >= 0) {
+        var o1 = load64(obs + (tt + 1) * 8);
+        var s1: f64 = load64(sc + (tt + 1) * 8);
+        i = 0;
+        while (i < n) {
+            var v: f64 = 0.0;
+            var j = 0;
+            while (j < n) {
+                var aij: f64 = load64(a + (i * n + j) * 8);
+                var bj: f64 = load64(b + (j * m + o1) * 8);
+                var bn: f64 = load64(be + ((tt + 1) * n + j) * 8);
+                v = v + aij * bj * bn;
+                j = j + 1;
+            }
+            var q: f64 = v / s1;
+            store64(be + (tt * n + i) * 8, q);
+            i = i + 1;
+        }
+        tt = tt - 1;
+    }
+    # accumulate γ and ξ
+    var k = 0;
+    while (k < n * n + n * m + 2 * n) {
+        var z: f64 = 0.0;
+        store64(xa + k * 8, z);
+        k = k + 1;
+    }
+    tt = 0;
+    while (tt < t) {
+        var o = load64(obs + tt * 8);
+        i = 0;
+        while (i < n) {
+            var av: f64 = load64(al + (tt * n + i) * 8);
+            var bv: f64 = load64(be + (tt * n + i) * 8);
+            var g: f64 = av * bv;
+            var gbo: f64 = load64(gb + (i * m + o) * 8);
+            store64(gb + (i * m + o) * 8, gbo + g);
+            var gti: f64 = load64(gt + i * 8);
+            store64(gt + i * 8, gti + g);
+            if (tt == 0) { store64(pi + i * 8, g); }
+            if (tt < t - 1) {
+                var gai: f64 = load64(ga + i * 8);
+                store64(ga + i * 8, gai + g);
+                var o1 = load64(obs + (tt + 1) * 8);
+                var s1: f64 = load64(sc + (tt + 1) * 8);
+                var j = 0;
+                while (j < n) {
+                    var aij: f64 = load64(a + (i * n + j) * 8);
+                    var bj: f64 = load64(b + (j * m + o1) * 8);
+                    var bn: f64 = load64(be + ((tt + 1) * n + j) * 8);
+                    var x: f64 = av * aij * bj * bn / s1;
+                    var xo: f64 = load64(xa + (i * n + j) * 8);
+                    store64(xa + (i * n + j) * 8, xo + x);
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+        tt = tt + 1;
+    }
+    # re-estimate A and B (π was written above)
+    i = 0;
+    while (i < n) {
+        var gai: f64 = load64(ga + i * 8);
+        var gti: f64 = load64(gt + i * 8);
+        var j = 0;
+        while (j < n) {
+            var x: f64 = load64(xa + (i * n + j) * 8);
+            var q: f64 = x / gai;
+            store64(a + (i * n + j) * 8, q);
+            j = j + 1;
+        }
+        k = 0;
+        while (k < m) {
+            var g: f64 = load64(gb + (i * m + k) * 8);
+            var q: f64 = g / gti;
+            store64(b + (i * m + k) * 8, q);
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    scratch_give(w, slot);
+    return ll;
+}
+
+# ---- a stable median ----
+
+# Stable bottom-up merge sort of n words at p by `<`, with tmp (n words) as the other buffer. Returns the buffer that
+# holds the sorted run.
+fn _merge_sort(p, tmp, n): i64 {
+    var src = p;
+    var dst = tmp;
+    var width = 1;
+    while (width < n) {
+        var lo = 0;
+        while (lo < n) {
+            var mid = lo + width;
+            if (mid > n) { mid = n; }
+            var hi = lo + 2 * width;
+            if (hi > n) { hi = n; }
+            var i = lo;
+            var j = mid;
+            var k = lo;
+            while (k < hi) {
+                var take_right = 0;
+                if (i >= mid) {
+                    take_right = 1;
+                } else {
+                    if (j < hi) {
+                        var vj: f64 = load64(src + j * 8);
+                        var vi: f64 = load64(src + i * 8);
+                        if (vj < vi) { take_right = 1; }
+                    }
+                }
+                if (take_right == 1) {
+                    store64(dst + k * 8, load64(src + j * 8));
+                    j = j + 1;
+                } else {
+                    store64(dst + k * 8, load64(src + i * 8));
+                    i = i + 1;
+                }
+                k = k + 1;
+            }
+            lo = hi;
+        }
+        var sw = src;
+        src = dst;
+        dst = sw;
+        width = width * 2;
+    }
+    return src;
+}
+
+# The median of xs (n words), which it doesn't modify: a NaN-checked copy and a merge sort in two pool claims.
+fn p4_median(xs, n): (i64, i64) {
+    if (xs == 0) { return (1, P4_ERR_NULL); }
+    if (n <= 0) { return (1, P4_ERR_PARAM); }
+    var c, s1 = scratch_take(n * 8);
+    if (c == 0) { return (1, P4_ERR_ALLOC); }
+    var tmp, s2 = scratch_take(n * 8);
+    if (tmp == 0) {
+        scratch_give(c, s1);
+        return (1, P4_ERR_ALLOC);
+    }
+    var i = 0;
+    while (i < n) {
+        var v: f64 = load64(xs + i * 8);
+        if (v != v) {
+            scratch_give(tmp, s2);
+            scratch_give(c, s1);
+            return (1, P4_ERR_NAN);
+        }
+        store64(c + i * 8, v);
+        i = i + 1;
+    }
+    var sorted = _merge_sort(c, tmp, n);
+    var r: f64 = load64(sorted + (n / 2) * 8);
+    if (n % 2 == 0) {
+        var lo: f64 = load64(sorted + (n / 2 - 1) * 8);
+        r = (lo + r) / 2.0;
+    }
+    scratch_give(tmp, s2);
+    scratch_give(c, s1);
+    return (0, r);
+}
+
+# ---- a caller buffer: the moving average ----
+
+# The overlap of [a, a + an) and [b, b + bn), in bytes.
+fn overlaps(a, an, b, bn): i64 {
+    if (a < b + bn && b < a + an) { return 1; }
+    return 0;
+}
+
+# The w-point moving average of xs (n words) into out (cap words): Ok(count), or the refusal.
+fn p4_moving_average(xs, n, w, out, cap): Result {
+    if (xs == 0 || out == 0) { return Err(P4_ERR_NULL); }
+    if (w <= 0 || w > n) { return Err(P4_ERR_PARAM); }
+    var cnt = n - w + 1;
+    if (cap < cnt) { return Err(P4_ERR_CAP); }
+    if (overlaps(xs, n * 8, out, cap * 8) == 1) { return Err(P4_ERR_ALIAS); }
+    var wf: f64 = f64_from(w);
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < w) {
+        var v: f64 = load64(xs + i * 8);
+        s = s + v;
+        i = i + 1;
+    }
+    store64(out, s / wf);
+    i = w;
+    while (i < n) {
+        var add: f64 = load64(xs + i * 8);
+        var sub: f64 = load64(xs + (i - w) * 8);
+        s = s + add - sub;
+        var q: f64 = s / wf;
+        store64(out + (i - w + 1) * 8, q);
+        i = i + 1;
+    }
+    return Ok(cnt);
+}
+
+# ---- the soak harness ----
+
+var g_b0 = 0;
+var g_f0 = 0;
+var g_v0 = 0;
+var g_grew = 0;
+var g_bad = 0;
+
+fn snap(): i64 {
+    g_b0 = alloc_used();
+    g_f0 = g_fl_live;
+    g_v0 = vm_kb();
+    return 0;
+}
+
+fn put_signed(v): i64 {
+    if (v < 0) {
+        print("-", 1);
+        fmt_int(-v);
+        return 0;
+    }
+    print("+", 1);
+    fmt_int(v);
+    return 0;
+}
+
+# Prints the heap deltas since snap() and the claimed slots; any change is GREW.
+fn verdict(): i64 {
+    var db = alloc_used() - g_b0;
+    var df = g_fl_live - g_f0;
+    var dv = vm_kb() - g_v0;
+    var held = scratch_claimed();
+    print("    heap: bump ", 15);
+    put_signed(db);
+    print(" B, freelist blocks ", 20);
+    put_signed(df);
+    print(", mapped ", 9);
+    put_signed(dv);
+    print(" KB, slots held ", 16);
+    fmt_int(held);
+    if (db == 0 && df == 0 && dv == 0 && held == 0) {
+        println(": FLAT");
+        return 0;
+    }
+    println(": GREW");
+    g_grew = g_grew + 1;
+    return 0;
+}
+
+fn expect(what: cstring, ok): i64 {
+    if (ok == 0) {
+        print("    check failed: ", 18);
+        print(what, strlen(what));
+        println("");
+        g_bad = g_bad + 1;
+    }
+    return 0;
+}
+
+# ---- the soaks ----
+
+fn soak_normal(): i64 {
+    var d = PmnNormal { 0.0, 1.0 };
+    var e = PmnExponential { 1.0 };
+    var s: f64 = 0.0;
+    var x: f64 = -4.0;
+    var t, v = PmnNormal_new(&d, 0.5, 2.0);
+    var b = bench_new("10^6 × (PmnNormal_new into a stack struct + pdf + bad-sd Err + PmnExponential cdf)");
+    snap();
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 1000000) {
+        var t1, v1 = PmnNormal_new(&d, 0.5, 2.0);
+        var p: f64 = PmnNormal_pdf(&d, x);
+        var t2, v2 = PmnNormal_new(&d, 0.5, -1.0);
+        var t3, v3 = PmnExponential_new(&e, 1.5);
+        var c: f64 = PmnExponential_cdf(&e, x + 4.0);
+        s = s + p + c;
+        if (is_ok(t2)) { g_bad = g_bad + 1; }
+        x = x + 0.000008;
+        i = i + 1;
+    }
+    bench_batch_stop(b, 1000000);
+    bench_report(b);
+    verdict();
+    expect("normal soak sum is finite", finite(s));
+    return 0;
+}
+
+fn soak_mvn(): i64 {
+    var d = 4;
+    var mean = fl_take(d * 8);
+    var cov = fl_take(d * d * 8);
+    var x = fl_take(d * 8);
+    var i = 0;
+    while (i < d) {
+        var mi: f64 = 0.1 * f64_from(i);
+        store64(mean + i * 8, mi);
+        store64(x + i * 8, mi + 0.25);
+        var j = 0;
+        while (j < d) {
+            var c: f64 = 0.3;
+            if (i == j) { c = 1.0 + 0.5 * f64_from(i); }
+            store64(cov + (i * d + j) * 8, c);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    var m = PmnMvn { 0, 0, 0.0 };
+    var t, v = PmnMvn_new(&m, mean, cov, d);
+    expect("MVN constructs", is_ok(t));
+    var s: f64 = PmnMvn_ln_pdf(&m, x);
+    var b = bench_new("10^5 × PmnMvn_ln_pdf, d = 4 (L z = x − mean in pool scratch)");
+    snap();
+    bench_batch_start(b);
+    i = 0;
+    while (i < 100000) {
+        var r: f64 = PmnMvn_ln_pdf(&m, x);
+        s = s + r;
+        i = i + 1;
+    }
+    bench_batch_stop(b, 100000);
+    bench_report(b);
+    verdict();
+    PmnMvn_drop(&m);
+    b = bench_new("10^4 × PmnMvn_new + _drop, d = 4 (160-byte block: a freelist class)");
+    snap();
+    bench_batch_start(b);
+    i = 0;
+    while (i < 10000) {
+        var t2, v2 = PmnMvn_new(&m, mean, cov, d);
+        PmnMvn_drop(&m);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 10000);
+    bench_report(b);
+    verdict();
+    fl_give(mean);
+    fl_give(cov);
+    fl_give(x);
+    # d = 32: a 8,448-byte block, above the freelist's 4 KB classes, so each cycle maps and unmaps.
+    d = 32;
+    mean = fl_take(d * 8);
+    cov = fl_take(d * d * 8);
+    i = 0;
+    while (i < d) {
+        var z: f64 = 0.0;
+        store64(mean + i * 8, z);
+        var j = 0;
+        while (j < d) {
+            var c: f64 = 0.01;
+            if (i == j) { c = 1.0; }
+            store64(cov + (i * d + j) * 8, c);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    var t3, v3 = PmnMvn_new(&m, mean, cov, d);
+    PmnMvn_drop(&m);
+    b = bench_new("10^3 × PmnMvn_new + _drop, d = 32 (8,448-byte block: mmap + munmap)");
+    snap();
+    bench_batch_start(b);
+    i = 0;
+    while (i < 1000) {
+        var t4, v4 = PmnMvn_new(&m, mean, cov, d);
+        PmnMvn_drop(&m);
+        i = i + 1;
+    }
+    bench_batch_stop(b, 1000);
+    bench_report(b);
+    verdict();
+    fl_give(mean);
+    fl_give(cov);
+    expect("MVN ln pdf is finite", finite(s));
+    return 0;
+}
+
+fn soak_mh(): i64 {
+    var k: f64 = 0.5;
+    # The target, −k·Σx² (a normal of variance 1): built once, before the snapshot.
+    var target = |p, d| {
+        var kf: f64 = k;
+        var s: f64 = 0.0;
+        var i = 0;
+        while (i < d) {
+            var v: f64 = load64(p + i * 8);
+            s = s + v * v;
+            i = i + 1;
+        }
+        var r: f64 = -kf * s;
+        return r;
+    };
+    var init = fl_take(2 * 8);
+    var z: f64 = 0.0;
+    store64(init, z);
+    store64(init + 8, z);
+    var res = PmnMcmc { 0, 0, 0, 0 };
+    var t, v = p4_mh(target, init, 2, 10000, 1.0, 100, &res);
+    PmnMcmc_drop(&res);
+    var acc = 0;
+    var sum: f64 = 0.0;
+    var b = bench_new("100 × p4_mh(10^4 samples, d = 2) + _drop: 10^6 samples (160 KB result: mmap + munmap)");
+    snap();
+    bench_batch_start(b);
+    var c = 0;
+    while (c < 100) {
+        var t2, v2 = p4_mh(target, init, 2, 10000, 1.0, 100, &res);
+        acc = acc + res.accepted;
+        var i = 0;
+        while (i < 10000) {
+            var x0: f64 = load64(res.samples + i * 16);
+            sum = sum + x0;
+            i = i + 1;
+        }
+        PmnMcmc_drop(&res);
+        c = c + 1;
+    }
+    bench_batch_stop(b, 1000000);
+    bench_report(b);
+    verdict();
+    fl_give(init);
+    var rate: f64 = f64_from(acc) / 1000000.0;
+    var mean: f64 = sum / 1000000.0;
+    expect("MH acceptance rate in (0.2, 0.8)", rate > 0.2 && rate < 0.8);
+    expect("MH sample mean within 0.05 of 0", mean > -0.05 && mean < 0.05);
+    return 0;
+}
+
+fn soak_hmm(): i64 {
+    var t = 200;
+    var obs = fl_take(t * 8);
+    var i = 0;
+    while (i < t) {
+        var u: f64 = unif();
+        var sym = f64_to(u * 4.0);
+        if (sym > 3) { sym = 3; }
+        if (i % 7 < 3) { sym = sym / 2; }
+        store64(obs + i * 8, sym);
+        i = i + 1;
+    }
+    var h = PmnHmm { 0, 0, 0 };
+    var tc, vc = PmnHmm_new(&h, 3, 4);
+    var prev: f64 = PmnHmm_baum_welch_step(&h, obs, t);
+    var drops = 0;
+    var b = bench_new("10^3 Baum–Welch iterations, 3 states, 4 symbols, T = 200 (α, β, ξ in one pool claim)");
+    snap();
+    bench_batch_start(b);
+    i = 0;
+    while (i < 1000) {
+        var ll: f64 = PmnHmm_baum_welch_step(&h, obs, t);
+        var slack: f64 = 0.000000001 * f64_abs(ll);
+        if (ll < prev - slack) { drops = drops + 1; }
+        prev = ll;
+        i = i + 1;
+    }
+    bench_batch_stop(b, 1000);
+    bench_report(b);
+    verdict();
+    PmnHmm_drop(&h);
+    fl_give(obs);
+    expect("Baum–Welch log-likelihood never decreases", drops == 0);
+    expect("Baum–Welch log-likelihood is finite", finite(prev));
+    return 0;
+}
+
+fn soak_median(): i64 {
+    var n = 1000000;
+    var xs = fl_take(n * 8);
+    var i = 0;
+    while (i < n) {
+        var v: f64 = f64_from(i);
+        store64(xs + i * 8, v);
+        i = i + 1;
+    }
+    i = n - 1;
+    while (i > 0) {
+        var u: f64 = unif();
+        var j = f64_to(u * f64_from(i + 1));
+        var a = load64(xs + i * 8);
+        store64(xs + i * 8, load64(xs + j * 8));
+        store64(xs + j * 8, a);
+        i = i - 1;
+    }
+    var e0, r0 = p4_median(xs, n);
+    var bad = 0;
+    var b = bench_new("10 × median of 10^6 (copy + stable merge sort in two 8 MB pool claims)");
+    snap();
+    bench_batch_start(b);
+    i = 0;
+    while (i < 10) {
+        var e, r = p4_median(xs, n);
+        var rf: f64 = r;
+        if (e != 0 || rf != 499999.5) { bad = bad + 1; }
+        i = i + 1;
+    }
+    bench_batch_stop(b, 10);
+    bench_report(b);
+    verdict();
+    var nan: f64 = 0.0 / 0.0;
+    store64(xs + 12345 * 8, nan);
+    var e1, r1 = p4_median(xs, n);
+    expect("median of a shuffled 0..10^6 − 1 is 499999.5", bad == 0);
+    expect("a NaN is refused and the slots come back", e1 == 1 && r1 == P4_ERR_NAN && scratch_claimed() == 0);
+    fl_give(xs);
+    return 0;
+}
+
+fn soak_moving_average(): i64 {
+    var n = 16;
+    var buf = fl_take(64 * 8);
+    var xs = buf;
+    var out = buf + 32 * 8;
+    var i = 0;
+    while (i < n) {
+        var v: f64 = f64_from(i);
+        store64(xs + i * 8, v);
+        i = i + 1;
+    }
+    var b = bench_new("10^6 × p4_moving_average(16 points, w = 4) into a caller buffer");
+    snap();
+    bench_batch_start(b);
+    var cnt = 0;
+    i = 0;
+    while (i < 1000000) {
+        var t, c = p4_moving_average(xs, n, 4, out, 32);
+        cnt = cnt + c;
+        i = i + 1;
+    }
+    bench_batch_stop(b, 1000000);
+    bench_report(b);
+    verdict();
+    var last: f64 = load64(out + 12 * 8);
+    expect("moving average: 13 values, the last 13.5", cnt == 13000000 && last == 13.5);
+    var t1, c1 = p4_moving_average(xs, n, 4, 0, 32);
+    expect("a null out is refused", is_err_result(t1) && c1 == P4_ERR_NULL);
+    var t2, c2 = p4_moving_average(xs, n, 4, out, 12);
+    expect("a cap below n − w + 1 is refused", is_err_result(t2) && c2 == P4_ERR_CAP);
+    var t3, c3 = p4_moving_average(xs, n, 4, xs + 8 * 8, 13);
+    expect("an out overlapping xs is refused", is_err_result(t3) && c3 == P4_ERR_ALIAS);
+    var t4, c4 = p4_moving_average(xs, n, 17, out, 32);
+    expect("a window over n is refused", is_err_result(t4) && c4 == P4_ERR_PARAM);
+    fl_give(buf);
+    return 0;
+}
+
+# Nine nested claims, one past the pool: the ninth is a freelist block, freed on release.
+fn soak_pool_overflow(): i64 {
+    var ps[72];
+    var ss[72];
+    var k = 0;
+    while (k < 9) {
+        var p, s = scratch_take(256);
+        store64(&ps + k * 8, p);
+        store64(&ss + k * 8, s);
+        k = k + 1;
+    }
+    expect("the ninth nested claim is an overflow block", load64(&ss + 64) == _P4_OVERFLOW);
+    k = 8;
+    while (k >= 0) {
+        scratch_give(load64(&ps + k * 8), load64(&ss + k * 8));
+        k = k - 1;
+    }
+    var b = bench_new("10^4 × nine nested 256-byte claims, the ninth past the pool");
+    snap();
+    bench_batch_start(b);
+    var i = 0;
+    while (i < 10000) {
+        k = 0;
+        while (k < 9) {
+            var p, s = scratch_take(256);
+            store64(&ps + k * 8, p);
+            store64(&ss + k * 8, s);
+            k = k + 1;
+        }
+        k = 8;
+        while (k >= 0) {
+            scratch_give(load64(&ps + k * 8), load64(&ss + k * 8));
+            k = k - 1;
+        }
+        i = i + 1;
+    }
+    bench_batch_stop(b, 10000);
+    bench_report(b);
+    verdict();
+    return 0;
+}
+
+# A slot that grows frees what it outgrew. The median soak left one slot at 8,000,000 bytes (10^6 words). A 12 MiB
+# claim grows it to 16,000,000 bytes and a 24 MiB claim to 32,000,000, so the process maps 24,000,000 bytes more:
+# the pool's own growth. kimiya's bump-grown slot would keep the outgrown 8 and 16 MB besides.
+fn soak_pool_growth(): i64 {
+    var before = pool_bytes();
+    snap();
+    var p1, s1 = scratch_take(12 * 1048576);
+    scratch_give(p1, s1);
+    var p2, s2 = scratch_take(24 * 1048576);
+    scratch_give(p2, s2);
+    var dv = vm_kb() - g_v0;
+    var db = alloc_used() - g_b0;
+    var grew = (pool_bytes() - before) / 1024;
+    put("  pool growth in one slot, 8 to 16 to 32 MB: the pool +");
+    fmt_int(grew);
+    put(" KB; mapped ");
+    put_signed(dv);
+    put(" KB, bump ");
+    put_signed(db);
+    println(" B");
+    var off = dv - grew;
+    expect("the outgrown buffers were unmapped", s1 == s2 && db == 0 && off >= -8 && off <= 8);
+    var held = 0;
+    var i = 0;
+    while (i < _P4_SLOTS) {
+        if (load64(&_p4_ptr + 8 * i) != 0) { held = held + 1; }
+        i = i + 1;
+    }
+    put("  the pool now holds ");
+    fmt_int(held);
+    put(" buffers, ");
+    fmt_int(pool_bytes() / 1024);
+    println(" KB, for the process's lifetime");
+    return 0;
+}
+
+# The bytes the pool's slots hold.
+fn pool_bytes(): i64 {
+    var bytes = 0;
+    var i = 0;
+    while (i < _P4_SLOTS) {
+        bytes = bytes + load64(&_p4_cap + 8 * i);
+        i = i + 1;
+    }
+    return bytes;
+}
+
+# Write a C string to stdout.
+fn put(s: cstring): i64 {
+    print(s, strlen(s));
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    soak_normal();
+    soak_mvn();
+    soak_mh();
+    soak_hmm();
+    soak_median();
+    soak_moving_average();
+    soak_pool_overflow();
+    soak_pool_growth();
+    print("  soaks that grew: ", 19);
+    fmt_int(g_grew);
+    print("; failed checks: ", 17);
+    fmt_int(g_bad);
+    println("");
+    return g_grew + g_bad;
+}
+
+var r = main();
+sys_exit_group(r);

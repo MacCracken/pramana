@@ -526,3 +526,119 @@ Otherwise it accepts the divergence as ADR 007 row 14, with a documented stable 
   the row to the stable rule's result (`descriptive.map.tsv`, at M4), and it passes as accepted (ADR 7).
 - **The precedent:** pravash's sort ties (its ADR 0002 #3).
 
+### 6.2 Part 9b: P2, P3, P4 (2026-11-15)
+
+**How they were timed.** All three are `.bcyr` programs run by `cyrius bench`. Each was run on x86_64 ELF, pinned to one
+core (`taskset -c 5`), three times, interleaved, at a load average of 5–7 on the shared box. The figures are ns per
+call. The runs agree to within 1 ns, except one draw run that was 3–5 ns slower. Each row's loop tests a kind per
+iteration, so compare the rows; don't read a row as a bare call.
+
+**P2, dispatch (`p2_dispatch.bcyr`).** A distribution's pdf and an RNG's draw, 10⁶ calls per row:
+
+| Call form | pdf (arithmetic only) | pdf with exp | draw |
+|---|---|---|---|
+| direct method call | 14 | 57 | 12 |
+| bounded generic, `<T: PmnDistribution>` / `<R: PmnRng>` | 17 | | 14 |
+| `dyn PmnDistribution` / `dyn PmnRng` | 18 | 64 | 15 |
+| `callptr(&fn, ctx, …)` | 14 | 57 | 12 |
+
+- **The wrapper:** the generic and dyn rows call through a one-line wrapper, so each makes one call more than the
+  direct row. The generic's +2–3 ns is that call; its own call is static.
+- **The dyn:** it costs 1 ns more than the generic through the same wrapper, and 3–7 ns more than a direct call.
+  That is a quarter of a 12 ns draw, and the gamma, Poisson and beta samplers draw several times per sample.
+- **`callptr`:** with the callee known as `&f`, it costs the same as a direct call.
+- **What it means for D7:** generics give Rust's `&mut impl Rng` with static calls. A `dyn PmnRng` at every API
+  boundary (D7 as first decided) costs about 3 ns per draw over that. So D7 was amended (2026-11-15): the RNG is
+  generic over `R: PmnRng`, with `dyn` only for Gibbs' conditionals (ADR 007 row 6).
+
+**P3, callbacks (`p3_callbacks.bcyr`).** A library-shaped fn receives the callback as a parameter and calls it 10⁶
+times. Every form's sum equals the direct call's bits in all three runs.
+
+| Callback | direct | `callptr(&fn, …)` | `callptr(&fn, ctx, …)` | closure, no capture | closure capturing its context |
+|---|---|---|---|---|---|
+| `f(x)` (Monte Carlo, the KS cdf) | 5 | 6 | 6 | 5 | 5–6 |
+| `log_target(xs, 4)` (MH) | 15 | | 16 | | 18 |
+| `cond(xs, 4, rng)` (Gibbs) | | | 21 | | 23 |
+
+- **Heap:**
+  - a capturing closure's environment is 16 bytes (its code pointer and one f64; 8 more per capture), made where the
+    literal is evaluated;
+  - calls allocate nothing, for either form;
+  - 1,000 closures made in a loop leave 16,000 bytes, which the bump heap never frees.
+- **One parameter takes every form.** `callptr` tells a closure from a function pointer at run time (the handle's top
+  bit). So a library fn whose parameter is declared `f: *fn(f64): f64` takes `&fn`, a closure held in a variable, or
+  an inline literal, all without a warning.
+- **Windows:**
+  - a capturing closure takes at most 3 parameters, and 4 is a compile error on `--win` ("capturing closure has too
+    many parameters"), not a silent fault;
+  - `callptr` itself has no limit: a 4-argument call through a function pointer runs under wine (exit 23, as
+    computed).
+- **A trap: a captured f64 is an untyped word in arithmetic.**
+  - In `|x| k * x` with `k: f64` captured, the multiply is an integer one: 3.0 × 0.25 gives the bits 0x0, under the
+    warning *integer arithmetic with an f64 right operand*.
+  - `x * k` is right, but it warns *f64 arithmetic with a non-f64 right operand*.
+  - The guide (6.7.16, its D3) makes a captured f64 bind `T = f64` as a generic argument, so arithmetic is the odd
+    case out. Filed at step 10.
+  - The rule: copy a capture into a typed local first (`var kf: f64 = k;`). `cyrius test` must be warning-free, so the
+    warning catches a missed copy.
+- **Gibbs' RNG.** A dyn can't be pointed to (`*dyn` is refused), and a generic fn can't hold one.
+  - A sampler generic over `R: PmnRng` passes `rng` to a non-generic helper that takes `dyn PmnRng`, and the dyn is
+    formed at that call.
+  - The helper keeps a `struct PmnRngRef { o: dyn PmnRng; }` on its stack and hands `&rr` to each conditional.
+  - A conditional reads it as `var rr: PmnRngRef = rp; rr.o.next_f64()`. Nothing allocates, and the probe checks
+    that this path gives the conditional the same draws as a dyn formed directly.
+  - Binding the untyped parameter to `*PmnRngRef` warns *assigning non-pointer to typed pointer*; the pointer-mode
+    handle `var rr: PmnRngRef = rp;` does not.
+- **`cyrius lint` and closures.** lint first compiles the file without the manifest's stdlib, so a capturing closure is
+  then a hard error, *a capturing closure needs include "lib/alloc.cyr"*. Missing functions there are only warnings.
+  A file that builds one includes `lib/alloc.cyr` itself; include-once makes that a no-op in the build. Filed at step
+  10.
+- **What it means for D7:**
+  - The function pointer plus a context word stands: it costs what a closure costs, never allocates, and needs no
+    capture rule.
+  - One correction to D7's rejected column. A Gibbs conditional needs 4 parameters only with an explicit context. A
+    closure that captures its context needs 3, which fits Windows.
+  - Closures still work under D7. A non-capturing closure is a bare function pointer, of any arity.
+
+**P4, the flat heap (`p4_memory.bcyr`).** It prototypes D11's conventions:
+- **constructors** fill caller storage and return a value-form `Result`;
+- **owned objects** (the MVN, the HMM, the MCMC result) keep their buffers in one freelist block, freed by `_drop`;
+- **scratch** comes from the work-table pool (below);
+- **a caller buffer** `(out, cap)` is checked for null, size and aliasing.
+
+Each soak runs once to warm up, then compares four things after the loop: the bump heap's bytes, the freelist blocks
+held, the process's mapped size (`/proc/self/statm`) and the pool slots claimed.
+
+| Soak | Per iteration | Heap after |
+|---|---|---|
+| 10⁶ × `PmnNormal_new` into a stack struct, pdf, a refused constructor, and `PmnExponential`'s cdf | 172 ns | flat |
+| 10⁵ × MVN ln pdf, d = 4 (the triangular solve in pool scratch) | 122 ns | flat |
+| 10⁴ × MVN new + `_drop`, d = 4 (160 bytes: a freelist class) | 380 ns | flat |
+| 10³ × MVN new + `_drop`, d = 32 (8,448 bytes: over 4 KB, so mmap + munmap) | 36 µs | flat |
+| 100 MH runs of 10⁴ samples, d = 2, + `_drop` (10⁶ samples; a 160 KB result per run) | 333 ns a sample | flat |
+| 10³ Baum–Welch iterations, 3 states, 4 symbols, T = 200 | 75 µs | flat |
+| 10 medians of 10⁶ (a NaN-checked copy and a stable merge sort, in two 8 MB claims) | 222 ms | flat |
+| 10⁶ × moving average into a caller buffer (16 points, w = 4) | 94 ns | flat |
+| 10⁴ × nine nested claims, the ninth past the pool | 395 ns | flat |
+
+Every check passes:
+- Baum–Welch's log-likelihood never decreases over 10³ iterations;
+- MH's acceptance rate and sample mean are in range;
+- the median of a shuffled 0 … 10⁶ − 1 is 499,999.5;
+- a NaN is refused, and both of its slots come back;
+- the moving average refuses a null out, a short cap, an out that overlaps its input, and a window over n.
+
+**The pool** is kimiya's ADR 0007 with one change. A slot grows on the freelist and frees the buffer it outgrew, and a
+claim past the eighth slot is a freelist block, freed on release. kimiya takes both from the bump heap, which never
+frees.
+- **Measured:** growing one slot from 8,000,000 to 16,000,000 to 32,000,000 bytes mapped 23,436 KB more, against the
+  pool's own growth of 23,437 KB. Bump growth would keep the outgrown 24,000,000 bytes besides.
+- **The cost is kimiya's:** the pool holds its buffers for the process's lifetime, 39 MB after these soaks (the two
+  median slots).
+
+**Two findings for later milestones** (speed is measured, not gated):
+- **Owned objects over 4 KB** pay the freelist's open large-block issue (cyrius, 2026-11-11): 36 µs per MVN new +
+  drop at d = 32, and an mmap for each MH result. pramana adds these numbers to that issue at step 10.
+- **The stable median costs a full sort:** 222 ms for 10⁶ elements by merge sort, where Rust selects in O(n). M4 can
+  keep ADR 007 row 14's rule at O(n) expected with a stable three-way quickselect over pool scratch. Partitioning into
+  <, = and > keeps input order within each part, so the k-th element is the stable sort's k-th. The parity rows decide.

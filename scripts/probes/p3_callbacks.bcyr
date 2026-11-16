@@ -1,0 +1,406 @@
+# p3_callbacks.bcyr — M0 step 9, probe P3: caller-supplied functions (port plan §5 step 9, D7).
+#
+# pramana's callbacks are Monte Carlo integration's f(x), Metropolis–Hastings' log_target(xs, len), Gibbs'
+# conditionals (xs, len, rng), and the one-sample KS test's cdf(x). Each form is timed per call over 10^6 calls,
+# made from a library-shaped fn that receives the callback as a parameter (the handle escapes the var that built it):
+# - a direct call (the baseline);
+# - a function pointer and a context word, through `callptr`;
+# - a closure that captures nothing (a bare function pointer);
+# - a closure that captures its context (by value, in a heap environment made when the literal is evaluated).
+# Every form's sum must equal the direct call's bits: "differs" after a row is a wrong result.
+# The heap bytes that making and calling each form leave are printed after the rows.
+#   cyrius bench scripts/probes/p3_callbacks.bcyr
+
+# cyrius lint compiles the file without the manifest's stdlib, and a capturing closure needs the allocator
+# by name there (include-once makes this a no-op in the build).
+include "lib/alloc.cyr"
+
+struct Ctx {
+    k: f64;
+}
+
+# Gibbs' RNG argument. A dyn is two words and can't be pointed to, so the conditional gets a record that holds it.
+struct PmnSimpleRng {
+    state;
+}
+
+trait PmnRng {
+    fn next_f64(self): f64;
+}
+
+impl PmnRng for PmnSimpleRng {
+    fn next_f64(self): f64 {
+        var x = self.state;
+        x = x ^ (x << 13);
+        x = x ^ (x >> 7);
+        x = x ^ (x << 17);
+        self.state = x;
+        var a: f64 = f64_from(x >> 11);
+        var d: f64 = 9007199254740992.0;
+        return a / d;
+    }
+}
+
+struct PmnRngRef {
+    o: dyn PmnRng;
+}
+
+# The integrand with its context, as a function pointer plus a context word takes it.
+fn f_ctx(c: *Ctx, x: f64): f64 {
+    var r: f64 = c.k * x * x;
+    return r;
+}
+
+# The same without a context: the direct baseline.
+fn f_plain(x: f64): f64 {
+    var r: f64 = 3.0 * x * x;
+    return r;
+}
+
+# MH's log_target(xs, len) with its context: −k·Σx².
+fn logt_ctx(c: *Ctx, xs, len): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < len) {
+        var v: f64 = load64(xs + i * 8);
+        s = s + v * v;
+        i = i + 1;
+    }
+    var r: f64 = -c.k * s;
+    return r;
+}
+
+fn logt_plain(xs, len): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < len) {
+        var v: f64 = load64(xs + i * 8);
+        s = s + v * v;
+        i = i + 1;
+    }
+    var r: f64 = -3.0 * s;
+    return r;
+}
+
+# Gibbs' conditional: a uniform draw scaled by the mean of xs.
+fn cond_ctx(c: *Ctx, xs, len, rng: *PmnRngRef): f64 {
+    var m: f64 = 0.0;
+    var i = 0;
+    while (i < len) {
+        var v: f64 = load64(xs + i * 8);
+        m = m + v;
+        i = i + 1;
+    }
+    var u: f64 = rng.o.next_f64();
+    var r: f64 = c.k * m * u;
+    return r;
+}
+
+# Gibbs as the port would write it: generic over R, like the other samplers. A generic fn can't hold a dyn, so the dyn
+# forms at the call into a non-generic helper. The helper keeps the record on its stack and hands the conditional its
+# address.
+fn gibbs_step_dyn(rng: dyn PmnRng, cond, xs, len): f64 {
+    var rr = PmnRngRef { rng };
+    var r: f64 = callptr(cond, xs, len, &rr);
+    return r;
+}
+
+fn gibbs_step<R: PmnRng>(rng: *R, cond, xs, len): f64 {
+    var r: f64 = gibbs_step_dyn(rng, cond, xs, len);
+    return r;
+}
+
+var N = 1000000;
+
+# The library side: each takes the callback as a parameter and calls it N times, as pramana's fns would.
+fn lib_f(f, x: f64): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < N) {
+        var r: f64 = callptr(f, x);
+        s = s + r;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn lib_f_ctx(f, ctx, x: f64): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < N) {
+        var r: f64 = callptr(f, ctx, x);
+        s = s + r;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn lib_f_direct(x: f64): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < N) {
+        var r: f64 = f_plain(x);
+        s = s + r;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn lib_lt(f, xs, len): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < N) {
+        var r: f64 = callptr(f, xs, len);
+        s = s + r;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn lib_lt_ctx(f, ctx, xs, len): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < N) {
+        var r: f64 = callptr(f, ctx, xs, len);
+        s = s + r;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn lib_lt_direct(xs, len): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < N) {
+        var r: f64 = logt_plain(xs, len);
+        s = s + r;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn lib_cond(f, xs, len, rr): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < N) {
+        var r: f64 = callptr(f, xs, len, rr);
+        s = s + r;
+        i = i + 1;
+    }
+    return s;
+}
+
+fn lib_cond_ctx(f, ctx, xs, len, rr): f64 {
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < N) {
+        var r: f64 = callptr(f, ctx, xs, len, rr);
+        s = s + r;
+        i = i + 1;
+    }
+    return s;
+}
+
+# The reference bits of each family, set by its direct (or first) row.
+var g_ref = 0;
+var g_bad = 0;
+
+# Times one call of a library fn (N callbacks); compares the sum's bits with the family's reference.
+fn report(b, s, first): i64 {
+    bench_batch_stop(b, N);
+    bench_report(b);
+    if (first == 1) { g_ref = s; }
+    if (first == 0 && s != g_ref) {
+        println("    differs from the family's first row");
+        g_bad = g_bad + 1;
+    }
+    return 0;
+}
+
+fn rows_f(): i64 {
+    var c = Ctx { 3.0 };
+    var k: f64 = 3.0;
+    var f_nocap = |x| {
+        var xf: f64 = x;
+        var r: f64 = 3.0 * xf * xf;
+        return r;
+    };
+    # A captured f64 is an untyped word in arithmetic: copy it into a typed local first.
+    var f_cap = |x| {
+        var kf: f64 = k;
+        var xf: f64 = x;
+        var r: f64 = kf * xf * xf;
+        return r;
+    };
+    var x: f64 = 0.25;
+    var b = bench_new("f(x), direct call");
+    bench_batch_start(b);
+    var s: f64 = lib_f_direct(x);
+    report(b, s, 1);
+    b = bench_new("f(x), callptr(&fn, x), no context");
+    bench_batch_start(b);
+    s = lib_f(&f_plain, x);
+    report(b, s, 0);
+    b = bench_new("f(x), callptr(&fn, ctx, x)");
+    bench_batch_start(b);
+    s = lib_f_ctx(&f_ctx, &c, x);
+    report(b, s, 0);
+    b = bench_new("f(x), closure capturing nothing");
+    bench_batch_start(b);
+    s = lib_f(f_nocap, x);
+    report(b, s, 0);
+    b = bench_new("f(x), closure capturing k");
+    bench_batch_start(b);
+    s = lib_f(f_cap, x);
+    report(b, s, 0);
+    return 0;
+}
+
+fn rows_lt(xs): i64 {
+    var c = Ctx { 3.0 };
+    var k: f64 = 3.0;
+    var lt_cap = |p, len| {
+        var kf: f64 = k;
+        var s: f64 = 0.0;
+        var i = 0;
+        while (i < len) {
+            var v: f64 = load64(p + i * 8);
+            s = s + v * v;
+            i = i + 1;
+        }
+        var r: f64 = -kf * s;
+        return r;
+    };
+    var b = bench_new("log_target(xs, 4), direct call");
+    bench_batch_start(b);
+    var s: f64 = lib_lt_direct(xs, 4);
+    report(b, s, 1);
+    b = bench_new("log_target(xs, 4), callptr(&fn, ctx, xs, len)");
+    bench_batch_start(b);
+    s = lib_lt_ctx(&logt_ctx, &c, xs, 4);
+    report(b, s, 0);
+    b = bench_new("log_target(xs, 4), closure capturing k");
+    bench_batch_start(b);
+    s = lib_lt(lt_cap, xs, 4);
+    report(b, s, 0);
+    return 0;
+}
+
+fn rows_cond(xs): i64 {
+    var c = Ctx { 3.0 };
+    var k: f64 = 3.0;
+    var cond_cap = |p, len, rp| {
+        var kf: f64 = k;
+        var rr: PmnRngRef = rp;
+        var m: f64 = 0.0;
+        var i = 0;
+        while (i < len) {
+            var v: f64 = load64(p + i * 8);
+            m = m + v;
+            i = i + 1;
+        }
+        var u: f64 = rr.o.next_f64();
+        var r: f64 = kf * m * u;
+        return r;
+    };
+    var g = PmnSimpleRng { 88172645463325252 };
+    var rr: PmnRngRef = alloc(sizeof(PmnRngRef));
+    rr.o = &g;
+    var b = bench_new("Gibbs cond(xs, 4, rng), callptr(&fn, ctx, xs, len, rng)");
+    bench_batch_start(b);
+    var s: f64 = lib_cond_ctx(&cond_ctx, &c, xs, 4, rr);
+    report(b, s, 1);
+    g.state = 88172645463325252;
+    b = bench_new("Gibbs cond(xs, 4, rng), closure capturing k");
+    bench_batch_start(b);
+    s = lib_cond(cond_cap, xs, 4, rr);
+    report(b, s, 0);
+    # The port's path: a sampler generic over R hands the conditional the same draws as the dyn in rr.
+    g.state = 88172645463325252;
+    var sg: f64 = 0.0;
+    var i = 0;
+    while (i < 3) {
+        var r: f64 = gibbs_step(&g, cond_cap, xs, 4);
+        sg = sg + r;
+        i = i + 1;
+    }
+    g.state = 88172645463325252;
+    var sd: f64 = 0.0;
+    i = 0;
+    while (i < 3) {
+        var r: f64 = callptr(cond_cap, xs, 4, rr);
+        sd = sd + r;
+        i = i + 1;
+    }
+    if (sg != sd) {
+        println("    the generic-to-dyn Gibbs path differs");
+        g_bad = g_bad + 1;
+    }
+    return 0;
+}
+
+# What making and calling each form leaves on the bump heap.
+fn heap_report(): i64 {
+    var k: f64 = 3.0;
+    var c = Ctx { 3.0 };
+    var before = alloc_used();
+    var f_cap = |x| {
+        var kf: f64 = k;
+        var xf: f64 = x;
+        var r: f64 = kf * xf * xf;
+        return r;
+    };
+    var made = alloc_used() - before;
+    var x: f64 = 0.25;
+    before = alloc_used();
+    var s: f64 = lib_f(f_cap, x);
+    var called = alloc_used() - before;
+    before = alloc_used();
+    s = lib_f_ctx(&f_ctx, &c, x);
+    var fp_called = alloc_used() - before;
+    before = alloc_used();
+    var i = 0;
+    while (i < 1000) {
+        var g = |y| {
+            var kf: f64 = k;
+            var yf: f64 = y;
+            var r: f64 = kf * yf;
+            return r;
+        };
+        i = i + 1;
+    }
+    var made_1000 = alloc_used() - before;
+    print("  heap: one closure capturing an f64 made: ", 43);
+    fmt_int(made);
+    print(" bytes; 10^6 calls of it: ", 26);
+    fmt_int(called);
+    print(" bytes; 10^6 fn-pointer calls: ", 31);
+    fmt_int(fp_called);
+    print(" bytes; 1000 closures made in a loop: ", 38);
+    fmt_int(made_1000);
+    println(" bytes");
+    return 0;
+}
+
+# Every family, then the heap report and the verdict.
+fn main(): i64 {
+    alloc_init();
+    var xs = alloc(4 * 8);
+    var j = 0;
+    while (j < 4) {
+        var v: f64 = 0.5;
+        store64(xs + j * 8, v);
+        j = j + 1;
+    }
+    rows_f();
+    rows_lt(xs);
+    rows_cond(xs);
+    heap_report();
+    print("  rows whose sum differs from their family's first: ", 52);
+    fmt_int(g_bad);
+    println("");
+    return g_bad;
+}
+
+var r = main();
+sys_exit_group(r);

@@ -22,7 +22,7 @@ The Cyrius API differs from Rust 1.3.0 only in the rows below, each with how the
 | 3 | `Vec` returns | a caller buffer `(out, cap)` plus a count where the length follows from the inputs; otherwise a freelist-owned result with `_drop` (D11) | per element |
 | 4 | `u128` from `factorial`, `permutations`, `combinations` | an out-pointer `PmnU128 { lo, hi }` (D10) | A |
 | 5 | `impl Fn` closures | a function pointer plus a context pointer (D7) | the same values |
-| 6 | `&mut impl Rng` | `dyn PmnRng`, implemented by `PmnSimpleRng` (D7) | the same streams |
+| 6 | `&mut impl Rng`; `&mut dyn Rng` (Gibbs' conditionals) | `rng: *R`, generic over `R: PmnRng` and implemented by `PmnSimpleRng`, so a draw is a static call as in Rust; a Gibbs conditional gets the address of a stack `PmnRngRef { o: dyn PmnRng }`. Amended 2026-11-15 after probe P2: the seed row passed `dyn PmnRng` at every boundary, about 3 ns more per 12 ns draw (D7) | the same streams |
 | 7 | serde_json text | bayan's Grisu2 text; every 1.3.0 document decodes to the same bits (D5) | A on the decoded bits |
 | 8 | `PramanaError` JSON with a message | the code only; the message is dropped on decode | A on the variant |
 | 9 | `async StatQuery::query`; `HashMap` column order | synchronous HTTP to hoosh; columns in sorted name order (D8) | A on the tool results; the prompt text is n/a |

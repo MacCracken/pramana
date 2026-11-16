@@ -1,0 +1,140 @@
+# p2_dispatch.bcyr — M0 step 9, probe P2: what dispatch costs (port plan §5 step 9, D7).
+#
+# A distribution's pdf and an RNG's draw, each called four ways: a direct method call, a call through a bounded
+# generic (static: monomorphized; the draw's generic is over the RNG, Rust's `&mut impl Rng`), through `dyn`
+# (a vtable), and through a function pointer plus a context word.
+# Each pdf comes twice: a body that only does arithmetic, which isolates the call, and one with the exp polyfill,
+# to show how the call compares with a realistic body. 10^6 calls per row, batched.
+#   cyrius bench scripts/probes/p2_dispatch.bcyr
+
+struct PmnNormal {
+    mean: f64;
+    sd: f64;
+}
+
+struct PmnSimpleRng {
+    state;
+}
+
+trait PmnDistribution {
+    fn pdf(self, x: f64): f64;
+    fn pdf_exp(self, x: f64): f64;
+}
+
+trait PmnRng {
+    fn next_f64(self): f64;
+}
+
+impl PmnDistribution for PmnNormal {
+    # The arithmetic of a normal pdf's exponent, no transcendental: the call dominates.
+    fn pdf(self, x: f64): f64 {
+        var z: f64 = (x - self.mean) / self.sd;
+        var r: f64 = -0.5 * z * z;
+        return r;
+    }
+
+    # The same with exp: a realistic body.
+    fn pdf_exp(self, x: f64): f64 {
+        var z: f64 = (x - self.mean) / self.sd;
+        var e: f64 = -0.5 * z * z;
+        var r: f64 = _f64_exp_polyfill(e);
+        return r;
+    }
+}
+
+impl PmnRng for PmnSimpleRng {
+    fn next_f64(self): f64 {
+        var x = self.state;
+        x = x ^ (x << 13);
+        x = x ^ (x >> 7);
+        x = x ^ (x << 17);
+        self.state = x;
+        var a: f64 = f64_from(x >> 11);
+        var d: f64 = 9007199254740992.0;
+        return a / d;
+    }
+}
+
+# A bounded generic: monomorphized, so a static call.
+fn pdf_generic<T: PmnDistribution>(d: *T, x: f64): f64 {
+    var r: f64 = d.pdf(x);
+    return r;
+}
+
+# Through the trait object.
+fn pdf_dyn(o: dyn PmnDistribution, x: f64): f64 {
+    var r: f64 = o.pdf(x);
+    return r;
+}
+
+fn pdf_exp_dyn(o: dyn PmnDistribution, x: f64): f64 {
+    var r: f64 = o.pdf_exp(x);
+    return r;
+}
+
+# A bounded generic over the RNG: Rust's `&mut impl Rng`, monomorphized.
+fn draw_generic<R: PmnRng>(g: *R): f64 {
+    var r: f64 = g.next_f64();
+    return r;
+}
+
+fn draw_dyn(o: dyn PmnRng): f64 {
+    var r: f64 = o.next_f64();
+    return r;
+}
+
+var N = 1000000;
+
+# One timed row: `kind` selects the call form; the sum keeps every result live.
+fn row(name, kind): i64 {
+    var d = PmnNormal { 0.5, 2.0 };
+    var g = PmnSimpleRng { 88172645463325252 };
+    var o: dyn PmnDistribution = &d;
+    var og: dyn PmnRng = &g;
+    var fp = &PmnNormal_pdf;
+    var fpe = &PmnNormal_pdf_exp;
+    var fr = &PmnSimpleRng_next_f64;
+    var s: f64 = 0.0;
+    var x: f64 = 0.25;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < N) {
+        if (kind == 0) { var r: f64 = d.pdf(x); s = s + r; }
+        if (kind == 1) { var r: f64 = pdf_generic(&d, x); s = s + r; }
+        if (kind == 2) { var r: f64 = pdf_dyn(o, x); s = s + r; }
+        if (kind == 3) { var r: f64 = callptr(fp, &d, x); s = s + r; }
+        if (kind == 4) { var r: f64 = d.pdf_exp(x); s = s + r; }
+        if (kind == 5) { var r: f64 = pdf_exp_dyn(o, x); s = s + r; }
+        if (kind == 6) { var r: f64 = callptr(fpe, &d, x); s = s + r; }
+        if (kind == 7) { var r: f64 = g.next_f64(); s = s + r; }
+        if (kind == 8) { var r: f64 = draw_dyn(og); s = s + r; }
+        if (kind == 9) { var r: f64 = callptr(fr, &g); s = s + r; }
+        if (kind == 10) { var r: f64 = draw_generic(&g); s = s + r; }
+        i = i + 1;
+    }
+    bench_batch_stop(b, N);
+    bench_report(b);
+    if (s != s) { println("nan"); }
+    return 0;
+}
+
+# Every row, in the report's order.
+fn main(): i64 {
+    alloc_init();
+    row("pdf, direct method call", 0);
+    row("pdf, bounded generic <T: PmnDistribution>", 1);
+    row("pdf, dyn PmnDistribution", 2);
+    row("pdf, callptr(fn, ctx, x)", 3);
+    row("pdf with exp, direct", 4);
+    row("pdf with exp, dyn", 5);
+    row("pdf with exp, callptr", 6);
+    row("draw, direct method call", 7);
+    row("draw, dyn PmnRng", 8);
+    row("draw, callptr(fn, ctx)", 9);
+    row("draw, bounded generic <R: PmnRng>", 10);
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

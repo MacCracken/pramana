@@ -79,6 +79,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     9,393 of 180,000 zero-heavy inputs. Decided: the port selects from a stable sort, and the rows where Rust's zero
     differs are mapped (ADR 007 row 14).
 
+- **Probes, part 9b** (port plan M0 step 9; `scripts/probes/p{2,3,4}_*.bcyr`, run by `cyrius bench`; results in
+  `docs/development/port-parity.md` §6.2). Pinned, three interleaved runs, x86_64.
+  - **P2, dispatch:** a direct call, a static generic and `callptr(&f, …)` cost about the same. A `dyn` call costs
+    about 3 ns more: 15 against 12 ns per RNG draw, and 64 against 57 ns per pdf with exp. So D7 was amended: the RNG
+    is generic over `R: PmnRng`, as Rust's `impl Rng`, with `dyn` only for Gibbs' conditionals (ADR 007 row 6).
+  - **P3, callbacks:** a function pointer plus context and closures (with or without captures) are within 1–3 ns of a
+    direct call. Every form gives the same bits, and calls allocate nothing. Found:
+    - a captured f64 is an untyped word in arithmetic, so `k * x` computes 0 for 3.0 × 0.25 (with a warning);
+    - `cyrius lint` refuses a capturing closure unless the file includes `lib/alloc.cyr`;
+    - a 4-parameter capturing closure is a compile error on Windows. D7's function pointer plus context needs no
+      capture.
+  - **P4, the flat heap:** D11's conventions prototyped, among them a work-table pool that grows on the freelist and
+    frees what it outgrew. Every soak leaves the bump heap, the freelist and the mapped size unchanged: 10⁶ pdf/cdf
+    calls, 10⁵ MVN pdfs, 10⁶ MH samples, 10³ Baum–Welch iterations, 10 medians of 10⁶, and pool overflow.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

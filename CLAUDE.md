@@ -177,6 +177,8 @@ and `build` drive, never from `cyrius lint`. Each one is a bug:
   owned storage (the Cyrius form of "`write!` over `format!`").
 - **Float hygiene.**
   - Bind every call result to a `: f64` local before using it in an operator.
+  - Inside a closure, copy a captured f64 into a typed local (`var kf: f64 = k;`): a capture is an untyped word in
+    arithmetic, so `k * x` multiplies the bits (port plan §8.3).
   - Never put hex in a `const`: it is an integer.
   - Never write `(0 - x)` on a float: use `-x`.
   - There is no exponent notation in literals: the lexer has none. Generated files write decimals positionally.
@@ -191,7 +193,8 @@ and `build` drive, never from `cyrius lint`. Each one is a bug:
 - **Function names follow the Rust API**, except where ADR 007 changes them.
 - **Optional dependencies** go in `[features]`, so consumers pull only what they need; `[build] dce` drops unused code.
 - Build with `cyrius build`, not raw `cat file | cc5` — the manifest auto-resolves deps.
-- Source files only need project includes — stdlib auto-resolves from `cyrius.cyml`.
+- Source files only need project includes — stdlib auto-resolves from `cyrius.cyml`. The one exception: a file that
+  builds a capturing closure includes `lib/alloc.cyr` itself, because `cyrius lint` compiles without the manifest.
 - `var buf[N]` = N **bytes**, not N entries.
 
 ## DO NOT

@@ -20,9 +20,10 @@
 >
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
 > **Steps 4–8** are committed (`53078cb`, `30eb41b`, `bb0f938`, `d7941bc`, `aec9861`). **Step 9,** the probes, is in
-> progress: part 9a (P1, P5, P6) is done but not committed. P6's decision is taken: ADR 007 row 14. The maintainer took each recommendation and
-> chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline tool,
-> `scripts/port-baseline/`, which produced §3.2.
+> progress: part 9a (P1, P5, P6) is committed (`96ae9d5`, and P6's decision, ADR 007 row 14, as `aa3dc1e`). Part 9b
+> (P2, P3, P4) is done but not committed. After it, the maintainer amended D7: the RNG is generic. The maintainer took
+> each recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the
+> accuracy-baseline tool, `scripts/port-baseline/`, which produced §3.2.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -77,7 +78,7 @@ Each row gives the decision and the alternatives not chosen.
 | D4 | ✅ **Numerical upgrades outside the special functions:** compensated summation in `sum` / `mean`, and polynomial regression on a centered, scaled Vandermonde matrix with Householder QR | Not in 2.0: in those chains Rust's operation order is the definition (as pravash). Measure them against NIST StRD in M4/M5 (class R, §3.6) and file the failures as 2.1 candidates, with numbers | Change them in 2.0: that alters every descriptive and regression row, a scope kimiya's mid-port overflow audit showed is costly (1.7 days, about 30 ADR rows) |
 | D5 | ✅ **JSON.** Rust serializes 38 types and validates 20 on deserialize, with 32 round-trip tests; CLAUDE.md requires serde on every type. tanmatra dropped serde and kimiya marked it n/a. pravash wrote hand codecs over bayan's value tree (1,947 lines). The `#derive` has **no validation hook**, no `Vec<Vec<f64>>`, `u64` or data-variant support, and four open defects | Carry JSON for all 38 types with hand codecs (pravash's `src/json.cyr` as template). Every document serde_json writes from 1.3.0 decodes to the same bits, and every Cyrius document round-trips. Text identity is not required: bayan prints Grisu2 digits. Every decoder goes through the validating constructor, as Rust's `try_from` does | `#derive` (it cannot validate). Or dropping JSON (it breaks a CLAUDE.md principle) |
 | D6 | ✅ **Errors.** Rust's five `PramanaError` variants carry message strings | `PMN_ERR_*` codes, append-only, with no detail strings (as every sibling), plus `PMN_ERR_OUT_OF_MEMORY` and `PMN_ERR_DESERIALIZE`. `pmn_err_name(code)` gives the text. A 1.3.0 error document decodes to its code, and the message is dropped (ADR 0007) | A thread-local "last error detail" string: no sibling precedent |
-| D7 | ✅ **Traits and callbacks.** `Distribution` has 13 impls, with `sample(&self, rng: &mut impl Rng)`. `Rng` is implemented by users. Closures are taken by `monte_carlo_integrate`, `metropolis_hastings`, `gibbs_sampling` (`Fn(&[f64], &mut dyn Rng)`) and `ks_one_sample` | A checked `trait PmnRng { fn next_f64(self): f64 }`, passed as `dyn PmnRng` at API boundaries (one indirect call per draw), with `PmnSimpleRng` as its impl. `Distribution` as a checked trait on each struct, statically dispatched. Callbacks as a function pointer plus a context pointer (kimiya): nothing allocates, and any arity works through `callptr`. Probes P2 and P3 confirm the costs | Capturing closures: they allocate on the heap and take at most 5 parameters (3 on Windows); a Gibbs conditional needs 4 |
+| D7 | ✅ **Traits and callbacks.** `Distribution` has 13 impls, with `sample(&self, rng: &mut impl Rng)`. `Rng` is implemented by users. Closures are taken by `monte_carlo_integrate`, `metropolis_hastings`, `gibbs_sampling` (`Fn(&[f64], &mut dyn Rng)`) and `ks_one_sample` | A checked `trait PmnRng { fn next_f64(self): f64 }`, with `PmnSimpleRng` as its impl. **Amended 2026-11-15, after P2:** every API that takes Rust's `&mut impl Rng` is generic over `R: PmnRng` and takes `rng: *R`, so a draw is a static call, as Rust's monomorphized one is. That includes the trait method `fn sample<R: PmnRng>(self, rng: *R): f64`, which Cyrius 6.7.18 accepts. `dyn PmnRng` is kept only where Rust has `&mut dyn Rng`, for Gibbs' conditionals, which get the address of a stack `PmnRngRef` (P3). `Distribution` as a checked trait on each struct, statically dispatched. Callbacks as a function pointer plus a context pointer (kimiya): nothing allocates, and any arity works through `callptr`. **Measured (P2, P3; §5 step 9b):** the callback form stands; a dyn costs about 3 ns on a 12 ns draw | `dyn PmnRng` at every API boundary (D7 as first decided): about 3 ns more per draw (P2), and the gamma, Poisson and beta samplers draw several times per sample. Capturing closures: they allocate on the heap and take at most 5 parameters (3 on Windows). A Gibbs conditional with an explicit context needs 4 (corrected by P3: one that captures its context needs 3) |
 | D8 | ✅ **`ai`.** `StatQuery::query` is async (tokio) and uses the Rust hoosh 1.3 client with five tools (`describe`, `correlate`, `regress`, `t_test`, `forecast`). The Cyrius hoosh has no client library | Port it onto `sandhi_http_post` (synchronous) and bayan, against hoosh's OpenAI-compatible tool-calling API. It lives in `src/ai.cyr`, outside the core `[lib]`, or in a `[lib.ai]` profile (probe P8 decides), so core consumers never compile sandhi or TLS. Tests run on a recorded-response transport. File a client-library request in hoosh (L9) | Drop `ai`: there is no language reason, so the §0.1 rule forbids it |
 | D9 | ✅ **`soorat-compat`.** Five data shapes plus `HistogramData::from_data`; soorat is still Rust | Port it into the core bundle, with JSON. Dead-code elimination removes it for consumers who don't call it, and a Rust soorat can read the JSON. No feature flag | Leave it out until soorat ports |
 | D10 | ✅ **u128 results.** `factorial`, `permutations` and `combinations` return `Result<u128>` | An out-pointer `PmnU128 { lo, hi }` with pramana's own overflow-checked multiply and divide by u64 (about 60 lines; class A) | bayan's `u128` handles: they pull bayan's big-integer layer into a 4-function module |
@@ -159,8 +160,8 @@ Read from the 6.7.18 guide, the stdlib reference, the `lib/` sources and the ope
 | structs, `impl`, methods | packed structs with typed fields, `impl` blocks | port |
 | `Result<T, PramanaError>`, `?` | value-form `Result` with a **one-word payload** and `?`. A ≤ 8-byte struct payload is miscompiled (open issue 2026-11-08) | codes plus out-pointers (D6, D11) |
 | `Kernel` (unit enum), `#[non_exhaustive]` | plain enums, append-only by convention; unit variants serialize by name | port |
-| `Distribution` (13 impls), `Rng` (user impls) | checked `trait` / `impl X for T` with static dispatch; `dyn Tr` is a 16-byte `{data, vtable}`; generics are monomorphized with checked bounds (ADR-007) | D7, probe P2 |
-| `impl Fn(f64) -> f64`, `Fn(&[f64]) -> f64`, `Fn(&[f64], &mut dyn Rng) -> f64` | capturing closures (heap, ≤ 5 parameters, 3 on Windows), or `&f` with `callptr` / `fncallN` and a context word | function pointer plus context (D7), probe P3 |
+| `Distribution` (13 impls), `Rng` (user impls) | checked `trait` / `impl X for T` with static dispatch; `dyn Tr` is a 16-byte `{data, vtable}`; generics are monomorphized with checked bounds (ADR-007). A trait may declare a generic method (`fn sample<R: PmnRng>(self, rng: *R): f64`), and stays usable as `dyn` for its other methods (checked 2026-11-15) | D7, probe P2 |
+| `impl Fn(f64) -> f64`, `Fn(&[f64]) -> f64`, `Fn(&[f64], &mut dyn Rng) -> f64` | capturing closures (heap, ≤ 5 parameters, 3 on Windows), or `&f` with `callptr` / `fncallN` and a context word. P3: a closure's captured f64 is an untyped word in arithmetic (`k * x` multiplies the bits), and `cyrius lint` refuses a capturing closure unless the file includes `lib/alloc.cyr` | function pointer plus context (D7), probe P3 |
 | `Vec<f64>`, `Vec<Vec<f64>>` | `vec` holds 8-byte words, **aborts** on an out-of-bounds `vec_get` and never frees an outgrown buffer; ganita matrices are flat row-major | flat arrays plus counts; caller buffers (D11) |
 | `sort_unstable_by`, `select_nth_unstable_by`, `sort_by(total_cmp)` (median, percentile, mode, KS, PCA) | `vec_sort_by` (introsort, unstable) and `vec_select_nth` (aborts if k is out of range) work on a `Vec` only; there is no stable sort | an f64-array introsort and quickselect stand-in (L3); probe P6 settles ±0 and tie order |
 | `HashMap<String, Vec<f64>>` / `<String, f64>` (`ai` only) | `map_new_str`. Values are words, so f64 bits fit. The seed is random per process, and Rust's `RandomState` order is random too | port; iterate in sorted key order for determinism (ADR 0007) |
@@ -451,7 +452,7 @@ This is the seed list, finalized at M0 step 2. Each row says how the harness sti
 | 3 | `Vec` returns | caller buffer plus count, or a freelist-owned result with `_drop` (D11) | per element |
 | 4 | `u128` | `PmnU128 { lo, hi }` out-pointer (D10) | A |
 | 5 | `impl Fn` closures | function pointer plus context (D7) | same values |
-| 6 | `&mut impl Rng` | `dyn PmnRng` (D7) | same streams |
+| 6 | `&mut impl Rng`; `&mut dyn Rng` | `rng: *R` generic over `R: PmnRng`; Gibbs' conditionals get a `PmnRngRef` (D7, amended) | same streams |
 | 7 | serde_json text | bayan Grisu2 text; decode-compatible (D5) | A on the decoded bits |
 | 8 | `PramanaError` JSON with a message | the code only; the message is dropped on decode | A on the variant |
 | 9 | `async StatQuery::query`; HashMap column order | synchronous; columns in sorted name order (D8) | A on the tool results; the prompt text is n/a |
@@ -796,7 +797,29 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
        zero-heavy results). **Decided 2026-11-15: accept the divergence** (ADR 007 row 14). The port selects from a
        stable sort, and the rows where Rust's zero differs are mapped. rustc 1.100's `select_nth_unstable_by`
        (about 300 lines of Rust's core library) was not chosen.
-   - **9b:** P2, P3, P4.
+   - **9b ✅ (2026-11-15): P2, P3, P4** (`port-parity.md` §6.2).
+     - **P2, dispatch:** `callptr` to a known `&f` costs what a direct call costs. A bounded generic is a static call.
+       A `dyn` costs about 3 ns more per call (a quarter of a 12 ns draw, 7 ns with an exp body). **D7 amended
+       2026-11-15:** the RNG is generic over `R: PmnRng`, as Rust's `impl Rng`, with `dyn` only for Gibbs'
+       conditionals, as Rust's `&mut dyn Rng`.
+     - **P3, callbacks:** every form (`callptr(&fn, ctx, …)`, a closure with or without captures) is within 1–3 ns of a
+       direct call and gives the same bits. Calls allocate nothing; a capturing closure's environment is 16 bytes,
+       once.
+       - **D7's callback form stands.** Its rejected column is corrected: a Gibbs conditional that captures its
+         context needs 3 parameters, which fits Windows. A 4-parameter capturing closure is a compile error on PE.
+       - **Gibbs' RNG:** a generic sampler forms the `dyn` at a call into a non-generic helper. The helper keeps it in
+         a stack record and passes the record's address. Nothing allocates.
+       - **Found:** a captured f64 is an untyped word in arithmetic (`k * x` gives 0 for 3.0 × 0.25, with a warning),
+         and `cyrius lint` refuses a capturing closure without an explicit `include "lib/alloc.cyr"`. Both are filed
+         at step 10; the rules are in §8.3.
+     - **P4, the flat heap:** D11's conventions prototyped and soaked. Every soak leaves the heap flat: 10⁶ pdf/cdf
+       calls with constructors into caller storage, 10⁵ MVN pdfs, 10⁴ and 10³ MVN new/drop cycles, 10⁶ MH samples,
+       10³ Baum–Welch iterations, 10 medians of 10⁶, 10⁶ caller-buffer calls, and pool overflow.
+       - **The pool** changes kimiya's ADR 0007 in one way: slots grow on the freelist and free what they outgrew, and
+         an overflow claim is a freelist block (§8.5).
+       - **Findings for later:** an owned object over 4 KB pays the freelist's open large-block issue (36 µs per MVN
+         new/drop at d = 32). The stable median by merge sort takes 222 ms for 10⁶; M4 can make it O(n) with a stable
+         three-way quickselect.
    - **9c:** P7, P8.
    - **9d:** P9's prototypes.
    - **9e:** the CORE-MATH erf/erfc port.
@@ -966,7 +989,10 @@ which keeps every consumer's compile free of it.
 | `Vec<Vec<f64>>` (covariance, transition and emission matrices) | flat row-major f64 arrays with dimensions |
 | `Option<f64>` (`select_pair`) | an out-pointer plus 1/0 |
 | `Result<T, PramanaError>` | value-form `Result` with a `PMN_ERR_*` code; never through `callptr` |
-| `impl Fn…` | function pointer plus context word (D7) |
+| `impl Fn…` | function pointer plus context word (D7); a parameter declared `f: *fn(f64): f64` takes `&fn` or a closure (P3) |
+| a closure capturing an f64 (tests, examples) | copy the capture into a typed local before arithmetic: `var kf: f64 = k;` (P3) |
+| `rng: &mut impl Rng` | `rng: *R`, with `<R: PmnRng>` on the fn or method: `fn sample<R: PmnRng>(self, rng: *R): f64` in `PmnDistribution` (D7, amended after P2) |
+| `&mut dyn Rng` (Gibbs' conditionals) | the address of a stack `PmnRngRef { o: dyn PmnRng }`, formed by a non-generic helper (P3) |
 | serde | `src/json.cyr` hand codecs; decode calls the validating constructor (D5) |
 | `HashMap<String, Vec<f64>>` (`ai`) | `map_new_str`, with keys sorted before iteration |
 
@@ -986,8 +1012,13 @@ which keeps every consumer's compile free of it.
 Probe 4 settles this, under D11:
 - **Constructors** fill caller storage.
 - **Owned objects** are freelist-allocated with `_drop`. Their buffers are sized at construction, never grown.
-- **Scratch** comes from the work-table pool (kimiya ADR 0007: grow-only slots claimed by compare-and-swap, with the
-  bump heap as fallback). The parity harness fails if a slot stays claimed.
+- **Scratch** comes from the work-table pool: kimiya ADR 0007's eight grow-only slots, claimed by compare-and-swap. The
+  parity harness fails if a slot stays claimed. Unlike kimiya's, a slot grows on the freelist and frees the buffer it
+  outgrew, and a claim past the eighth slot is a freelist block freed on release (kimiya takes both from the bump
+  heap). P4 measured both paths flat.
+- **P4's soaks** (port-parity §6.2) left the bump heap, the freelist and the mapped size unchanged under every
+  convention above. Two costs remain: an owned buffer over 4 KB maps and unmaps on each new/drop (the freelist's open
+  large-block issue), and the pool holds its buffers for the process's lifetime.
 - **JSON** decoding allocates the decoded object, which the caller drops.
 - **Never `alloc_reset`**: it would wipe the consumer's heap.
 - **Every buffer parameter** is checked for null and for aliasing (the gaps kimiya's 2.0.1 review found).
@@ -1037,6 +1068,14 @@ the probe numbers. Where an issue is already open, pramana adds itself as a cons
 | L8 | lgamma, erf/erfc, incomplete gamma/beta in ganita | ganita: a **scope** request, since these are in neither its scope nor its out-of-scope list (§1.3). pramana's T1 functions are the seed, and a second consumer is the cue to extract them | `src/special.cyr` |
 | L9 | a hoosh client library (tool calling) | hoosh | `src/ai.cyr` |
 | L10 | `#derive(Debug)` and a shortest-float printer (pravash's L16) | cyrius | pravash's `fmtf.cyr` |
+
+Also filed at step 10, with no stand-in (a rule in §8.3 covers each meanwhile):
+- **cyrius:** a closure's captured f64 is an untyped word in arithmetic, though it binds `T = f64` as a generic
+  argument (P3).
+- **cyrius:** `cyrius lint` compiles a file without the manifest's stdlib, so it refuses a capturing closure that
+  builds (P3).
+- **cyrius:** pramana's numbers added to the open freelist large-block issue (2026-11-11): 36 µs per MVN new/drop at
+  d = 32, and an mmap per MH result (P4).
 
 ---
 
