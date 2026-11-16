@@ -590,3 +590,35 @@ load average of 3 (1.98, 1.99, 2.06). Every row's sum is the same in all three r
 
 This is a finding to measure against, not a change for this part. `#inline` on the parameter checks is the candidate
 fix. It applies to every constructor M3 ports, so it should be measured once, across them.
+
+## M3 part a3: Cauchy and Weibull (2026-11-16)
+
+**Bodies.** `tests/dist.bcyr` and its twin `m3_dist.rs` gain seven rows, with part a1's loop. Each row builds its
+distribution on every call, as the twin does. Three rounds, interleaved and pinned to core 5, each started under a
+load average of 3 (2.82, 2.61, 2.48). Every row's sum is the same in all three rounds.
+- **The digests:** all 21 are explained by `validate.py`'s models (`build/handoff/bench_digests_dist.py`, now on
+  `dist_prims`, which carries 1.3.0's Lanczos coefficients). The new rows differ from 1.3.0's where glibc misrounds:
+  Cauchy's cdf on 4 of 4,096 values (atan) and its draws on 5 (tan); Weibull's pdf on 3, its cdf on 283 (pow and
+  expm1) and its draws on 2. Its mean differs on 3,778, the T1 lnΓ in place of 1.3.0's Lanczos form. Cauchy's pdf
+  doesn't differ at all.
+- **Parts a1's and a2's rows,** re-measured: within 4% of their records.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `Cauchy::pdf`, Cauchy(0, 1), x in [−10, 10) | 7.5–7.7 ns | 44–45 ns | 5.8× |
+| `Cauchy::cdf`, Cauchy(0, 1), x in [−10, 10) | 15.3–15.9 ns | 163–167 ns | 10.6× |
+| `Cauchy::sample`, x0 in [−10, 10), γ in [0.1, 10) | 22.6–23.5 ns | 233–237 ns | 10.2× |
+| `Weibull::pdf`, Weibull(2, 1), x in [0, 3) | 37.7–39.0 ns | 371–375 ns | 9.7× |
+| `Weibull::cdf`, Weibull(2, 1), x in [0, 3) | 32.2–32.5 ns | 235–236 ns | 7.3× |
+| `Weibull::mean`, k in [0.1, 10), λ = 1 | 38.9–40.0 ns | 186–188 ns | 4.8× |
+| `Weibull::sample`, λ and k in [0.1, 10) | 27.6–28.2 ns | 255–259 ns | 9.2× |
+
+**Where the time goes.**
+- **Cauchy's pdf** is arithmetic and the constructor, the cost part a2 measured (about 24 ns of uninlined checks).
+- **Cauchy's cdf and draws** add one correctly rounded atan or tan. atan is kimiya's atan2(x, 1).
+- **Weibull's pdf** takes two correctly rounded pows and an exp; its cdf a pow and an expm1; a draw a ln and a pow.
+- **Weibull's mean** is the T1 lnΓ (M2 part b3: 153–179 ns for x > 0) and an exp, against 1.3.0's Lanczos form on
+  glibc. At 4.8× it is the cheapest ratio here: Rust's lnΓ is itself a 9-term sum and two logs.
+
+These are findings to measure against, not changes for this part. The correctly rounded primitives' cost is ADR 009's,
+and the constructors' share is part a2's finding.

@@ -4,7 +4,7 @@
 # (debug.tsv). These tests carry 1.3.0's own unit tests over (distribution.rs) and pin what a replay doesn't: a
 # constructor's refusals, the identities each method keeps bit for bit, a consumer's own generator through the trait,
 # and the codecs' and Debug's exact text. Part a1: Normal, Box–Muller and Debug's f64 form; part a2: Uniform,
-# Exponential and Bernoulli.
+# Exponential and Bernoulli; part a3: Cauchy and Weibull.
 
 include "tests/lib.cyr"
 
@@ -461,6 +461,248 @@ fn main() {
     store64(sb + 8, 0);
     assert_eq(be.debug(sb, 1), PMN_ERR_NONE, "Bernoulli {:#?}");
     assert(text_is(sb, "Bernoulli {\n    p: 0.7,\n}") == 1, "one field a line");
+
+    test_group("1.3.0's Cauchy tests (cauchy_pdf_and_cdf, cauchy_undefined_moments, cauchy_sample_finite)");
+    var ca: PmnCauchy;
+    assert_eq(PmnCauchy_new(&ca, 0.0, 1.0), PMN_ERR_NONE, "Cauchy(0, 1)");
+    var cp0: f64 = ca.pdf(0.0);
+    var pi: f64 = _PMN_F64_PI;
+    var ipi: f64 = 1.0 / pi;
+    assert(bits(cp0) == bits(ipi), "pdf(0) = 1/π bit for bit (1.3.0: within 1e-10)");
+    var cc0: f64 = ca.cdf(0.0);
+    assert(cc0 == 0.5, "cdf(0) = 0.5 exactly");
+    var cc1: f64 = ca.cdf(1.0);
+    var ccm1: f64 = ca.cdf(-1.0);
+    var csym: f64 = cc1 + ccm1 - 1.0;
+    assert(f64_abs(csym) < 0.0000000001, "cdf(1) + cdf(−1) = 1 within 1e-10");
+    var cmean: f64 = ca.mean();
+    var cvar: f64 = ca.variance();
+    assert(cmean != cmean && cvar != cvar, "mean and variance undefined: NaN");
+    assert(bits(cmean) == bits(nan), "the quiet NaN Rust's f64::NAN is");
+    PmnSimpleRng_new(&g, 42);
+    var cfin = 1;
+    for (var ci1 = 0; ci1 < 10000; ci1 = ci1 + 1) {
+        var cs: f64 = ca.sample(&g);
+        if (_pmn_is_finite(cs) == 0) { cfin = 0; }
+    }
+    assert_eq(cfin, 1, "10,000 draws from seed 42, all finite");
+
+    test_group("1.3.0's Weibull tests (weibull_exponential_case, weibull_mean_and_variance, _sample_nonnegative)");
+    var wb: PmnWeibull;
+    assert_eq(PmnWeibull_new(&wb, 1.0, 2.0), PMN_ERR_NONE, "Weibull(1, 2)");
+    var wm: f64 = wb.mean();
+    assert(wm == 2.0, "mean 2·Γ(2) = 2 exactly: the T1 lnΓ(2) is 0 (1.3.0: within 1e-8)");
+    var wc2: f64 = wb.cdf(2.0);
+    var em1: f64 = _pmn_exp(-1.0);
+    var wce: f64 = 1.0 - em1;
+    assert(f64_abs(wc2 - wce) < 0.00000001, "cdf(2) = 1 − e⁻¹ within 1e-8");
+    assert_eq(PmnWeibull_new(&wb, 2.0, 1.0), PMN_ERR_NONE, "Weibull(2, 1)");
+    var wm2: f64 = wb.mean();
+    assert_eq(bits(wm2), 0x3FEC5BF891B4EF6B, "mean Γ(1.5) = √π/2, correctly rounded (MPFR; 1.3.0: 2 ulp above)");
+    var wv2: f64 = wb.variance();
+    assert_eq(bits(wv2), 0x3FCB7812AEEF4B9C, "variance 1 − π/4, 3 ulp from MPFR's (1.3.0: 15)");
+    assert_eq(PmnWeibull_new(&wb, 2.0, 3.0), PMN_ERR_NONE, "Weibull(2, 3)");
+    PmnSimpleRng_new(&g, 42);
+    var wneg = 0;
+    for (var wi1 = 0; wi1 < 10000; wi1 = wi1 + 1) {
+        var ws: f64 = wb.sample(&g);
+        if (ws < 0.0 || ws != ws) { wneg = 1; }
+    }
+    assert_eq(wneg, 0, "10,000 draws from seed 42, none negative");
+    assert_eq(PmnWeibull_new(&wb, 1.0, 1.0), PMN_ERR_NONE, "Weibull(1, 1)");
+    var wc20: f64 = wb.cdf(e20);
+    assert(bits(wc20) == bits(e20), "cdf(1e-20) = 1e-20 exactly (1.3.0's _cdf_small_x: within 1e-15)");
+
+    test_group("the constructors' refusals (constructors_reject_non_finite_parameters; D11)");
+    var bc: PmnCauchy;
+    assert_eq(PmnCauchy_new(&bc, nan, 1.0), PMN_ERR_INVALID_PARAMETER, "a NaN x0");
+    assert_eq(PmnCauchy_new(&bc, 0.0, inf), PMN_ERR_INVALID_PARAMETER, "an infinite gamma");
+    assert_eq(PmnCauchy_new(&bc, inf, 1.0), PMN_ERR_INVALID_PARAMETER, "an infinite x0");
+    assert_eq(PmnCauchy_new(&bc, 0.0, 0.0), PMN_ERR_INVALID_PARAMETER, "gamma 0");
+    assert_eq(PmnCauchy_new(&bc, 0.0, mz), PMN_ERR_INVALID_PARAMETER, "gamma −0");
+    assert_eq(PmnCauchy_new(&bc, 0.0, -1.0), PMN_ERR_INVALID_PARAMETER, "a negative gamma");
+    assert_eq(PmnCauchy_new(0, 0.0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    bc.x0 = 7.0;
+    bc.gamma = 8.0;
+    assert_eq(PmnCauchy_new(&bc, 0.0, nan), PMN_ERR_INVALID_PARAMETER, "a NaN gamma");
+    var bcx: f64 = bc.x0;
+    var bcg: f64 = bc.gamma;
+    assert(bcx == 7.0 && bcg == 8.0, "a refusal writes nothing");
+    assert_eq(PmnCauchy_new(&bc, mz, tiny), PMN_ERR_NONE, "x0 = −0.0 and a subnormal gamma");
+    var bcz: f64 = bc.x0;
+    assert_eq(bits(bcz), bits(mz), "x0 kept with its sign");
+    var bw: PmnWeibull;
+    assert_eq(PmnWeibull_new(&bw, nan, 1.0), PMN_ERR_INVALID_PARAMETER, "a NaN k");
+    assert_eq(PmnWeibull_new(&bw, 1.0, nan), PMN_ERR_INVALID_PARAMETER, "a NaN lambda");
+    assert_eq(PmnWeibull_new(&bw, inf, 1.0), PMN_ERR_INVALID_PARAMETER, "an infinite k");
+    assert_eq(PmnWeibull_new(&bw, 1.0, inf), PMN_ERR_INVALID_PARAMETER, "an infinite lambda");
+    assert_eq(PmnWeibull_new(&bw, 0.0, 1.0), PMN_ERR_INVALID_PARAMETER, "k 0");
+    assert_eq(PmnWeibull_new(&bw, 1.0, mz), PMN_ERR_INVALID_PARAMETER, "lambda −0");
+    assert_eq(PmnWeibull_new(0, 1.0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    bw.k = 7.0;
+    bw.lambda = 8.0;
+    assert_eq(PmnWeibull_new(&bw, 1.0, -1.0), PMN_ERR_INVALID_PARAMETER, "a negative lambda");
+    var bwk: f64 = bw.k;
+    var bwl: f64 = bw.lambda;
+    assert(bwk == 7.0 && bwl == 8.0, "a refusal writes nothing");
+    assert_eq(PmnWeibull_new(&bw, tiny, mxu), PMN_ERR_NONE, "a subnormal k and f64::MAX's lambda");
+
+    test_group("Cauchy's edges and identities");
+    assert_eq(PmnCauchy_new(&ca, 0.0, 1.0), PMN_ERR_NONE, "Cauchy(0, 1)");
+    var c_even = 1;
+    for (var c2 = 0 - 80; c2 <= 80; c2 = c2 + 1) {
+        var cf: f64 = f64_from(c2);
+        var cx: f64 = cf / 8.0;
+        var cnx: f64 = -cx;
+        var cpa: f64 = ca.pdf(cx);
+        var cpb: f64 = ca.pdf(cnx);
+        if (bits(cpa) != bits(cpb)) { c_even = 0; }
+    }
+    assert_eq(c_even, 1, "Cauchy(0, 1)'s pdf is even, bit for bit");
+    var cinf: f64 = ca.cdf(inf);
+    var cninf: f64 = ca.cdf(ninf2);
+    assert(cinf == 1.0 && cninf == 0.0, "cdf(±∞) = 1 and 0 exactly: (1/π)·atan(∞) rounds to ½");
+    var cpinf: f64 = ca.pdf(inf);
+    var cpnan: f64 = ca.pdf(nan);
+    var ccnan: f64 = ca.cdf(nan);
+    assert(cpinf == 0.0 && cpnan != cpnan && ccnan != ccnan, "pdf(∞) = 0; NaN at NaN");
+    assert_eq(PmnCauchy_new(&ca, 2.0, 3.0), PMN_ERR_NONE, "Cauchy(2, 3)");
+    var cmed: f64 = ca.cdf(2.0);
+    var cpk: f64 = ca.pdf(2.0);
+    var p3: f64 = pi * 3.0;
+    var wpk3: f64 = 1.0 / p3;
+    assert(cmed == 0.5 && bits(cpk) == bits(wpk3), "cdf(x0) = ½ and pdf(x0) = 1/(πγ), bit for bit");
+    assert_eq(PmnCauchy_new(&ca, 0.0, tiny), PMN_ERR_NONE, "Cauchy(0, 5e-324)");
+    var ctp: f64 = ca.pdf(1.0);
+    var ctc: f64 = ca.cdf(1.0);
+    assert(ctp == 0.0 && ctc == 1.0, "a subnormal scale: z overflows, pdf 0 and cdf 1");
+    assert_eq(PmnCauchy_new(&ca, 2.0, 3.0), PMN_ERR_NONE, "Cauchy(2, 3)");
+    PmnSimpleRng_new(&g, 12345);
+    PmnSimpleRng_new(&h, 12345);
+    var cs_ok = 1;
+    for (var c3 = 0; c3 < 1000; c3 = c3 + 1) {
+        var csa: f64 = ca.sample(&g);
+        var cu: f64 = h.next_f64();
+        var ch: f64 = cu - 0.5;
+        var cph: f64 = pi * ch;
+        var ct: f64 = _pmn_tan(cph);
+        var cgt: f64 = 3.0 * ct;
+        var csb: f64 = 2.0 + cgt;
+        if (bits(csa) != bits(csb)) { cs_ok = 0; }
+    }
+    assert_eq(cs_ok, 1, "a draw is x0 + γ·tan(π(u − ½)), bit for bit on the same stream");
+    e8.k = 0;
+    e8.calls = 0;
+    var cs0: f64 = ca.sample(&e8);
+    assert(e8.calls == 1 && _pmn_is_finite(cs0) == 1, "one uniform a draw; u = 0 gives tan(−π/2 rounded), finite");
+
+    test_group("Weibull's edges and identities");
+    assert_eq(PmnWeibull_new(&wb, 1.0, 1.0), PMN_ERR_NONE, "Weibull(1, 1)");
+    assert_eq(PmnExponential_new(&ex, 1.0), PMN_ERR_NONE, "Exp(1)");
+    var w_exp = 1;
+    for (var wi2 = 0; wi2 <= 160; wi2 = wi2 + 1) {
+        var wf: f64 = f64_from(wi2);
+        var wx: f64 = wf / 16.0;
+        var wpa: f64 = wb.pdf(wx);
+        var wpb: f64 = ex.pdf(wx);
+        var wca: f64 = wb.cdf(wx);
+        var wcb: f64 = ex.cdf(wx);
+        if (bits(wpa) != bits(wpb) || bits(wca) != bits(wcb)) { w_exp = 0; }
+    }
+    assert_eq(w_exp, 1, "Weibull(1, 1) is Exp(1), pdf and cdf bit for bit: x^1 and x^0 are exact");
+    var wp0: f64 = wb.pdf(0.0);
+    assert(wp0 == 1.0, "pdf(0) = 1/λ for k = 1");
+    assert_eq(PmnWeibull_new(&wb, 2.0, 1.0), PMN_ERR_NONE, "Weibull(2, 1)");
+    var wp0b: f64 = wb.pdf(0.0);
+    var wp0n: f64 = wb.pdf(mz);
+    assert(wp0b == 0.0 && wp0n == 0.0, "pdf(0) = 0 for k > 1, −0.0 included");
+    assert_eq(PmnWeibull_new(&wb, 0.5, 1.0), PMN_ERR_NONE, "Weibull(0.5, 1)");
+    var wp0c: f64 = wb.pdf(0.0);
+    assert(wp0c == inf, "pdf(0) = +∞ for k < 1");
+    var wcz: f64 = wb.cdf(0.0);
+    var wcn: f64 = wb.cdf(-1.0);
+    var wci: f64 = wb.cdf(inf);
+    var wcnan: f64 = wb.cdf(nan);
+    var wpn: f64 = wb.pdf(-1.0);
+    var wpnan: f64 = wb.pdf(nan);
+    assert(wcz == 0.0 && wcn == 0.0 && wpn == 0.0, "0 at and below 0");
+    assert(wci == 1.0 && wcnan != wcnan && wpnan != wpnan, "cdf(∞) = 1; NaN at NaN");
+    var wcmz: f64 = wb.cdf(mz);
+    assert_eq(bits(wcmz), 0, "cdf(−0.0) = +0.0 for k = ½");
+    assert_eq(PmnWeibull_new(&wb, 1.0, 1.0), PMN_ERR_NONE, "Weibull(1, 1)");
+    var wcmz1: f64 = wb.cdf(mz);
+    assert_eq(bits(wcmz1), 0, "cdf(−0.0) = +0.0 for k = 1, by the x ≤ 0 arm: (−0.0)^1 would give −0.0");
+    assert_eq(PmnWeibull_new(&wb, tiny, 1.0), PMN_ERR_NONE, "Weibull(5e-324, 1)");
+    var wtm: f64 = wb.mean();
+    assert(wtm == inf, "k = 5e-324: Γ(1 + ∞) = ∞ on the T1 lnΓ (1.3.0's Lanczos form: NaN)");
+    assert_eq(PmnWeibull_new(&wb, 0.005, tiny), PMN_ERR_NONE, "Weibull(0.005, 5e-324)");
+    var wom: f64 = wb.mean();
+    assert(wom == inf, "Γ(201) overflows before the product, as in Rust's form: +∞");
+    assert_eq(PmnWeibull_new(&wb, 2.0, 3.0), PMN_ERR_NONE, "Weibull(2, 3)");
+    PmnSimpleRng_new(&g, 12345);
+    PmnSimpleRng_new(&h, 12345);
+    var ws_ok = 1;
+    for (var w3i = 0; w3i < 1000; w3i = w3i + 1) {
+        var wsa: f64 = wb.sample(&g);
+        var wu: f64 = h.next_f64();
+        var wcu: f64 = 1.0 - wu;
+        var wl: f64 = _pmn_ln(wcu);
+        var wnl: f64 = -wl;
+        var wpw: f64 = _pmn_powf(wnl, 0.5);
+        var wsb: f64 = 3.0 * wpw;
+        if (bits(wsa) != bits(wsb)) { ws_ok = 0; }
+    }
+    assert_eq(ws_ok, 1, "a draw is λ·(−ln(1 − u))^(1/k), bit for bit on the same stream");
+    e8.k = 0;
+    e8.calls = 0;
+    var wz2: f64 = wb.sample(&e8);
+    assert(e8.calls == 1 && bits(wz2) == 0, "one uniform a draw; u = 0: (−0.0)^½ = +0.0");
+    assert_eq(PmnWeibull_new(&wb, 1.0, 3.0), PMN_ERR_NONE, "Weibull(1, 3)");
+    e8.k = 0;
+    var wz1: f64 = wb.sample(&e8);
+    assert_eq(bits(wz1), bits(mz), "k = 1: (−0.0)^1 = −0.0, as Rust's powf, so the draw is −0.0");
+
+    test_group("JSON (1.3.0's serde_roundtrip_cauchy, _weibull and deserialize_rejects; D5)");
+    assert_eq(PmnCauchy_new(&ca, 2.0, 3.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(ca.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"x0\":2.0,\"gamma\":3.0}") == 1, "as serde_json writes it");
+    var rc: PmnCauchy;
+    assert_eq(PmnCauchy_from_json(&rc, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rcx: f64 = rc.x0;
+    var rcg: f64 = rc.gamma;
+    assert(rcx == 2.0 && rcg == 3.0, "the same parameters");
+    var jc = "{\"x0\":0.0,\"gamma\":0.0}";
+    assert_eq(PmnCauchy_from_json(&rc, jc, strlen(jc)), PMN_ERR_DESERIALIZE, "gamma 0");
+    assert_eq(PmnCauchy_from_json(0, jc, strlen(jc)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnWeibull_new(&wb, 2.0, 3.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(wb.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"k\":2.0,\"lambda\":3.0}") == 1, "as serde_json writes it");
+    var rw: PmnWeibull;
+    assert_eq(PmnWeibull_from_json(&rw, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rwk: f64 = rw.k;
+    var rwl: f64 = rw.lambda;
+    assert(rwk == 2.0 && rwl == 3.0, "the same parameters");
+    var jw = "{\"k\":-1.0,\"lambda\":1.0}";
+    assert_eq(PmnWeibull_from_json(&rw, jw, strlen(jw)), PMN_ERR_DESERIALIZE, "k −1");
+    var jw2 = "[2.0,3.0]";
+    assert_eq(PmnWeibull_from_json(&rw, jw2, strlen(jw2)), PMN_ERR_NONE, "serde's sequence form");
+    assert_eq(PmnWeibull_from_json(0, jw, strlen(jw)), PMN_ERR_INVALID_PARAMETER, "a null out");
+
+    test_group("Debug (D12): Cauchy and Weibull");
+    store64(sb + 8, 0);
+    assert_eq(ca.debug(sb, 0), PMN_ERR_NONE, "Cauchy {:?}");
+    assert(text_is(sb, "Cauchy { x0: 2.0, gamma: 3.0 }") == 1, "Cauchy { x0: 2.0, gamma: 3.0 }");
+    store64(sb + 8, 0);
+    assert_eq(ca.debug(sb, 1), PMN_ERR_NONE, "Cauchy {:#?}");
+    assert(text_is(sb, "Cauchy {\n    x0: 2.0,\n    gamma: 3.0,\n}") == 1, "one field a line");
+    store64(sb + 8, 0);
+    assert_eq(wb.debug(sb, 0), PMN_ERR_NONE, "Weibull {:?}");
+    assert(text_is(sb, "Weibull { k: 2.0, lambda: 3.0 }") == 1, "Weibull { k: 2.0, lambda: 3.0 }");
+    store64(sb + 8, 0);
+    assert_eq(wb.debug(sb, 1), PMN_ERR_NONE, "Weibull {:#?}");
+    assert(text_is(sb, "Weibull {\n    k: 2.0,\n    lambda: 3.0,\n}") == 1, "one field a line");
 
     return assert_summary();
 }

@@ -40,8 +40,8 @@
 > b3, lnΓ within 2 ulp, is committed (`7628c0c`), part b4, the incomplete gamma within 4 ulp, is committed (`0191a05`),
 > part b5, the incomplete beta within 8 ulp, is committed (`a19e947`), and part c, M2's gate, is committed
 > (`46d107b`): **M2 is complete.** M3, the distributions, has begun (its parts are in §7): part a1, the trait,
-> Box–Muller and Normal, with Debug's f64 form, is committed (`7e1ca00`), and part a2, Uniform, Exponential and
-> Bernoulli, is done and not committed.
+> Box–Muller and Normal, with Debug's f64 form, is committed (`7e1ca00`), part a2, Uniform, Exponential and
+> Bernoulli, is committed (`5b76636`), and part a3, Cauchy and Weibull, is done and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1178,7 +1178,10 @@ T1 function is recorded against T1 from the start (ADR 009 as amended):
   `dist` rows (each constructor's grid, the pdf and cdf across and beyond each support and at its edges, 90 streams),
   640 codec rows and 92 Debug rows; `dist.cr.tsv` 255 more rows where glibc's exp, expm1 or ln misrounds; every row
   passing on the first replay, at 0 ulp, on three targets ✅;
-- **a3:** `Cauchy` and `Weibull`;
+- **a3:** `Cauchy` and `Weibull` in `src/dist_cont.cyr`, Weibull's moments on the T1 lnΓ. 33,360 more `dist` rows
+  (the pdf and cdf across each support and its far tails, Weibull's moments at 221 shapes, 78 streams), 461 codec rows
+  and 64 Debug rows; `dist.cr.tsv` 603 more rows and `dist.ref.tsv` 1,100 Weibull moments; every row passing on the
+  first replay, at 0 ulp, on three targets ✅;
 - **b1:** `Gamma` (Marsaglia–Tsang) and `ChiSquared`, in `src/dist_gamma.cyr`;
 - **b2:** `Beta`, `StudentT` and `FDistribution`, with the oracle's Student-t and F hooks;
 - **c1:** `Poisson` (Loader's pdf, PTRS), beside Bernoulli in `src/dist_disc.cyr`;

@@ -10,7 +10,7 @@
 //!   row 8);
 //! - 1.3.0's `SimpleRng` (e1), read through its repr and `new`, so a state of 0 reads as 1.
 //! - 1.3.0's `Normal` (M3 part a1), read through `NormalRepr` and `Normal::new`, so a std_dev it refuses is an error;
-//!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2) the same way.
+//!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2), and `Cauchy` and `Weibull` (a3), the same way.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -44,7 +44,7 @@
 
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
-use pramana::distribution::{Bernoulli, Exponential, Normal, Uniform};
+use pramana::distribution::{Bernoulli, Cauchy, Exponential, Normal, Uniform, Weibull};
 use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
 use serde::{Deserialize, Serialize};
@@ -596,6 +596,8 @@ pub fn emit() -> Module {
     uniform(&mut m, &mut g);
     exponential(&mut m, &mut g);
     bernoulli(&mut m, &mut g);
+    cauchy(&mut m, &mut g);
+    weibull(&mut m, &mut g);
     m
 }
 
@@ -695,6 +697,48 @@ fn bernoulli(m: &mut Module, g: &mut Rng) {
     for &p in &ps {
         let b = Bernoulli::new(p).expect("valid parameters");
         m.row("json::write::Bernoulli", Class::A, &[f(p)], &[text(&b)]);
+    }
+}
+
+// ── M3 a3: Cauchy's and Weibull's codecs ──
+
+fn cauchy(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Cauchy::new(2.0, 3.0).expect("valid")).expect("a Cauchy");
+    let forms = f64_forms();
+    let mut docs = struct_docs(&base, &["x0", "gamma"], &[forms.clone(), forms]);
+    docs.extend(bytes(&["[0.5,2.0]", "[0.5]", "[0.5,-2.0]", "[0.5,2.0,1]", r#"{"x0":0.0,"gamma":0.0}"#]));
+    let mut pairs: Vec<(f64, f64)> = vec![(0.0, 1.0), (-0.0, 1.0), (f64::MAX, f64::from_bits(1)), (-1e-300, 1e300)];
+    pairs.extend((0..40).map(|_| (g.signed_log_uniform(-20.0, 20.0), g.log_uniform(-20.0, 20.0))));
+    for &(x0, ga) in &pairs {
+        docs.push(format!("{{\"x0\":{},\"gamma\":{}}}", ryu_like(x0), ryu_like(ga)).into_bytes());
+        docs.push(format!("{{\"x0\":{},\"gamma\":{}}}", ryu_like(x0), ryu_like(-ga)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Cauchy", d, serde_json::from_slice::<Cauchy>(d), |c| vec![f(c.x0), f(c.gamma)]);
+    }
+    for &(x0, ga) in &pairs {
+        let c = Cauchy::new(x0, ga).expect("valid parameters");
+        m.row("json::write::Cauchy", Class::A, &[f(x0), f(ga)], &[text(&c)]);
+    }
+}
+
+fn weibull(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Weibull::new(2.0, 3.0).expect("valid")).expect("a Weibull");
+    let forms = f64_forms();
+    let mut docs = struct_docs(&base, &["k", "lambda"], &[forms.clone(), forms]);
+    docs.extend(bytes(&["[0.5,2.0]", "[0.5]", "[-0.5,2.0]", "[0.5,2.0,1]", r#"{"k":-1.0,"lambda":1.0}"#]));
+    let mut pairs: Vec<(f64, f64)> = vec![(1.0, 1.0), (f64::MAX, f64::from_bits(1)), (1e-300, 1e300)];
+    pairs.extend((0..40).map(|_| (g.log_uniform(-20.0, 20.0), g.log_uniform(-20.0, 20.0))));
+    for &(k, l) in &pairs {
+        docs.push(format!("{{\"k\":{},\"lambda\":{}}}", ryu_like(k), ryu_like(l)).into_bytes());
+        docs.push(format!("{{\"k\":{},\"lambda\":{}}}", ryu_like(-k), ryu_like(l)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Weibull", d, serde_json::from_slice::<Weibull>(d), |w| vec![f(w.k), f(w.lambda)]);
+    }
+    for &(k, l) in &pairs {
+        let w = Weibull::new(k, l).expect("valid parameters");
+        m.row("json::write::Weibull", Class::A, &[f(k), f(l)], &[text(&w)]);
     }
 }
 

@@ -728,6 +728,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 27–83 ns a pdf or cdf and 35–115 ns a draw, 5.9–10.8× Rust. Most of a
     simple row is the constructor's checks, uninlined calls (24 ns of Uniform's 38), a finding to measure across M3's
     constructors; every bench digest is explained by the models.
+- **M3 part a3: Cauchy and Weibull** (`src/dist_cont.cyr`; port plan §7; D5, D7 as amended, D11, D12; results in
+  `docs/development/port-parity.md` §9.3):
+  - **`PmnCauchy`, `PmnWeibull`:** each constructor refuses as 1.3.0 does, writing nothing; the five trait methods in
+    Rust's operation order, on the correctly rounded atan, tan, pow, exp, expm1 and ln, and Weibull's mean and
+    variance on the T1 lnΓ; serde_json's text byte for byte, read through each constructor; the derived Debug;
+  - **golden rows:** 33,360 more `dist` rows (90,981: each constructor's grid, the pdf and cdf across each support,
+    its edges and far tails, Weibull's moments at 221 shapes, 78 streams), 461 codec rows and 64 Debug rows.
+    `validate.py` models every one; `dist.cr.tsv` gains 603 rows where glibc misrounds, and `dist.ref.tsv` 1,100
+    Weibull moments on the T1 lnΓ. Every row passes on the first replay, at 0 ulp, warning-free, on x86_64 ELF, PE
+    and aarch64;
+  - **accuracy:** against MPFR at 1,024 bits, Weibull's mean is within 433 ulp where Γ is finite (1.3.0: 1,268) and
+    correctly rounded on 535 of 857 rows (1.3.0: 134); Weibull(2, 1)'s is the correctly rounded √π/2 (1.3.0: 2 ulp
+    off). The variance cancels for large k in both, and Γ's overflow makes some finite means +∞: findings for 2.1;
+  - **tests and checks:** `tests/dist.tcyr`, 256 checks (94 new); all 24 mutants fail; one, a wrong-signed zero at
+    x = −0.0, first passed the replay, whose class-C comparison put +0 and −0 0 ulp apart: the harness now compares a
+    zero's sign in classes C and S (no row in the corpus changes); surface parity maps 22 more items
+    (89 pending);
+  - **cost:** 44–45 ns Cauchy's pdf (5.8× Rust), 163–237 ns Cauchy's cdf and draws (10–11×: the
+    correctly rounded atan and tan), 235–375 ns Weibull's pdf, cdf and draws (7–10×: two correctly rounded pows and an
+    exp at most), 186–188 ns Weibull's mean (4.8×: the T1 lnΓ); every bench digest is explained by the models.
 
 ### Performance
 

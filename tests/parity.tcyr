@@ -441,6 +441,20 @@ fn _par_json_write(fp, fl): i64 {
         if (PmnExponential_new(&we, wl) != PMN_ERR_NONE) { return 0 - 1; }
         _par_json_k = 1;
         e = we.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::Cauchy") == 1) {
+        var wc: PmnCauchy;
+        var wx0: f64 = _par_in(0);
+        var wg: f64 = _par_in(1);
+        if (PmnCauchy_new(&wc, wx0, wg) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 2;
+        e = wc.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::Weibull") == 1) {
+        var ww: PmnWeibull;
+        var wk: f64 = _par_in(0);
+        var wwl: f64 = _par_in(1);
+        if (PmnWeibull_new(&ww, wk, wwl) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 2;
+        e = ww.to_json(sb);
     } elif (_par_eq(fp, fl, "json::write::Bernoulli") == 1) {
         var wb: PmnBernoulli;
         var wp: f64 = _par_in(0);
@@ -522,7 +536,8 @@ fn _par_json_normal(): i64 {
     return 1;
 }
 
-# json::Uniform, json::Exponential and json::Bernoulli rows (M3 part a2): each one's from_json, the fields it holds.
+# json::Uniform, json::Exponential and json::Bernoulli rows (M3 part a2), json::Cauchy and json::Weibull (a3): each
+# one's from_json, the fields it holds.
 fn _par_json_dist(fp, fl): i64 {
     var n = 0;
     var doc = _par_in_bytes(0, &n);
@@ -541,6 +556,18 @@ fn _par_json_dist(fp, fl): i64 {
         var x: PmnExponential;
         e = PmnExponential_from_json(&x, doc, n);
         a = x.lambda;
+    } elif (_par_eq(fp, fl, "json::Cauchy") == 1) {
+        var c: PmnCauchy;
+        e = PmnCauchy_from_json(&c, doc, n);
+        a = c.x0;
+        b = c.gamma;
+        two = 1;
+    } elif (_par_eq(fp, fl, "json::Weibull") == 1) {
+        var w: PmnWeibull;
+        e = PmnWeibull_from_json(&w, doc, n);
+        a = w.k;
+        b = w.lambda;
+        two = 1;
     } elif (_par_eq(fp, fl, "json::Bernoulli") == 1) {
         var y: PmnBernoulli;
         e = PmnBernoulli_from_json(&y, doc, n);
@@ -664,6 +691,28 @@ fn _par_debug(fp, fl): i64 {
         var dhi: f64 = _par_in(1);
         if (PmnUniform_new(&du, dlo, dhi) != PMN_ERR_NONE) { return 0 - 1; }
         e = du.debug(sb, _par_in(2));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::Cauchy") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var dc: PmnCauchy;
+        var dx0: f64 = _par_in(0);
+        var dg: f64 = _par_in(1);
+        if (PmnCauchy_new(&dc, dx0, dg) != PMN_ERR_NONE) { return 0 - 1; }
+        e = dc.debug(sb, _par_in(2));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::Weibull") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var dw: PmnWeibull;
+        var dk: f64 = _par_in(0);
+        var dwl: f64 = _par_in(1);
+        if (PmnWeibull_new(&dw, dk, dwl) != PMN_ERR_NONE) { return 0 - 1; }
+        e = dw.debug(sb, _par_in(2));
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -948,7 +997,7 @@ fn _par_special(fp, fl): i64 {
 
 # `dist` rows (M3): src/dist.cyr, src/dist_cont.cyr and src/dist_disc.cyr, each distribution built by its constructor
 # from the row's parameters. Part a1: Normal, and Box–Muller's `standard_normal` through a bounded generic; part a2:
-# Uniform, Exponential and Bernoulli.
+# Uniform, Exponential and Bernoulli; part a3: Cauchy and Weibull.
 fn _par_std_normal<R: PmnRng>(g: *R): f64 {
     var z: f64 = _pmn_standard_normal(g);
     return z;
@@ -1054,6 +1103,26 @@ fn _par_dist(fp, fl): i64 {
         if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(ee, &de, 1); }
         if (ee != PMN_ERR_NONE) { return 0 - 1; }
         return _par_dist_call(&de, fp + px, fl - px, 1);
+    }
+    px = _par_dist_prefix(fp, fl, "Cauchy");
+    if (px > 0) {
+        var x0: f64 = _par_in(0);
+        var ga: f64 = _par_in(1);
+        var dc: PmnCauchy;
+        var ec = PmnCauchy_new(&dc, x0, ga);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(ec, &dc, 2); }
+        if (ec != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&dc, fp + px, fl - px, 2);
+    }
+    px = _par_dist_prefix(fp, fl, "Weibull");
+    if (px > 0) {
+        var wk: f64 = _par_in(0);
+        var wl: f64 = _par_in(1);
+        var dw: PmnWeibull;
+        var ew = PmnWeibull_new(&dw, wk, wl);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(ew, &dw, 2); }
+        if (ew != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&dw, fp + px, fl - px, 2);
     }
     px = _par_dist_prefix(fp, fl, "Bernoulli");
     if (px > 0) {
@@ -1190,6 +1259,13 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "Exponential::pdf") == 1) { return 0; }      # exp (part a2)
     if (_par_eq(fp, fl, "Exponential::cdf") == 1) { return 0; }      # exp_m1
     if (_par_eq(fp, fl, "Exponential::sample") == 1) { return 0; }   # ln
+    if (_par_eq(fp, fl, "Cauchy::cdf") == 1) { return 0; }           # atan (part a3)
+    if (_par_eq(fp, fl, "Cauchy::sample") == 1) { return 0; }        # tan
+    if (_par_eq(fp, fl, "Weibull::pdf") == 1) { return 0; }          # powf and exp
+    if (_par_eq(fp, fl, "Weibull::cdf") == 1) { return 0; }          # powf and exp_m1
+    if (_par_eq(fp, fl, "Weibull::mean") == 1) { return 0; }         # downstream of the T1 lnΓ (ADR 009 as amended)
+    if (_par_eq(fp, fl, "Weibull::variance") == 1) { return 0; }
+    if (_par_eq(fp, fl, "Weibull::sample") == 1) { return 0; }       # ln and powf
     return 0 - 1;
 }
 

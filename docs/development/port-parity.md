@@ -3440,3 +3440,127 @@ as a consumer's generic code calls them. Normal's rows now go through it too, wi
 Rust), 79–83 ns an Exponential pdf or cdf (5.9–10.7×: the correctly rounded exp and expm1), and 35–115 ns a draw
 (9–11×). Most of a simple row is the constructor's checks, uninlined calls: `Uniform::new` alone is 24 ns over the
 loop's 6. The bench's fourteen digests are all explained by the models.
+
+### 9.3 Part a3: Cauchy and Weibull (2026-11-16)
+
+**The modules.** `src/dist_cont.cyr` gains `PmnCauchy { x0, gamma }` and `PmnWeibull { k, lambda }`, with the methods,
+codec and Debug of the others.
+- **Cauchy:** the constructor takes a finite x0 and a finite, positive gamma. The pdf, 1/(π·γ·(1 + z²)), is plain
+  arithmetic, so it matches 1.3.0's bits. The cdf, (1/π)·atan(z) + ½, takes the correctly rounded atan, and a draw,
+  x0 + γ·tan(π(u − ½)), the correctly rounded tan. The mean and variance are undefined: NaN.
+- **Weibull:** the constructor takes a finite, positive k and lambda.
+  - The pdf is (k/λ)·z^(k−1)·exp(−z^k), with 1.3.0's three values at 0: 1/λ for k = 1, 0 for k > 1, +∞ for k < 1.
+  - The cdf is −expm1(−(x/λ)^k).
+  - A draw is λ·(−ln(1 − u))^(1/k).
+  - All three are on the correctly rounded pow, exp, expm1 and ln.
+  - The mean, λ·Γ(1 + 1/k), and the variance, (λ·λ)·(Γ(1 + 2/k) − Γ(1 + 1/k)²), take Γ as 1.3.0 does,
+    exp(lnΓ(·)), now on the T1 lnΓ.
+
+**The golden rows.**
+- **`dist`, 33,360 more rows (90,981 in all):**
+  - each constructor on every pair of the 20-value grid; class A;
+  - `Cauchy::pdf` and `Cauchy::cdf`, 6,071 rows each: eleven fixed (x0, γ) at z = k/4 on [−40, 40], at
+    z = ±10¹⁰, ±10²⁰, ±10¹⁵⁴, ±1.4×10¹⁵⁴ (z² overflows) and ±10³⁰⁰, and at the specials; 40 seeded pairs at
+    z = −40, −37.5, …, 40; 1,000 seeded triples with |z| up to 10⁶. Among the fixed pairs: γ = 5e-324,
+    (−f64::MAX, f64::MAX) and x0 = f64::MAX. The pdf is class A, the cdf class C (glibc's atan);
+  - `Weibull::pdf` and `Weibull::cdf`, 9,180 rows each: fifteen fixed (k, λ) (k from 5e-324 to f64::MAX, λ from
+    1e-300 to 1e300) and 40 seeded pairs, at x = λ·j/16 for j from −8 to 80, at λ·2^j for j from −40 to 12, at λ and
+    its neighbours and at λ·10⁻³⁰⁰; the fixed pairs at the specials too; 1,000 seeded triples. Class C;
+  - the moments: Cauchy's at every pair (NaN, class A); Weibull's mean and variance, 939 rows each, at every pair above
+    and at 221 shapes (21 fixed from 5e-324 to f64::MAX, 200 seeded from 10⁻³ to 10⁶) times four scales. Class C;
+  - 78 streams: 10⁴ draws of Cauchy(0, 1) and Weibull(1, 1) from three seeds, and 256 of each other fixed pair.
+    Class C.
+- **`json`,** 461 more rows (7,731 in all), and **`debug`,** 64 more (25,464), as part a2's.
+
+**The models.** `validate.py` models every row in Rust's operation order. `Prims` gains tan, atan and pow, and
+`dist_prims` gives each model 1.3.0's Lanczos coefficients, so Weibull's moments go through 1.3.0's lnΓ on glibc and
+on the correctly rounded primitives, and through the T1 lnΓ in the reference model.
+- **`dist.cr.tsv`** gains 603 rows where a glibc primitive misrounds: 561 Weibull cdf values, 19 pdf values, 13 Cauchy
+  and 9 Weibull streams, and one Weibull mean. The far ones are exp amplifying a pow misround: z^k ≈ 120, so 1 ulp of
+  z^k is 121 ulp of exp(−z^k).
+- **`dist.ref.tsv`** gains 1,100 rows, Weibull moments the T1 lnΓ moves: 686 means and 414 variances.
+- Twenty documents serde_json reads only by skipping a member unchecked join `json.map.tsv` (90 rows).
+
+**The result.** Every row passed on the first replay. The replay is ten modules: 225,641 rows ok and 25,549 accepted
+(25,459 under ADR 9, 90 under ADR 7), warning-free. Every a3 row is at 0 ulp, against 1.3.0's bits, its correction
+or Rust's formula on the T1 lnΓ.
+
+**Weibull's moments against MPFR** (λ·Γ(1 + 1/k) and λ²(Γ(1 + 2/k) − Γ(1 + 1/k)²) at 1,024 bits, rounded once; on
+the golden rows):
+
+| Rows | 1.3.0 | The port |
+|---|---|---|
+| the mean, Γ finite (857) | 134 exact, max 1,268 ulp | 535 exact, max 433 ulp |
+| the variance, k ≤ 20 (403) | 180 exact, max 2,412 ulp | 198 exact, max 432 ulp |
+| the variance, k > 20 (426) | cancellation: up to 10⁹ ulp, and negative from k = 10¹⁰ | the same |
+
+- **The mean** is never less accurate than 1.3.0's, and Weibull(2, 1)'s is now the correctly rounded √π/2 (1.3.0:
+  2 ulp off). What remains is Rust's form: exp turns lnΓ's last-ulp error, relative to |lnΓ| up to about 700, into up
+  to 433 ulp of Γ.
+- **The variance** cancels for large k: g2 − g1² loses about 2·log₁₀ k digits. At k = 10⁶ and λ = 1, 1.3.0 gives
+  1.64502×10⁻¹², the port 1.64491×10⁻¹², and the truth is 1.644934×10⁻¹². From k = 10¹⁰ both are noise: 1.3.0
+  gives −1.8×10⁻¹⁵, the port 1.1×10⁻¹⁶, and the truth is 1.6×10⁻²⁰.
+- **Where Γ overflows,** both give +∞, though λ·Γ may be finite: Weibull(0.005, 1e-300)'s true mean is about
+  10⁶³. At k = 5e-324, 1.3.0's Lanczos lnΓ(∞) is NaN, and the port's T1 lnΓ(∞) = ∞ gives the right mean, +∞.
+
+These are findings for 2.1, where a form on lnΓ differences and logs would remove the cancellation and the overflow.
+The port keeps Rust's formulas, as parity requires.
+
+**Mutation checks** (`build/handoff/mut_a3.py`: the replay and `tests/dist.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| Cauchy: x0 unchecked | 30 | 2 |
+| Cauchy: gamma only finite | 170 | 4 |
+| Cauchy's pdf as 1/(π·(γ·(1 + z²))) | 1,069 | 0 |
+| Cauchy's cdf as atan(z)/π | 723 | 0 |
+| Cauchy's cdf with z as x/γ − x0/γ | 804 | 0 |
+| Cauchy's mean as x0 | 51 | 2 |
+| Cauchy's draw on tan(πu − π/2) | 24 | 1 |
+| Cauchy's draw on tan(π(½ − u)) | 30 | 1 |
+| Weibull: lambda only finite | 75 | 3 |
+| Weibull's pdf without the k = 1 arm at 0 | 6 | 2 |
+| Weibull's pdf 0 at 0 for k < 1 | 41 | 1 |
+| Weibull's pdf as (k/λ)·(z^(k−1)·exp(−z^k)) | 2,129 | 0 |
+| Weibull's pdf with z^k as z^(k−1)·z | 1,435 | 0 |
+| Weibull's cdf as 1 − exp | 3,262 | 2 |
+| Weibull's cdf with x < 0 for its zero arm | 4 | 1 |
+| Weibull's moments with 1 + j/k as (k + j)/k | 160 | 0 |
+| Weibull's variance as λ·(λ·(g2 − g1²)) | 34 | 0 |
+| Weibull's draw as exp(ln(·)/k) | 38 | 2 |
+| Weibull's draw on −ln(u) | 42 | 3 |
+| Cauchy's JSON names read swapped | 105 | 1 |
+| Weibull's JSON with lambda written first | 43 | 1 |
+| Weibull's refusal decoded as `INVALID_PARAMETER` | 55 | 1 |
+| Cauchy's Debug field named `x_0` | 32 | 2 |
+| Weibull's Debug with lambda as a first field | 16 | 1 |
+
+- **All 24 fail.** Weibull's unused MIN_POSITIVE guard is equivalent, as Exponential's, and wasn't run.
+- **The zero arm** first survived both. With x < 0 in place of x ≤ 0, the cdf at x = −0.0 and an odd-integer k is
+  −(expm1(−(−0.0)^k)) = −0.0, where 1.3.0 returns +0.0.
+  - The golden rows hold these cases, but the harness's class-C comparison measured ulp distance, which puts +0 and −0
+    0 ulp apart. `validate.py`'s `same` already compares bits.
+  - The harness now compares a zero's sign in classes C and S too (`tests/parity_core.cyr`). No row in the corpus
+    changes: a trial run with the check failing every wrong-signed zero failed none.
+  - The mutant now fails 4 replay rows, and a unit test pins cdf(−0.0) = +0.0 for k = ½ and 1.
+
+**Tests.** `tests/dist.tcyr` has 256 checks, 94 of them new:
+- 1.3.0's tests: `cauchy_pdf_and_cdf` (pdf(0) = 1/π bit for bit), `cauchy_undefined_moments`,
+  `cauchy_sample_finite`, `weibull_exponential_case` (the mean exactly 2), `weibull_mean_and_variance` (now the
+  correctly rounded √π/2), `weibull_sample_nonnegative`, `serde_roundtrip_cauchy` and `_weibull`, the two types'
+  lines of `constructors_reject_non_finite_parameters` and `deserialize_rejects_invalid_parameters`, and
+  `exponential_and_weibull_cdf_small_x`'s Weibull line, now exactly 1e-20;
+- the constructors: every refusal, a null `out`, a refusal that writes nothing, x0 = −0.0 kept, a subnormal γ or k;
+- Cauchy: the pdf even bit for bit, cdf(±∞) exactly 1 and 0, cdf(x0) = ½, a subnormal scale's overflow, the draws bit
+  for bit against x0 + γ·tan(π(u − ½));
+- Weibull: Weibull(1, 1) is Exp(1) bit for bit, the three values at 0, cdf(−0.0) = +0.0, the moments at k = 5e-324
+  and where Γ overflows, the draws bit for bit, and a u of 0 drawing +0.0 for k = 2 and −0.0 for k = 1, as Rust's
+  powf gives (−0.0)^½ = +0.0 and (−0.0)^1 = −0.0;
+- each codec's text and refusals, and each Debug's two forms.
+
+**Surface parity.** 22 more items are mapped (72 of `distribution`'s 161), and 89 are pending until M3's gate.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 44–45 ns a Cauchy pdf (5.8× Rust), 163–167 ns a Cauchy cdf and
+233–237 ns a draw (10–11×: the correctly rounded atan and tan), 235–375 ns a Weibull pdf, cdf or draw (7–10×: up to
+two correctly rounded pows and an exp), and 186–188 ns a Weibull mean (4.8×: the T1 lnΓ). The bench's 21 digests are
+all explained by the models.

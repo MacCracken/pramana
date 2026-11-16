@@ -22,13 +22,18 @@
 //! - `X::sample`: 10^4 draws of the standard case (U(0, 1), Exp(1), Bernoulli(0.5)) from three seeds, and 256 of
 //!   each other fixed case.
 //!
+//! Part a3, `Cauchy` and `Weibull`, the same kinds of rows, and for Weibull's mean and variance, which take the T1
+//! lnΓ, a wider grid of shapes. Class C but Cauchy's constructor, pdf, mean and variance and Weibull's constructor
+//! (class A): Cauchy's cdf and draws take glibc's atan and tan, Weibull's take glibc's pow, exp, expm1 and ln, and its
+//! moments 1.3.0's Lanczos lnΓ.
+//!
 //! Inputs: the parameters, then x (or the seed and the count). Outputs: the value, or the draws as a sequence.
 
 use std::hint::black_box;
 
 use crate::grids::{Rng as Seeds, specials};
 use crate::tsv::{Class, Module, Tok, err, f, i};
-use pramana::distribution::{Bernoulli, Distribution, Exponential, Normal, Uniform};
+use pramana::distribution::{Bernoulli, Cauchy, Distribution, Exponential, Normal, Uniform, Weibull};
 use pramana::{SimpleRng, oracle};
 
 const SEEDS: [u64; 3] = [42, 0x9e37_79b9_7f4a_7c15, 12345];
@@ -286,6 +291,146 @@ fn bernoulli(m: &mut Module, g: &mut Seeds) {
     streams(m, "Bernoulli::sample", Class::A, &cases);
 }
 
+fn cauchy(m: &mut Module, g: &mut Seeds) {
+    for &x0 in &param_grid() {
+        for &ga in &param_grid() {
+            match Cauchy::new(black_box(x0), black_box(ga)) {
+                Ok(c) => m.row("Cauchy::new", Class::A, &[f(x0), f(ga)], &[f(c.x0), f(c.gamma)]),
+                Err(e) => m.row("Cauchy::new", Class::A, &[f(x0), f(ga)], &[err(&e)]),
+            }
+        }
+    }
+    let fixed: Vec<(f64, f64)> = vec![
+        (0.0, 1.0),
+        (2.0, 3.0),
+        (-3.5, 0.25),
+        (1e6, 1e-3),
+        (-0.0, 1.0),
+        (0.0, 1e-300),
+        (0.0, 1e300),
+        (f64::MAX, 1.0),
+        (-f64::MAX, f64::MAX),
+        (1e-300, 7.0),
+        (0.0, f64::from_bits(1)),
+    ];
+    let seeded: Vec<(f64, f64)> =
+        (0..40).map(|_| (g.signed_log_uniform(-6.0, 6.0), g.log_uniform(-4.0, 4.0))).collect();
+    let point = |m: &mut Module, x0: f64, ga: f64, x: f64| {
+        let c = Cauchy::new(x0, ga).expect("valid parameters");
+        m.row("Cauchy::pdf", Class::A, &[f(x0), f(ga), f(x)], &[f(c.pdf(black_box(x)))]);
+        m.row("Cauchy::cdf", Class::C, &[f(x0), f(ga), f(x)], &[f(c.cdf(black_box(x)))]);
+    };
+    let far = [1e10, 1e20, 1e154, 1.4e154, 1e300];
+    for &(x0, ga) in &fixed {
+        for k in -160..=160 {
+            point(m, x0, ga, x0 + ga * (f64::from(k) / 4.0));
+        }
+        for z in far {
+            point(m, x0, ga, x0 + ga * z);
+            point(m, x0, ga, x0 - ga * z);
+        }
+        for &x in &specials() {
+            point(m, x0, ga, x);
+        }
+    }
+    for &(x0, ga) in &seeded {
+        for k in -16..=16 {
+            point(m, x0, ga, x0 + ga * (f64::from(k) * 2.5));
+        }
+    }
+    for _ in 0..1000 {
+        let x0 = g.signed_log_uniform(-3.0, 3.0);
+        let ga = g.log_uniform(-3.0, 3.0);
+        let x = x0 + ga * g.signed_log_uniform(-3.0, 6.0);
+        point(m, x0, ga, x);
+    }
+    for &(x0, ga) in fixed.iter().chain(&seeded) {
+        let c = Cauchy::new(x0, ga).expect("valid parameters");
+        m.row("Cauchy::mean", Class::A, &[f(x0), f(ga)], &[f(c.mean())]);
+        m.row("Cauchy::variance", Class::A, &[f(x0), f(ga)], &[f(c.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, Cauchy)> =
+        fixed.iter().map(|&(x0, ga)| (vec![x0, ga], Cauchy::new(x0, ga).expect("valid"))).collect();
+    streams(m, "Cauchy::sample", Class::C, &cases);
+}
+
+fn weibull(m: &mut Module, g: &mut Seeds) {
+    for &k in &param_grid() {
+        for &l in &param_grid() {
+            match Weibull::new(black_box(k), black_box(l)) {
+                Ok(w) => m.row("Weibull::new", Class::A, &[f(k), f(l)], &[f(w.k), f(w.lambda)]),
+                Err(e) => m.row("Weibull::new", Class::A, &[f(k), f(l)], &[err(&e)]),
+            }
+        }
+    }
+    let fixed: Vec<(f64, f64)> = vec![
+        (1.0, 1.0),
+        (2.0, 1.0),
+        (0.5, 1.0),
+        (1.0, 2.0),
+        (2.0, 3.0),
+        (1.5, 0.25),
+        (5.0, 1e3),
+        (0.1, 1.0),
+        (10.0, 1.0),
+        (100.0, 1.0),
+        (2.0, 1e-300),
+        (3.0, 1e300),
+        (1e-3, 1.0),
+        (f64::MAX, 1.0),
+        (f64::from_bits(1), 1.0),
+    ];
+    let seeded: Vec<(f64, f64)> = (0..40).map(|_| (g.log_uniform(-1.5, 1.5), g.log_uniform(-3.0, 3.0))).collect();
+    let point = |m: &mut Module, k: f64, l: f64, x: f64| {
+        let w = Weibull::new(k, l).expect("valid parameters");
+        m.row("Weibull::pdf", Class::C, &[f(k), f(l), f(x)], &[f(w.pdf(black_box(x)))]);
+        m.row("Weibull::cdf", Class::C, &[f(k), f(l), f(x)], &[f(w.cdf(black_box(x)))]);
+    };
+    for &(k, l) in fixed.iter().chain(&seeded) {
+        for j in -8..=80 {
+            point(m, k, l, l * (f64::from(j) / 16.0));
+        }
+        for j in -40..=12 {
+            point(m, k, l, l * f64::from(j).exp2());
+        }
+        for x in around(l) {
+            point(m, k, l, x);
+        }
+        point(m, k, l, l * 1e-300);
+    }
+    for &(k, l) in &fixed {
+        for &x in &specials() {
+            point(m, k, l, x);
+        }
+    }
+    for _ in 0..1000 {
+        let k = g.log_uniform(-1.0, 1.3);
+        let l = g.log_uniform(-3.0, 3.0);
+        let x = l * g.log_uniform(-6.0, 1.5);
+        point(m, k, l, x);
+    }
+    // The moments take lnΓ(1 + 1/k) and lnΓ(1 + 2/k): every parameter above, and a wider grid of shapes.
+    let mut shapes: Vec<f64> = vec![
+        1e-3, 0.01, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 3.6, 10.0, 100.0, 1e3, 1e6, 1e10, 1e16, 1e300, 0.003,
+        f64::MIN_POSITIVE, f64::from_bits(1), f64::MAX,
+    ];
+    shapes.extend((0..200).map(|_| g.log_uniform(-3.0, 6.0)));
+    let mut moments: Vec<(f64, f64)> = fixed.iter().chain(&seeded).copied().collect();
+    for &k in &shapes {
+        for l in [1.0, 2.5, 1e-300, 1e300] {
+            moments.push((k, l));
+        }
+    }
+    for &(k, l) in &moments {
+        let w = Weibull::new(k, l).expect("valid parameters");
+        m.row("Weibull::mean", Class::C, &[f(k), f(l)], &[f(w.mean())]);
+        m.row("Weibull::variance", Class::C, &[f(k), f(l)], &[f(w.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, Weibull)> =
+        fixed.iter().map(|&(k, l)| (vec![k, l], Weibull::new(k, l).expect("valid"))).collect();
+    streams(m, "Weibull::sample", Class::C, &cases);
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("dist");
     let mut g = Seeds::new(0x510e_527f_ade6_82d1);
@@ -293,5 +438,7 @@ pub fn emit() -> Module {
     uniform(&mut m, &mut g);
     exponential(&mut m, &mut g);
     bernoulli(&mut m, &mut g);
+    cauchy(&mut m, &mut g);
+    weibull(&mut m, &mut g);
     m
 }

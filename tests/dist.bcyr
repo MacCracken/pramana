@@ -4,7 +4,8 @@
 # is scripts/probes/rust/src/bin/m3_dist.rs: the same xorshift, regions and loop, 1.3.0's distributions on glibc's
 # primitives. Each side prints the row's sum and an FNV-1a digest of its 4,096 results' bits; they differ where a
 # glibc primitive misrounds or a T1 function (here Φ, M2 part b2) moves a value. The record is
-# docs/benchmarks-rust-v-cyrius.md. Part a1: Normal; part a2: Uniform, Exponential and Bernoulli.
+# docs/benchmarks-rust-v-cyrius.md. Part a1: Normal; part a2: Uniform, Exponential and Bernoulli; part a3: Cauchy and
+# Weibull.
 
 include "tests/lib.cyr"
 
@@ -33,6 +34,7 @@ fn unit(): f64 {
 # `which`: 0 N(0, 1)'s pdf at x, 1 N(0, 1)'s cdf at x, 2 one draw of N(x, y), 3 N(x, y) to JSON and back (the mean
 # read back), 4 N(x, y)'s Debug (the text's length); 5 and up, part a2's rows (eval_a2).
 fn eval(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    if (which >= 12) { return eval_a3(which, x, y, g); }
     if (which >= 5) { return eval_a2(which, x, y, g); }
     var r: f64 = 0.0;
     var n: PmnNormal;
@@ -80,6 +82,30 @@ fn eval_a2(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
         if (PmnBernoulli_new(&b, 0.3) == PMN_ERR_NONE) { r = b.cdf(x); }
     } elif (which == 11) {
         if (PmnBernoulli_new(&b, y) == PMN_ERR_NONE) { r = b.sample(g); }
+    }
+    return r;
+}
+
+# Part a3's rows: 12 Cauchy(0, 1)'s pdf at x, 13 its cdf at x, 14 one draw of Cauchy(x, y), 15 Weibull(2, 1)'s pdf
+# at x, 16 its cdf at x, 17 Weibull(y, 1)'s mean, 18 one draw of Weibull(y, x).
+fn eval_a3(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    var r: f64 = 0.0;
+    var c: PmnCauchy;
+    var w: PmnWeibull;
+    if (which == 12) {
+        if (PmnCauchy_new(&c, 0.0, 1.0) == PMN_ERR_NONE) { r = c.pdf(x); }
+    } elif (which == 13) {
+        if (PmnCauchy_new(&c, 0.0, 1.0) == PMN_ERR_NONE) { r = c.cdf(x); }
+    } elif (which == 14) {
+        if (PmnCauchy_new(&c, x, y) == PMN_ERR_NONE) { r = c.sample(g); }
+    } elif (which == 15) {
+        if (PmnWeibull_new(&w, 2.0, 1.0) == PMN_ERR_NONE) { r = w.pdf(x); }
+    } elif (which == 16) {
+        if (PmnWeibull_new(&w, 2.0, 1.0) == PMN_ERR_NONE) { r = w.cdf(x); }
+    } elif (which == 17) {
+        if (PmnWeibull_new(&w, y, 1.0) == PMN_ERR_NONE) { r = w.mean(); }
+    } elif (which == 18) {
+        if (PmnWeibull_new(&w, y, x) == PMN_ERR_NONE) { r = w.sample(g); }
     }
     return r;
 }
@@ -152,6 +178,13 @@ fn main(): i64 {
     row("Exponential::sample, lambda in [0.1, 10)", 9, 0.0, 1.0, 0.1, 10.0);
     row("Bernoulli::cdf, p = 0.3, x in [-1, 2)", 10, -1.0, 2.0, 0.0, 1.0);
     row("Bernoulli::sample, p in [0, 1)", 11, 0.0, 1.0, 0.0, 1.0);
+    row("Cauchy::pdf, Cauchy(0, 1), x in [-10, 10)", 12, -10.0, 10.0, 0.0, 1.0);
+    row("Cauchy::cdf, Cauchy(0, 1), x in [-10, 10)", 13, -10.0, 10.0, 0.0, 1.0);
+    row("Cauchy::sample, x0 in [-10, 10), gamma in [0.1, 10)", 14, -10.0, 10.0, 0.1, 10.0);
+    row("Weibull::pdf, Weibull(2, 1), x in [0, 3)", 15, 0.0, 3.0, 0.0, 1.0);
+    row("Weibull::cdf, Weibull(2, 1), x in [0, 3)", 16, 0.0, 3.0, 0.0, 1.0);
+    row("Weibull::mean, k in [0.1, 10), lambda = 1", 17, 0.0, 1.0, 0.1, 10.0);
+    row("Weibull::sample, lambda in [0.1, 10), k in [0.1, 10)", 18, 0.1, 10.0, 0.1, 10.0);
     return 0;
 }
 

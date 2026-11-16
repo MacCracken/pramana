@@ -808,6 +808,8 @@ JSON_VALIDATED = {
     "Uniform": ([("min", "f64"), ("max", "f64")], lambda lo, hi: d_uniform_new(lo, hi)),
     "Exponential": ([("lambda", "f64")], lambda la: math.isfinite(la) and la > 0.0),
     "Bernoulli": ([("p", "f64")], lambda p: 0.0 <= p <= 1.0),
+    "Cauchy": ([("x0", "f64"), ("gamma", "f64")], lambda x0, g: math.isfinite(x0) and math.isfinite(g) and g > 0.0),
+    "Weibull": ([("k", "f64"), ("lambda", "f64")], lambda k, la: d_positive(k) and d_positive(la)),
 }
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
@@ -2286,6 +2288,7 @@ class Prims:
             self.exp, self.ln, self.ln1p, self.sin = _libm.exp, _libm.log, _libm.log1p, _libm.sin
             self.cos = _libm.cos                    # Box–Muller (M3)
             self.expm1 = _libm.expm1                # Exponential::cdf (M3)
+            self.tan, self.atan, self.pow = _libm.tan, _libm.atan, _libm.pow   # Cauchy, Weibull (M3)
         else:
             self.exp = lambda x: mpfr_ref.cr("exp", x)
             self.ln = lambda x: mpfr_ref.cr("log", x)
@@ -2293,6 +2296,9 @@ class Prims:
             self.sin = lambda x: mpfr_ref.cr("sin", x)
             self.cos = lambda x: mpfr_ref.cr("cos", x)
             self.expm1 = lambda x: mpfr_ref.cr("expm1", x)
+            self.tan = lambda x: mpfr_ref.cr("tan", x)
+            self.atan = lambda x: mpfr_ref.cr("atan", x)
+            self.pow = lambda x, y: mpfr_ref.cr2("pow", x, y)
         if mode == "ref":
             self.erf = lambda x: mpfr_ref.cr("erf", x)
             self.erfc = lambda x: mpfr_ref.cr("erfc", x)
@@ -2680,6 +2686,50 @@ def d_bernoulli_cdf(p, x):
     return 1.0 - p if x < 1.0 else 1.0
 
 
+def d_positive(v):
+    return math.isfinite(v) and v > 0.0
+
+
+def d_cauchy_pdf(x0, g, x):
+    z = fdiv(x - x0, g)
+    return fdiv(1.0, (math.pi * g) * (1.0 + z * z))
+
+
+def d_cauchy_cdf(L, x0, g, x):
+    return fdiv(1.0, math.pi) * L.atan(fdiv(x - x0, g)) + 0.5
+
+
+def d_weibull_pdf(L, k, la, x):
+    if x < 0.0:
+        return 0.0
+    if x == 0.0:
+        return fdiv(1.0, la) if k == 1.0 else (0.0 if k > 1.0 else math.inf)
+    z = fdiv(x, la)
+    return (fdiv(k, la) * L.pow(z, k - 1.0)) * L.exp(-L.pow(z, k))
+
+
+def d_weibull_cdf(L, k, la, x):
+    if x <= 0.0:
+        return 0.0
+    return -L.expm1(-L.pow(fdiv(x, la), k))
+
+
+def d_weibull_g(L, j, k):
+    """Γ(1 + j/k) as 1.3.0 computes it, exp(ln_gamma(1 + j/k)): 1.3.0's Lanczos lnΓ through glibc or on correctly
+    rounded primitives, or the T1 lnΓ as the port computes it (the reference model)."""
+    return L.exp(sp_ln_gamma(L.K, L, 1.0 + fdiv(j, k)))
+
+
+def d_weibull_variance(L, k, la):
+    g1, g2 = d_weibull_g(L, 1.0, k), d_weibull_g(L, 2.0, k)
+    return (la * la) * (g2 - g1 * g1)
+
+
+def d_weibull_sample(L, k, la, u):
+    v = max(next(u), MIN_POSITIVE)
+    return la * L.pow(-L.ln(1.0 - v), fdiv(1.0, k))
+
+
 def d_new(ok, fields):
     return fields if ok else ["E:InvalidParameter"]
 
@@ -2720,16 +2770,45 @@ DIST = {  # name: model(L, *inputs) -> outputs (a list)
     "Bernoulli::variance": lambda L, p: [p * (1.0 - p)],
     "Bernoulli::sample": lambda L, p, seed, n: [f"v:{n}"] + d_sample(
         L, lambda L, u: 1.0 if next(u) < p else 0.0, seed, n),
+    # part a3
+    "Cauchy::new": lambda L, x0, g: d_new(math.isfinite(x0) and d_positive(g), [x0, g]),
+    "Cauchy::pdf": lambda L, x0, g, x: [d_cauchy_pdf(x0, g, x)],
+    "Cauchy::cdf": lambda L, x0, g, x: [d_cauchy_cdf(L, x0, g, x)],
+    "Cauchy::mean": lambda L, x0, g: [math.nan],
+    "Cauchy::variance": lambda L, x0, g: [math.nan],
+    "Cauchy::sample": lambda L, x0, g, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: x0 + g * L.tan(math.pi * (next(u) - 0.5)), seed, n),
+    "Weibull::new": lambda L, k, la: d_new(d_positive(k) and d_positive(la), [k, la]),
+    "Weibull::pdf": lambda L, k, la, x: [d_weibull_pdf(L, k, la, x)],
+    "Weibull::cdf": lambda L, k, la, x: [d_weibull_cdf(L, k, la, x)],
+    "Weibull::mean": lambda L, k, la: [la * d_weibull_g(L, 1.0, k)],
+    "Weibull::variance": lambda L, k, la: [d_weibull_variance(L, k, la)],
+    "Weibull::sample": lambda L, k, la, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_weibull_sample(L, k, la, u), seed, n),
 }
-DIST_T1 = {"Normal::cdf": "Φ"}   # rows downstream of a T1 function (ADR 009 as amended)
+DIST_T1 = {"Normal::cdf": "Φ", "Weibull::mean": "lnΓ", "Weibull::variance": "lnΓ"}   # rows downstream of a T1 function (ADR 009 as amended)
+
+
+def dist_prims(root):
+    """The three Prims the dist models run on, each carrying 1.3.0's lnΓ coefficients (K) for Weibull's moments."""
+    consts = python_constants(root)
+    F = {k[len("math::fdlibm::"):]: v for k, v in consts.items() if k.startswith("math::fdlibm::")}
+    K = {
+        "F": F,
+        "LG": [consts[f"math::ln_gamma::COEFFICIENTS[{i}]"] for i in range(9)],
+        "G": consts["math::ln_gamma::G"],
+        "LS": consts["math::LN_SQRT_2PI"],
+    }
+    out = Prims("glibc", F), Prims("cr", F), Prims("ref", F)
+    for P in out:
+        P.K = K
+    return out
 
 
 def check_dist(root, rows):
     """As check_special: every row re-derived through glibc (1.3.0's bits), on correctly rounded primitives (the T0
     model, `dist.cr.tsv`) and on the T1 functions as the port computes them (`dist.ref.tsv`)."""
-    consts = python_constants(root)
-    F = {k[len("math::fdlibm::"):]: v for k, v in consts.items() if k.startswith("math::fdlibm::")}
-    glibc, cr, ref = Prims("glibc", F), Prims("cr", F), Prims("ref", F)
+    glibc, cr, ref = dist_prims(root)
     failures, by_fn, crs, refs = [], {}, [], []
 
     def same_all(a, b):
@@ -2879,6 +2958,12 @@ def debug_text(fn, ins):
         return debug_struct("Exponential", [("lambda", rust_debug_f64(ins[0]))], ins[1] == 1)
     if fn == "debug::Bernoulli":
         return debug_struct("Bernoulli", [("p", rust_debug_f64(ins[0]))], ins[1] == 1)
+    if fn == "debug::Cauchy":
+        return debug_struct("Cauchy", [("x0", rust_debug_f64(ins[0])), ("gamma", rust_debug_f64(ins[1]))],
+                            ins[2] == 1)
+    if fn == "debug::Weibull":
+        return debug_struct("Weibull", [("k", rust_debug_f64(ins[0])), ("lambda", rust_debug_f64(ins[1]))],
+                            ins[2] == 1)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:

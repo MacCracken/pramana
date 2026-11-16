@@ -11392,7 +11392,7 @@ fn _pmn_dist_fields(root, names, n, vals): i64 {
 
 # dist_cont.cyr — the continuous distributions of Rust 1.3.0's src/distribution.rs (port plan §4.1, D5, D7, D11, D12;
 # M3 parts a1–a3): their constructors, the five `PmnDistribution` methods, serde_json's codec and the derived Debug.
-# Normal (part a1), Uniform and Exponential (a2).
+# Normal (part a1), Uniform and Exponential (a2), Cauchy and Weibull (a3).
 #
 # Each is Rust's in its operation order on the correctly rounded primitives and the T1 special functions (ADR 009),
 # so its values differ from 1.3.0's only where glibc misrounds or where T1 moves a special function. JSON is serde's
@@ -11784,6 +11784,308 @@ fn _pmn_exponential_from_root(root, out): i64 {
 fn PmnExponential_from_json(out: *PmnExponential, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
     return _pmn_json_decode(buf, len, &_pmn_exponential_from_root, out);
+}
+
+# ── Cauchy (part a3) ────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `Cauchy`: the Cauchy distribution with location `x0` and scale `gamma`.
+struct PmnCauchy {
+    x0: f64;
+    gamma: f64;
+}
+
+# Rust's `Cauchy::new(x0, gamma)` into out (caller storage, D11): PMN_ERR_NONE, or PMN_ERR_INVALID_PARAMETER, writing
+# nothing, unless x0 is finite and gamma finite and positive; or for a null out.
+#must_use
+fn PmnCauchy_new(out: *PmnCauchy, x0: f64, gamma: f64): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_require_finite(x0);
+    if (e == PMN_ERR_NONE) { e = _pmn_require_positive(gamma); }
+    if (e != PMN_ERR_NONE) { return e; }
+    out.x0 = x0;
+    out.gamma = gamma;
+    return PMN_ERR_NONE;
+}
+
+impl PmnDistribution for PmnCauchy {
+    # Rust's `pdf`: 1/(π·γ·(1 + z²)), z = (x − x0)/γ.
+    #must_use
+    fn pdf(self, x: f64): f64 {
+        var x0: f64 = self.x0;
+        var g: f64 = self.gamma;
+        var d: f64 = x - x0;
+        var z: f64 = d / g;
+        var pi: f64 = _PMN_F64_PI;
+        var pg: f64 = pi * g;
+        var zz: f64 = z * z;
+        var q: f64 = 1.0 + zz;
+        var den: f64 = pg * q;
+        return 1.0 / den;
+    }
+
+    # Rust's `cdf`: (1/π)·atan((x − x0)/γ) + ½, on the correctly rounded atan.
+    #must_use
+    fn cdf(self, x: f64): f64 {
+        var x0: f64 = self.x0;
+        var g: f64 = self.gamma;
+        var pi: f64 = _PMN_F64_PI;
+        var ip: f64 = 1.0 / pi;
+        var d: f64 = x - x0;
+        var z: f64 = d / g;
+        var a: f64 = _pmn_atan(z);
+        var r: f64 = ip * a;
+        return r + 0.5;
+    }
+
+    # Rust's `mean`: undefined, NaN.
+    #must_use
+    fn mean(self): f64 {
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+
+    # Rust's `variance`: undefined, NaN.
+    #must_use
+    fn variance(self): f64 {
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+
+    # Rust's `sample`, the inverse cdf: x0 + γ·tan(π·(u − ½)), on the correctly rounded tan.
+    #must_use
+    fn sample<R: PmnRng>(self, rng: *R): f64 {
+        var u: f64 = rng.next_f64();
+        var pi: f64 = _PMN_F64_PI;
+        var h: f64 = u - 0.5;
+        var t: f64 = pi * h;
+        var tn: f64 = _pmn_tan(t);
+        var g: f64 = self.gamma;
+        var gt: f64 = g * tn;
+        var x0: f64 = self.x0;
+        return x0 + gt;
+    }
+}
+
+impl PmnCauchy {
+    # Appends Rust's Debug (D12): `Cauchy { x0: 0.0, gamma: 1.0 }`, or its alternate form. PMN_ERR_NONE, or
+    # PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var x0: f64 = self.x0;
+        var g: f64 = self.gamma;
+        var e = _pmn_dbg_open(sb, "Cauchy", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "x0", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, x0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "gamma", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, g); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text, `{"x0":X,"gamma":G}`: PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var x0: f64 = self.x0;
+        var g: f64 = self.gamma;
+        var e = _pmn_json_w_key(sb, "x0", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, x0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "gamma", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, g); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder for PmnCauchy_from_json: CauchyRepr's two f64 fields, then `Cauchy::new`.
+fn _pmn_cauchy_from_root(root, out): i64 {
+    var names[16];
+    store64(&names, "x0");
+    store64(&names + 8, "gamma");
+    var v[16];
+    var e = _pmn_dist_fields(root, &names, 2, &v);
+    if (e != PMN_ERR_NONE) { return e; }
+    var x0: f64 = load64(&v);
+    var g: f64 = load64(&v + 8);
+    if (PmnCauchy_new(out, x0, g) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a Cauchy document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document
+# serde_json refuses (a gamma the constructor refuses among them), or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnCauchy_from_json(out: *PmnCauchy, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_cauchy_from_root, out);
+}
+
+# ── Weibull (part a3) ───────────────────────────────────────────────────────────────────────────────
+
+# Rust's `Weibull`: the Weibull distribution with shape `k` and scale `lambda`.
+struct PmnWeibull {
+    k: f64;
+    lambda: f64;
+}
+
+# Rust's `Weibull::new(k, lambda)` into out (caller storage, D11): PMN_ERR_NONE, or PMN_ERR_INVALID_PARAMETER, writing
+# nothing, unless k and lambda are both finite and positive; or for a null out.
+#must_use
+fn PmnWeibull_new(out: *PmnWeibull, k: f64, lambda: f64): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_require_positive(k);
+    if (e == PMN_ERR_NONE) { e = _pmn_require_positive(lambda); }
+    if (e != PMN_ERR_NONE) { return e; }
+    out.k = k;
+    out.lambda = lambda;
+    return PMN_ERR_NONE;
+}
+
+# Γ(1 + j/k) as Rust computes it, exp(lnΓ(1 + j/k)), on the T1 lnΓ and the correctly rounded exp: the Weibull
+# moments' factor.
+#must_use
+fn _pmn_weibull_g(j: f64, k: f64): f64 {
+    var q: f64 = j / k;
+    var a: f64 = 1.0 + q;
+    var lg: f64 = _pmn_ln_gamma(a);
+    var r: f64 = _pmn_exp(lg);
+    return r;
+}
+
+impl PmnDistribution for PmnWeibull {
+    # Rust's `pdf`: (k/λ)·z^(k−1)·exp(−z^k), z = x/λ, for x > 0; 0 below 0; at 0, 1/λ for k = 1, 0 for k > 1 and +∞
+    # for k < 1. On the correctly rounded pow and exp.
+    #must_use
+    fn pdf(self, x: f64): f64 {
+        if (x < 0.0) { return 0.0; }
+        var k: f64 = self.k;
+        var l: f64 = self.lambda;
+        if (x == 0.0) {
+            if (k == 1.0) { return 1.0 / l; }
+            if (k > 1.0) { return 0.0; }
+            var inf: f64 = _PMN_F64_INFINITY;
+            return inf;
+        }
+        var z: f64 = x / l;
+        var kl: f64 = k / l;
+        var km1: f64 = k - 1.0;
+        var p1: f64 = _pmn_powf(z, km1);
+        var p2: f64 = _pmn_powf(z, k);
+        var np2: f64 = -p2;
+        var ex: f64 = _pmn_exp(np2);
+        var a: f64 = kl * p1;
+        return a * ex;
+    }
+
+    # Rust's `cdf`: −expm1(−(x/λ)^k) for x > 0, else 0 (NaN at NaN). On the correctly rounded pow and expm1.
+    #must_use
+    fn cdf(self, x: f64): f64 {
+        if (x <= 0.0) { return 0.0; }
+        var k: f64 = self.k;
+        var l: f64 = self.lambda;
+        var z: f64 = x / l;
+        var p: f64 = _pmn_powf(z, k);
+        var np: f64 = -p;
+        var em: f64 = _pmn_exp_m1(np);
+        return -em;
+    }
+
+    # Rust's `mean`: λ·Γ(1 + 1/k), Γ as exp(lnΓ) on the T1 lnΓ.
+    #must_use
+    fn mean(self): f64 {
+        var k: f64 = self.k;
+        var g1: f64 = _pmn_weibull_g(1.0, k);
+        var l: f64 = self.lambda;
+        return l * g1;
+    }
+
+    # Rust's `variance`: λ²·(Γ(1 + 2/k) − Γ(1 + 1/k)²), in Rust's order, (λ·λ)·(g2 − g1·g1).
+    #must_use
+    fn variance(self): f64 {
+        var k: f64 = self.k;
+        var g1: f64 = _pmn_weibull_g(1.0, k);
+        var g2: f64 = _pmn_weibull_g(2.0, k);
+        var l: f64 = self.lambda;
+        var ll: f64 = l * l;
+        var gg: f64 = g1 * g1;
+        var d: f64 = g2 - gg;
+        return ll * d;
+    }
+
+    # Rust's `sample`, the inverse cdf: λ·(−ln(1 − u))^(1/k), with u kept from 0 by f64::MIN_POSITIVE. On the
+    # correctly rounded ln and pow.
+    #must_use
+    fn sample<R: PmnRng>(self, rng: *R): f64 {
+        var d: f64 = rng.next_f64();
+        var mp: f64 = _PMN_F64_MIN_POSITIVE;
+        var u: f64 = _pmn_max(d, mp);
+        var c: f64 = 1.0 - u;
+        var lc: f64 = _pmn_ln(c);
+        var nlc: f64 = -lc;
+        var k: f64 = self.k;
+        var ik: f64 = 1.0 / k;
+        var p: f64 = _pmn_powf(nlc, ik);
+        var l: f64 = self.lambda;
+        return l * p;
+    }
+}
+
+impl PmnWeibull {
+    # Appends Rust's Debug (D12): `Weibull { k: 2.0, lambda: 1.0 }`, or its alternate form. PMN_ERR_NONE, or
+    # PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var k: f64 = self.k;
+        var l: f64 = self.lambda;
+        var e = _pmn_dbg_open(sb, "Weibull", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "k", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, k); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "lambda", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, l); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text, `{"k":K,"lambda":L}`: PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var k: f64 = self.k;
+        var l: f64 = self.lambda;
+        var e = _pmn_json_w_key(sb, "k", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, k); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "lambda", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, l); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder for PmnWeibull_from_json: WeibullRepr's two f64 fields, then `Weibull::new`.
+fn _pmn_weibull_from_root(root, out): i64 {
+    var names[16];
+    store64(&names, "k");
+    store64(&names + 8, "lambda");
+    var v[16];
+    var e = _pmn_dist_fields(root, &names, 2, &v);
+    if (e != PMN_ERR_NONE) { return e; }
+    var k: f64 = load64(&v);
+    var l: f64 = load64(&v + 8);
+    if (PmnWeibull_new(out, k, l) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a Weibull document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document
+# serde_json refuses (a shape or scale the constructor refuses among them), or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnWeibull_from_json(out: *PmnWeibull, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_weibull_from_root, out);
 }
 
 # --- dist_disc.cyr ---

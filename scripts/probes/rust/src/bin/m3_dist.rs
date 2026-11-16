@@ -7,7 +7,7 @@
 //!   taskset -c 5 cargo run --release --locked --features roundtrip --bin m3_dist
 
 use pramana::SimpleRng;
-use pramana::distribution::{Bernoulli, Distribution, Exponential, Normal, Uniform};
+use pramana::distribution::{Bernoulli, Cauchy, Distribution, Exponential, Normal, Uniform, Weibull};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -89,4 +89,12 @@ fn main() {
     row(&mut r, "Exponential::sample, lambda in [0.1, 10)", |_, y, g| Exponential::new(y).unwrap().sample(g), u, sd);
     row(&mut r, "Bernoulli::cdf, p = 0.3, x in [-1, 2)", |x, _, _| Bernoulli::new(0.3).unwrap().cdf(x), (-1.0, 2.0), u);
     row(&mut r, "Bernoulli::sample, p in [0, 1)", |_, y, g| Bernoulli::new(y).unwrap().sample(g), u, u);
+    // part a3
+    row(&mut r, "Cauchy::pdf, Cauchy(0, 1), x in [-10, 10)", |x, _, _| Cauchy::new(0.0, 1.0).unwrap().pdf(x), wide, u);
+    row(&mut r, "Cauchy::cdf, Cauchy(0, 1), x in [-10, 10)", |x, _, _| Cauchy::new(0.0, 1.0).unwrap().cdf(x), wide, u);
+    row(&mut r, "Cauchy::sample, x0 in [-10, 10), gamma in [0.1, 10)", |x, y, g| Cauchy::new(x, y).unwrap().sample(g), wide, sd);
+    row(&mut r, "Weibull::pdf, Weibull(2, 1), x in [0, 3)", |x, _, _| Weibull::new(2.0, 1.0).unwrap().pdf(x), (0.0, 3.0), u);
+    row(&mut r, "Weibull::cdf, Weibull(2, 1), x in [0, 3)", |x, _, _| Weibull::new(2.0, 1.0).unwrap().cdf(x), (0.0, 3.0), u);
+    row(&mut r, "Weibull::mean, k in [0.1, 10), lambda = 1", |_, y, _| Weibull::new(y, 1.0).unwrap().mean(), u, sd);
+    row(&mut r, "Weibull::sample, lambda in [0.1, 10), k in [0.1, 10)", |x, y, g| Weibull::new(y, x).unwrap().sample(g), sd, sd);
 }
