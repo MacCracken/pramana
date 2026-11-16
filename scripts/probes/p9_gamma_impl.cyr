@@ -296,8 +296,8 @@ fn p9_lngamma1p_dd(f: f64): (f64, f64) {
     return (acc, accl);
 }
 
-# lnΓ(a) for 0 < a < 10 as a double-double: lnΓ(1 + f) − ln a below 1, else lnΓ(1 + f) + ln((1 + f)…(m − 1 + f))
-# with a = m + f and the product a double-double.
+# lnΓ(a) for 0 < a < 20 as a double-double: lnΓ(1 + f) − ln a below 1, else lnΓ(1 + f) + ln((1 + f)…(m − 1 + f))
+# with a = m + f and the product a double-double (gamma_inc calls it below 10, beta_inc below 20).
 fn p9_lngamma_small_dd(a: f64): (f64, f64) {
     if (a < 1.0) {
         var gh, gl = p9_lngamma1p_dd(a);

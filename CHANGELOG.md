@@ -142,6 +142,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     plain-double loops misses the bound (up to 79 ulp), so the cost belongs to the loops. M2 part b measures cheaper
     algorithms for the two slow regions.
 
+- **Probes, part 9d-3: P9's `beta_inc` prototype** (port plan M0 step 9; `scripts/probes/p9_beta*`, with
+  `p9_beta_exact.py`; results in `docs/development/port-parity.md` §6.6).
+  - **The design:**
+    - the smaller of x and y taken as exact;
+    - a double-double prefactor, with lnΓ a double-double at every argument;
+    - the continued fraction in double-double;
+    - TOMS 708's power series for a complement below 2⁻⁶.
+  - **Accuracy:** checked against a 320-bit continued fraction (`check.c`'s `bref`, which agrees with exact rationals
+    to 4×10⁻⁷⁸ ulp), on 214,744 rows over a, b ∈ [10⁻³, 10⁵]. T1 is within 0.51 ulp, mean ≤ 0.25, against ADR 009's
+    fixed ≤ 8.
+  - **Rust 1.3.0** reaches 550 / 583 ulp on §3.2's integer shapes, and 1.7×10⁵ near the mean with one large shape.
+  - **Defects reworked in T1 on the way:**
+    - a prefactor zeroed near the subnormal range;
+    - a complement by the far side's slow continued fraction (3.6×10¹⁰ ulp);
+    - Stirling's correction in plain double on a + b's high part (5.3 ulp).
+  - **Targets:** the same bits on x86_64, PE and aarch64.
+  - **Cost:** 7.5–71 µs a call, 10–17× Rust's form on correctly rounded primitives.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

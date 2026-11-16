@@ -5,12 +5,16 @@
 // continued fraction, since mpfr_gamma_inc takes 0.05-0.8 s a call near a = 1e5. They count zero and subnormal
 // results in units of 2^-1074 (ADR 009). "gref_vs_mpfr a x 0" rows report gref's own relative error against
 // mpfr_gamma_inc at 1,024 bits, in units of 2^-53.
+// Probe P9's incomplete beta rows ("bref_i…" for I_x(a, b), "bref_c…" for 1 - I_x(a, b): "name a b x y result") use
+// bref() below, a 320-bit continued fraction, since MPFR has no incomplete beta; the smaller of x and y is exact and
+// the other 1 - it. "bref_vs_exact a b x y <decimal>" rows report bref's relative error against an exact value given
+// as a decimal string, in units of 2^-53.
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
 #include <mpfr.h>
-typedef struct { char name[48]; long n, ncr, skipped; double maxu, sumu, worst_x, worst_y; } Stat;
+typedef struct { char name[48]; long n, ncr, skipped; double maxu, sumu, worst_x, worst_y, worst_z; } Stat;
 static Stat st[128]; static int nst;
 static Stat *get(const char *nm){ for(int i=0;i<nst;i++) if(!strcmp(st[i].name,nm)) return &st[i]; strcpy(st[nst].name,nm); return &st[nst++]; }
 static double fromh(const char *s){ uint64_t u; sscanf(s,"%lx",&u); double d; memcpy(&d,&u,8); return d; }
@@ -50,15 +54,91 @@ static void gref(mpfr_t P, mpfr_t Q, double ad, double xd){
   }
   mpfr_clears(a,x,pre,t,s,term,h,b,c,d,an,del,tiny,lim,(mpfr_ptr)0);
 }
+// x^a y^b / (a B(a, b)) times Lentz's continued fraction (Rust's even and odd steps), at 320 bits, stopped when a
+// step changes it by under 2^-310: I_x(a, b) for x < (a+1)/(a+b+2).
+static void bcf(mpfr_t r, mpfr_t a, mpfr_t b, mpfr_t x, mpfr_t y){
+  mpfr_t t,u,pre,c,d,h,num,del,tiny; int sg;
+  mpfr_inits2(320,t,u,pre,c,d,h,num,del,tiny,(mpfr_ptr)0);
+  mpfr_set_ui_2exp(tiny,1,-20000,MPFR_RNDN);
+  mpfr_log(t,x,MPFR_RNDN); mpfr_mul(pre,t,a,MPFR_RNDN);
+  mpfr_log(t,y,MPFR_RNDN); mpfr_mul(t,t,b,MPFR_RNDN); mpfr_add(pre,pre,t,MPFR_RNDN);
+  mpfr_lgamma(t,&sg,a,MPFR_RNDN); mpfr_sub(pre,pre,t,MPFR_RNDN);
+  mpfr_lgamma(t,&sg,b,MPFR_RNDN); mpfr_sub(pre,pre,t,MPFR_RNDN);
+  mpfr_add(u,a,b,MPFR_RNDN); mpfr_lgamma(t,&sg,u,MPFR_RNDN); mpfr_add(pre,pre,t,MPFR_RNDN);
+  mpfr_log(t,a,MPFR_RNDN); mpfr_sub(pre,pre,t,MPFR_RNDN); mpfr_exp(pre,pre,MPFR_RNDN);
+  mpfr_set_ui(c,1,MPFR_RNDN);
+  mpfr_ui_sub(t,1,b,MPFR_RNDN); mpfr_mul(t,t,x,MPFR_RNDN); mpfr_add_ui(u,a,1,MPFR_RNDN); mpfr_mul(u,u,y,MPFR_RNDN);
+  mpfr_add(d,t,u,MPFR_RNDN); mpfr_add_ui(u,a,1,MPFR_RNDN); mpfr_div(d,d,u,MPFR_RNDN);
+  mpfr_ui_div(d,1,d,MPFR_RNDN); mpfr_set(h,d,MPFR_RNDN);
+  for(unsigned long m=1;;m++){
+    for(int odd=0;odd<2;odd++){
+      if(!odd){ // m(b - m)x / ((a + 2m - 1)(a + 2m))
+        mpfr_sub_ui(num,b,m,MPFR_RNDN); mpfr_mul_ui(num,num,m,MPFR_RNDN); mpfr_mul(num,num,x,MPFR_RNDN);
+        mpfr_add_ui(t,a,2*m-1,MPFR_RNDN); mpfr_add_ui(u,a,2*m,MPFR_RNDN);
+      } else { // -(a + m)(a + b + m)x / ((a + 2m)(a + 2m + 1))
+        mpfr_add_ui(num,a,m,MPFR_RNDN); mpfr_add(t,a,b,MPFR_RNDN); mpfr_add_ui(t,t,m,MPFR_RNDN);
+        mpfr_mul(num,num,t,MPFR_RNDN); mpfr_mul(num,num,x,MPFR_RNDN); mpfr_neg(num,num,MPFR_RNDN);
+        mpfr_add_ui(t,a,2*m,MPFR_RNDN); mpfr_add_ui(u,a,2*m+1,MPFR_RNDN);
+      }
+      mpfr_mul(t,t,u,MPFR_RNDN); mpfr_div(num,num,t,MPFR_RNDN);
+      mpfr_mul(d,num,d,MPFR_RNDN); mpfr_add_ui(d,d,1,MPFR_RNDN);
+      mpfr_abs(t,d,MPFR_RNDN); if(mpfr_cmp(t,tiny)<0) mpfr_set(d,tiny,MPFR_RNDN);
+      mpfr_div(t,num,c,MPFR_RNDN); mpfr_add_ui(c,t,1,MPFR_RNDN);
+      mpfr_abs(t,c,MPFR_RNDN); if(mpfr_cmp(t,tiny)<0) mpfr_set(c,tiny,MPFR_RNDN);
+      mpfr_ui_div(d,1,d,MPFR_RNDN); mpfr_mul(del,d,c,MPFR_RNDN); mpfr_mul(h,h,del,MPFR_RNDN);
+    }
+    mpfr_sub_ui(t,del,1,MPFR_RNDN); mpfr_abs(t,t,MPFR_RNDN); if(mpfr_cmp_d(t,0x1p-310)<0) break;
+  }
+  mpfr_mul(r,pre,h,MPFR_RNDN);
+  mpfr_clears(t,u,pre,c,d,h,num,del,tiny,(mpfr_ptr)0);
+}
+// I_x(a, b) and 1 - I_x(a, b) at 320 bits, the smaller of xd and yd exact: the continued fraction on the side where it
+// converges fast, the other value as 1 - it (which keeps at least ~270 bits on every row probe P9 makes).
+static void bref(mpfr_t I, mpfr_t C, double ad, double bd, double xd, double yd){
+  mpfr_t a,b,x,y,s,r;
+  mpfr_inits2(320,a,b,x,y,s,r,(mpfr_ptr)0);
+  mpfr_set_d(a,ad,MPFR_RNDN); mpfr_set_d(b,bd,MPFR_RNDN);
+  if(xd<=yd){ mpfr_set_d(x,xd,MPFR_RNDN); mpfr_ui_sub(y,1,x,MPFR_RNDN); }
+  else { mpfr_set_d(y,yd,MPFR_RNDN); mpfr_ui_sub(x,1,y,MPFR_RNDN); }
+  mpfr_add_ui(s,a,1,MPFR_RNDN); mpfr_add(r,a,b,MPFR_RNDN); mpfr_add_ui(r,r,2,MPFR_RNDN); mpfr_div(s,s,r,MPFR_RNDN);
+  if(mpfr_cmp(x,s)<0){ bcf(I,a,b,x,y); mpfr_ui_sub(C,1,I,MPFR_RNDN); }
+  else { bcf(C,b,a,y,x); mpfr_ui_sub(I,1,C,MPFR_RNDN); }
+  mpfr_clears(a,b,x,y,s,r,(mpfr_ptr)0);
+}
 int main(void){
   mpfr_set_default_prec(1024);
   mpfr_t v,a,b,t,gp,gq; mpfr_inits2(1024,v,a,b,t,gp,gq,(mpfr_ptr)0);
-  char nm[48], s1[32], s2[32], s3[32]; char line[256];
+  char nm[48], s1[32], s2[32], s3[32], s4[32]; static char s5[512]; char line[1024];
   while(fgets(line,sizeof line,stdin)){
-    int k=sscanf(line,"%47s %31s %31s %31s",nm,s1,s2,s3);
+    int k=sscanf(line,"%47s %31s %31s %31s %31s %511s",nm,s1,s2,s3,s4,s5);
     int gr=!strncmp(nm,"gref_p",6)||!strncmp(nm,"gref_q",6);
+    int br=!strncmp(nm,"bref_i",6)||!strncmp(nm,"bref_c",6);
     double x=fromh(s1), y=0, r;
     if(k==4){ y=fromh(s2); r=fromh(s3);} else r=fromh(s2);
+    if(!strcmp(nm,"bref_vs_exact")){
+      // bref's I against an exact value (a decimal string): the relative error in units of 2^-53.
+      double ba=fromh(s1), bb=fromh(s2), bx=fromh(s3), by=fromh(s4);
+      bref(gp,gq,ba,bb,bx,by); mpfr_set_str(v,s5,10,MPFR_RNDN);
+      mpfr_sub(t,gp,v,MPFR_RNDN); mpfr_div(t,t,v,MPFR_RNDN); mpfr_abs(t,t,MPFR_RNDN); mpfr_mul_2si(t,t,53,MPFR_RNDN);
+      double e=mpfr_get_d(t,MPFR_RNDN); Stat *s=get(nm); s->n++; s->sumu+=e;
+      if(e>s->maxu){ s->maxu=e; s->worst_x=ba; s->worst_y=bb; }
+      continue;
+    }
+    if(br){
+      // "name a b x y result": the reference once per input, as for gref.
+      static double ka=-1, kb=-1, kx=-1, ky=-1;
+      double ba=fromh(s1), bb=fromh(s2), bx=fromh(s3), by=fromh(s4); r=fromh(s5);
+      if(ba!=ka||bb!=kb||bx!=kx||by!=ky){ bref(gp,gq,ba,bb,bx,by); ka=ba; kb=bb; kx=bx; ky=by; }
+      Stat *s=get(nm);
+      double cr=mpfr_get_d(nm[5]=='i'?gp:gq,MPFR_RNDN);
+      if(!isfinite(cr) || isnan(r)){ s->skipped++; continue; }
+      double u=nextafter(fabs(cr),INFINITY)-fabs(cr);
+      mpfr_set_d(t,r,MPFR_RNDN); mpfr_sub(t,t,nm[5]=='i'?gp:gq,MPFR_RNDN); mpfr_abs(t,t,MPFR_RNDN);
+      double e=mpfr_get_d(t,MPFR_RNDN)/u;
+      s->n++; s->sumu+=e; if(r!=cr) s->ncr++;
+      if(e>s->maxu){ s->maxu=e; s->worst_x=ba; s->worst_y=bb; s->worst_z=(bx<=by?bx:-by); }
+      continue;
+    }
     mpfr_set_d(a,x,MPFR_RNDN); mpfr_set_d(b,y,MPFR_RNDN);
     int ok=1;
     if(!strcmp(nm,"exp")) mpfr_exp(v,a,MPFR_RNDN);
@@ -108,6 +188,8 @@ int main(void){
   for(int i=0;i<nst;i++){ Stat*s=&st[i];
     printf("%-14s %8ld %12.4g %10.3g %8.4f%%  x=%.17g%s", s->name,s->n,s->maxu,s->n?s->sumu/s->n:0,100.0*s->ncr/(s->n?s->n:1),s->worst_x, "");
     if(!strncmp(s->name,"gamma",5)||!strncmp(s->name,"gref",4)||!strcmp(s->name,"pow")) printf(" y=%.17g",s->worst_y);
+    // A bref row's worst input is a (x=), b (b=) and then x, or −y when y was the smaller.
+    if(!strncmp(s->name,"bref_i",6)||!strncmp(s->name,"bref_c",6)) printf(" b=%.17g x(−y)=%.17g",s->worst_y,s->worst_z);
     if(s->skipped) printf("  (skipped %ld)",s->skipped);
     printf("\n"); }
   return 0;

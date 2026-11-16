@@ -965,3 +965,84 @@ regions, not by less precision.
   - the direct small-shape form carried further than x = 1.1, in place of the slow continued fraction.
 - The double-double toolkit (add, multiply, divide, expm1 and ln of a double-double) becomes part of
   `src/crmath.cyr`, with the ζ(k) table generated beside it.
+
+### 6.6 Part 9d-3: P9, `beta_inc` (2026-11-15)
+
+**The reference.** MPFR has no incomplete beta, so `check.c` gained `bref`: x^a y^b/(a B(a, b)) times Lentz's
+continued fraction (Rust's even and odd steps) at 320 bits.
+- It works on the side x < (a + 1)/(a + b + 2) and takes the other value as 1 − it.
+- It stops when a step changes the value by under 2⁻³¹⁰.
+- The smaller of x and y is exact, and the other is 1 − it.
+
+On the baseline's 4,000 integer-shape rows, `bref` agrees with the exact rationals (`p9_beta_exact.py`, 120 digits) to
+4×10⁻⁷⁸ ulp. Rust's errors measured through it, 550 and 583 ulp, are §3.2's exactly.
+
+**What it compares** (`p9_beta_impl.cyr`):
+- **Rust 1.3.0's own results** on those 4,000 rows;
+- **T0:** Rust's `beta_inc` (its continued fraction, `ln_beta`'s Stirling forms and TOMS 708's `bd0` prefactor) in its
+  operation order, on correctly rounded primitives;
+- **T1, the prototype,** with four changes:
+  - **the smaller of x and y is taken as exact,** and the other recomputed as 1 − it in double-double. Rust's API passes
+    both so that a caller who knows 1 − x can keep it;
+  - **the prefactor's exponent a ln x + b ln y − ln B(a, b) − ln a is a double-double,** with lnΓ a double-double at
+    every argument. Below 20 it comes from the ζ series and the recurrence; from 20 it uses Stirling, whose correction series
+    is also a double-double, on the whole argument. So ln B's large cancellation costs nothing;
+  - **the continued fraction runs in double-double** and stops at 2⁻⁶²;
+  - **a complement below 2⁻⁶ is computed directly.** That happens only for a small first shape below its switch,
+    where b·x ≲ 1. The direct form is TOMS 708's power series: 1 − I = (aB − x^a − a·x^a·Σ (1 − b)ⱼ/j!·xʲ/(a + j))/(aB),
+    with aB − 1 and x^a − 1 as expm1s of double-doubles.
+
+**The sets:** four seeded sets over a, b ∈ [10⁻³, 10⁵]:
+- 12,757 with x = μ ± 5σ;
+- 10,000 in each tail, down to 10⁻¹⁰ of the mean;
+- 10,000 with one small shape;
+- 4,929 at the switch, x = (a + 1)/(a + b + 2)·(1 ± δ) with δ down to 10⁻¹².
+
+That makes 214,744 rows, checked in under 2 minutes.
+
+| Set | Function | Rust 1.3.0, max (mean) | T0, max | T1, max (mean) | T1 not CR |
+|---|---|---|---|---|---|
+| §3.2's 4,000 integer-shape rows | I | 550 (14.1) | 550 | **0.50** (0.218) | 0% |
+| | 1 − I | 583 (12.8) | 583 | **0.50** (0.221) | 0.03% |
+| x = μ ± 5σ | I | — | 4.3×10⁴ | **0.50** (0.248) | 0.04% |
+| | 1 − I | — | 1.7×10⁵ | **0.50** (0.250) | 0.02% |
+| lower tail | I | — | 2,403 | **0.50** (0.150) | 0% |
+| | 1 − I | — | 2,103 | **0.50** (0.112) | 0% |
+| upper tail | I | — | 1,845 | **0.50** (0.113) | 0% |
+| | 1 − I | — | 4,230 | **0.50** (0.156) | 0% |
+| one small shape | I | — | 4.9×10⁴ | **0.50** (0.173) | 0% |
+| | 1 − I | — | 1.3×10⁴ | **0.50** (0.177) | 0% |
+| at the switch | I | — | 1.0×10⁵ | **0.51** (0.250) | 0.14% |
+| | 1 − I | — | 1.2×10⁵ | **0.50** (0.246) | 0.04% |
+
+- **T1 is within 0.51 ulp everywhere,** against ADR 009's fixed ≤ 8. It is correctly rounded on all but 0–0.14% of each
+  set's rows.
+- **Rust is worse than §3.2 recorded outside its integer shapes.** T0, which is Rust on §3.2's rows, reaches 1.7×10⁵
+  ulp near the mean with one large shape, and 1.2×10⁵ at the switch.
+- **Three defects found on the way.** Each was a T1 bug, not a bound to move, and each was reworked:
+  - **a prefactor whose binary exponent fell between −1022 and −1000 was zeroed,** though the result is normal;
+  - **the first direct complement used the other side's continued fraction,** which can't converge when x is tiny.
+    It reached 3.6×10¹⁰ ulp at a = 0.001, b = 24,797, x = 8×10⁻¹² before the power series replaced it;
+  - **Stirling's correction in plain double, on the high part of a + b only,** left lnΓ(a + b) at 2⁻⁶⁷ relative. Small
+    shapes' 1 − I cancels about 14×, which made that 5.3 ulp. The double-double series on the whole argument brought it
+    to 2⁻⁷⁵·⁶, and the row to 0.50.
+- **One answer on every target:** the probe's 214,744 rows are byte-identical on x86_64 ELF, PE and aarch64, sha256
+  `b2f05119…`.
+
+**Cost** (`p9_beta.bcyr`): ns per (I, 1 − I) call, pinned, three runs.
+
+| Inputs | T0 | T1 |
+|---|---|---|
+| a, b ∈ [1, 60], x uniform | 1,148–1,169 | 14,544–14,692 |
+| a, b ∈ [10, 10³], x = μ ± 2σ | 1,614–1,636 | 21,229–21,452 |
+| a, b ∈ [10³, 10⁵], x = μ ± 2σ | 4,160–4,220 | 70,536–71,319 |
+| a ∈ [10⁻³, 1], b ∈ [1, 10³], x uniform | 1,342–1,359 | 13,343–13,484 |
+| a, b ∈ [1, 10³], lower tail | 753–766 | 7,512–7,588 |
+
+T1 costs 10–17× T0, as `gamma_inc` does, and for the same reason: the continued fraction runs in double-double.
+
+**What it means for M2 part b:**
+- T1's design stands, and its margin is large: 0.51 against 8.
+- M2 part b can trade some of that margin for speed. TOMS 708's region-specific expansions (`bgrat` for one large shape,
+  `basym` for two) are O(1) where the continued fraction takes O(√max(a, b)) steps.
+- The ≥ 50k verification must keep the switch set and the small-shape set, where the defects above lived.
