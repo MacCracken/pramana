@@ -629,6 +629,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 7.24–7.50 µs a call for small shapes and 5.82–5.97 µs for large ones, 48–61× Rust and 10–13× T0 (P9:
     10–17×). Every series and continued-fraction step is double-double, which P9 showed the bound needs. The bench's
     26 digests are all explained, the T1 rows by the T1 model.
+- **M2 part b5: the incomplete beta within 8 ulp (T1)** (`src/betainc.cyr`; port plan D3 = C, ADR 009; ledger L8;
+  results in `docs/development/port-parity.md` §8.9):
+  - **the function:** `beta_inc` up to max(a, b) = 10⁹ is probe P9's T1 form: Rust's continued fraction on the side
+    x < (a + 1)/(a + b + 2), the smaller of x and y taken as exact, a double-double prefactor and fraction, and TOMS
+    708's power series for a complement below 2⁻⁶. It runs on `src/dd.cyr`, gammainc's lnΓ below 20 and the ζ table.
+    Past 10⁹ Rust's form stays, as for `gamma_inc` (the maintainer's choice): near the switch the fraction costs 5 ms a
+    call at 10⁹ and 130 ms at 10¹⁵. Rust's form is off by 10³–10⁶ ulp there near the mean, a finding for 2.1. An
+    infinite shape returns Rust's (NaN, NaN) before the loop, not after its 10⁶-step budget. The wrapper keeps Rust's
+    projection;
+  - **five fixes to P9's form,** found past its sets:
+    - the power series' ln(a·B(a, b)) is lnΓ(1 + a) − [lnΓ(a + b) − lnΓ(b)], with the difference in a form whose
+      every term is proportional to a (Stirling's from b = 20, the ζ series term by term below). P9's sum of lnΓ lost
+      the a/(a + b) of two tiny shapes entirely (1 − I = 6.7·10⁻³¹⁹ for 2.4·10⁻³³), and left 118 ulp at b = 6.1·10⁸;
+    - a subnormal numerator is scaled by 2⁶⁰⁰ in the double-double quotient a/b, which kept 27 bits of it;
+    - the prefactor takes TOMS 708's brcomp form for two shapes of 20 or more, and the Stirling difference for ln B
+      with one: P9's sum cancelled from a + b down to O(1), leaving 2–3 ulp near 10⁹;
+    - the side is chosen on the x the computation uses (1 − y when y is the smaller), not the caller's x: on 1.3.0's
+      rows that pass a y that isn't 1 − x, P9's form returned (0, 1) for (1, 0);
+  - **verified:** `scripts/crverify/run.sh beta` (a new set) checks 140,098 rows against `bref`. They are P9's five sets,
+    reproduced byte for byte before the fixes, and sets out to shapes of 10⁹ (the switch included) and down to the least
+    subnormal, with x and y at 2⁻¹⁰⁷⁴, 2⁻¹⁰²², 2⁻⁵³ and the switch. The maximum is 1.0 ulp (one unit of 2⁻¹⁰⁷⁴ on two
+    subnormal results), against ADR 009's 8; the three targets' outputs are identical. `bref` holds x and y exactly,
+    grows its precision for a tiny complement (P9's fixed 320 bits keep none of a 2⁻¹⁰⁰⁰ one), and now agrees with the
+    exact rationals to 2.3×10⁻⁹⁷ ulp. `check.c` now counts a NaN `bref` result as a failure, rather than skipping it;
+  - **reference rows:** `mpfr_ref.py` gains `beta_ic`, the true I and 1 − I. `validate.py` pools and caches them (5,714
+    inputs, 50 s) and gains `t1_beta_inc`, the port step for step, which equals it on all 6,219 golden inputs in T1's
+    range. `special.ref.tsv` grows to 20,621 rows: `beta_inc` 4,834 at the truth and the wrapper 243 on T1's value.
+    `special.cr.tsv` falls to 91;
+  - **the harness:** `beta_inc` is gated at 8 ulp for a, b ∈ [10⁻³, 10⁵], and outside that domain, up to 10⁹, by
+    `_par_c_vs_rust`. Every golden row is within 1 ulp and none is less accurate than 1.3.0, which reaches 59,059 ulp on
+    the domain and 151,644 past it, and returns NaN for tiny shapes;
+  - **mutation checks:** 17 of 21 mutants fail the replay, a unit test or both. Several of the fixes only show past the
+    golden rows, so each is pinned by a unit test from the `crverify` row where its mutant is worst (2×10¹⁴ ulp for
+    lnΓ(1 + a) as lnΓ(a) + ln a, 50,109 for the brcomp prefactor dropped). Two survivors cost 1 ulp on 1 and 4
+    `crverify` rows, and two are equivalent;
+  - **tests:** `tests/special.tcyr` has 126 checks: §3.2's worst rows, P9's defects and every b5 fix against MPFR, the
+    switch on a y that isn't 1 − x, and Rust's form past 10⁹ bit for bit;
+  - **cost:** 17.78–18.46 µs a call on small shapes and 33.41–36.20 µs on large ones, both at the mean, 72× and 56× Rust
+    and 14–15× T0 (P9: 10–17×). Every continued-fraction step is double-double, which P9 showed the bound needs. The
+    bench's 26 digests are all explained, the T1 rows by the T1 model.
 
 ### Performance
 

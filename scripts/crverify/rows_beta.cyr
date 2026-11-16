@@ -1,0 +1,335 @@
+# rows_beta.cyr — the accuracy check of pramana's regularized incomplete beta (M2 part b5; port plan D3 = C, §3.4;
+# ADR 009: I and 1 − I within 8 ulp for a and b in [1e-3, 1e5] and x in [0, 1]; for other shapes, no row less accurate
+# than Rust's).
+#
+# Prints `bref_i/<set>/t1 a b x y I` and `bref_c/<set>/t1 a b x y C` rows (bit patterns) for
+# scripts/port-baseline/check.c, which compares each with its reference (`bref`: Lentz's continued fraction on the side
+# x < (a + 1)/(a + b + 2), the other value as 1 − it, at 320 bits or more; the smaller of x and y exact). Zero and
+# subnormal results count in units of 2^-1074. In every row the smaller of x and y is the exact one, and the other its
+# rounded complement, as a caller passes them. The sets:
+# - probe P9's five sets (scripts/probes/p9_beta.cyr), in the same order and from the same seed, so these rows are
+#   byte for byte P9's own T1 rows: §3.2's 4,000 integer-shape rows (a and b in 1 … 60, x = k/2^20, drawn as
+#   scripts/port-baseline/main.rs draws them), then 20,000 draws of x = μ ± 5σ (12,757 inside (0, 1)), 10,000 in each
+#   tail down to 1e-10 of the mean, 10,000 with one shape in [1e-3, 1], and 5,000 at the switch, x = (a + 1)/(a + b +
+#   2)·(1 ± δ) with δ down to 1e-12 (4,929 inside);
+# - beyond P9 (M2 part b5), continuing the same generator: 2,000 with the larger shape log-uniform in [1e5, 1e9], where
+#   T1 stops, and the other in [1e-3, 1e9] (x = μ ± 5σ, or in either tail); 2,000 with both in [1e8, 1e9] and
+#   x = μ ± 3σ, where the prefactor's terms cancel most; 4,000 with one shape log-uniform from the least subnormal,
+#   2^-1074, to 1e-3 and the other from 2^-1074 to 1e5, x or y log-uniform from 2^-1074 to 1/2; and 1,000 shape pairs
+#   over the domain, each at x = 2^-1074, 2^-1022, 2^-53 and 1/2, at y = 2^-1074 and 2^-53, and at the switch
+#   (a + 1)/(a + b + 2) and its two neighbours; and 500 pairs with both shapes in [1e5, 1e9] at the switch and its two
+#   neighbours, where the continued fraction converges slowest.
+#   bash scripts/crverify/run.sh beta
+
+include "tests/lib.cyr"
+
+var g_rng = 0x9E3779B97F4A7C15;
+var g_out = 0;
+
+# xorshift64*: uniform in [0, 1) from the top 53 bits. Every shift is `>>`, the logical one.
+fn cb_unit(): f64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    var top = (x * 0x2545F4914F6CDD1D) >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# Log-uniform in [lo, hi], as P9 draws it.
+fn cb_logr(lo: f64, hi: f64): f64 {
+    var l1: f64 = _pmn_km_cr_ln(lo);
+    var l2: f64 = _pmn_km_cr_ln(hi);
+    var w: f64 = l2 - l1;
+    var u: f64 = cb_unit();
+    var t: f64 = l1 + w * u;
+    var r: f64 = _pmn_km_cr_exp(t);
+    return r;
+}
+
+fn cb_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+fn cb_row(fname: cstring, set: cstring, a: f64, b: f64, x: f64, y: f64, v: f64): i64 {
+    str_builder_add_cstr(g_out, fname);
+    str_builder_putc(g_out, 47);
+    str_builder_add_cstr(g_out, set);
+    str_builder_add_cstr(g_out, "/t1 ");
+    cb_hex64(g_out, a);
+    str_builder_putc(g_out, 32);
+    cb_hex64(g_out, b);
+    str_builder_putc(g_out, 32);
+    cb_hex64(g_out, x);
+    str_builder_putc(g_out, 32);
+    cb_hex64(g_out, y);
+    str_builder_putc(g_out, 32);
+    cb_hex64(g_out, v);
+    str_builder_putc(g_out, 10);
+    if (load64(g_out + 8) > 1048576) {
+        print(load64(g_out), load64(g_out + 8));
+        store64(g_out + 8, 0);
+    }
+    return 0;
+}
+
+# One input: I's row, then 1 − I's (check.c reuses its reference across consecutive rows of the same input).
+fn cb_pair(set: cstring, a: f64, b: f64, x: f64, y: f64): i64 {
+    var p, q = _pmn_beta_inc(a, b, x, y);
+    cb_row("bref_i", set, a, b, x, y, p);
+    cb_row("bref_c", set, a, b, x, y, q);
+    return 0;
+}
+
+# A point t in (0, 1) as a caller passes it: (t, 1 − t) when t ≤ 1/2, else (1 − s, s) with s = 1 − t, the smaller
+# exact and the larger its rounded complement.
+fn cb_point(set: cstring, a: f64, b: f64, t: f64): i64 {
+    if (t <= 0.0 || t >= 1.0) { return 0; }
+    if (t <= 0.5) {
+        var y: f64 = 1.0 - t;
+        cb_pair(set, a, b, t, y);
+        return 0;
+    }
+    var s: f64 = 1.0 - t;
+    var x: f64 = 1.0 - s;
+    cb_pair(set, a, b, x, s);
+    return 0;
+}
+
+# A point given by its upper tail s = 1 − x in (0, 1/2].
+fn cb_upper(set: cstring, a: f64, b: f64, s: f64): i64 {
+    var x: f64 = 1.0 - s;
+    cb_pair(set, a, b, x, s);
+    return 0;
+}
+
+# §3.2's 4,000 integer-shape rows as scripts/port-baseline/main.rs's `beta` mode draws them, on its own generator
+# from the same seed: a = ⌊60u⌋ + 1, b likewise, k = ⌊(2^20 − 1)u⌋ + 1, x = k/2^20, y = 1 − x (exact).
+fn cb_baseline(): i64 {
+    var i = 0;
+    while (i < 4000) {
+        var ua: f64 = cb_unit();
+        var ub: f64 = cb_unit();
+        var uk: f64 = cb_unit();
+        var ai = f64_to(ua * 60.0) + 1;
+        var bi = f64_to(ub * 60.0) + 1;
+        var ki = f64_to(uk * 1048575.0) + 1;
+        var a: f64 = f64_from(ai);
+        var b: f64 = f64_from(bi);
+        var kf: f64 = f64_from(ki);
+        var d: f64 = 1048576.0;
+        var x: f64 = kf / d;
+        var y: f64 = 1.0 - x;
+        cb_pair("base", a, b, x, y);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    cb_baseline();
+    g_rng = 0x9E3779B97F4A7C15;                 # P9's seeded sets start from the seed again
+    var smin: f64 = 0.001;
+    var smax: f64 = 100000.0;
+    var i = 0;
+    # x near the mean: x = μ + t·σ, t in [−5, 5].
+    while (i < 20000) {
+        var a1: f64 = cb_logr(smin, smax);
+        var b1: f64 = cb_logr(smin, smax);
+        var s1: f64 = a1 + b1;
+        var mu: f64 = a1 / s1;
+        var s11: f64 = s1 + 1.0;
+        var v1: f64 = (a1 * b1) / (s1 * s1 * s11);
+        var sd: f64 = f64_sqrt(v1);
+        var t1: f64 = -5.0 + 10.0 * cb_unit();
+        var x1: f64 = mu + t1 * sd;
+        cb_point("near", a1, b1, x1);
+        i = i + 1;
+    }
+    # The tails: x = μ·r (I small) or 1 − x = (1 − μ)·r (1 − I small), r log-uniform in [1e-10, 1/2].
+    i = 0;
+    while (i < 10000) {
+        var a2: f64 = cb_logr(smin, smax);
+        var b2: f64 = cb_logr(smin, smax);
+        var s2: f64 = a2 + b2;
+        var mu2: f64 = a2 / s2;
+        var r2: f64 = cb_logr(0.0000000001, 0.5);
+        var x2: f64 = mu2 * r2;
+        cb_point("lower", a2, b2, x2);
+        var a3: f64 = cb_logr(smin, smax);
+        var b3: f64 = cb_logr(smin, smax);
+        var s3: f64 = a3 + b3;
+        var nu3: f64 = b3 / s3;
+        var r3: f64 = cb_logr(0.0000000001, 0.5);
+        var y3: f64 = nu3 * r3;
+        cb_upper("upper", a3, b3, y3);
+        i = i + 1;
+    }
+    # Small shapes: one shape in [1e-3, 1], the other over the whole range; x uniform, or in a tail.
+    i = 0;
+    while (i < 10000) {
+        var a4: f64 = cb_logr(smin, 1.0);
+        var b4: f64 = cb_logr(smin, smax);
+        if (cb_unit() < 0.5) {
+            var sw4: f64 = a4;
+            a4 = b4;
+            b4 = sw4;
+        }
+        var u4: f64 = cb_unit();
+        var x4: f64 = cb_unit();
+        if (u4 < 0.25) { x4 = cb_logr(0.0000000001, 0.5); }
+        if (u4 > 0.75) {
+            var y4: f64 = cb_logr(0.0000000001, 0.5);
+            cb_upper("smalls", a4, b4, y4);
+        } else {
+            cb_point("smalls", a4, b4, x4);
+        }
+        i = i + 1;
+    }
+    # The switch: x = (a + 1)/(a + b + 2)·(1 ± δ), δ log-uniform in [1e-12, 1e-2].
+    i = 0;
+    while (i < 5000) {
+        var a5: f64 = cb_logr(smin, smax);
+        var b5: f64 = cb_logr(smin, smax);
+        var a51: f64 = a5 + 1.0;
+        var s5: f64 = a5 + b5 + 2.0;
+        var sw5: f64 = a51 / s5;
+        var d5: f64 = cb_logr(0.000000000001, 0.01);
+        var x5: f64 = sw5 + sw5 * d5;
+        if (cb_unit() < 0.5) { x5 = sw5 - sw5 * d5; }
+        cb_point("switch", a5, b5, x5);
+        i = i + 1;
+    }
+    # Beyond P9: large shapes, the larger in [1e5, 1e9]. Half x = μ ± 5σ, a quarter in each tail as above.
+    var sbig: f64 = 1000000000.0;
+    i = 0;
+    while (i < 2000) {
+        var a6: f64 = cb_logr(smin, sbig);
+        var b6: f64 = cb_logr(smax, sbig);
+        if (cb_unit() < 0.5) {
+            var sw6: f64 = a6;
+            a6 = b6;
+            b6 = sw6;
+        }
+        var s6: f64 = a6 + b6;
+        var mu6: f64 = a6 / s6;
+        var u6: f64 = cb_unit();
+        if (u6 < 0.5) {
+            var s61: f64 = s6 + 1.0;
+            var v6: f64 = (a6 * b6) / (s6 * s6 * s61);
+            var sd6: f64 = f64_sqrt(v6);
+            var t6: f64 = -5.0 + 10.0 * cb_unit();
+            var x6: f64 = mu6 + t6 * sd6;
+            cb_point("bigab", a6, b6, x6);
+        } elif (u6 < 0.75) {
+            var r6: f64 = cb_logr(0.0000000001, 0.5);
+            var x7: f64 = mu6 * r6;
+            cb_point("bigab", a6, b6, x7);
+        } else {
+            var nu6: f64 = b6 / s6;
+            var r7: f64 = cb_logr(0.0000000001, 0.5);
+            var y7: f64 = nu6 * r7;
+            cb_upper("bigab", a6, b6, y7);
+        }
+        i = i + 1;
+    }
+    # Beyond P9: both shapes in [1e8, 1e9], x = μ ± 3σ, where the prefactor's terms reach 1e9 and cancel to O(1).
+    var s8: f64 = 100000000.0;
+    i = 0;
+    while (i < 2000) {
+        var a7: f64 = cb_logr(s8, sbig);
+        var b7: f64 = cb_logr(s8, sbig);
+        var s7: f64 = a7 + b7;
+        var mu7: f64 = a7 / s7;
+        var s71: f64 = s7 + 1.0;
+        var v7: f64 = (a7 * b7) / (s7 * s7 * s71);
+        var sd7: f64 = f64_sqrt(v7);
+        var t7: f64 = -3.0 + 6.0 * cb_unit();
+        var x8: f64 = mu7 + t7 * sd7;
+        cb_point("bigboth", a7, b7, x8);
+        i = i + 1;
+    }
+    # Beyond P9: tiny shapes, one from 2^-1074 to 1e-3, the other from 2^-1074 to 1e5; x or y from 2^-1074 to 1/2.
+    var stiny: f64 = 0.0;
+    store64(&stiny, 1);                         # 2^-1074, the least subnormal
+    i = 0;
+    while (i < 4000) {
+        var a8: f64 = cb_logr(stiny, smin);
+        var b8: f64 = cb_logr(stiny, smax);
+        if (cb_unit() < 0.5) {
+            var sw8: f64 = a8;
+            a8 = b8;
+            b8 = sw8;
+        }
+        var t8: f64 = cb_logr(stiny, 0.5);
+        if (cb_unit() < 0.5) {
+            cb_point("tiny", a8, b8, t8);
+        } else {
+            cb_upper("tiny", a8, b8, t8);
+        }
+        i = i + 1;
+    }
+    # Beyond P9: the extremes of x and y, and the switch exactly, on 1,000 shape pairs over the domain.
+    var xmin: f64 = 0.0;
+    store64(&xmin, 1);                          # 2^-1074
+    var xnorm: f64 = 0x0010000000000000;        # 0x1p-1022
+    var xeps: f64 = 0x3CA0000000000000;         # 0x1p-53
+    i = 0;
+    while (i < 1000) {
+        var a9: f64 = cb_logr(smin, smax);
+        var b9: f64 = cb_logr(smin, smax);
+        cb_point("edges", a9, b9, xmin);
+        cb_point("edges", a9, b9, xnorm);
+        cb_point("edges", a9, b9, xeps);
+        cb_point("edges", a9, b9, 0.5);
+        cb_upper("edges", a9, b9, xmin);
+        cb_upper("edges", a9, b9, xeps);
+        var a91: f64 = a9 + 1.0;
+        var s9: f64 = a9 + b9 + 2.0;
+        var sw9: f64 = a91 / s9;
+        var w9 = load64(&sw9);
+        var lo9: f64 = 0.0;
+        var hi9: f64 = 0.0;
+        store64(&lo9, w9 - 1);
+        store64(&hi9, w9 + 1);
+        cb_point("edges", a9, b9, sw9);
+        cb_point("edges", a9, b9, lo9);
+        cb_point("edges", a9, b9, hi9);
+        i = i + 1;
+    }
+    # Beyond P9: the switch for large shapes, where the fraction converges slowest: 500 pairs with both shapes in
+    # [1e5, 1e9], at (a + 1)/(a + b + 2) and its two neighbours.
+    i = 0;
+    while (i < 500) {
+        var ac: f64 = cb_logr(smax, sbig);
+        var bc: f64 = cb_logr(smax, sbig);
+        var ac1: f64 = ac + 1.0;
+        var sc: f64 = ac + bc + 2.0;
+        var swc: f64 = ac1 / sc;
+        var wc = load64(&swc);
+        var loc: f64 = 0.0;
+        var hic: f64 = 0.0;
+        store64(&loc, wc - 1);
+        store64(&hic, wc + 1);
+        cb_point("bigswitch", ac, bc, swc);
+        cb_point("bigswitch", ac, bc, loc);
+        cb_point("bigswitch", ac, bc, hic);
+        i = i + 1;
+    }
+    print(load64(g_out), load64(g_out + 8));
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

@@ -148,13 +148,23 @@ files. This README records what is specific to pramana.
   - `t1_ln_gamma`, P9's lnΓ on MPFR's double-double logarithms (`mpfr_ref.ln_dd`) and libm 0.2.16's coefficients;
   - `t1_gamma_inc` (part b4), src/gammainc.cyr step for step, on kimiya's Dekker product, MPFR's double-double
     logarithms and exponentials (`mpfr_ref.ln_dd`, `mpfr_ref.exp_dd`, with the exp core's exponent taken as the port
-    takes it) and MPFR's γ and ζ(k) (`mpfr_ref.zeta_table`). It feeds the two regularized wrappers.
+    takes it) and MPFR's γ and ζ(k) (`mpfr_ref.zeta_table`). It feeds the two regularized wrappers;
+  - `t1_beta_inc` (part b5), src/betainc.cyr step for step on the same toolkit, with Rust's form (`sp_beta_inc`) past
+    max(a, b) = 1e9. It equals the port on all 6,219 golden inputs in T1's range, and feeds
+    `regularized_incomplete_beta`.
 
   The incomplete gamma's own rows (part b4) take their true P and Q from `mpfr_ref.gamma_pq`: check.c's 320-bit
   series or continued fraction through ctypes, wider below a = 2^-10. A row at a = 1e9 takes about 10 s, so
   `validate.py` runs them in a process pool and caches them in `build/golden/`, under a hash of the reference's source
   and the MPFR version. The first run takes a few minutes; later ones read the cache. The harness's bound for them is
   `_par_c_gamma_bound`: 4 ulp for a in [1e-3, 1e5], 0 for the edges and the Wilson–Hilferty rows past 1e9.
+
+  The incomplete beta's own rows (part b5) take their true I and 1 − I from `mpfr_ref.beta_ic`: check.c's continued
+  fraction through ctypes, with x and y held exactly (the smaller as given, the other as 1 − it) and the precision grown
+  for a tiny complement. `validate.py` pools and caches them as for `gamma_inc` (5,714 inputs, about 50 s). The
+  harness's bound is `_par_c_beta_bound`: 8 ulp for a and b in [1e-3, 1e5], 0 for the edges, an infinite shape and the
+  rows past 1e9, where Rust's form stays. In between, as for `gamma_inc` outside its domain, `_par_c_vs_rust` holds each
+  output to 1.3.0's own error.
 
 | Module | Milestone | Golden rows | Golden emitter | Generated Cyrius / correctly rounded rows |
 |---|---|---|---|---|
@@ -166,7 +176,7 @@ files. This README records what is specific to pramana.
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `debug` | M1 f | 60 | `src/m_debug.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
-| `special` | M2 a1–a4, b1–b4 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 17,230 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; and the rows downstream of them on T1's values, 4,472, among them gamma_inc's 510 Wilson–Hilferty rows and the two wrappers' 534); `special.cr.tsv`, 172 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel, ln B and the incomplete beta, 170; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
+| `special` | M2 a1–a4, b1–b5 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 20,621 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; b5: the incomplete beta's I and 1 − I at theirs, 4,834; and the rows downstream of them on T1's values, 3,029, among them gamma_inc's 510 Wilson–Hilferty rows and the three wrappers' 777); `special.cr.tsv`, 91 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel and ln B, 87; two `beta_inc` rows whose true value is Rust's form on correctly rounded primitives; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
 
 ## Format 1
 

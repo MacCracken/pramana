@@ -50,6 +50,7 @@ modules = [
     "src/lgamma.cyr",
     "src/zeta_data.cyr",
     "src/gammainc.cyr",
+    "src/betainc.cyr",
     "src/mathx.cyr",
     "src/fmtf.cyr",
     "src/pool.cyr",

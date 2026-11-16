@@ -60,12 +60,13 @@ static void gref(mpfr_t P, mpfr_t Q, double ad, double xd){
   }
   mpfr_clears(a,x,pre,t,s,term,h,b,c,d,an,del,tiny,lim,w,(mpfr_ptr)0);
 }
-// x^a y^b / (a B(a, b)) times Lentz's continued fraction (Rust's even and odd steps), at 320 bits, stopped when a
-// step changes it by under 2^-310: I_x(a, b) for x < (a+1)/(a+b+2).
-static void bcf(mpfr_t r, mpfr_t a, mpfr_t b, mpfr_t x, mpfr_t y){
-  mpfr_t t,u,pre,c,d,h,num,del,tiny; int sg;
-  mpfr_inits2(320,t,u,pre,c,d,h,num,del,tiny,(mpfr_ptr)0);
+// x^a y^b / (a B(a, b)) times Lentz's continued fraction (Rust's even and odd steps), at prec bits, stopped when a
+// step changes it by under 2^-(prec - 10): I_x(a, b) for x < (a+1)/(a+b+2). x and y are exact (M2 part b5).
+static void bcf(mpfr_t r, mpfr_t a, mpfr_t b, mpfr_t x, mpfr_t y, long prec){
+  mpfr_t t,u,pre,c,d,h,num,del,tiny,stop; int sg;
+  mpfr_inits2(prec,t,u,pre,c,d,h,num,del,tiny,stop,(mpfr_ptr)0);
   mpfr_set_ui_2exp(tiny,1,-20000,MPFR_RNDN);
+  mpfr_set_ui_2exp(stop,1,-(prec-10),MPFR_RNDN);
   mpfr_log(t,x,MPFR_RNDN); mpfr_mul(pre,t,a,MPFR_RNDN);
   mpfr_log(t,y,MPFR_RNDN); mpfr_mul(t,t,b,MPFR_RNDN); mpfr_add(pre,pre,t,MPFR_RNDN);
   mpfr_lgamma(t,&sg,a,MPFR_RNDN); mpfr_sub(pre,pre,t,MPFR_RNDN);
@@ -93,23 +94,38 @@ static void bcf(mpfr_t r, mpfr_t a, mpfr_t b, mpfr_t x, mpfr_t y){
       mpfr_abs(t,c,MPFR_RNDN); if(mpfr_cmp(t,tiny)<0) mpfr_set(c,tiny,MPFR_RNDN);
       mpfr_ui_div(d,1,d,MPFR_RNDN); mpfr_mul(del,d,c,MPFR_RNDN); mpfr_mul(h,h,del,MPFR_RNDN);
     }
-    mpfr_sub_ui(t,del,1,MPFR_RNDN); mpfr_abs(t,t,MPFR_RNDN); if(mpfr_cmp_d(t,0x1p-310)<0) break;
+    mpfr_sub_ui(t,del,1,MPFR_RNDN); mpfr_abs(t,t,MPFR_RNDN); if(mpfr_cmp(t,stop)<0) break;
   }
   mpfr_mul(r,pre,h,MPFR_RNDN);
-  mpfr_clears(t,u,pre,c,d,h,num,del,tiny,(mpfr_ptr)0);
+  mpfr_clears(t,u,pre,c,d,h,num,del,tiny,stop,(mpfr_ptr)0);
 }
-// I_x(a, b) and 1 - I_x(a, b) at 320 bits, the smaller of xd and yd exact: the continued fraction on the side where it
-// converges fast, the other value as 1 - it (which keeps at least ~270 bits on every row probe P9 makes).
+// I_x(a, b) and 1 - I_x(a, b), the smaller of xd and yd exact and the other 1 - it, held exactly (1,200 bits): the
+// continued fraction on the side where it converges fast, the other value as 1 - it from the exact difference. At 320
+// bits, as P9 had it, that complement keeps at least ~270 bits on every row P9 makes, but none for a tiny shape, whose
+// complement can be 2^-1000 (M2 part b5): when the complement is below 2^-(prec - 330), prec grows by its binary
+// exponent plus 64 and the side is recomputed. A complement still below 2^-1200 at 1,600 bits or more rounds to 0.
 static void bref(mpfr_t I, mpfr_t C, double ad, double bd, double xd, double yd){
-  mpfr_t a,b,x,y,s,r;
-  mpfr_inits2(320,a,b,x,y,s,r,(mpfr_ptr)0);
+  mpfr_t a,b,x,y,s,r,v,w;
+  mpfr_inits2(1200,a,b,x,y,s,r,(mpfr_ptr)0);
   mpfr_set_d(a,ad,MPFR_RNDN); mpfr_set_d(b,bd,MPFR_RNDN);
   if(xd<=yd){ mpfr_set_d(x,xd,MPFR_RNDN); mpfr_ui_sub(y,1,x,MPFR_RNDN); }
   else { mpfr_set_d(y,yd,MPFR_RNDN); mpfr_ui_sub(x,1,y,MPFR_RNDN); }
   mpfr_add_ui(s,a,1,MPFR_RNDN); mpfr_add(r,a,b,MPFR_RNDN); mpfr_add_ui(r,r,2,MPFR_RNDN); mpfr_div(s,s,r,MPFR_RNDN);
-  if(mpfr_cmp(x,s)<0){ bcf(I,a,b,x,y); mpfr_ui_sub(C,1,I,MPFR_RNDN); }
-  else { bcf(C,b,a,y,x); mpfr_ui_sub(I,1,C,MPFR_RNDN); }
-  mpfr_clears(a,b,x,y,s,r,(mpfr_ptr)0);
+  int direct=mpfr_cmp(x,s)<0;
+  long prec=320;
+  for(;;){
+    mpfr_init2(v,prec); mpfr_init2(w,2*prec+64);
+    if(direct) bcf(v,a,b,x,y,prec); else bcf(v,b,a,y,x,prec);
+    mpfr_ui_sub(w,1,v,MPFR_RNDN);
+    long ex=mpfr_zero_p(w)?-(2*prec):(long)mpfr_get_exp(w);
+    if(ex>=-(prec-330) || (prec>=1600 && ex<-1200)) break;
+    long np=prec-ex+64;
+    prec=np>prec?np:2*prec;
+    mpfr_clears(v,w,(mpfr_ptr)0);
+  }
+  if(direct){ mpfr_set(I,v,MPFR_RNDN); mpfr_set(C,w,MPFR_RNDN); }
+  else { mpfr_set(C,v,MPFR_RNDN); mpfr_set(I,w,MPFR_RNDN); }
+  mpfr_clears(a,b,x,y,s,r,v,w,(mpfr_ptr)0);
 }
 int main(void){
   mpfr_set_default_prec(1024);
@@ -137,7 +153,11 @@ int main(void){
       if(ba!=ka||bb!=kb||bx!=kx||by!=ky){ bref(gp,gq,ba,bb,bx,by); ka=ba; kb=bb; kx=bx; ky=by; }
       Stat *s=get(nm);
       double cr=mpfr_get_d(nm[5]=='i'?gp:gq,MPFR_RNDN);
-      if(!isfinite(cr) || isnan(r)){ s->skipped++; continue; }
+      // A NaN or infinite result counts as +∞ ulp (M2 part b5, as b4 made gref's): I and 1 − I are always finite.
+      if(!isfinite(cr) || !isfinite(r)){
+        s->n++; s->ncr++; if(INFINITY>s->maxu){ s->maxu=INFINITY; s->worst_x=ba; s->worst_y=bb; s->worst_z=(bx<=by?bx:-by); }
+        continue;
+      }
       double u=nextafter(fabs(cr),INFINITY)-fabs(cr);
       mpfr_set_d(t,r,MPFR_RNDN); mpfr_sub(t,t,nm[5]=='i'?gp:gq,MPFR_RNDN); mpfr_abs(t,t,MPFR_RNDN);
       double e=mpfr_get_d(t,MPFR_RNDN)/u;

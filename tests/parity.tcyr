@@ -766,6 +766,7 @@ fn _par_math(fp, fl): i64 {
 # (T0), so every row matches special.cr.tsv's model at 0 ulp. Part a1: fdlibm's erf and erfc, Φ and 1 − Φ. Part a2:
 # lnΓ, the Stirling remainder, bd0, the prefactor kernel and ln B. Part a3: the regularized incomplete gamma, (P, Q)
 # and each alone. Part a4: the regularized incomplete beta, (I, 1 − I) from (a, b, x, y), and I alone from (x, a, b).
+# Part b on: the T1 functions' rows are compared with special.ref.tsv at ADR 009's bounds (`_par_c_bound`).
 fn _par_special(fp, fl): i64 {
     var x: f64 = _par_in(0);
     if (_par_in_n == 1) {
@@ -936,7 +937,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "math::gamma_inc") == 1) { return _par_c_gamma_bound(); }   # T1 (part b4)
     if (_par_eq(fp, fl, "math::regularized_lower_incomplete_gamma") == 1) { return 0; }
     if (_par_eq(fp, fl, "math::regularized_upper_incomplete_gamma") == 1) { return 0; }
-    if (_par_eq(fp, fl, "math::beta_inc") == 1) { return 0; }    # exp, ln, ln_1p (part a4)
+    if (_par_eq(fp, fl, "math::beta_inc") == 1) { return _par_c_beta_bound(); }     # T1 (part b5)
     if (_par_eq(fp, fl, "math::regularized_incomplete_beta") == 1) { return 0; }
     return 0 - 1;
 }
@@ -968,11 +969,41 @@ fn _par_c_gamma_bound(): i64 {
     return 0;
 }
 
+# beta_inc's region by its shapes (T1, M2 part b5; ADR 009): 1 on the committed domain, a and b in [1e-3, 1e5] with
+# x > 0 and y > 0; 2 for the other inputs T1 computes, finite shapes up to 1e9; 0 for the edges (a NaN, a shape ≤ 0,
+# x ≤ 0, y ≤ 0), an infinite shape, and a shape past 1e9, where Rust's form stays (on T1's lnΓ).
+#must_use
+fn _par_c_beta_region(): i64 {
+    if (_par_in_n != 4) { return 0; }
+    var a: f64 = _par_in(0);
+    var b: f64 = _par_in(1);
+    var x: f64 = _par_in(2);
+    var y: f64 = _par_in(3);
+    var big: f64 = 1000000000.0;
+    if (a > 0.0 && a <= big && b > 0.0 && b <= big && x > 0.0 && y > 0.0) {
+        var lo: f64 = 0.001;
+        var hi: f64 = 100000.0;
+        if (a >= lo && a <= hi && b >= lo && b <= hi) { return 1; }
+        return 2;
+    }
+    return 0;
+}
+
+# beta_inc's bound: ADR 009's 8 ulp on the committed domain; elsewhere 0, which `_par_c_vs_rust` widens to 1.3.0's own
+# error outside the domain.
+#must_use
+fn _par_c_beta_bound(): i64 {
+    if (_par_c_beta_region() == 1) { return 8; }
+    return 0;
+}
+
 # 1 for a row outside its T1 function's committed domain, where ADR 009 asks only that no row be less accurate than
-# Rust: gamma_inc for a < 1e-3 or 1e5 < a ≤ 1e9 (M2 part b4).
+# Rust: gamma_inc for a < 1e-3 or 1e5 < a ≤ 1e9 (M2 part b4); beta_inc for a shape below 1e-3, or in (1e5, 1e9]
+# (part b5).
 #must_use
 fn _par_c_vs_rust(fp, fl): i64 {
     if (_par_eq(fp, fl, "math::gamma_inc") == 1 && _par_c_gamma_region() == 2) { return 1; }
+    if (_par_eq(fp, fl, "math::beta_inc") == 1 && _par_c_beta_region() == 2) { return 1; }
     return 0;
 }
 

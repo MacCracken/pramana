@@ -496,3 +496,32 @@ algorithms rather than less precision:
 - the direct small-shape form carried further than x = 1.1.
 
 Both are findings to measure, not changes for this part.
+
+## M2 part b5: the incomplete beta within 8 ulp, T1 (2026-11-16)
+
+**Bodies.** The whole of `tests/special.bcyr` and its twin. Three rounds, interleaved and pinned to core 5, each started
+under a load average of 3 (2.79, 2.69 and 2.93 at the starts; other projects' jobs raised it during some rounds).
+- **The digests:** all 26 are explained by `validate.py`'s models. The port's two T1 `beta_inc` rows equal the T1
+  model (`t1_beta_inc`) on all 8,192 of their arguments. 1.3.0's I − (1 − I) differs from T1's on 4,051 and 4,027 of
+  each row's 4,096: at the mean, where these rows sit, 1.3.0 is least accurate.
+- **The rows b5 leaves alone** re-measured within 5% at their fastest round (the gamma rows 7.60 and 6.13 µs against 7.24 and 5.82), with single-round spikes of up to 70% on a few rows where the load rose mid-round of their b4 record.
+
+| Row | Rust 1.3.0 | Cyrius T1 (b5) | Cyrius / Rust | Cyrius T0 (part a4) |
+|---|---|---|---|---|
+| `beta_inc`, a and b in [0.5, 10), x at the mean | 242.7–261.3 ns | 17.78–18.46 µs | 72× | 1.29–1.30 µs |
+| `beta_inc`, a and b in [10, 1000), x at the mean | 605.0–654.1 ns | 33.41–36.20 µs | 56× | 2.30–2.33 µs |
+
+**Where the time goes.** T1 costs 14–15× T0, within the 10–17× P9 measured (§6.6):
+- **every continued-fraction step is double-double:** per half-step two double-double divisions, a reciprocal and four
+  products, where Rust takes two divisions and a few multiply-adds; at the mean the fraction runs longest;
+- **the prefactor** is a double-double exponent through kimiya's exp core: for two shapes of 20 or more the brcomp form
+  with three double-double Stirling corrections, each of which divides out its seven coefficients afresh;
+- **the fixes add little on these rows:** the power series and the Stirling difference run only for small shapes
+  against large ones, which these rows don't draw.
+
+As for `gamma_inc`, P9 showed that plain-double loops miss the bound, so the cost has to come down through algorithms:
+- TOMS 708's `bgrat` for one large shape and `basym` for two, which are O(1) where the fraction takes O(√max(a, b))
+  steps (P9's note);
+- the Stirling coefficients as generated double-double constants, rather than seven divisions per call.
+
+Both are findings to measure, not changes for this part.

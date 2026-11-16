@@ -10,10 +10,13 @@ scripts/probes/p9_zeta_table.c through ctypes; it writes the same bits. Constant
 
     python3 -I -B scripts/gen_zeta.py .            # write src/zeta_data.cyr
     python3 -I -B scripts/gen_zeta.py . --check    # exit 1 when it differs from what MPFR gives, or an inline word
-                                                   # in src/dd.cyr or src/gammainc.cyr isn't proven
+                                                   # in src/dd.cyr, src/gammainc.cyr or src/betainc.cyr isn't proven
 
-`--check` also proves the inline hex words of src/dd.cyr and src/gammainc.cyr: each 16-digit word in code is the power
-of two its comment cites (`0x3C10000000000000  # 0x1p-62`). Without MPFR it checks those alone and reports the table
+The T1 incomplete beta (src/betainc.cyr, M2 part b5) takes the same table for lnΓ(1 + a) and for the difference
+lnΓ(a + b) − lnΓ(b) below b = 20.
+
+`--check` also proves the inline hex words of src/dd.cyr, src/gammainc.cyr and src/betainc.cyr: each 16-digit word in
+code is the power of two its comment cites (`0x3C10000000000000  # 0x1p-62`). Without MPFR it checks those alone and reports the table
 "unverified". MPFR (libmpfr.so.6) is called through ctypes; stdlib only.
 """
 
@@ -27,7 +30,7 @@ import sys
 ROOT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else ".")
 CHECK = "--check" in sys.argv
 OUT = os.path.join(ROOT, "src", "zeta_data.cyr")
-INLINE = ("src/dd.cyr", "src/gammainc.cyr")
+INLINE = ("src/dd.cyr", "src/gammainc.cyr", "src/betainc.cyr")
 
 
 def bits(d: float) -> int:

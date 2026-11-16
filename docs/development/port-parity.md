@@ -2940,3 +2940,188 @@ The exact downstream gate catches three of these alone: ζ's and γ's low words,
 **Cost** (`docs/benchmarks-rust-v-cyrius.md`): 7.24–7.50 µs a call on small shapes and 5.82–5.97 µs on large ones,
 48–61× Rust and 10–13× T0, as P9 measured (10–17×). The bench's digests show the port equal to the T1 model on all
 8,192 arguments of its two T1 rows.
+
+### 8.9 Part b5: the incomplete beta within 8 ulp, T1 (2026-11-16)
+
+**The module.** `beta_inc` up to max(a, b) = 10⁹ is now probe P9's T1 form (§6.6), in `src/betainc.cyr`. It keeps
+Rust's continued fraction on the side x < (a + 1)/(a + b + 2), with four changes:
+- the smaller of x and y is taken as exact, and the other is recomputed as 1 − it in double-double;
+- a double-double prefactor;
+- a double-double continued fraction, stopped at 2⁻⁶²;
+- TOMS 708's power series for a complement below 2⁻⁶.
+
+It reuses `src/dd.cyr`, gammainc's lnΓ below 20 and the ζ table. P9's own Stirling double-double for arguments of 20
+and up comes with it. 1.3.0's double-precision fraction, which part a4 proved at 0 ulp, is retired below 10⁹.
+- **Past 10⁹, Rust's form stays, as for `gamma_inc`.** Near the switch the fraction's cost grows with the shapes: 5 ms
+  a call at a = b = 10⁹, 45 ms at 10¹², 130 ms at 10¹⁵. Beyond about 10¹⁵⁴ its products overflow. 1.3.0 has the same
+  limits, which its 10⁶-step budget bounds. Keeping its form there satisfies ADR 009's "no row less accurate than
+  Rust" as it stands, and keeps P9's cap, 4000 + 200·⌊√max(a, b)⌋, inside an integer: past about 10³⁸ `f64_to`
+  overflows, to INT64_MIN on x86 and to INT64_MAX on aarch64.
+- **An infinite shape returns (NaN, NaN) before the loop.** That is 1.3.0's value, which it reached only after running
+  its budget on a NaN prefactor (part a4's finding).
+- **Against P9:** the port's output on P9's five sets equalled P9's own T1 rows byte for byte, all 103,372 of them,
+  until the fixes below. After them, 3 of the 103,372 differ, and all 3 moved closer to the truth: the `near` set's
+  share not correctly rounded fell from 0.039% to 0.024%.
+
+**Five fixes to P9's form**, each found past P9's sets (a and b in [10⁻³, 10⁵], y = 1 − x):
+- **The power series' ln(a·B(a, b)) cancelled.** P9 formed it as lnΓ(a) + ln a + lnΓ(b) − lnΓ(a + b). With two tiny
+  shapes, 1 − I ≈ a/(a + b), and the a/b enters through lnΓ(b) − lnΓ(a + b) ≈ −a/b, which the difference of two
+  double-doubles near 662 loses entirely: at a = 3.8·10⁻³²¹, b = 1.6·10⁻²⁸⁸ P9 gave 1 − I = 6.7·10⁻³¹⁹ for
+  2.4·10⁻³³. With a large b it loses the logarithms' 2⁻⁸⁰·b ln b instead: 118 ulp at a = 0.0035, b = 6.1·10⁸.
+  The port takes ln(aB) = lnΓ(1 + a) − [lnΓ(a + b) − lnΓ(b)], with lnΓ(1 + a) from the ζ series and the difference in
+  a form whose every term is proportional to a:
+  - from b = 20, Stirling's: (b − ½)·ln(1 + a/b) + a·(ln(a + b) − 1) − [st(b) − st(a + b)], each of Stirling's terms
+    c/zⁿ contributing c·a·r·q·Σ rʲqⁿ⁻¹⁻ʲ (r = 1/b, q = 1/(a + b));
+  - below 20 (a < 1), a shift by m = ⌊b⌋ − 1 into [1, 3), the ζ series' difference term by term through
+    Dₖ = y₂ᵏ − y₁ᵏ = y₂·Dₖ₋₁ + a·y₁ᵏ⁻¹, and ln(1 + a/(b − i)) for each step of the shift.
+- **A subnormal numerator kept 27 bits of its quotient.** The double-double a/b takes its correction from the
+  remainder a − q·b, near 2⁻⁵³·a, which Dekker's product no longer gives exactly below 2⁻¹⁰²². A numerator below
+  2⁻⁵¹² is now scaled by 2⁶⁰⁰ first. Found at a = 9·10⁻³¹⁶, b = 6·10⁻²⁶⁴.
+- **The prefactor cancelled for large shapes.** P9's M = a ln x + b ln y − ln B(a, b) − ln a cancels from about a + b
+  down to O(1) near the mean, leaving the logarithms' 2⁻⁸⁰ relative error: 2 ulp in I near a = b = 10⁹. For two
+  shapes of 20 or more the port takes TOMS 708's brcomp form, which is also 1.3.0's for two shapes of 10 or more,
+  here in double-double: with λ = bx − ay, M = −a·φ(λ/a) − b·φ(−λ/b) + ½ ln(b/(a(a + b))) − ln √(2π) − [st(a) +
+  st(b) − st(a + b)], φ(u) = u − ln(1 + u) by its series for |u| ≤ ¼.
+- **ln B cancelled with one large shape.** With one shape q of 20 or more and p below, ln B = lnΓ(p) − [lnΓ(p + q) −
+  lnΓ(q)] by the Stirling difference above, where P9's lnΓ(q) − lnΓ(a + b) cancelled from q ln q: 3 ulp in 1 − I at
+  a = 0.0016, b = 7.7·10⁸.
+- **The side was chosen on the caller's x.** T1 computes with x = 1 − y when y is the smaller, but P9 tested the
+  caller's x against the switch. Wherever y = 1 − x the two agree, so P9's sets never saw it. On 1.3.0's golden rows
+  that pass a y that isn't, beta_inc(2, 3, 0.3, 2⁻¹⁰⁷⁴), it ran the fraction at x ≈ 1 on the wrong side and returned
+  (0, 1) for (1, 0). The parity replay found it.
+
+**The reference** (`mpfr_ref.beta_ic`, and `check.c`'s `bref`, which it follows) is P9's continued fraction, with three
+changes:
+- **x and y are held exactly** (1,200 bits): 1 − x needs up to 1,075 bits for a subnormal x.
+- **More precision for a tiny complement.** At P9's fixed 320 bits, 1 − V keeps ~270 bits on every row P9 makes, but
+  none for a tiny shape, whose complement can be 2⁻¹⁰⁰⁰. When the complement is below 2^-(prec − 330), prec grows by
+  its binary exponent plus 64 and the side is recomputed; the stop tightens with it, to 2^-(prec − 10). A complement
+  still below 2⁻¹²⁰⁰ at 1,600 bits rounds to 0.
+- **A NaN or infinite result now fails.** `check.c` had skipped a `bref` row whose result was NaN.
+
+Against the exact rationals on §3.2's 4,000 integer-shape rows (`p9_beta_exact.py`), `bref` now agrees to
+2.3×10⁻⁹⁷ ulp (P9: 4×10⁻⁷⁸). `validate.py` computes the golden inputs' references in a process pool and caches them in
+`build/golden/`, as for `gamma_inc`: 5,714 inputs in 50 s.
+
+**Verification** (`scripts/crverify/run.sh beta`, a new set): 140,098 rows against `bref`.
+- **The sets:** P9's five, reproduced from its seed and order: §3.2's 4,000 integer-shape rows, drawn as
+  `scripts/port-baseline/main.rs` draws them, and its four seeded sets (103,372 rows). Then five sets beyond them:
+  - 2,000 draws with the larger shape in [10⁵, 10⁹] (`bigab`);
+  - 2,000 with both shapes in [10⁸, 10⁹] at μ ± 3σ, where the prefactor cancels most (`bigboth`);
+  - 500 pairs with both shapes in [10⁵, 10⁹] at the switch and its two neighbours, where the fraction converges
+    slowest (`bigswitch`);
+  - 4,000 with a shape from 2⁻¹⁰⁷⁴ to 10⁻³ (`tiny`);
+  - 1,000 pairs over the domain at x = 2⁻¹⁰⁷⁴, 2⁻¹⁰²², 2⁻⁵³ and ½, at y = 2⁻¹⁰⁷⁴ and 2⁻⁵³ given exactly, and at the
+    switch and its neighbours (`edges`).
+- **An input's two rows stay together,** so `bref` runs once per input.
+
+| Set | I, max (mean) | 1 − I, max (mean) | Not correctly rounded |
+|---|---|---|---|
+| §3.2's 4,000 integer-shape rows | 0.50 (0.218) | 0.50 (0.221) | 0%, 0.03% |
+| x = μ ± 5σ, a, b ∈ [10⁻³, 10⁵] | 0.50 (0.248) | 0.50 (0.250) | 0.02%, 0.02% |
+| lower tail | 0.50 (0.150) | 0.50 (0.112) | 0%, 0% |
+| upper tail | 0.50 (0.113) | 0.50 (0.156) | 0%, 0% |
+| one small shape | 0.50 (0.173) | 0.50 (0.177) | 0%, 0% |
+| at the switch | 0.51 (0.250) | 0.50 (0.246) | 0.14%, 0.04% |
+| the larger shape in [10⁵, 10⁹] | 0.50 (0.145) | 0.50 (0.137) | 0%, 0% |
+| both in [10⁸, 10⁹], μ ± 3σ | 0.50 (0.254) | 0.50 (0.253) | 0.10%, 0% |
+| the switch, both in [10⁵, 10⁹] | 0.50 (0.251) | 0.50 (0.251) | 0%, 0% |
+| a shape from 2⁻¹⁰⁷⁴ to 10⁻³ | 1 unit of 2⁻¹⁰⁷⁴ (0.139) | 1 unit of 2⁻¹⁰⁷⁴ (0.138) | 0.10%, 0.03% |
+| x and y at 2⁻¹⁰⁷⁴, 2⁻¹⁰²², 2⁻⁵³, the switch | 0.50 (0.147) | 0.50 (0.141) | 0.01%, 0.04% |
+
+- **The worst rows** are two subnormal results, one unit of 2⁻¹⁰⁷⁴ each: I at a = 34, b = 9.9·10⁻³¹⁶, and 1 − I at
+  a = 2⁻¹⁰⁷⁴, b = 10⁻¹³. Elsewhere the maximum is 0.5064 ulp, P9's own worst row at the switch.
+- **Against ADR 009:** within its 8 ulp on the committed domain, and within 1 ulp beyond it, up to 10⁹.
+- **On three targets:** identical outputs (sha256 `b76122f13845ebdd`).
+- **Against P9:** 3 of P9's 103,372 rows differ from its own T1 rows, and all 3 are now correctly rounded.
+
+**The model and the rows.** `validate.py` carries `t1_beta_inc`, src/betainc.cyr step for step on b4's double-double
+helpers, with kimiya's ln and exp cores as MPFR's double-doubles. It equals the port bit for bit on all 6,219 golden
+inputs in T1's range: I, 1 − I and the wrapper's value.
+- `beta_inc`'s own rows expect the true I and 1 − I: 4,834 rows in `special.ref.tsv`. Two more are in
+  `special.cr.tsv`, where the truth happens to equal Rust's form on correctly rounded primitives;
+- the wrapper, downstream, expects Rust's projection of T1's value, at 0 ulp: 243 rows;
+- the edges, the infinite shapes and the three f64::MAX rows past 10⁹ keep Rust's values.
+
+`special.ref.tsv` grows to 20,621 rows; `special.cr.tsv` falls to 91, as 74 `beta_inc` rows and the wrapper's 7 leave
+it for the truth.
+
+**The harness.**
+- **`_par_c_beta_bound`:** ADR 009's 8 ulp for a and b in [10⁻³, 10⁵] with x, y > 0, and 0 for the edges, an
+  infinite shape and the rows past 10⁹.
+- **`_par_c_vs_rust`** now covers `beta_inc` too: for a shape below 10⁻³, or in (10⁵, 10⁹], each output's bound is
+  1.3.0's own distance from the truth.
+- **It found the fifth fix:** the first replay failed 2 rows, 1.3.0's beta_inc(2, 3, 0.3, y) with y = 2.2·10⁻³⁰⁸ and
+  2⁻¹⁰⁷⁴, where the port gave (0, 1).
+
+**The result.** The port is within 1 ulp of the truth on every golden row, and never further from it than 1.3.0:
+
+| Shapes | Rows | Port, max | 1.3.0, max | Port worse than 1.3.0 |
+|---|---|---|---|---|
+| a, b ∈ [10⁻³, 10⁵] | 5,388 | 1 ulp | 59,059 ulp where y = 1 − x | 0 outputs |
+| larger, up to 10⁹ | 258 | 0 | 151,644 ulp | 0 |
+| a shape below 10⁻³ | 68 | 0 | wrong values, and 4 NaN outputs | 0 |
+
+On the 15 rows that pass a y other than 1 − x, 1.3.0 answers for the x it is given and T1 for 1 − y, the smaller
+being exact; the reference follows T1. Of `beta_inc`'s 11,706 outputs, 11,703 are at 0 ulp and 3 at 1; the wrapper's 407 rows are all at 0. The replay is nine
+modules: 112,655 rows ok and 20,818 accepted (20,788 under ADR 9, of which 20,621 are reference rows, and 30 under
+ADR 7), warning-free, on x86_64 ELF, PE (wine) and aarch64 (qemu). Every `math::` result line is identical on the three.
+
+**Past 10⁹** (a finding, for 2.1). Rust's form, which stays there by the maintainer's choice, is far from the truth
+near the mean, where T1 is exact:
+
+| a, b, x | Rust's form, I and 1 − I | T1 |
+|---|---|---|
+| 5, 2·10⁹, 2.4·10⁻⁹ | 45, 90 ulp | 0, 0 |
+| 2·10⁹, 3·10⁹, 0.40001 | 5,631, 45,046 ulp | 0, 0 |
+| 10¹⁰, 10¹⁰, 0.500003 | 65,139, 260,560 ulp | 0, 0 |
+| 10¹¹, 3·10¹¹, 0.250001 | 104,619, 836,959 ulp | 0, 0 |
+
+Extending T1 would cost up to 45 ms a call near the switch at 10¹² and 130 ms at 10¹⁵ (ADR 009's rule holds either way).
+
+**Mutation checks** (`build/handoff/mut_b5.py`: the replay, `tests/special.tcyr`, and the `crverify` rows each mutant
+moves, measured against MPFR when the first two pass):
+
+| Mutant | Replay rows failed | Unit checks failed | `crverify`: rows moved, worst |
+|---|---|---|---|
+| the fraction stopped at 2⁻⁴⁰ | 2,460 | 4 | 53,193 |
+| the prefactor's low part dropped | 1,227 | 7 | 44,305 |
+| x and y as given, neither exact | 1,392 | 9 | 33,915 |
+| P9's switch test, on the caller's x | 2 | 1 | 0 |
+| the power series dropped | 6 | 1 | 781, all bits lost |
+| lnΓ's first-order zl·ψ dropped | 291 | 0 | 12,698 |
+| ln(aB) as P9's sum of lnΓ | 0 | 7 | 1,852, all bits lost |
+| lnΓ(1 + a) as lnΓ(a) + ln a | 0 | 2 | 207, 2×10¹⁴ ulp |
+| the Stirling difference's st terms dropped | 1,574 | 7 | 37,408 |
+| (b − ½)·ln(1 + a/b) directly | 0 | 1 | 2, 18 units of 2⁻¹⁰⁷⁴ |
+| ln(1 + a/b) dropped for b < 1 | 33 | 3 | 2,315 |
+| the quotient's 2⁶⁰⁰ scaling dropped | 0 | 1 | 28, 4.4×10⁷ ulp |
+| the brcomp prefactor dropped | 0 | 1 | 3,072, 50,109 ulp |
+| the Stirling difference for ln B dropped (one shape ≥ 20) | 0 | 1 | 8, 3 ulp |
+| φ's series dropped | 858 | 3 | 22,011 |
+| T1 past 10⁹ when one shape is below it | 0 | 1 | 0 |
+| Rust's form from 10⁸ | 0 | 6 | 5,816 |
+| the power series below 2⁻¹⁰ only | 0 | 0 | 4, 1 ulp |
+| Stirling's correction on the high part (P9's third defect) | 0 | 0 | 1, 1 ulp |
+| an infinite shape to Rust's loop | 0 | 0 | 0 |
+| the power series' stop without j > 2 | 0 | 0 | 0 |
+
+- **Seventeen of twenty-one fail** the replay or a unit check.
+- **Several fixes only show past the golden rows.** Each of those mutants first passed both, and moved `crverify` rows by
+  the amounts above. So each fix now has a unit check on the `crverify` row where its mutant is worst.
+- **The four survivors:** two cost 1 ulp on the rows they move, within the bound (the margin P9 left); the last two are
+  equivalent (the same NaN after Rust's budget, and no row stops on its first two terms). P9's third defect is now
+  nearly out of reach, as the power series no longer takes lnΓ(a + b).
+
+**Tests.** `tests/special.tcyr` grows to 126 checks:
+- §3.2's worst rows, I_x(36, 15) and 1 − I_x(22, 50), where 1.3.0 is 550 and 583 ulp off, within 8 ulp of MPFR;
+- P9's three defects, x and y at 2⁻¹⁰⁷⁴, and a = b = 10⁹, within 8 ulp;
+- every b5 fix, within 1 ulp, at the row where its mutant is worst;
+- the switch on a y that isn't 1 − x: beta_inc(2, 3, 0.3, 2⁻¹⁰⁷⁴) = (1, 0);
+- Rust's form past 10⁹, bit for bit, with both shapes past it and with one;
+- an infinite shape gives (NaN, NaN) either way round.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 17.78–18.46 µs a call on small shapes and 33.41–36.20 µs on large ones,
+both at the mean, where the fraction runs longest. That is 72× and 56× Rust, and 14–15× part a4's T0, within the
+10–17× P9 measured. The bench's digests show the port equal to the T1 model on all 8,192 arguments of its two beta
+rows. TOMS 708's region-specific expansions (`bgrat`, `basym`) are the candidates for the cost, as P9 noted.

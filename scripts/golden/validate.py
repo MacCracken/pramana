@@ -1808,6 +1808,452 @@ def gamma_reference(root, rows, wh):
     GAMMA_REF.update({k: (from_bits(v[0]), from_bits(v[1])) for k, v in known.items() if k in keys})
 
 
+# ── the T1 incomplete beta (M2 part b5), as src/betainc.cyr computes it ──
+# Every double-double step is the port's, in its order, on the helpers above; kimiya's ln and exp cores are MPFR's
+# double-doubles of the same values, kimiya's correctly rounded ln is MPFR's, and γ and ζ(k) − 1 are MPFR's.
+BETA_T1_MAX = 1e9   # src/special.cyr's beta_inc: T1 up to max(a, b) = 1e9, Rust's form (T0) past it
+
+
+def t_ln_of_dd(h, l):
+    lh, ll = mpfr_ref.ln_dd(h)
+    return lh, ll + l / h
+
+
+def t_bi_digamma(z):
+    s, w = 0.0, z
+    while w < 6.0:
+        s = s - 1.0 / w
+        w = w + 1.0
+    lw = mpfr_ref.cr("log", w)
+    iw = 1.0 / w
+    i2 = iw * iw
+    t = i2 * (0.083333333333333333 - i2 * (0.0083333333333333333 - i2 * 0.003968253968253968))
+    return ((lw - 0.5 * iw) - t) + s
+
+
+def t_bi_stirling_dd(zh, zl):
+    rh, rl = t_dd_div(1.0, 0.0, zh, zl)
+    r2h, r2l = t_dd_mul(rh, rl, rh, rl)
+    cs = [t_dd_div(n, 0.0, d, 0.0) for n, d in ((1.0, 12.0), (1.0, 360.0), (1.0, 1260.0), (1.0, 1680.0),
+                                                 (1.0, 1188.0), (691.0, 360360.0), (1.0, 156.0))]
+    th, tl = t_dd_mul(r2h, r2l, cs[6][0], cs[6][1])
+    for k in (5, 4, 3, 2, 1, 0):
+        uh, ul = t_dd_add(cs[k][0], cs[k][1], -th, -tl)
+        if k == 0:
+            return t_dd_mul(rh, rl, uh, ul)
+        th, tl = t_dd_mul(r2h, r2l, uh, ul)
+
+
+def t_bi_ln_sqrt_2pi():
+    tph, tpm = 2.0 * math.pi, 2.0 * PI_L
+    lph, lpl = mpfr_ref.ln_dd(tph)
+    return 0.5 * lph, 0.5 * (lpl + tpm / tph)
+
+
+def t_bi_lgamma_dd(zh, zl):
+    if zh < 20.0:
+        gh, gl = t_lngamma_small_dd(zh)
+        if zl != 0.0:
+            return t_dd_add(gh, gl, zl * t_bi_digamma(zh), 0.0)
+        return gh, gl
+    lh, ll0 = mpfr_ref.ln_dd(zh)
+    ll = ll0 + zl / zh
+    mh, ml = t_dd_add(zh, zl, -0.5, 0.0)
+    ph, pl = t_dd_mul(mh, ml, lh, ll)
+    qh, ql = t_dd_add(ph, pl, -zh, -zl)
+    sph, spl = t_bi_ln_sqrt_2pi()
+    r1h, r1l = t_dd_add(qh, ql, sph, spl)
+    sth, stl = t_bi_stirling_dd(zh, zl)
+    return t_dd_add(r1h, r1l, sth, stl)
+
+
+def t_bi_quot(a, w):
+    if a < 2.0 ** -512:
+        qh, ql = t_dd_div(a * 2.0 ** 600, 0.0, w, 0.0)
+        return qh * 2.0 ** -600, ql * 2.0 ** -600
+    return t_dd_div(a, 0.0, w, 0.0)
+
+
+def t_bi_log1p_g(th, tl):
+    sh, sl, ph, pl = 1.0, 0.0, 1.0, 0.0
+    for k in range(2, 80):
+        nh, nl = t_dd_mul(ph, pl, th, tl)
+        ph, pl = -nh, -nl
+        qh, ql = t_dd_div(ph, pl, float(k), 0.0)
+        sh, sl = t_dd_add(sh, sl, qh, ql)
+        if abs(qh) < sh * 2.0 ** -62 or qh == 0.0:
+            break
+    return sh, sl
+
+
+def t_bi_ln1p_ratio(a, w):
+    if 4.0 * a <= w:
+        th, tl = t_bi_quot(a, w)
+        gh, gl = t_bi_log1p_g(th, tl)
+        return t_dd_mul(th, tl, gh, gl)
+    swh, swl = t_two_sum(w, a)
+    l1h, l1l = t_ln_of_dd(swh, swl)
+    l2h, l2l = mpfr_ref.ln_dd(w)
+    return t_dd_add(l1h, l1l, -l2h, -l2l)
+
+
+def t_bi_lgdiff_big(a, b):
+    rh, rl = t_dd_div(1.0, 0.0, b, 0.0)
+    sh, sl = t_two_sum(b, a)
+    qh, ql = t_dd_div(1.0, 0.0, sh, sl)
+    acch, accl = t_dd_div(1.0, 0.0, 12.0, 0.0)
+    ph, pl, wh, wl = 1.0, 0.0, rh, rl
+    coef = {3: (1.0, 360.0), 5: (1.0, 1260.0), 7: (1.0, 1680.0), 9: (1.0, 1188.0), 11: (691.0, 360360.0),
+            13: (1.0, 156.0)}
+    n = 1
+    while n < 13:
+        mh, ml = t_dd_mul(qh, ql, ph, pl)
+        ph, pl = t_dd_add(wh, wl, mh, ml)
+        n += 1
+        wh, wl = t_dd_mul(wh, wl, rh, rl)
+        if n & 1:
+            ch, cl = t_dd_div(coef[n][0], 0.0, coef[n][1], 0.0)
+            th, tl = t_dd_mul(ch, cl, ph, pl)
+            if (n & 3) == 3:
+                th, tl = -th, -tl
+            acch, accl = t_dd_add(acch, accl, th, tl)
+    rqh, rql = t_dd_mul(rh, rl, qh, ql)
+    aqh, aql = t_dd_mul_d(rqh, rql, a)
+    dsh, dsl = t_dd_mul(aqh, aql, acch, accl)
+    if 4.0 * a <= b:
+        tth, ttl = t_bi_quot(a, b)
+        gh, gl = t_bi_log1p_g(tth, ttl)
+        hrh, hrl = t_dd_mul_d(rh, rl, -0.5)
+        fh, fl = t_dd_add(1.0, 0.0, hrh, hrl)
+        fgh, fgl = t_dd_mul(fh, fl, gh, gl)
+        t1h, t1l = t_dd_mul_d(fgh, fgl, a)
+    else:
+        lh, ll = t_bi_ln1p_ratio(a, b)
+        bmh, bml = t_two_sum(b, -0.5)
+        t1h, t1l = t_dd_mul(bmh, bml, lh, ll)
+    lsh, lsl = t_ln_of_dd(sh, sl)
+    l1h, l1l = t_dd_add(lsh, lsl, -1.0, 0.0)
+    t2h, t2l = t_dd_mul_d(l1h, l1l, a)
+    u1h, u1l = t_dd_add(t1h, t1l, t2h, t2l)
+    return t_dd_add(u1h, u1l, -dsh, -dsl)
+
+
+def t_bi_lgdiff_small(a, b):
+    mf = math.floor(b) - 1.0
+    m = int(mf)
+    y1h, y1l = t_two_sum(b, -(mf + 2.0))
+    y2h, y2l = t_dd_add(y1h, y1l, a, 0.0)
+    if not ZETA:
+        ZETA.extend(mpfr_ref.zeta_table())
+    (gh, gl), zt, zm = ZETA
+    oh, ol = t_two_sum(1.0, -gh)
+    acch, accl = t_dd_mul_d(oh, ol - gl, a)
+    dh, dl, ph, pl = a, 0.0, 1.0, 0.0
+    for k in range(2, 65):
+        ph, pl = t_dd_mul(ph, pl, y1h, y1l)
+        t1h, t1l = t_dd_mul(y2h, y2l, dh, dl)
+        t2h, t2l = t_dd_mul_d(ph, pl, a)
+        dh, dl = t_dd_add(t1h, t1l, t2h, t2l)
+        th, tl = t_dd_mul(zm[k][0], zm[k][1], dh, dl)
+        uh, ul = t_dd_div(th, tl, float(k), 0.0)
+        if k & 1:
+            uh, ul = -uh, -ul
+        acch, accl = t_dd_add(acch, accl, uh, ul)
+    if m < 0:
+        lh, ll = t_bi_ln1p_ratio(a, b)
+        return t_dd_add(acch, accl, -lh, -ll)
+    for i in range(1, m + 1):
+        lh, ll = t_bi_ln1p_ratio(a, b - float(i))
+        acch, accl = t_dd_add(acch, accl, lh, ll)
+    return acch, accl
+
+
+def t_bi_ln_ab(a, b):
+    if a >= 1.0 and b < 20.0:
+        g1h, g1l = t_bi_lgamma_dd(a, 0.0)
+        lah, lal = mpfr_ref.ln_dd(a)
+        h1h, h1l = t_dd_add(g1h, g1l, lah, lal)
+        gbh, gbl = t_bi_lgamma_dd(b, 0.0)
+        sh, sl = t_two_sum(a, b)
+        gsh, gsl = t_bi_lgamma_dd(sh, sl)
+        l1h, l1l = t_dd_add(h1h, h1l, gbh, gbl)
+        return t_dd_add(l1h, l1l, -gsh, -gsl)
+    if a < 1.0:
+        ah, al = t_lngamma1p_dd(a)
+    else:
+        g3h, g3l = t_bi_lgamma_dd(a, 0.0)
+        la2h, la2l = mpfr_ref.ln_dd(a)
+        ah, al = t_dd_add(g3h, g3l, la2h, la2l)
+    dh, dl = t_bi_lgdiff_big(a, b) if b >= 20.0 else t_bi_lgdiff_small(a, b)
+    return t_dd_add(ah, al, -dh, -dl)
+
+
+def t_bi_phi(uh, ul, lh, ll):
+    if abs(uh) <= 0.25:
+        fh = fl = 0.0
+        wh, wl = -uh, -ul
+        ph, pl = t_dd_mul(wh, wl, wh, wl)
+        for k in range(2, 200):
+            th, tl = t_dd_div(ph, pl, float(k), 0.0)
+            fh, fl = t_dd_add(fh, fl, th, tl)
+            if abs(th) < abs(fh) * 2.0 ** -62 or th == 0.0:
+                break
+            ph, pl = t_dd_mul(ph, pl, wh, wl)
+        return fh, fl
+    return t_dd_add(uh, ul, -lh, -ll)
+
+
+def t_bi_lnpre_large(a, b, xh, xl, yh, yl):
+    sh, sl = t_two_sum(a, b)
+    bxh, bxl = t_dd_mul_d(xh, xl, b)
+    ayh, ayl = t_dd_mul_d(yh, yl, a)
+    lmh, lml = t_dd_add(bxh, bxl, -ayh, -ayl)
+    uah, ual = t_dd_div(lmh, lml, a, 0.0)
+    ubh, ubl = t_dd_div(-lmh, -lml, b, 0.0)
+    lah, lal = mpfr_ref.ln_dd(a)
+    lbh, lbl = mpfr_ref.ln_dd(b)
+    lsh, lsl = t_ln_of_dd(sh, sl)
+    l1h = l1l = l2h = l2l = 0.0
+    if abs(uah) > 0.25:
+        lxh, lxl = t_ln_of_dd(xh, xl)
+        v1h, v1l = t_dd_add(lsh, lsl, lxh, lxl)
+        l1h, l1l = t_dd_add(v1h, v1l, -lah, -lal)
+    if abs(ubh) > 0.25:
+        lyh, lyl = t_ln_of_dd(yh, yl)
+        w1h, w1l = t_dd_add(lsh, lsl, lyh, lyl)
+        l2h, l2l = t_dd_add(w1h, w1l, -lbh, -lbl)
+    pah, pal = t_bi_phi(uah, ual, l1h, l1l)
+    pbh, pbl = t_bi_phi(ubh, ubl, l2h, l2l)
+    fah, fal = t_dd_mul_d(pah, pal, a)
+    fbh, fbl = t_dd_mul_d(pbh, pbl, b)
+    h1h, h1l = t_dd_add(lbh, lbl, -lah, -lal)
+    h2h, h2l = t_dd_add(h1h, h1l, -lsh, -lsl)
+    sah, sal = t_bi_stirling_dd(a, 0.0)
+    sbh, sbl = t_bi_stirling_dd(b, 0.0)
+    ssh, ssl = t_bi_stirling_dd(sh, sl)
+    c1h, c1l = t_dd_add(sah, sal, sbh, sbl)
+    c2h, c2l = t_dd_add(c1h, c1l, -ssh, -ssl)
+    qh, ql = t_bi_ln_sqrt_2pi()
+    m1h, m1l = t_dd_add(0.5 * h2h, 0.5 * h2l, -fah, -fal)
+    m2h, m2l = t_dd_add(m1h, m1l, -fbh, -fbl)
+    m3h, m3l = t_dd_add(m2h, m2l, -qh, -ql)
+    return t_dd_add(m3h, m3l, -c2h, -c2l)
+
+
+def t_bi_lnpre(a, b, xh, xl, yh, yl):
+    if a >= 20.0 and b >= 20.0:
+        return t_bi_lnpre_large(a, b, xh, xl, yh, yl)
+    lxh, lxl = t_ln_of_dd(xh, xl)
+    lyh, lyl = t_ln_of_dd(yh, yl)
+    t1h, t1l = t_dd_mul_d(lxh, lxl, a)
+    t2h, t2l = t_dd_mul_d(lyh, lyl, b)
+    if a >= 20.0 or b >= 20.0:
+        p, q = (b, a) if a > b else (a, b)
+        gph, gpl = t_bi_lgamma_dd(p, 0.0)
+        dh, dl = t_bi_lgdiff_big(p, q)
+        la2h, la2l = mpfr_ref.ln_dd(a)
+        f1h, f1l = t_dd_add(t1h, t1l, t2h, t2l)
+        f2h, f2l = t_dd_add(f1h, f1l, -gph, -gpl)
+        f3h, f3l = t_dd_add(f2h, f2l, dh, dl)
+        return t_dd_add(f3h, f3l, -la2h, -la2l)
+    gah, gal = t_bi_lgamma_dd(a, 0.0)
+    gbh, gbl = t_bi_lgamma_dd(b, 0.0)
+    sh, sl = t_two_sum(a, b)
+    gsh, gsl = t_bi_lgamma_dd(sh, sl)
+    lah, lal = mpfr_ref.ln_dd(a)
+    u1h, u1l = t_dd_add(t1h, t1l, t2h, t2l)
+    u2h, u2l = t_dd_add(u1h, u1l, -gah, -gal)
+    u3h, u3l = t_dd_add(u2h, u2l, -gbh, -gbl)
+    u4h, u4l = t_dd_add(u3h, u3l, gsh, gsl)
+    return t_dd_add(u4h, u4l, -lah, -lal)
+
+
+def t_bi_cf(a, b, xh, xl, yh, yl, cap):
+    tiny = 2.0 ** -1022
+    a1h, a1l = t_two_sum(a, 1.0)
+    obh, obl = t_two_sum(1.0, -b)
+    n1h, n1l = t_dd_mul(obh, obl, xh, xl)
+    n2h, n2l = t_dd_mul(a1h, a1l, yh, yl)
+    n3h, n3l = t_dd_add(n1h, n1l, n2h, n2l)
+    d0h, d0l = t_dd_div(n3h, n3l, a1h, a1l)
+    if abs(d0h) < tiny:
+        d0h, d0l = tiny, 0.0
+    dh, dl = t_dd_div(1.0, 0.0, d0h, d0l)
+    hh, hl, ch, cl = dh, dl, 1.0, 0.0
+    abh, abl = t_two_sum(a, b)
+    for m in range(1, cap):
+        mf = float(m)
+        tm = 2.0 * mf
+        bmh, bml = t_two_sum(b, -mf)
+        e1h, e1l = t_dd_mul_d(bmh, bml, mf)
+        e2h, e2l = t_dd_mul(e1h, e1l, xh, xl)
+        at0h, at0l = t_two_sum(a, tm)
+        at1h, at1l = t_dd_add(at0h, at0l, -1.0, 0.0)
+        dnh, dnl = t_dd_mul(at1h, at1l, at0h, at0l)
+        neh, nel = t_dd_div(e2h, e2l, dnh, dnl)
+        x1h, x1l = t_dd_mul(neh, nel, dh, dl)
+        d2h, d2l = t_dd_add(1.0, 0.0, x1h, x1l)
+        q1h, q1l = t_dd_div(neh, nel, ch, cl)
+        ch, cl = t_dd_add(1.0, 0.0, q1h, q1l)
+        dh, dl = t_dd_div(1.0, 0.0, d2h, d2l)
+        g1h, g1l = t_dd_mul(dh, dl, ch, cl)
+        hh, hl = t_dd_mul(hh, hl, g1h, g1l)
+        amh, aml = t_two_sum(a, mf)
+        abmh, abml = t_dd_add(abh, abl, mf, 0.0)
+        o1h, o1l = t_dd_mul(amh, aml, abmh, abml)
+        o2h, o2l = t_dd_mul(o1h, o1l, xh, xl)
+        at2h, at2l = t_dd_add(at0h, at0l, 1.0, 0.0)
+        dn2h, dn2l = t_dd_mul(at0h, at0l, at2h, at2l)
+        noh, nol = t_dd_div(o2h, o2l, dn2h, dn2l)
+        noh, nol = -noh, -nol
+        x2h, x2l = t_dd_mul(noh, nol, dh, dl)
+        d3h, d3l = t_dd_add(1.0, 0.0, x2h, x2l)
+        q2h, q2l = t_dd_div(noh, nol, ch, cl)
+        ch, cl = t_dd_add(1.0, 0.0, q2h, q2l)
+        dh, dl = t_dd_div(1.0, 0.0, d3h, d3l)
+        delh, dell = t_dd_mul(dh, dl, ch, cl)
+        hh, hl = t_dd_mul(hh, hl, delh, dell)
+        if abs(t_dd_add(delh, dell, -1.0, 0.0)[0]) < 2.0 ** -62:
+            break
+    return hh, hl
+
+
+def t_bi_side(a, b, xh, xl, yh, yl, cap):
+    mh, ml = t_bi_lnpre(a, b, xh, xl, yh, yl)
+    if mh < -1100.0:
+        return 0.0, 0.0, -100000
+    eh, el, e = t_exp_core(mh, ml)
+    hh, hl = t_bi_cf(a, b, xh, xl, yh, yl, cap)
+    vh, vl = t_dd_mul(eh, el, hh, hl)
+    return vh, vl, e
+
+
+def t_bi_comp(a, b, xh, xl):
+    l2h, l2l = t_bi_ln_ab(a, b)
+    bmh, bml = t_dd_expm1(l2h, l2l)
+    lxh, lxl = t_ln_of_dd(xh, xl)
+    axh, axl = t_dd_mul_d(lxh, lxl, a)
+    pmh, pml = t_dd_expm1(axh, axl)
+    th, tl, sumh, suml = 1.0, 0.0, 0.0, 0.0
+    for j in range(1, 100000):
+        fj = float(j)
+        jbh, jbl = t_two_sum(fj, -b)
+        m1h, m1l = t_dd_mul(th, tl, jbh, jbl)
+        m2h, m2l = t_dd_mul(m1h, m1l, xh, xl)
+        th, tl = t_dd_div(m2h, m2l, fj, 0.0)
+        ajh, ajl = t_two_sum(a, fj)
+        qh, ql = t_dd_div(th, tl, ajh, ajl)
+        sumh, suml = t_dd_add(sumh, suml, qh, ql)
+        if abs(qh) < abs(sumh) * 2.0 ** -62 and j > 2:
+            break
+    xah, xal = t_dd_add(1.0, 0.0, pmh, pml)
+    w1h, w1l = t_dd_mul(xah, xal, sumh, suml)
+    w2h, w2l = t_dd_mul_d(w1h, w1l, a)
+    n1h, n1l = t_dd_add(bmh, bml, -pmh, -pml)
+    n2h, n2l = t_dd_add(n1h, n1l, -w2h, -w2l)
+    dh, dl = t_dd_add(1.0, 0.0, bmh, bml)
+    rh, rl = t_dd_div(n2h, n2l, dh, dl)
+    return rh + rl
+
+
+def t1_beta_core(a, b, x, y):
+    """src/betainc.cyr's (I, 1 − I) for finite 0 < a, b ≤ 1e9 and x, y > 0, as the port computes them."""
+    xh, xl, yh, yl = x, 0.0, y, 0.0
+    if x <= y:
+        yh, yl = t_two_sum(1.0, -x)
+    else:
+        xh, xl = t_two_sum(1.0, -y)
+    sw = (a + 1.0) / ((a + b) + 2.0)
+    mx = b if b > a else a
+    cap = 4000 + 200 * int(math.sqrt(mx))
+    swap = xh >= sw
+    if not swap:
+        vh, vl, e = t_bi_side(a, b, xh, xl, yh, yl, cap)
+    else:
+        vh, vl, e = t_bi_side(b, a, yh, yl, xh, xl, cap)
+    v = vsh = vsl = 0.0
+    if e > -2000:
+        v = t_scale(vh + vl, e)
+        if e >= -1022:
+            s = math.ldexp(1.0, e)
+            vsh, vsl = vh * s, vl * s
+        else:
+            vsh = v
+    oh, ol = t_dd_add(1.0, 0.0, -vsh, -vsl)
+    other = oh + ol
+    if oh < 0.015625:
+        other = t_bi_comp(a, b, xh, xl) if not swap else t_bi_comp(b, a, yh, yl)
+    return (v, other) if not swap else (other, v)
+
+
+def t1_beta_inc(K, L, a, b, x, y):
+    """The port's beta_inc: Rust's edges; (NaN, NaN) for an infinite shape; T1 (t1_beta_core) up to max(a, b) = 1e9;
+    Rust's form past it (sp_beta_inc, on L's primitives and lnΓ)."""
+    if math.isnan(x) or math.isnan(y) or math.isnan(a) or math.isnan(b) or a <= 0.0 or b <= 0.0 or x <= 0.0 \
+            or y <= 0.0:
+        return sp_beta_inc(K, L, a, b, x, y)
+    if math.isinf(a) or math.isinf(b):
+        return (math.nan, math.nan)
+    if a <= BETA_T1_MAX and b <= BETA_T1_MAX:
+        return t1_beta_core(a, b, x, y)
+    return sp_beta_inc(K, L, a, b, x, y)
+
+
+def beta_t1_range(a, b, x, y):
+    """1 where T1 computes beta_inc: finite shapes in (0, 1e9], x > 0 and y > 0 (none NaN)."""
+    return 0.0 < a <= BETA_T1_MAX and 0.0 < b <= BETA_T1_MAX and x > 0.0 and y > 0.0
+
+
+# The true (I, 1 − I) of every golden beta_inc row in T1's range (mpfr_ref.beta_ic), keyed by the inputs' bits.
+BETA_REF = {}
+
+
+def ref_beta_inc(K, L, a, b, x, y):
+    """beta_inc's own rows in the reference model: the true I and 1 − I where T1 computes them, the port's form
+    elsewhere."""
+    if not beta_t1_range(a, b, x, y):
+        return t1_beta_inc(K, L, a, b, x, y)
+    return BETA_REF[(bits(a), bits(b), bits(x), bits(y))]
+
+
+def _beta_ref_one(key):
+    i, c = mpfr_ref.beta_ic(*(from_bits(k) for k in key))
+    return key, (bits(i), bits(c))
+
+
+def beta_reference(root, rows):
+    """Fills BETA_REF as gamma_reference fills GAMMA_REF: a process pool, the largest shapes first, and a cache in
+    build/golden/ under a hash of beta_ic's source and the MPFR version."""
+    import hashlib
+    import inspect
+    import multiprocessing
+    import os
+    keys = set()
+    for fn, cls, ins, outs, raw in rows:
+        if fn == "math::beta_inc" and len(ins) == 4 and beta_t1_range(*ins):
+            keys.add(tuple(bits(v) for v in ins))
+    src = inspect.getsource(mpfr_ref.beta_ic) + inspect.getsource(mpfr_ref._beta_cf) + mpfr_ref.VERSION
+    tag = hashlib.sha256(src.encode()).hexdigest()[:16]
+    cache = root / "build" / "golden" / f"beta_ref.{tag}.tsv"
+    known = {}
+    if cache.exists():
+        for line in cache.read_text(encoding="utf-8").splitlines():
+            w = tuple(int(t, 16) for t in line.split())
+            known[w[:4]] = w[4:]
+    todo = sorted(keys - known.keys(), key=lambda k: -max(from_bits(k[0]), from_bits(k[1])))
+    if todo:
+        print(f"  beta_inc reference: {len(todo)} inputs at 320 bits or more (cached in build/golden/)", flush=True)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with multiprocessing.get_context("fork").Pool(os.cpu_count()) as pool, \
+                open(cache, "a", encoding="utf-8") as out:
+            for key, (ib, cb) in pool.imap_unordered(_beta_ref_one, todo):
+                known[key] = (ib, cb)
+                out.write(" ".join(f"{v:016x}" for v in key) + f" {ib:016x} {cb:016x}\n")
+                out.flush()
+    BETA_REF.clear()
+    BETA_REF.update({k: (from_bits(v[0]), from_bits(v[1])) for k, v in known.items() if k in keys})
+
+
 class Prims:
     """The primitives 1.3.0's math.rs calls, and its erf and erfc, in one of three modes:
     - "glibc": glibc's primitives (ctypes) and 1.3.0's fdlibm erf and erfc on them: 1.3.0's own bits;
@@ -1815,9 +2261,9 @@ class Prims:
     - "ref": as "cr", with the T1 functions landed so far: each T1 function's own rows expect its true value (MPFR),
       and the formulas downstream of it take T1's own value (the maintainer, 2026-11-16), as the port computes them.
       erf and erfc (b1) are correctly rounded, and Φ (b2) is on every golden row, so for them the two are the same;
-      lnΓ (b3) is within 2 ulp, so the model carries T1's lnΓ (t1_ln_gamma) for its callers, and the incomplete
-      gamma (b4), within 4, carries T1's P and Q (t1_gamma_inc) for its wrappers. The reference model (`*.ref.tsv`);
-      each later T1 function joins it as its part lands."""
+      lnΓ (b3) is within 2 ulp, so the model carries T1's lnΓ (t1_ln_gamma) for its callers; the incomplete gamma
+      (b4), within 4, carries T1's P and Q (t1_gamma_inc) for its wrappers; and the incomplete beta (b5), within 8,
+      carries T1's I (t1_beta_inc) for its wrapper. The reference model (`*.ref.tsv`)."""
 
     def __init__(self, mode, F):
         if mode == "glibc":
@@ -1839,6 +2285,9 @@ class Prims:
             # The incomplete gamma (part b4) likewise: its own rows expect the true P and Q (gamma_row), and the
             # wrappers downstream take T1's (gamma, src/gammainc.cyr as the port computes it).
             self.gamma, self.gamma_row = t1_gamma_inc, ref_gamma_inc
+            # And the incomplete beta (part b5): its own rows expect the true I and 1 − I (beta_row), and its wrapper
+            # takes T1's (beta, src/betainc.cyr as the port computes it).
+            self.beta, self.beta_row = t1_beta_inc, ref_beta_inc
         else:
             self.erf = lambda x: sp_erf(F, self.exp, x)
             self.erfc = lambda x: sp_erfc(F, self.exp, x)
@@ -1847,6 +2296,7 @@ class Prims:
             self.nsf = lambda z: 0.5 * self.erfc(z / math.sqrt(2.0))
             self.lgamma = self.lgamma_row = None   # 1.3.0's Lanczos form, sp_ln_gamma
             self.gamma = self.gamma_row = None     # 1.3.0's series and continued fraction, sp_gamma_inc
+            self.beta = self.beta_row = None       # 1.3.0's continued fraction, sp_beta_inc
 
 
 def sp_ln_gamma(K, L, x):
@@ -2059,8 +2509,8 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
     "math::gamma_inc": (2, lambda K, L, a, x: (L.gamma_row or sp_gamma_inc)(K, L, a, x)),
     "math::regularized_lower_incomplete_gamma": (2, lambda K, L, a, x: (L.gamma or sp_gamma_inc)(K, L, a, x)[0]),
     "math::regularized_upper_incomplete_gamma": (2, lambda K, L, a, x: (L.gamma or sp_gamma_inc)(K, L, a, x)[1]),
-    "math::beta_inc": (4, sp_beta_inc),
-    "math::regularized_incomplete_beta": (3, lambda K, L, x, a, b: sp_beta_inc(K, L, a, b, x, 1.0 - x)[0]),
+    "math::beta_inc": (4, lambda K, L, a, b, x, y: (L.beta_row or sp_beta_inc)(K, L, a, b, x, y)),
+    "math::regularized_incomplete_beta": (3, lambda K, L, x, a, b: (L.beta or sp_beta_inc)(K, L, a, b, x, 1.0 - x)[0]),
 }
 
 
@@ -2069,12 +2519,17 @@ T1_SO_FAR = {"math::erf": "MPFR's correctly rounded erf", "math::erfc": "MPFR's 
              "math::normal_cdf": "MPFR's ½·erfc(−z/√2), correctly rounded",
              "math::normal_sf": "MPFR's ½·erfc(z/√2), correctly rounded",
              "math::ln_gamma": "MPFR's ln|Γ(x)|, correctly rounded",
-             "math::gamma_inc": "the true P and Q (MPFR: a 320-bit series or continued fraction), correctly rounded"}
+             "math::gamma_inc": "the true P and Q (MPFR: a 320-bit series or continued fraction), correctly rounded",
+             "math::beta_inc": "the true I and 1 − I (MPFR: a continued fraction at 320 bits or more, the smaller of x "
+                               "and y exact), correctly rounded"}
 
 
 def t1_own(fn, ins, K):
     """1 for a row of a T1 function's own, at its true value: not gamma_inc's edges or its Wilson–Hilferty rows past
-    a = 1e9, which keep Rust's form (on T1's Φ)."""
+    a = 1e9, which keep Rust's form (on T1's Φ), nor beta_inc's edges, infinite shapes or shapes past 1e9, which keep
+    Rust's form (on T1's lnΓ)."""
+    if fn == "math::beta_inc":
+        return beta_t1_range(*ins)
     if fn != "math::gamma_inc":
         return fn in T1_SO_FAR
     return 0.0 < ins[0] <= K["WH"] and 0.0 < ins[1] < math.inf
@@ -2101,6 +2556,7 @@ def check_special(root, rows):
     }
     glibc, cr, ref = Prims("glibc", F), Prims("cr", F), Prims("ref", F)
     gamma_reference(root, rows, K["WH"])
+    beta_reference(root, rows)
     failures, by_fn, crs, refs = [], {}, [], []
 
     def shown(v):

@@ -82,7 +82,7 @@ jobs:
       - name: fdlibm lgamma coefficients current (src/lgamma*.cyr; unverified without libm 0.2.16 in the cargo registry)
         run: python3 -I -B scripts/vendor_lgamma.py . --check
 
-      - name: ζ(k) table current and inline words proven (src/zeta_data.cyr, src/dd.cyr, src/gammainc.cyr; MPFR)
+      - name: ζ(k) table current and inline words proven (src/zeta_data.cyr, src/dd.cyr, src/gammainc.cyr, src/betainc.cyr; MPFR)
         run: python3 -I -B scripts/gen_zeta.py . --check
 
   rust-oracle:

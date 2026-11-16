@@ -324,6 +324,158 @@ def gamma_pq(a, x):
             _m.mpfr_clear(ctypes.byref(r))
 
 
+# I_x(a, b) and 1 − I_x(a, b) (M2 part b5's reference rows): scripts/port-baseline/check.c's `bref`, through ctypes.
+# MPFR has no incomplete beta. The smaller of x and y is exact and the other is 1 − it, both held exactly (1,200 bits).
+# On the side x < (a + 1)/(a + b + 2), V = x^a y^b/(a B(a, b)) times Lentz's continued fraction (Rust's even and odd
+# steps) at prec bits, stopped when a step changes it by under 2^-(prec - 10); else the same for I_y(b, a). The other
+# value is 1 − V, exact at 2·prec + 64 bits. P9 ran at 320 bits, which keeps ~270 bits of the complement on all its
+# rows but none for a tiny shape, whose complement can be 2^-1000: when it is below 2^-(prec - 330), prec grows by its
+# binary exponent plus 64 and V is recomputed. A complement still below 2^-1200 at 1,600 bits rounds to 0. Each value
+# is then rounded once to binary64 by mpfr_get_d, subnormals included.
+_m.mpfr_get_exp.argtypes = [_P]
+_m.mpfr_get_exp.restype = ctypes.c_long
+_m.mpfr_zero_p.argtypes = [_P]
+_m.mpfr_set_ui.argtypes = [_P, ctypes.c_ulong, ctypes.c_int]
+_m.mpfr_init2.argtypes = [_P, ctypes.c_long]
+
+
+def _beta_cf(V, A, B, X, Y, prec):
+    """V = x^a y^b/(a B(a, b)) times the continued fraction, at prec bits (A, B, X, Y: exact mpfr refs)."""
+    regs = [_MPFR_T() for _ in range(11)]
+    for r in regs:
+        _m.mpfr_init2(ctypes.byref(r), prec)
+    t, u, pre, c, d, h, num, dl, tiny, stop, w = (ctypes.byref(r) for r in regs)
+    try:
+        sign = ctypes.c_int(0)
+        _m.mpfr_set_ui_2exp(tiny, 1, -20000, _RNDN)
+        _m.mpfr_set_ui_2exp(stop, 1, -(prec - 10), _RNDN)
+        _m.mpfr_log(t, X, _RNDN)
+        _m.mpfr_mul(pre, t, A, _RNDN)
+        _m.mpfr_log(t, Y, _RNDN)
+        _m.mpfr_mul(t, t, B, _RNDN)
+        _m.mpfr_add(pre, pre, t, _RNDN)
+        _m.mpfr_lgamma(t, ctypes.byref(sign), A, _RNDN)
+        _m.mpfr_sub(pre, pre, t, _RNDN)
+        _m.mpfr_lgamma(t, ctypes.byref(sign), B, _RNDN)
+        _m.mpfr_sub(pre, pre, t, _RNDN)
+        _m.mpfr_add(u, A, B, _RNDN)
+        _m.mpfr_lgamma(t, ctypes.byref(sign), u, _RNDN)
+        _m.mpfr_add(pre, pre, t, _RNDN)
+        _m.mpfr_log(t, A, _RNDN)
+        _m.mpfr_sub(pre, pre, t, _RNDN)
+        _m.mpfr_exp(pre, pre, _RNDN)
+        _m.mpfr_set_ui(c, 1, _RNDN)
+        _m.mpfr_ui_sub(t, 1, B, _RNDN)
+        _m.mpfr_mul(t, t, X, _RNDN)
+        _m.mpfr_add_ui(u, A, 1, _RNDN)
+        _m.mpfr_mul(u, u, Y, _RNDN)
+        _m.mpfr_add(d, t, u, _RNDN)
+        _m.mpfr_add_ui(u, A, 1, _RNDN)
+        _m.mpfr_div(d, d, u, _RNDN)
+        _m.mpfr_ui_div(d, 1, d, _RNDN)
+        _m.mpfr_set(h, d, _RNDN)
+        m = 1
+        while True:
+            for odd in (0, 1):
+                if not odd:  # m(b − m)x / ((a + 2m − 1)(a + 2m))
+                    _m.mpfr_sub_ui(num, B, m, _RNDN)
+                    _m.mpfr_mul_ui(num, num, m, _RNDN)
+                    _m.mpfr_mul(num, num, X, _RNDN)
+                    _m.mpfr_add_ui(t, A, 2 * m - 1, _RNDN)
+                    _m.mpfr_add_ui(u, A, 2 * m, _RNDN)
+                else:        # −(a + m)(a + b + m)x / ((a + 2m)(a + 2m + 1))
+                    _m.mpfr_add_ui(num, A, m, _RNDN)
+                    _m.mpfr_add(t, A, B, _RNDN)
+                    _m.mpfr_add_ui(t, t, m, _RNDN)
+                    _m.mpfr_mul(num, num, t, _RNDN)
+                    _m.mpfr_mul(num, num, X, _RNDN)
+                    _m.mpfr_neg(num, num, _RNDN)
+                    _m.mpfr_add_ui(t, A, 2 * m, _RNDN)
+                    _m.mpfr_add_ui(u, A, 2 * m + 1, _RNDN)
+                _m.mpfr_mul(t, t, u, _RNDN)
+                _m.mpfr_div(num, num, t, _RNDN)
+                _m.mpfr_mul(d, num, d, _RNDN)
+                _m.mpfr_add_ui(d, d, 1, _RNDN)
+                _m.mpfr_abs(t, d, _RNDN)
+                if _m.mpfr_cmp(t, tiny) < 0:
+                    _m.mpfr_set(d, tiny, _RNDN)
+                _m.mpfr_div(t, num, c, _RNDN)
+                _m.mpfr_add_ui(c, t, 1, _RNDN)
+                _m.mpfr_abs(t, c, _RNDN)
+                if _m.mpfr_cmp(t, tiny) < 0:
+                    _m.mpfr_set(c, tiny, _RNDN)
+                _m.mpfr_ui_div(d, 1, d, _RNDN)
+                _m.mpfr_mul(dl, d, c, _RNDN)
+                _m.mpfr_mul(h, h, dl, _RNDN)
+            _m.mpfr_sub_ui(t, dl, 1, _RNDN)
+            _m.mpfr_abs(t, t, _RNDN)
+            if _m.mpfr_cmp(t, stop) < 0:
+                break
+            m += 1
+        _m.mpfr_mul(V, pre, h, _RNDN)
+    finally:
+        for r in regs:
+            _m.mpfr_clear(ctypes.byref(r))
+
+
+def beta_ic(a, b, x, y):
+    """(I_x(a, b), 1 − I_x(a, b)), each correctly rounded to binary64, for finite a, b > 0 and x, y > 0 (floats); the
+    smaller of x and y is taken as exact and the other as 1 − it."""
+    exact = [_MPFR_T() for _ in range(6)]
+    for r in exact:
+        _m.mpfr_init2(ctypes.byref(r), 1200)
+    A, B, X, Y, S, R = (ctypes.byref(r) for r in exact)
+    _m.mpfr_set_emin(_m.mpfr_get_emin_min())
+    _m.mpfr_set_emax(_m.mpfr_get_emax_max())
+    try:
+        _m.mpfr_set_d(A, a, _RNDN)
+        _m.mpfr_set_d(B, b, _RNDN)
+        if x <= y:
+            _m.mpfr_set_d(X, x, _RNDN)
+            _m.mpfr_ui_sub(Y, 1, X, _RNDN)
+        else:
+            _m.mpfr_set_d(Y, y, _RNDN)
+            _m.mpfr_ui_sub(X, 1, Y, _RNDN)
+        _m.mpfr_add_ui(S, A, 1, _RNDN)
+        _m.mpfr_add(R, A, B, _RNDN)
+        _m.mpfr_add_ui(R, R, 2, _RNDN)
+        _m.mpfr_div(S, S, R, _RNDN)
+        direct = _m.mpfr_cmp(X, S) < 0
+        prec = 320
+        while True:
+            v, w = _MPFR_T(), _MPFR_T()
+            _m.mpfr_init2(ctypes.byref(v), prec)
+            _m.mpfr_init2(ctypes.byref(w), 2 * prec + 64)
+            V, W = ctypes.byref(v), ctypes.byref(w)
+            if direct:
+                _beta_cf(V, A, B, X, Y, prec)
+            else:
+                _beta_cf(V, B, A, Y, X, prec)
+            _m.mpfr_ui_sub(W, 1, V, _RNDN)
+            ex = -2 * prec if _m.mpfr_zero_p(W) else _m.mpfr_get_exp(W)
+            if ex >= -(prec - 330) or (prec >= 1600 and ex < -1200):
+                break
+            _m.mpfr_clear(V)
+            _m.mpfr_clear(W)
+            np_ = prec - ex + 64
+            prec = np_ if np_ > prec else 2 * prec
+        _m.mpfr_set_emin(-1073)
+        _m.mpfr_set_emax(1024)
+        res = []
+        for z in (V, W):
+            _m.mpfr_set(ctypes.byref(_r), z, _RNDN)
+            t = _m.mpfr_check_range(ctypes.byref(_r), 0, _RNDN)
+            res.append(_finish(t))
+        _m.mpfr_clear(V)
+        _m.mpfr_clear(W)
+        return (res[0], res[1]) if direct else (res[1], res[0])
+    finally:
+        _m.mpfr_set_emin(-1073)
+        _m.mpfr_set_emax(1024)
+        for r in exact:
+            _m.mpfr_clear(ctypes.byref(r))
+
+
 def _self_check():
     """Known correctly rounded values, among them glibc's misrounds that port-parity §1 found."""
     import struct

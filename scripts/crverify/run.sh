@@ -17,6 +17,10 @@
 #   `gref`; the bound is ≤ 4 ulp for a in [1e-3, 1e5]. Its first 120,000 rows are probe P9's five sets; when P9's own
 #   output is at hand (build/p9/gamma_rows.txt, from scripts/probes/p9_gamma.sh), the rows that differ from its T1 rows
 #   are counted (the port was byte for byte P9 until M2 part b4 made the series' stop tail-aware).
+# - `beta`: scripts/crverify/rows_beta.cyr, the incomplete beta's I and 1 − I (M2 part b5), against check.c's `bref`
+#   (320 bits, more for a tiny complement); the bound is ≤ 8 ulp for a and b in [1e-3, 1e5]. Its first 103,372 rows are
+#   probe P9's five sets; when P9's own output is at hand (build/p9/beta_rows.txt, from scripts/probes/p9_beta.sh), the
+#   rows that differ from its T1 rows are counted.
 # Needs gcc with MPFR (and FMA for CORE-MATH's build), wine and qemu-aarch64.
 #   bash scripts/crverify/run.sh               # every set
 #   bash scripts/crverify/run.sh erf           # one
@@ -26,7 +30,7 @@ work=$root/build/crverify
 mkdir -p "$work"
 cd "$root"
 sets=("$@")
-[ ${#sets[@]} -gt 0 ] || sets=(primitives erf ncdf lgamma gamma)
+[ ${#sets[@]} -gt 0 ] || sets=(primitives erf ncdf lgamma gamma beta)
 quiet() { grep -v -e '^note' -e '^OK' -e 'warning:lib/' -e 'unreachable fns' || true; }
 gcc -O2 -o "$work/check" scripts/port-baseline/check.c -lmpfr -lgmp -lm
 
@@ -51,10 +55,17 @@ verify() {
             <(head -120000 "$out/rows.txt") | awk -F'|' '$1 != $2' | wc -l)
         echo "P9's five sets: $moved of 120,000 rows differ from probe P9's T1 rows (the series' tail-aware stop)"
     fi
+    if [ "$name" = beta ] && [ -f "$root/build/p9/beta_rows.txt" ]; then
+        local bmoved
+        bmoved=$(paste -d'|' <(grep '/t1 ' "$root/build/p9/beta_rows.txt") <(head -103372 "$out/rows.txt") \
+            | awk -F'|' '$1 != $2' | wc -l)
+        echo "P9's five sets: $bmoved of 103,372 rows differ from probe P9's T1 rows"
+    fi
     local pids=()
     # A gamma pair's P and Q rows stay in one chunk, so check.c computes its reference once.
     local per=1
     [ "$name" = gamma ] && per=2
+    [ "$name" = beta ] && per=2
     for k in 0 1 2 3 4 5 6 7 8 9; do
         awk -v k="$k" -v per="$per" 'int((NR - 1) / per) % 10 == k' "$out/rows.txt" > "$out/chunks/rows$k.txt"
         "$work/check" < "$out/chunks/rows$k.txt" > "$out/chunks/report$k.txt" &
@@ -110,8 +121,11 @@ for line in sys.stdin:
     gamma)
         verify gamma scripts/crverify/rows_gamma.cyr
         ;;
+    beta)
+        verify beta scripts/crverify/rows_beta.cyr
+        ;;
     *)
-        echo "unknown set $s (primitives, erf, ncdf, lgamma, gamma)" >&2
+        echo "unknown set $s (primitives, erf, ncdf, lgamma, gamma, beta)" >&2
         exit 1
         ;;
     esac
