@@ -72,4 +72,11 @@ fn main() {
     row(&mut r, "gamma_inc, a in [10, 1000), x in [5, 1500)", gi, (10.0, 1000.0), (5.0, 1500.0));
     let wh = (1e9, 1.0001e9);
     row(&mut r, "gamma_inc, Wilson-Hilferty, a and x in [1e9, 1.0001e9)", gi, wh, wh);
+    let bi = |a, b| {
+        let s = a + b;
+        let (p, q) = oracle::beta_inc(a, b, a / s, b / s);
+        p - q
+    };
+    row(&mut r, "beta_inc, a and b in [0.5, 10), x at the mean", bi, (0.5, 10.0), (0.5, 10.0));
+    row(&mut r, "beta_inc, a and b in [10, 1000), x at the mean", bi, (10.0, 1000.0), (10.0, 1000.0));
 }

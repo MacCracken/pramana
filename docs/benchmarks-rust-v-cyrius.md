@@ -331,3 +331,30 @@ cbrt, a sqrt and part a1's Φ and 1 − Φ, which make four correctly rounded ex
 
 **A first form of the Wilson–Hilferty row was dropped.** It drew a and x independently over [10⁹, 10¹²), so z was
 almost always far out, P − Q was ±1, and both sums came to exactly 0. The narrowed range keeps |z| ≲ 3.
+
+## M2 part a4: the regularized incomplete beta, T0 (2026-11-15)
+
+**Bodies.** `tests/special.bcyr` and its twin `m2_special.rs`, as before. The beta rows draw two shapes and put x at
+the mean a/(a + b), with y = b/(a + b), where the continued fraction runs longest, and sum I − (1 − I). Three rounds,
+interleaved, pinned to core 5, at a load average of 2.1–2.3 on 16 cores. The gamma rows re-measured 5–11 ns faster
+than part a3's record, at the lower load, with the same ratios.
+
+| Row | Rust | Cyrius | Cyrius / Rust | Sums |
+|---|---|---|---|---|
+| `beta_inc`, a and b in [0.5, 10), x at the mean | 245.4–248.2 ns | 1.29–1.30 µs | 5.2× | differ, as glibc misrounds |
+| `beta_inc`, a and b in [10, 1000), x at the mean | 614.4–622.7 ns | 2.30–2.33 µs | 3.8× | agree |
+
+**The differing sum is glibc's, not the port's.** 25 of the bench's 26 rows agree bit for bit with the twin; the
+small-shape beta row doesn't (Cyrius `…8f21`, Rust `…8f8f`). The Python model settles it:
+- it re-creates the row's 4,096 arguments from the bench's xorshift;
+- through glibc's primitives it gives Rust's sum exactly, and through correctly rounded ones the port's;
+- 144 of the 4,096 arguments (3.5%) differ between the two, because at the mean both of the prefactor's logs come
+  from log1p, and glibc's log1p misrounds there.
+
+**My tabulating script first missed both beta rows.** The bench prints a row over 1 µs in µs, and the script read
+only ns, so it reported no differing sums. It now reads both. The earlier parts' rows were all under 1 µs, and their
+row counts matched.
+
+**Where the time goes.** The prefactor (part a2's ln B or the brcomp form, and an exp) and the loop's two divisions
+per half-step. The large-shape row is the closest to Rust of any special-function row: its time is mostly the
+loop's arithmetic, which costs about the same in both compilers' code.

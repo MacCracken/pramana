@@ -2442,3 +2442,96 @@ and 1.3.0's series overshoots 1 on 19 of those rows before its clamp.
 
 **The harness** now pads function names to 44 columns, since the wrappers' names (41 characters) ran into the class
 letter.
+
+### 8.4 Part a4: the regularized incomplete beta, T0 (2026-11-15)
+
+**The module** adds `beta_inc(a, b, x, y)`, which returns (I_x(a, b), 1 − I_x(a, b)). The caller passes y = 1 − x
+itself, so a caller that knows it exactly never rounds 1 − x; the value is not checked.
+
+**`beta_cf`,** Lentz's continued fraction, runs on whichever side converges faster:
+- **x < (a + 1)/(a + b + 2):** the fraction gives I directly, and 1 − I is 1 − it;
+- **otherwise:** through I_x(a, b) = 1 − I_y(b, a).
+
+**Its prefactor,** x^a·y^b/(a·B(a, b)), is taken in logs, in one of two forms:
+- **both shapes 10 or more:** TOMS 708's brcomp form on part a2's bd0 and Stirling remainder;
+- **otherwise:** a ln x + b ln y − ln B − ln a, each log on the side that keeps precision, ln(1 − y) as ln_1p(−y)
+  below ½.
+
+**The loop** alternates even and odd steps, each denominator kept from 0 by 1e-300. It stops when an odd step's
+factor is within 1e-15 of 1, or when part a3's budget for max(a, b) runs out, and then clamps to [0, 1].
+`regularized_incomplete_beta(x, a, b)` is beta_inc's first value with y = 1 − x.
+
+**The golden rows.** `special` grows to 58,101 rows. `beta_inc` has 5,853, each with two outputs:
+- the specials in each argument;
+- 17 shapes from 10⁻³ to 10⁵, 10 and its neighbours among them, taken pairwise against eleven x;
+- the side switch on 100 seeded pairs;
+- both shapes in [10, 10⁶] at the mean ± j standard deviations;
+- the callers' forms, with x and y each computed exactly: Student's t (ν/2, ½, ν/(ν + t²), t²/(ν + t²)), and F with
+  two numerator degrees of freedom;
+- a y that is not 1 − x;
+- shapes down to 10⁻³⁰⁰;
+- underflowing prefactors;
+- 1,000 seeded rows.
+
+The wrapper has 407 rows: seeds, and the out-of-range x.
+
+**The model.** `validate.py` transcribes both functions. All 6,260 rows agree through glibc. With correctly rounded
+primitives, 88 rows move, so `special.cr.tsv` has 226:
+
+| Function | Rows corrected | Max | The glibc primitive that moves them |
+|---|---|---|---|
+| `beta_inc` | 81 of 5,853 | 751 ulp | log1p (75), exp (6) |
+| `regularized_incomplete_beta` | 7 of 407 | 235 ulp | log1p |
+
+As in parts a2 and a3, the large distances come from the prefactor. Through bd0 and the kernel-like logs, a 1-ulp
+log1p difference becomes an absolute error in the exponent, and exp turns that into relative error.
+
+**What the loop reaches.** I counted the iterations on every row whose result depends on the loop: 4,915 rows, whose
+prefactor is finite and not 0. The loop uses at most 14.4% of its budget, and no step's |d| or |c| falls below 10⁻⁷
+(the first d below 6·10⁻⁸). So the budget never binds and the five 1e-300 guards never fire. 1.3.0 keeps both as
+defensive limits.
+
+**A finding.** On 6 rows the prefactor is NaN rather than 0: an infinite or f64::MAX shape, as in
+`beta_inc(3, ∞, 0.7, 0.3)`. 1.3.0 then runs the whole 10⁶-iteration budget before returning NaN, and so does the
+port. `tests/special.tcyr` pins the NaN. For T1 (part b5), the arguments could be refused before the loop.
+
+**The result.** Every row matches at 0 ulp: 6,172 against 1.3.0's own bits and 88 against `special.cr.tsv`. The
+replay is nine modules: 133,141 rows ok and 332 accepted (302 under ADR 9, 30 under ADR 7), warning-free, on
+x86_64 ELF, PE (wine) and aarch64 (qemu). Every `math::` result line is identical on the three.
+
+**Mutation checks** (the whole corpus replayed with each change; the unmutated run passes):
+
+| Mutant | Rows failed |
+|---|---|
+| the side switch at x ≤ (a + 1)/(a + b + 2) | 221 |
+| the switch's denominator as a + (b + 2) | 12 |
+| brcomp's form from a > 10 | 43 |
+| ln x never taken as ln_1p(−y) | 205 |
+| ln y never taken as ln_1p(−x) | 201 |
+| brcomp's last terms as t3 − (corr + ln a) | 377 |
+| the first d as 1 − (a + b)x/(a + 1), cancelling | 2,508 |
+| the even numerator as m((b − m)x) | 666 |
+| the odd step's a + (b + m) | 227 |
+| the stop at 2·10⁻¹⁵ | 491 |
+| the result unclamped | 8 |
+| the budget on a, not max(a, b) | 0 |
+| the budget's base 100, not 200 | 0 |
+| any one of the five 1e-300 guards dropped | 0 |
+
+The seven survivors are the budget and the guards, which (above) no reachable row engages.
+
+**Tests.** `tests/special.tcyr` grows to 75 checks:
+- 1.3.0's four tests: the known values, the complement's tail precision, the F(2, d) closed form for d up to 10⁸, and
+  the invalid arguments;
+- a NaN y gives (NaN, NaN), and y ≤ 0 gives (1, 0);
+- the infinite shape's NaN;
+- I_x(a, b) = 1 − I_y(b, a) bit for bit on 30 shape pairs;
+- the wrapper as beta_inc's first value bit for bit.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): `beta_inc` at the mean is 5.2× Rust for small shapes and 3.8× for
+large ones. The small-shape row's bench sum differs from the twin's, and `validate.py`'s model, run on the same 4,096
+arguments, gives Rust's sum through glibc and the port's through correctly rounded primitives: 144 of them differ as
+glibc's log1p misrounds.
+
+**T0 is complete.** All of 1.3.0's `src/math.rs` is ported in Rust's operation order. The golden rows cover the
+fourteen functions its `oracle` hooks expose, 58,101 rows at 0 ulp on correctly rounded primitives.

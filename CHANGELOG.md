@@ -489,6 +489,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 4.5–5.4× 1.3.0; all 24 bench rows give the same sums as the twin. The harness pads names to 44
     columns, for the wrappers' 41-character names.
 
+- **M2 part a4: the regularized incomplete beta, T0; T0 complete** (`src/special.cyr`; port plan D3 = C, ADR 009;
+  results in `docs/development/port-parity.md` §8.4):
+  - **the functions:** 1.3.0's `beta_inc(a, b, x, y)` (I and 1 − I, with the caller's exact y), its Lentz `beta_cf`
+    (TOMS 708's brcomp prefactor for two shapes ≥ 10, else logs on the precise side; even and odd steps), and
+    `regularized_incomplete_beta`, in Rust's operation order on the correctly rounded primitives;
+  - **golden rows:** 6,260 more in `special` (58,101 in all): a pairwise shape grid against eleven x, the side
+    switch, the mean ± j standard deviations for two large shapes, the t and F callers' exact x and y, a y that is
+    not 1 − x, and shapes from 10⁻³⁰⁰. `validate.py` transcribes both functions. `special.cr.tsv` gains 88 rows
+    (log1p 82, exp 6, up to 751 ulp). Every row matches at 0 ulp on x86_64, PE and aarch64;
+  - **a finding:** for an infinite or f64::MAX shape the prefactor is NaN, not 0, so 1.3.0 runs its whole
+    10⁶-iteration budget before returning NaN (6 golden rows). The port does the same; T1 can refuse such arguments
+    first;
+  - **mutation checks:** eleven of eighteen mutants fail rows (8–2,508). The seven that pass are the budget and the
+    five 1e-300 guards: counted on every row whose result depends on the loop, it uses at most 14.4% of its budget
+    and no |d| or |c| falls below 10⁻⁷;
+  - **tests:** `tests/special.tcyr` has 75 checks: 1.3.0's four incomplete-beta tests, the edges, the infinite
+    shape's NaN, I_x(a, b) = 1 − I_y(b, a) bit for bit, and the wrapper;
+  - **cost:** 3.8–5.2× 1.3.0. The small-shape bench row's sum differs from the twin's: the Python model re-creates
+    its 4,096 arguments and gives Rust's sum through glibc and the port's through correctly rounded primitives (144
+    arguments differ, glibc's log1p misrounding at the mean);
+  - **T0 is complete:** the fourteen functions of 1.3.0's math.rs its `oracle` hooks expose, on 58,101 golden rows,
+    226 of them corrected under ADR 009.
+
 ### Performance
 
 - **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),

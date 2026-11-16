@@ -103,7 +103,10 @@ files. This README records what is specific to pramana.
   from 10⁻³ to 10¹², seeds, and NaN, ±0 and negative shapes. Part a3 records `gamma_inc` (P and Q, two outputs) at
   its switches x = a + 1 and a = 10⁹, near the mode x = a ± j√a, on fixed ratios x = a·r over seeded shapes, for the
   χ² shapes k/2, for shapes from 10⁻³⁰⁰ to 10⁻⁸ (where the series' clamp binds), and where the prefactor underflows;
-  and the two regularized wrappers on seeds. All class C. `validate.py` transcribes each function and re-derives
+  and the two regularized wrappers on seeds. Part a4 records `beta_inc` (I and 1 − I from a, b, x and y) on a pairwise
+  shape grid against eleven x, at its side switch, at the mean ± j standard deviations for two large shapes, in its
+  callers' forms with x and y each computed exactly (Student's t, F), with a y that is not 1 − x, and for shapes from
+  10⁻³⁰⁰; and `regularized_incomplete_beta` on seeds and out-of-range x. All class C. `validate.py` transcribes each function and re-derives
   every row through glibc's exp, ln, log1p and sin (and the correctly rounded cbrt, as Rust's compiler_builtins
   gives); `special.cr.tsv` holds the rows that move when they are correctly rounded.
 - **`json.map.tsv`** (ADR 007 row 16), written by `validate.py --write-cr`. These are the rows serde_json reads only
@@ -144,7 +147,7 @@ files. This README records what is specific to pramana.
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `debug` | M1 f | 60 | `src/m_debug.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
-| `special` | M2 a1–a3 | 51,841 | `src/m_special.rs` | `special.cr.tsv`, 138 rows (exp misrounded in erfc's deep tail and in Φ and 1 − Φ there, 10, and in the incomplete gamma's prefactor, 10; log1p in bd0, the kernel, ln B and the incomplete gamma, 117; ln in ln B, 1) |
+| `special` | M2 a1–a4 | 58,101 | `src/m_special.rs` | `special.cr.tsv`, 226 rows (exp misrounded in erfc's deep tail and in Φ and 1 − Φ there, 10, and in the incomplete gamma's and beta's prefactors, 16; log1p in bd0, the kernel, ln B and the two incomplete functions, 199; ln in ln B, 1) |
 
 ## Format 1
 

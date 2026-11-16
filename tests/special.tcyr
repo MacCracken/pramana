@@ -410,6 +410,87 @@ fn main() {
     # MPFR puts Q(1, 300) 1.4e-14 off with every primitive correctly rounded. T1 (part b4) removes it.
     assert(ex_ok == 1, "P(1, x) = 1 - e^-x and Q(1, x) = e^-x within 1e-13, x from 0.05 to 300");
 
+    test_group("incomplete_beta_known_values (1.3.0's test)");
+    var i05: f64 = _pmn_regularized_incomplete_beta(0.5, 1.0, 1.0);
+    var i03: f64 = _pmn_regularized_incomplete_beta(0.3, 1.0, 1.0);
+    assert(f64_abs(i05 - 0.5) < t15 && f64_abs(i03 - 0.3) < t15, "I_x(1, 1) = x at 0.5 and 0.3");
+    var i07: f64 = _pmn_regularized_incomplete_beta(0.7, 3.5, 1.0);
+    var w07: f64 = _pmn_powf(0.7, 3.5);
+    assert(rel_ok(i07, w07, t14) == 1, "I_0.7(3.5, 1) = 0.7^3.5");
+    var i02: f64 = _pmn_regularized_incomplete_beta(0.2, 1.0, 4.0);
+    var p84: f64 = _pmn_powi(0.8, 4);
+    var w02: f64 = 1.0 - p84;
+    assert(rel_ok(i02, w02, t14) == 1, "I_0.2(1, 4) = 1 - 0.8^4");
+
+    test_group("incomplete_beta_complement_keeps_tail_precision (1.3.0's test)");
+    var bp1, bq1 = _pmn_beta_inc(1.0, 40.0, 0.9, 0.1);
+    var w40: f64 = _pmn_powi(0.1, 40);
+    var t13b: f64 = 0.0000000000001;
+    assert(rel_ok(bq1, w40, t13b) == 1, "1 - I_0.9(1, 40) = 0.1^40, not rounded to 0");
+    var bp2, bq2 = _pmn_beta_inc(2.5, 3.5, 0.4, 0.6);
+    var s2b: f64 = bp2 + bq2 - 1.0;
+    assert(f64_abs(s2b) < t15, "I + (1 - I) = 1 within 1e-15 at (2.5, 3.5, 0.4)");
+
+    test_group("incomplete_beta_large_shape (1.3.0's test: F(2, d) in closed form)");
+    var f_ok = 1;
+    var d2v: f64 = 10.0;
+    for (var f2 = 0; f2 < 4; f2 = f2 + 1) {
+        var two_x: f64 = 6.0;
+        var den: f64 = two_x + d2v;
+        var u: f64 = two_x / den;
+        var yv: f64 = d2v / den;
+        var r2x: f64 = two_x / d2v;
+        var l1: f64 = _pmn_ln_1p(r2x);
+        var nh: f64 = -d2v / 2.0;
+        var ex: f64 = nh * l1;
+        var ee: f64 = _pmn_exp(ex);
+        var expected: f64 = 1.0 - ee;
+        var hd: f64 = d2v / 2.0;
+        var fp, fq = _pmn_beta_inc(1.0, hd, u, yv);
+        if (rel_ok(fp, expected, t12) == 0) { f_ok = 0; }
+        if (f2 == 0) {
+            d2v = 10000.0;
+        } else {
+            d2v = d2v * 100.0;
+        }
+    }
+    assert(f_ok == 1, "I_u(1, d/2) = 1 - (1 + 2x/d)^(-d/2) within 1e-12, x = 3, d = 10, 1e4, 1e6, 1e8");
+
+    test_group("incomplete_beta_invalid (1.3.0's test)");
+    var vp1, vq1 = _pmn_beta_inc(nan, 1.0, 0.5, 0.5);
+    var vp2, vq2 = _pmn_beta_inc(1.0, 0.0, 0.5, 0.5);
+    var vi: f64 = _pmn_regularized_incomplete_beta(nan, 1.0, 1.0);
+    assert(_pmn_is_nan(vp1) == 1 && _pmn_is_nan(vp2) == 1 && _pmn_is_nan(vi) == 1, "NaN for a NaN or a shape of 0");
+    var vlo: f64 = _pmn_regularized_incomplete_beta(-1.0, 2.0, 2.0);
+    var vhi: f64 = _pmn_regularized_incomplete_beta(2.0, 2.0, 2.0);
+    assert(vlo == 0.0 && vhi == 1.0, "I_-1 = 0 and I_2 = 1");
+
+    test_group("beta_inc's edges, symmetry and wrapper");
+    var yp, yq = _pmn_beta_inc(2.0, 3.0, 0.3, nan);
+    assert(_pmn_is_nan(yp) == 1 && _pmn_is_nan(yq) == 1, "a NaN y gives (NaN, NaN)");
+    var zp, zq = _pmn_beta_inc(2.0, 3.0, 0.3, 0.0);
+    assert(zp == 1.0 && zq == 0.0, "y <= 0 gives (1, 0) whatever x is");
+    var ip6, iq6 = _pmn_beta_inc(3.0, inf, 0.7, 0.3);
+    assert(_pmn_is_nan(ip6) == 1 && _pmn_is_nan(iq6) == 1,
+        "an infinite shape gives NaN, after 1.3.0's whole 1e6-iteration budget (its prefactor is NaN, not 0)");
+    var sym_ok = 1;
+    var wr2_ok = 1;
+    var sa2: f64 = 0.03;
+    for (var j4 = 0; j4 < 30; j4 = j4 + 1) {
+        var sb2: f64 = 50.0 / (sa2 + 1.0);
+        var spl: f64 = (sa2 + 1.0) / (sa2 + sb2 + 2.0);
+        var xs2: f64 = spl * 0.5;
+        var ys2: f64 = 1.0 - xs2;
+        var p1, q1 = _pmn_beta_inc(sa2, sb2, xs2, ys2);
+        var p2, q2 = _pmn_beta_inc(sb2, sa2, ys2, xs2);
+        if (bits(p1) != bits(q2) || bits(q1) != bits(p2)) { sym_ok = 0; }
+        var rib: f64 = _pmn_regularized_incomplete_beta(xs2, sa2, sb2);
+        if (bits(rib) != bits(p1)) { wr2_ok = 0; }
+        sa2 = sa2 * 1.4;
+    }
+    assert(sym_ok == 1, "I_x(a, b) = 1 - I_y(b, a), the two calls bit for bit, on 30 shape pairs");
+    assert(wr2_ok == 1, "regularized_incomplete_beta(x, a, b) is beta_inc(a, b, x, 1 - x)'s first value bit for bit");
+
     return assert_summary();
 }
 

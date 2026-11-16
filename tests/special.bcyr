@@ -29,8 +29,9 @@ fn unit(): f64 {
 }
 
 # `which`: 0 erf, 1 erfc, 2 normal_cdf, 3 normal_sf, 4 the loop alone (x → x), 5 ln_gamma, 6 stirling_error, 7 bd0,
-# 8 ln_gamma_kernel, 9 ln_beta, 10 gamma_inc (P − Q, so both outputs reach the sum), on 4,096 uniform x in [lo, hi)
-# and y in [lo2, hi2) (y unused by the one-argument functions), drawn alternately.
+# 8 ln_gamma_kernel, 9 ln_beta, 10 gamma_inc (P − Q, so both outputs reach the sum), 11 beta_inc on shapes x and y at
+# the mean x/(x + y), its complement y/(x + y) passed as y (I − (1 − I)), on 4,096 uniform x in [lo, hi) and y in
+# [lo2, hi2) (y unused by the one-argument functions), drawn alternately.
 fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
     for (var j = 0; j < 4096; j = j + 1) {
         var w: f64 = hi - lo;
@@ -63,6 +64,13 @@ fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
             if (which == 10) {
                 var gp, gq = _pmn_gamma_inc(x, y);
                 r = gp - gq;
+            }
+            if (which == 11) {
+                var sxy: f64 = x + y;
+                var mx: f64 = x / sxy;
+                var my: f64 = y / sxy;
+                var bp, bq = _pmn_beta_inc(x, y, mx, my);
+                r = bp - bq;
             }
             s = s + r;
         }
@@ -107,6 +115,8 @@ fn main(): i64 {
     row("gamma_inc, a in [10, 1000), x in [5, 1500)", 10, 10.0, 1000.0, 5.0, 1500.0);
     row("gamma_inc, Wilson-Hilferty, a and x in [1e9, 1.0001e9)", 10, 1000000000.0, 1000100000.0, 1000000000.0,
         1000100000.0);
+    row("beta_inc, a and b in [0.5, 10), x at the mean", 11, 0.5, 10.0, 0.5, 10.0);
+    row("beta_inc, a and b in [10, 1000), x at the mean", 11, 10.0, 1000.0, 10.0, 1000.0);
     return 0;
 }
 

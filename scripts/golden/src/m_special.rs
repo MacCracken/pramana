@@ -42,6 +42,19 @@
 //! `regularized_lower_incomplete_gamma` and `regularized_upper_incomplete_gamma` get 400 seeded pairs each. √a is
 //! correctly rounded (IEEE 754), as × and ÷ are, so it may build a grid.
 //!
+//! Part a4, the regularized incomplete beta (`beta_inc(a, b, x, y)`, two outputs, I then 1 − I):
+//! - the specials in each of the four arguments;
+//! - 17 shapes from 10^-3 to 10^5 (10 with its neighbours) taken pairwise, against eleven x from 10^-10 to 1 − 10^-10;
+//! - the side switch x = (a + 1)/(a + b + 2), with two doubles either side, on 100 seeded shape pairs;
+//! - both shapes from 10 to 10^6 (the bd0 prefactor) with x at the mean ± j standard deviations;
+//! - the callers' forms, with x and y each computed exactly rather than y = 1 − x: Student's t (ν/2, ½, ν/(ν + t²),
+//!   t²/(ν + t²)) and F with two numerator degrees of freedom (1, d/2, 2x/(2x + d), d/(2x + d));
+//! - y not equal to 1 − x, which 1.3.0 does not check;
+//! - shapes down to 10^-300, and shapes large enough that the prefactor underflows;
+//! - seeded rows.
+//!
+//! `regularized_incomplete_beta(x, a, b)` gets 400 seeded rows and the out-of-range x.
+//!
 //! Every row is class C: each function calls glibc's exp, ln, ln_1p or sin. `validate.py` transcribes them,
 //! re-derives every row through glibc, and writes `special.cr.tsv` with the rows whose value changes when every
 //! primitive is correctly rounded.
@@ -330,6 +343,78 @@ fn gamma_pairs() -> Vec<(f64, f64)> {
     v
 }
 
+/// (a, b, x, y) rows for `beta_inc`.
+fn beta_rows() -> Vec<[f64; 4]> {
+    let mut v: Vec<[f64; 4]> = Vec::new();
+    for &s in &specials() {
+        v.push([2.0, 3.0, s, 1.0 - s]);
+        v.push([s, 3.0, 0.3, 0.7]);
+        v.push([2.0, s, 0.3, 0.7]);
+        v.push([2.0, 3.0, 0.3, s]);
+        v.push([s, s, 0.5, 0.5]);
+    }
+    let mut shapes = vec![0.001, 0.01, 0.1, 0.5, 1.0, 1.5, 2.0, 5.0, 9.5, 10.5, 20.0, 100.0, 1e3, 1e5];
+    around(&mut shapes, 10.0, 1);
+    sort_dedup(&mut shapes);
+    let xs = [1e-10, 1e-4, 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 0.9999, 1.0 - 1e-10];
+    for &a in &shapes {
+        for &b in &shapes {
+            for &x in &xs {
+                v.push([a, b, x, 1.0 - x]);
+            }
+        }
+    }
+    let mut g = Rng::new(0xcbbb_9d5d_c105_9ed8);
+    for _ in 0..100 {
+        let a = g.log_uniform(-3.0, 5.0);
+        let b = g.log_uniform(-3.0, 5.0);
+        let split = (a + 1.0) / (a + b + 2.0);
+        let mut near = Vec::new();
+        around(&mut near, split, 2);
+        v.extend(near.iter().map(|&x| [a, b, x, 1.0 - x]));
+    }
+    for _ in 0..100 {
+        let a = g.log_uniform(1.0, 6.0);
+        let b = g.log_uniform(1.0, 6.0);
+        let s = a + b;
+        let mean = a / s;
+        let sd = (a * b / (s * s * (s + 1.0))).sqrt();
+        for j in -4..=4 {
+            let x = mean + f64::from(j) * sd;
+            if x > 0.0 && x < 1.0 {
+                v.push([a, b, x, 1.0 - x]);
+            }
+        }
+    }
+    for nu in [1.0, 2.0, 5.0, 10.0, 30.0, 100.0, 1e3, 1e6] {
+        for t in [0.01, 0.5, 1.0, 2.0, 5.0, 20.0, 1e3] {
+            let t2 = t * t;
+            v.push([nu / 2.0, 0.5, nu / (nu + t2), t2 / (nu + t2)]);
+        }
+    }
+    for d in [10.0, 1e4, 1e6, 1e8] {
+        for x in [0.1, 1.0, 3.0, 30.0] {
+            v.push([1.0, d / 2.0, 2.0 * x / (2.0 * x + d), d / (2.0 * x + d)]);
+        }
+    }
+    v.extend([[2.0, 3.0, 0.3, 0.5], [2.0, 3.0, 0.3, 0.8], [20.0, 30.0, 0.4, 0.5], [20.0, 30.0, 0.6, 0.3]]);
+    for a in [1e-300, 1e-20, 1e-8] {
+        for b in [1e-300, 1e-8, 1.0, 10.0] {
+            for x in [0.001, 0.3, 0.5, 0.7, 0.999] {
+                v.push([a, b, x, 1.0 - x]);
+            }
+        }
+    }
+    v.extend([[1e3, 1e3, 0.01, 0.99], [1e5, 1e5, 0.3, 0.7], [1e5, 1e5, 0.7, 0.3], [5.0, 1e6, 0.5, 0.5]]);
+    for _ in 0..1000 {
+        let a = g.log_uniform(-3.0, 5.0);
+        let b = g.log_uniform(-3.0, 5.0);
+        let x = g.unit();
+        v.push([a, b, x, 1.0 - x]);
+    }
+    v
+}
+
 /// Seeded (a, x) pairs for the two wrappers: a in [10^-2, 10^4], x = a·u with u in [0.1, 3).
 fn wrapper_pairs(seed: u64) -> Vec<(f64, f64)> {
     let mut g = Rng::new(seed);
@@ -384,6 +469,23 @@ pub fn emit() -> Module {
     for &(a, x) in &wrapper_pairs(0x5be0_cd19_137e_2179) {
         let q = oracle::regularized_upper_incomplete_gamma(black_box(a), black_box(x));
         m.row("math::regularized_upper_incomplete_gamma", Class::C, &[f(a), f(x)], &[f(q)]);
+    }
+    for r in &beta_rows() {
+        let (p, q) = oracle::beta_inc(black_box(r[0]), black_box(r[1]), black_box(r[2]), black_box(r[3]));
+        m.row("math::beta_inc", Class::C, &[f(r[0]), f(r[1]), f(r[2]), f(r[3])], &[f(p), f(q)]);
+    }
+    let mut g = Rng::new(0x629a_292a_367c_d507);
+    let mut ib: Vec<[f64; 3]> = [-1.0, -0.0, 0.0, 1.0, 2.0, f64::NAN, f64::INFINITY]
+        .iter()
+        .map(|&x| [x, 2.0, 2.0])
+        .collect();
+    for _ in 0..400 {
+        let x = g.unit();
+        ib.push([x, g.log_uniform(-2.0, 3.0), g.log_uniform(-2.0, 3.0)]);
+    }
+    for r in &ib {
+        let p = oracle::regularized_incomplete_beta(black_box(r[0]), black_box(r[1]), black_box(r[2]));
+        m.row("math::regularized_incomplete_beta", Class::C, &[f(r[0]), f(r[1]), f(r[2])], &[f(p)]);
     }
     m
 }

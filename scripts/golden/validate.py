@@ -1469,6 +1469,70 @@ def sp_gamma_inc(K, L, a, x):
     return (1.0 - q, q)
 
 
+def sp_beta_cf(K, L, a, b, x, y):
+    """1.3.0's beta_cf: the brcomp prefactor for two shapes ≥ 10, else logs on the precise side; even and odd Lentz
+    steps."""
+    la = L.ln(a)
+    if a >= 10.0 and b >= 10.0:
+        s = a + b
+        corr = sp_stirling(K, L, a) + sp_stirling(K, L, b) - sp_stirling(K, L, s)
+        ln_prefix = (-sp_bd0(K, L, a, s * x) - sp_bd0(K, L, b, s * y) + 0.5 * (la + L.ln(b) - L.ln(s))
+                     - K["LS"] - corr - la)
+    else:
+        ln_x = L.ln1p(-y) if y < 0.5 else L.ln(x)
+        ln_y = L.ln1p(-x) if x < 0.5 else L.ln(y)
+        ln_prefix = a * ln_x + b * ln_y - sp_ln_beta(K, L, a, b) - la
+    prefix = L.exp(ln_prefix)
+    if prefix == 0.0:
+        return 0.0
+    tiny, eps = K["TINY"], K["EPS"]
+    c = 1.0
+    d = fdiv((1.0 - b) * x + (a + 1.0) * y, a + 1.0)
+    if abs(d) < tiny:
+        d = tiny
+    d = fdiv(1.0, d)
+    h = d
+    for m in range(1, sp_budget(K, sp_max(a, b)) + 1):
+        mf = float(m)
+        two_m = 2.0 * mf
+        num_even = fdiv(mf * (b - mf) * x, (a + two_m - 1.0) * (a + two_m))
+        d = 1.0 + num_even * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + fdiv(num_even, c)
+        if abs(c) < tiny:
+            c = tiny
+        d = fdiv(1.0, d)
+        h *= d * c
+        num_odd = fdiv(-((a + mf) * (a + b + mf) * x), (a + two_m) * (a + two_m + 1.0))
+        d = 1.0 + num_odd * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + fdiv(num_odd, c)
+        if abs(c) < tiny:
+            c = tiny
+        d = fdiv(1.0, d)
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < eps:
+            break
+    return sp_clamp01(prefix * h)
+
+
+def sp_beta_inc(K, L, a, b, x, y):
+    if math.isnan(x) or math.isnan(y) or math.isnan(a) or math.isnan(b) or a <= 0.0 or b <= 0.0:
+        return (math.nan, math.nan)
+    if x <= 0.0:
+        return (0.0, 1.0)
+    if y <= 0.0:
+        return (1.0, 0.0)
+    if x < fdiv(a + 1.0, a + b + 2.0):
+        p = sp_beta_cf(K, L, a, b, x, y)
+        return (p, 1.0 - p)
+    q = sp_beta_cf(K, L, b, a, y, x)
+    return (1.0 - q, q)
+
+
 SPECIAL = {  # name: (inputs, model(K, L, *inputs))
     "math::erf": (1, lambda K, L, x: sp_erf(K["F"], L.exp, x)),
     "math::erfc": (1, lambda K, L, x: sp_erfc(K["F"], L.exp, x)),
@@ -1482,6 +1546,8 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
     "math::gamma_inc": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)),
     "math::regularized_lower_incomplete_gamma": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)[0]),
     "math::regularized_upper_incomplete_gamma": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)[1]),
+    "math::beta_inc": (4, sp_beta_inc),
+    "math::regularized_incomplete_beta": (3, lambda K, L, x, a, b: sp_beta_inc(K, L, a, b, x, 1.0 - x)[0]),
 }
 
 
