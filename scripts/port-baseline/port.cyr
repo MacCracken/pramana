@@ -1,0 +1,191 @@
+# port.cyr — the port's side of the accuracy baseline (port plan §3.2; M2 part c, M2's gate).
+#
+# Reads one of main.rs's three outputs on stdin and writes it back with each Rust result replaced by the port's, on
+# the same inputs, so check.c and beta_check.py measure both on identical rows:
+# - `name x result` and `name x y result` rows (hex bit patterns): exp, log, log1p, expm1, sin, cos, tan, pow, erf,
+#   erfc, lgamma (all five sets), gamma_p and gamma_q (x the shape a, y the argument), ncdf and ncdf_core;
+# - `a b k p q` rows (decimal a, b, k, then hex I and 1 − I): beta_inc at x = k/2^20, y = 1 − x, both exact.
+#   bash scripts/port-baseline/run.sh   # (with --port, see run.sh)
+
+include "tests/lib.cyr"
+
+var g_out = 0;
+
+fn pb_hv(c): i64 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    return c - 87;
+}
+
+fn pb_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+# The 16-digit hex word at p.
+fn pb_word(p): i64 {
+    var v = 0;
+    for (var j = 0; j < 16; j = j + 1) { v = (v << 4) | pb_hv(load8(p + j)); }
+    return v;
+}
+
+# The decimal integer of n digits at p.
+fn pb_int(p, n): i64 {
+    var v = 0;
+    for (var j = 0; j < n; j = j + 1) { v = v * 10 + (load8(p + j) - 48); }
+    return v;
+}
+
+# 1 when the n bytes at p spell the C string s.
+fn pb_is(p, n, s: cstring): i64 {
+    if (strlen(s) != n) { return 0; }
+    for (var j = 0; j < n; j = j + 1) {
+        if (load8(p + j) != load8(s + j)) { return 0; }
+    }
+    return 1;
+}
+
+# The n bytes at p, appended to the output.
+fn pb_add(p, n): i64 {
+    for (var j = 0; j < n; j = j + 1) { str_builder_putc(g_out, load8(p + j)); }
+    return 0;
+}
+
+fn pb_flush(): i64 {
+    if (load64(g_out + 8) > 1048576) {
+        print(load64(g_out), load64(g_out + 8));
+        store64(g_out + 8, 0);
+    }
+    return 0;
+}
+
+# A `name x [y] result` row: the port's result for the name, with the inputs copied through.
+fn pb_named(line, len): i64 {
+    var sp = 0;
+    while (sp < len && load8(line + sp) != 32) { sp = sp + 1; }
+    var two = 0;
+    if (len - sp > 40) { two = 1; }
+    var xw = pb_word(line + sp + 1);
+    var x: f64 = xw;
+    var y: f64 = 0.0;
+    if (two == 1) {
+        var yw = pb_word(line + sp + 18);
+        y = yw;
+    }
+    var r: f64 = 0.0;
+    var known = 1;
+    if (pb_is(line, sp, "exp") == 1) {
+        r = _pmn_exp(x);
+    } elif (pb_is(line, sp, "log") == 1) {
+        r = _pmn_ln(x);
+    } elif (pb_is(line, sp, "log1p") == 1) {
+        r = _pmn_ln_1p(x);
+    } elif (pb_is(line, sp, "expm1") == 1) {
+        r = _pmn_exp_m1(x);
+    } elif (pb_is(line, sp, "sin") == 1) {
+        r = _pmn_sin(x);
+    } elif (pb_is(line, sp, "cos") == 1) {
+        r = _pmn_cos(x);
+    } elif (pb_is(line, sp, "tan") == 1) {
+        r = _pmn_tan(x);
+    } elif (pb_is(line, sp, "pow") == 1) {
+        r = _pmn_powf(x, y);
+    } elif (pb_is(line, sp, "erf") == 1) {
+        r = _pmn_erf(x);
+    } elif (pb_is(line, sp, "erfc") == 1) {
+        r = _pmn_erfc(x);
+    } elif (pb_is(line, sp, "ncdf") == 1 || pb_is(line, sp, "ncdf_core") == 1) {
+        r = _pmn_normal_cdf(x);
+    } elif (pb_is(line, sp, "gamma_p") == 1) {
+        var gp, gq = _pmn_gamma_inc(x, y);
+        r = gp;
+    } elif (pb_is(line, sp, "gamma_q") == 1) {
+        var hp, hq = _pmn_gamma_inc(x, y);
+        r = hq;
+    } elif (sp >= 6 && pb_is(line, 6, "lgamma") == 1) {
+        r = _pmn_ln_gamma(x);
+    } else {
+        known = 0;
+    }
+    if (known == 0) { return 0; }
+    var keep = sp + 17;
+    if (two == 1) { keep = keep + 17; }
+    pb_add(line, keep);
+    str_builder_putc(g_out, 32);
+    pb_hex64(g_out, r);
+    str_builder_putc(g_out, 10);
+    pb_flush();
+    return 1;
+}
+
+# An `a b k p q` row: the port's I and 1 − I at x = k/2^20.
+fn pb_beta(line, len): i64 {
+    var st[40];
+    var ln[40];
+    var f = 0;
+    var b0 = 0;
+    var j = 0;
+    while (j <= len && f < 5) {
+        if (j == len || load8(line + j) == 32) {
+            store64(&st + f * 8, line + b0);
+            store64(&ln + f * 8, j - b0);
+            f = f + 1;
+            b0 = j + 1;
+        }
+        j = j + 1;
+    }
+    var ai = pb_int(load64(&st), load64(&ln));
+    var bi = pb_int(load64(&st + 8), load64(&ln + 8));
+    var k = pb_int(load64(&st + 16), load64(&ln + 16));
+    var a: f64 = f64_from(ai);
+    var b: f64 = f64_from(bi);
+    var kf: f64 = f64_from(k);
+    var d: f64 = 1048576.0;
+    var x: f64 = kf / d;
+    var y: f64 = 1.0 - x;
+    var p, q = _pmn_beta_inc(a, b, x, y);
+    var head = load64(&st + 24) - line;
+    pb_add(line, head);
+    pb_hex64(g_out, p);
+    str_builder_putc(g_out, 32);
+    pb_hex64(g_out, q);
+    str_builder_putc(g_out, 10);
+    pb_flush();
+    return 1;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    var cap = 100663296;
+    var buf = alloc(cap);
+    var n = file_read_all("/dev/stdin", buf, cap);
+    if (n <= 0 || n >= cap) {
+        var msg = "port: cannot read stdin, or it is over 96 MiB\n";
+        print(msg, strlen(msg));
+        return 1;
+    }
+    var s = 0;
+    var i = 0;
+    while (i < n) {
+        if (load8(buf + i) == 10) {
+            var c = load8(buf + s);
+            if (c >= 48 && c <= 57) {
+                pb_beta(buf + s, i - s);
+            } else {
+                pb_named(buf + s, i - s);
+            }
+            s = i + 1;
+        }
+        i = i + 1;
+    }
+    print(load64(g_out), load64(g_out + 8));
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

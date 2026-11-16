@@ -25,6 +25,7 @@
 # ── helpers ────────────────────────────────────────────────────────────────────────────────────────
 
 # fma(a, b, c), exactly: RN(a·b + c) with one rounding.
+#must_use
 fn _pmn_cm_fma(a: f64, b: f64, c: f64): f64 {
     var p, e = _pmn_km_two_prod(a, b);
     var r: f64 = _pmn_km_rn3(p, e, c);
@@ -33,6 +34,7 @@ fn _pmn_cm_fma(a: f64, b: f64, c: f64): f64 {
 
 # RN(y + l·2^-106) exactly, for erf's tiny path: Y = y·2^106, Y + l = sh + sl exactly; a normal result is sh·2^-106,
 # a subnormal one N·2^-1074 with N = RN(2^52 + (sh + sl)·2^968) − 2^52 (the grid of [2^52, 2^53) is 1).
+#must_use
 fn _pmn_cm_fma_tiny(l: f64, y: f64): f64 {
     var s106: f64 = 0x4690000000000000;          # 0x1p106
     var ys: f64 = y * s106;
@@ -57,6 +59,7 @@ fn _pmn_cm_fma_tiny(l: f64, y: f64): f64 {
 }
 
 # s_mul: a·(bh + bl) as a double-double.
+#must_use
 fn _pmn_cm_s_mul(a: f64, bh: f64, bl: f64): (f64, f64) {
     var h, l = _pmn_km_two_prod(a, bh);
     var l2: f64 = _pmn_cm_fma(a, bl, l);
@@ -64,6 +67,7 @@ fn _pmn_cm_s_mul(a: f64, bh: f64, bl: f64): (f64, f64) {
 }
 
 # d_mul: (ah + al)·(bh + bl) − al·bl.
+#must_use
 fn _pmn_cm_d_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
     var h, l = _pmn_km_two_prod(ah, bh);
     var l2: f64 = _pmn_cm_fma(ah, bl, l);
@@ -72,6 +76,7 @@ fn _pmn_cm_d_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
 }
 
 # fast_sum: a + (bh + bl), for |a| ≥ |bh|.
+#must_use
 fn _pmn_cm_fast_sum(a: f64, bh: f64, bl: f64): (f64, f64) {
     var h, l = _pmn_km_fast_two_sum(a, bh);
     var l2: f64 = l + bl;
@@ -79,6 +84,7 @@ fn _pmn_cm_fast_sum(a: f64, bh: f64, bl: f64): (f64, f64) {
 }
 
 # Round to the nearest integer, ties to even, for |x| < 2^51.
+#must_use
 fn _pmn_cm_roundeven(x: f64): f64 {
     var t: f64 = x + 6755399441055744.0;         # 1.5·2^52
     var r: f64 = t - 6755399441055744.0;
@@ -86,6 +92,7 @@ fn _pmn_cm_roundeven(x: f64): f64 {
 }
 
 # 2^e·r with one rounding (C's ldexp): two exact scalings, of which only the second can round.
+#must_use
 fn _pmn_cm_ldexp(r: f64, e): f64 {
     var e1 = e / 2;
     var e2 = e - e1;
@@ -97,12 +104,14 @@ fn _pmn_cm_ldexp(r: f64, e): f64 {
 }
 
 # A double from its bit pattern, for the subnormal constants (a small hex literal in an f64 slot reads as an integer).
+#must_use
 fn _pmn_cm_bits(w): f64 {
     var r: f64 = 0.0;
     store64(&r, w);
     return r;
 }
 
+#must_use
 fn _pmn_cm_tab(t, i): f64 {
     var v: f64 = load64(t + i * 8);
     return v;
@@ -111,6 +120,7 @@ fn _pmn_cm_tab(t, i): f64 {
 # ── erf ────────────────────────────────────────────────────────────────────────────────────────────
 
 # cr_erf_fast: for 0 ≤ z ≤ 0x1.7afb48dc96626p+2, (h, l, err) with |(h + l)/erf(z) − 1| < err.
+#must_use
 fn _pmn_cm_erf_fast(z0: f64): (f64, f64, f64) {
     var z: f64 = z0;
     if (z < 0.0625) {
@@ -176,6 +186,7 @@ fn _pmn_cm_erf_fast(z0: f64): (f64, f64, f64) {
 }
 
 # cr_erf_accurate_tiny's polynomial, for 2^-61 ≤ z < 1/8 (erfc.c's copy, without erf's exception list).
+#must_use
 fn _pmn_cm_erf_acc_tiny_poly(z: f64): (f64, f64) {
     var p = &_PMN_CM_TINY_P;
     var z2: f64 = z * z;
@@ -215,6 +226,7 @@ fn _pmn_cm_erf_acc_tiny_poly(z: f64): (f64, f64) {
 }
 
 # cr_erf_accurate's polynomial, for 1/8 ≤ z ≤ 0x1.7afb48dc96626p+2.
+#must_use
 fn _pmn_cm_erf_acc_poly(z0: f64): (f64, f64) {
     var sz: f64 = 8.0 * z0;
     var v: f64 = f64_floor(sz);
@@ -253,6 +265,7 @@ fn _pmn_cm_erf_acc_poly(z0: f64): (f64, f64) {
 }
 
 # erf.c's cr_erf_accurate: its five exceptions, then the tiny path (with its own 171) or the polynomial.
+#must_use
 fn _pmn_cm_erf_accurate(z: f64): (f64, f64) {
     var e = &_PMN_CM_ACC_EXC;
     var i = 0;
@@ -277,6 +290,7 @@ fn _pmn_cm_erf_accurate(z: f64): (f64, f64) {
 }
 
 # erfc.c's cr_erf_accurate: no exceptions (cr_erfc_accurate keeps its own).
+#must_use
 fn _pmn_cm_erf_acc_core(z: f64): (f64, f64) {
     if (z < 0.125) {
         var th, tl = _pmn_cm_erf_acc_tiny_poly(z);
@@ -287,6 +301,7 @@ fn _pmn_cm_erf_acc_core(z: f64): (f64, f64) {
 }
 
 # erf(x), correctly rounded (cr_erf).
+#must_use
 fn _pmn_cm_erf(x: f64): f64 {
     var z: f64 = f64_abs(x);
     var ux = load64(&z);
@@ -343,6 +358,7 @@ fn _pmn_cm_erf(x: f64): f64 {
 }
 
 # The accurate path alone, for every finite x with 2^-61 ≤ |x| ≤ 0x1.7afb48dc96626p+2 (the verification's entry).
+#must_use
 fn _pmn_cm_erf_acc(x: f64): f64 {
     var z: f64 = f64_abs(x);
     var ah, al = _pmn_cm_erf_accurate(z);
@@ -359,6 +375,7 @@ fn _pmn_cm_erf_acc(x: f64): f64 {
 # ── erfc ───────────────────────────────────────────────────────────────────────────────────────────
 
 # q_1: exp(zh + zl) for |z| < 0.000130273, as a double-double.
+#must_use
 fn _pmn_cm_q_1(zh: f64, zl: f64): (f64, f64) {
     var q1 = &_PMN_CM_Q1;
     var z: f64 = zh + zl;
@@ -372,6 +389,7 @@ fn _pmn_cm_q_1(zh: f64, zl: f64): (f64, f64) {
 }
 
 # exp_1: exp(xh + xl) as a double-double (pow.[ch]'s fast path).
+#must_use
 fn _pmn_cm_exp_1(xh: f64, xl: f64): (f64, f64) {
     var inv: f64 = _PMN_CM_D_INVLOG2;
     var xi: f64 = xh * inv;
@@ -401,6 +419,7 @@ fn _pmn_cm_exp_1(xh: f64, xl: f64): (f64, f64) {
 }
 
 # exp_accurate: exp(xh + xl) = 2^e·(h + l) for −742 ≤ xh + xl ≤ −2.92, to about 104 bits.
+#must_use
 fn _pmn_cm_exp_accurate(xh: f64, xl: f64): (f64, f64, i64) {
     var inv: f64 = _PMN_CM_D_INVLOG2acc;
     var xi: f64 = xh * inv;
@@ -452,6 +471,7 @@ fn _pmn_cm_exp_accurate(xh: f64, xl: f64): (f64, f64, i64) {
 }
 
 # erfc_asympt_fast: for THRESHOLD1 < x < 0x1.b39dc41e48bfdp+4, (h, l, err), err an absolute bound.
+#must_use
 fn _pmn_cm_erfc_asympt_fast(x: f64): (f64, f64, f64) {
     var top: f64 = 0x4039DB1BB14E15CA;          # 0x1.9db1bb14e15cap+4
     if (x >= top) { return (0.0, 0.0, 1.0); }
@@ -501,6 +521,7 @@ fn _pmn_cm_erfc_asympt_fast(x: f64): (f64, f64, f64) {
 }
 
 # cr_erfc_fast: for −0x1.7744f8f74e94bp2 < x < 0x1.b39dc41e48bfdp+4, (h, l, err), err an absolute bound.
+#must_use
 fn _pmn_cm_erfc_fast(x: f64): (f64, f64, f64) {
     if (x < 0.0) {
         var nx: f64 = -x;
@@ -530,6 +551,7 @@ fn _pmn_cm_erfc_fast(x: f64): (f64, f64, f64) {
 }
 
 # erfc_asympt_accurate: for 0x1.b59ffb450828cp+0 < x < 0x1.b39dc41e48bfdp+4.
+#must_use
 fn _pmn_cm_erfc_asympt_accurate(x: f64): f64 {
     var ex = &_PMN_CM_ASACC_EXC;
     var n = 0;
@@ -606,6 +628,7 @@ fn _pmn_cm_erfc_asympt_accurate(x: f64): f64 {
 }
 
 # cr_erfc_accurate.
+#must_use
 fn _pmn_cm_erfc_accurate(x: f64): f64 {
     if (x < 0.0) {
         var en = &_PMN_CM_ERFC_NEG_EXC;
@@ -647,6 +670,7 @@ fn _pmn_cm_erfc_accurate(x: f64): f64 {
 }
 
 # erfc(x), correctly rounded (cr_erfc).
+#must_use
 fn _pmn_cm_erfc(x: f64): f64 {
     var t = load64(&x);
     var at = t & 0x7FFFFFFFFFFFFFFF;
@@ -698,6 +722,7 @@ fn _pmn_cm_erfc(x: f64): f64 {
 }
 
 # The accurate path alone, for every finite x the fast path serves (the verification's entry).
+#must_use
 fn _pmn_cm_erfc_acc(x: f64): f64 {
     var ra: f64 = _pmn_cm_erfc_accurate(x);
     return ra;

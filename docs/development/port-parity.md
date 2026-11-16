@@ -3125,3 +3125,103 @@ moves, measured against MPFR when the first two pass):
 both at the mean, where the fraction runs longest. That is 72× and 56× Rust, and 14–15× part a4's T0, within the
 10–17× P9 measured. The bench's digests show the port equal to the T1 model on all 8,192 arguments of its two beta
 rows. TOMS 708's region-specific expansions (`bgrat`, `basym`) are the candidates for the cost, as P9 noted.
+
+### 8.10 Part c: M2's gate (2026-11-16)
+
+Every part ran the per-part gates (build; test and test --bounds, warning-free; bench, recorded against Rust; vet,
+lint, fmt --check; distlib; deps --locked; audit; the ledger; the vendor and constant checks; the three targets). The
+plan's §7 adds what M2's gate covers across its parts: §3.2's sets re-measured on the T1 functions, and the rows T1
+moves remapped once, before M3 records any row against them. M1's gate (§7.15) adds the audit and the soak.
+
+**§3.2's sets, re-measured.** `scripts/port-baseline/run.sh` now measures the port too:
+`scripts/port-baseline/port.cyr` reads the Rust baseline's three outputs and writes them back with the port's
+results, so both sides are measured on identical rows, through the same `check.c` paths. Its Rust side reproduces
+§3.2's table exactly. Both sides are also measured on all 20,000 incomplete gamma pairs by `gref` (P9's re-measure),
+and lnΓ for x < 0 in ADR 009's mixed ulps as well as plain ones. Zero and subnormal results are excluded, as in §3.2.
+
+| Function | Domain | n | Rust 1.3.0, max (mean) | The port, max (mean) | Not CR, Rust → port | Bound |
+|---|---|---|---|---|---|---|
+| `exp`, `ln`, `ln_1p`, `exp_m1` | §3.2's | 100,000 each | 0.75 (0.21) at worst | 0.50 (0.25) | up to 1.19% → 0% | CR |
+| `sin`, `cos`, `tan`, `powf` | §3.2's | 100,000 each | 0.53 (0.25) at worst | 0.50 (0.25) | up to 0.24% → 0% | CR |
+| `erf` | [−6, 6] and ±[10⁻³⁰⁰, 1] | 100,000 | 0.822 (0.254) | 0.50 (0.25) | 3.1% → 0% | CR |
+| `erfc` | [−6, 27] | 98,623 | 2.49 (0.412) | 0.50 (0.25) | 30.6% → 0% | CR |
+| `normal_cdf` | z ∈ [−5, 5] | 50,000 | 29.1 (2.2) | 0.50 (0.25) | 42.4% → 0% | 1 |
+| `normal_cdf` | z ∈ [−38, 8] | 49,475 | 1,590 (175) | 0.50 (0.249) | 80.5% → 0% | 1 |
+| `ln_gamma` | [0.5, 10] | 100,000 | 1.2×10⁶ (65.2) | 1.25 (0.258) | 93.2% → 5.1% | 2 |
+| `ln_gamma` | beside 1 and 2 | 25,000 | 4.3×10¹³ (3.8×10¹¹) | 0.98 (0.27) | 99.98% → 11.3% | 2 |
+| `ln_gamma` | [10, 10¹⁵] | 25,000 | 4.85 (0.578) | 0.54 (0.251) | 47.2% → 0.04% | 2 |
+| `ln_gamma` | (10⁻³⁰⁰, ½) | 25,000 | 8.21 (0.028) | 0.50 (0.013) | 1.7% → 0.004% | 2 |
+| `ln_gamma` | (−20, 0), mixed ulps | 25,000 | 1,583 (5.36) | 0.93 (0.25) | 84.9% → 9.0% | 2, mixed |
+| `ln_gamma` | (−20, 0), plain ulps | 25,000 | 6.9×10⁴ (17.7) | 985 (0.57) | as above | — |
+| `gamma_inc` P | §3.2's sample | 4,000 | 58.1 (4.87) | 0.503 (0.25) | 79.8% → 0.08% | 4 |
+| `gamma_inc` Q | §3.2's sample | 4,000 | 246 (12.2) | 0.506 (0.245) | 76.2% → 0.05% | 4 |
+| `gamma_inc` P | all 20,000 pairs, `gref` | 20,000 | 97.0 (4.82) | 0.603 (0.249) | 80.4% → 0.08% | 4 |
+| `gamma_inc` Q | all 20,000 pairs, `gref` | 20,000 | 485 (12.4) | 0.640 (0.249) | 76.7% → 0.11% | 4 |
+| `beta_inc` I | integer shapes, exact rationals | 4,000 | 550 (14.1) | 0.4999 (0.218) | 57.1% → 0% | 8 |
+| `beta_inc` 1 − I | same | 4,000 | 583 (12.8) | 0.50 (0.221) | 56.7% → 0% | 8 |
+
+- **Every set is within its bound**, by margins of 1.6× (lnΓ on [0.5, 10]) to 16× (`beta_inc`).
+- **lnΓ's 985 ulp at x = −3.1435 is in plain ulps,** beside a zero of lnΓ, where the reflection's O(1) terms cancel
+  to near 0 and no fixed working precision bounds the relative error. That is why ADR 009's bound for x < 0 is in
+  ulps of max(|lnΓ|, 1), and in that measure the same set is within 0.93.
+- **What a user sees moves by up to thirteen orders of magnitude:** lnΓ beside 1 and 2 from 4.3×10¹³ ulp to under 1.
+
+**The rows T1 moves.** Only `special` calls the T1 functions among M2's golden modules: `bridge` and
+`combinatorics` take no part of math.rs, and its other callers, the distributions and the hypothesis tests, are M3 and
+M4. Each of `special`'s 58,101 rows is gated, with nothing measured or pending:
+
+| Function | Rows | At 1.3.0's bits | `special.cr.tsv` | `special.ref.tsv`, true value | `special.ref.tsv`, downstream |
+|---|---|---|---|---|---|
+| `erf`, `erfc` | 12,492 | 11,417 | 1 | 1,074 | — |
+| `normal_cdf`, `normal_sf` | 15,798 | 10,224 | — | 5,574 | — |
+| `ln_gamma` | 3,377 | 936 | — | 2,441 | — |
+| `stirling_error`, `bd0`, `ln_gamma_kernel`, `ln_beta` | 13,403 | 11,574 | 87 | — | 1,742 |
+| `gamma_inc` | 5,971 | 1,791 | 1 | 3,669 | 510 (Wilson–Hilferty) |
+| the two gamma wrappers | 800 | 266 | — | — | 534 |
+| `beta_inc` | 5,853 | 1,017 | 2 | 4,834 | — |
+| `regularized_incomplete_beta` | 407 | 164 | — | — | 243 |
+| **all** | **58,101** | **37,389** | **91** | **17,592** | **3,029** |
+
+M3's rows are recorded against T1 from their first generation: `validate.py`'s reference model (`Prims("ref")`)
+carries every T1 function, the ones that aren't correctly rounded as the port computes them (`t1_ln_gamma`,
+`t1_gamma_inc`, `t1_beta_inc`), for the distributions' formulas downstream. So nothing is remapped twice.
+
+**The audit of M2's sources** (`special.cyr`, `crerf.cyr`, `lgamma.cyr`, `dd.cyr`, `gammainc.cyr`, `betainc.cyr`
+and their data files), against CLAUDE.md's library rules:
+- **No aborts:** no `+?`, `-?` or `*?`, no `assert_fatal`, `panic` or `result_unwrap`, no `vec_get`.
+- **No allocation at all:** no `alloc`, freelist, builder or vector; every result is a value or a tuple of values.
+- **Every transcendental correctly rounded:** none of the stdlib's or ganita's plain transcendentals; the only
+  stdlib float functions are `f64_sqrt`, `f64_floor`, `f64_abs` and the conversions, all exact or correctly rounded.
+- **Constants generated or proven:** no hex in a `const`; every inline hex word is proven by `vendor_coremath.py`,
+  `vendor_lgamma.py` or `gen_zeta.py`, whose `--check` runs in CI.
+- **Names:** every top-level name carries the pmn prefix.
+- **`#must_use`:** the T1 helpers lacked it on 58 pure functions (12 of CORE-MATH's port, 3 of lnΓ's, and the
+  double-double helpers of `dd.cyr`, `gammainc.cyr` and `betainc.cyr`). Each now has it. The five `crverify`
+  generators, which reach every T1 path, compile to byte-identical binaries before and after.
+
+**The soak.** `tests/soak.tcyr` gains a group: 10⁴ rounds of all fourteen of math.rs's functions, across their
+branches (lnΓ's reflection, the incomplete gamma's series, fraction, small-shape Q and Wilson–Hilferty form, the
+incomplete beta's fraction, power series and Rust's form past 10⁹). The bump heap, the freelist's arena, the mapped
+size and the pool are unchanged, and every result is finite, on x86_64 ELF, PE and aarch64. The audit says M2
+allocates nothing; the soak confirms it at run time. `tests/soak.tcyr` has 13 checks.
+
+**Surface and Debug.** math.rs is crate-private in 1.3.0, and its functions are private here (`_pmn_`), so the
+surface check lists nothing new, and M2 has no type to derive Debug for.
+
+**M2's result.** The special functions are ported twice: T0 in Rust's operation order (parts a1–a4), which proved the
+transcription at 0 ulp, then T1 (parts b1–b5) to ADR 009's bounds:
+
+| Function | ADR 009's bound | Measured: `crverify` (rows) | Measured: §3.2's sets |
+|---|---|---|---|
+| `erf`, `erfc` | correctly rounded | correctly rounded (2,768,534) | correctly rounded |
+| `normal_cdf`, `normal_sf` | 1 ulp | 0.5 (1,146,809) | 0.5 |
+| `ln_gamma` | 2 ulp; mixed for x < 0 | 1.27; 1.26 mixed (1,000,000) | 1.25; 0.93 mixed |
+| `gamma_inc` | 4 ulp on its domain | 1.0 (148,000) | 0.64 |
+| `beta_inc` | 8 ulp on its domain | 1.0 (140,098) | 0.50 |
+
+The golden `special` module has 58,101 rows. The replay is nine modules: 112,655 rows ok and 20,818 accepted (20,788
+under ADR 9, of which 20,621 are reference rows, and 30 under ADR 7), warning-free, on x86_64 ELF, PE (wine) and
+aarch64 (qemu), with every `math::` result line identical on the three. `tests/special.tcyr` has 126 checks. The
+ledger has 14 rows, all open, with 18 notes in `src/`. The cost is recorded part by part in
+`docs/benchmarks-rust-v-cyrius.md`: T1 runs 5–157× Rust, most of it in double-double arithmetic and the emulated FMA
+(ledger L12).

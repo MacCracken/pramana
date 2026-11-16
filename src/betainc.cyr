@@ -53,6 +53,7 @@ fn _pmn_bi_digamma(z: f64): f64 {
 # Stirling's correction lnΓ(z) − [(z − ½) ln z − z + ln √(2π)] for z = zh + zl ≥ 20, Rust's seven terms evaluated
 # in double-double on the whole argument (truncation below 1e-21 there; the plain double sum's rounding, 4e-19, and
 # dropping zl, 3e-19, are what the small shapes' differences lnΓ(a) − lnΓ(a + b) cannot afford).
+#must_use
 fn _pmn_bi_stirling_dd(zh: f64, zl: f64): (f64, f64) {
     var rh, rl = _pmn_dd_div(1.0, 0.0, zh, zl);
     var r2h, r2l = _pmn_dd_mul(rh, rl, rh, rl);
@@ -82,6 +83,7 @@ fn _pmn_bi_stirling_dd(zh: f64, zl: f64): (f64, f64) {
 
 # lnΓ(z) for z = zh + zl > 0 as a double-double: below 20 the ζ-series form and the recurrence (plus zl·ψ), from 20
 # Stirling, (z − ½) ln z − z + ln √(2π) + stirling(z), every term a double-double.
+#must_use
 fn _pmn_bi_lgamma_dd(zh: f64, zl: f64): (f64, f64) {
     if (zh < 20.0) {
         var gh, gl = _pmn_gi_lngamma_small_dd(zh);
@@ -115,6 +117,7 @@ fn _pmn_bi_lgamma_dd(zh: f64, zl: f64): (f64, f64) {
 }
 
 # ln of a positive double-double.
+#must_use
 fn _pmn_bi_ln_of_dd(h: f64, l: f64): (f64, f64) {
     var lh, ll = _pmn_dd_ln_any(h);
     var c: f64 = l / h;
@@ -124,6 +127,7 @@ fn _pmn_bi_ln_of_dd(h: f64, l: f64): (f64, f64) {
 
 # φ(u) = u − ln(1 + u) for a double-double u > −1, as a double-double: the series Σ_{k≥2} (−u)^k/k for |u| ≤ ¼ (terms
 # fall by 4 or more), else u − l, l = ln(1 + u) given by the caller from exact logarithms (as _pmn_gi_lnpre does).
+#must_use
 fn _pmn_bi_phi(uh: f64, ul: f64, lh: f64, ll: f64): (f64, f64) {
     var au: f64 = f64_abs(uh);
     if (au <= 0.25) {
@@ -156,6 +160,7 @@ fn _pmn_bi_phi(uh: f64, ul: f64, lh: f64, ll: f64): (f64, f64) {
 }
 
 # ln √(2π) as a double-double (as _pmn_bi_lgamma_dd forms it).
+#must_use
 fn _pmn_bi_ln_sqrt_2pi(): (f64, f64) {
     var pih: f64 = _PMN_KM_CR_SC_PIH;
     var pim: f64 = _PMN_KM_CR_SC_PIM;
@@ -175,6 +180,7 @@ fn _pmn_bi_ln_sqrt_2pi(): (f64, f64) {
 # st being Stirling's correction (_pmn_bi_stirling_dd). Every term keeps its relative precision, where P9's sum
 # a ln x + b ln y − ln B(a, b) − ln a cancels from about a + b down to O(1) near the mean, which left the logarithms'
 # 2^-80 relative error at 2 ulp in I near a = b = 1e9 (M2 part b5).
+#must_use
 fn _pmn_bi_lnpre_large(a: f64, b: f64, xh: f64, xl: f64, yh: f64, yl: f64): (f64, f64) {
     var sh, sl = _pmn_km_two_sum(a, b);
     var bxh, bxl = _pmn_dd_mul_d(xh, xl, b);
@@ -232,6 +238,7 @@ fn _pmn_bi_lnpre_large(a: f64, b: f64, xh: f64, xl: f64, yh: f64, yl: f64): (f64
 # 20 or more, the brcomp form above; for one, ln B = lnΓ(p) − [lnΓ(p + q) − lnΓ(q)] with p the smaller shape and the
 # difference from _pmn_bi_lgdiff_big, where P9's lnΓ(q) − lnΓ(a + b) cancelled from about q ln q (3 ulp in 1 − I at
 # a = 0.0016, b = 7.7e8; M2 part b5); below 20, P9's sum of the three lnΓ.
+#must_use
 fn _pmn_bi_lnpre(a: f64, b: f64, xh: f64, xl: f64, yh: f64, yl: f64): (f64, f64) {
     if (a >= 20.0 && b >= 20.0) {
         var rh, rl = _pmn_bi_lnpre_large(a, b, xh, xl, yh, yl);
@@ -275,6 +282,7 @@ fn _pmn_bi_lnpre(a: f64, b: f64, xh: f64, xl: f64, yh: f64, yl: f64): (f64, f64)
 }
 
 # Lentz's continued fraction for I_x(a, b)·a·B(a, b)/(x^a y^b), Rust's even and odd steps, in double-double.
+#must_use
 fn _pmn_bi_cf(a: f64, b: f64, xh: f64, xl: f64, yh: f64, yl: f64, cap): (f64, f64) {
     var tiny: f64 = 0x0010000000000000;         # 0x1p-1022
     var thr: f64 = 0x3C10000000000000;          # 0x1p-62
@@ -352,6 +360,7 @@ fn _pmn_bi_cf(a: f64, b: f64, xh: f64, xl: f64, yh: f64, yl: f64, cap): (f64, f6
 }
 
 # x^a y^b/(a B(a, b)) times the continued fraction: I_x(a, b) as (h, l, E), h + l = I/2^E.
+#must_use
 fn _pmn_bi_side(a: f64, b: f64, xh: f64, xl: f64, yh: f64, yl: f64, cap): (f64, f64, i64) {
     var mh, ml = _pmn_bi_lnpre(a, b, xh, xl, yh, yl);
     var eh, el, e = _pmn_gi_exp_dd(mh, ml);
@@ -364,6 +373,7 @@ fn _pmn_bi_side(a: f64, b: f64, xh: f64, xl: f64, yh: f64, yl: f64, cap): (f64, 
 # a/w as a double-double for a, w > 0. Below a = 2^-512, a is scaled by 2^600 first and the quotient scaled back,
 # both exactly: the correction's remainder a − q·w is near 2^-53·a, and below 2^-1022 Dekker's product no longer gives
 # it exactly. Unscaled, a subnormal a over a tiny w kept only about 27 bits of the quotient (M2 part b5).
+#must_use
 fn _pmn_bi_quot(a: f64, w: f64): (f64, f64) {
     var t512: f64 = 0x1FF0000000000000;        # 0x1p-512
     if (a < t512) {
@@ -381,6 +391,7 @@ fn _pmn_bi_quot(a: f64, w: f64): (f64, f64) {
 
 # ln(1 + t)/t = Σ_{k≥1} (−1)^(k+1) t^(k−1)/k for 0 ≤ t ≤ 1/4 as a double-double. The terms fall by 4 or more, so the
 # tail after one under 2^-62 of the sum is below a third of that.
+#must_use
 fn _pmn_bi_log1p_g(th: f64, tl: f64): (f64, f64) {
     var sh: f64 = 1.0;
     var sl: f64 = 0.0;
@@ -407,6 +418,7 @@ fn _pmn_bi_log1p_g(th: f64, tl: f64): (f64, f64) {
 
 # ln(1 + a/w) for a, w > 0 as a double-double: t·(ln(1 + t)/t) with t = a/w when 4a ≤ w, else ln(w + a) − ln w,
 # which is at least ln(5/4) and so does not cancel.
+#must_use
 fn _pmn_bi_ln1p_ratio(a: f64, w: f64): (f64, f64) {
     var a4: f64 = 4.0 * a;
     if (a4 <= w) {
@@ -427,6 +439,7 @@ fn _pmn_bi_ln1p_ratio(a: f64, w: f64): (f64, f64) {
 # terms c/z^n contributes c·(r^n − q^n) = c·a·r·q·P_n, P_n = Σ_{j<n} r^j q^(n−1−j) (P_1 = 1, P_(n+1) = r^n + q·P_n).
 # The difference of two lnΓ near b ln b lost its absolute error, about 2^-80·b ln b from the logarithms, to a result
 # near a ln b: 9.6 ulp in 1 − I at a = 0.0031, b = 4.1e7.
+#must_use
 fn _pmn_bi_lgdiff_big(a: f64, b: f64): (f64, f64) {
     var rh, rl = _pmn_dd_div(1.0, 0.0, b, 0.0);
     var sh, sl = _pmn_km_two_sum(b, a);
@@ -509,6 +522,7 @@ fn _pmn_bi_lgdiff_big(a: f64, b: f64): (f64, f64) {
 # (y1 = b − m − 2, y2 = y1 + a), plus ln(1 + a/(b − i)) for i = 1 … m, or minus ln(1 + a/b) when m = −1. |D_k| ≤
 # k·a and ζ(k) − 1 < 2^(1−k), so all 63 terms are taken: the rest is below 2^-63·a. The difference of two lnΓ lost
 # the a/b of two tiny shapes, ln(1 + a/b), entirely: 1 − I off by a factor of 10^285 at a = 3.8e-321, b = 1.6e-288.
+#must_use
 fn _pmn_bi_lgdiff_small(a: f64, b: f64): (f64, f64) {
     var fb: f64 = f64_floor(b);
     var mf: f64 = fb - 1.0;
@@ -571,6 +585,7 @@ fn _pmn_bi_lgdiff_small(a: f64, b: f64): (f64, f64) {
 # lnΓ(1 + a) from the ζ series for a < 1, and the difference from _pmn_bi_lgdiff_big or _pmn_bi_lgdiff_small, so the
 # result keeps its relative precision when it is small, which is where 1 − I is. P9 summed lnΓ(a) + ln a + lnΓ(b) −
 # lnΓ(a + b); for a ≥ 1 with b < 20, which the power series doesn't reach in practice, that form remains.
+#must_use
 fn _pmn_bi_ln_ab(a: f64, b: f64): (f64, f64) {
     if (a >= 1.0 && b < 20.0) {
         var g1h, g1l = _pmn_bi_lgamma_dd(a, 0.0);
@@ -661,6 +676,7 @@ fn _pmn_bi_comp(a: f64, b: f64, xh: f64, xl: f64): f64 {
 
 # T1 (I_x(a, b), 1 − I_x(a, b)); the smaller of x and y is taken as exact. (NaN, NaN) for a NaN argument or a shape
 # ≤ 0; (0, 1) for x ≤ 0; (1, 0) for y ≤ 0; each as Rust's.
+#must_use
 fn _pmn_bi_beta_inc(a: f64, b: f64, x: f64, y: f64): (f64, f64) {
     var nan: f64 = _PMN_F64_NAN;
     if (x != x || y != y || a != a || b != b || a <= 0.0 || b <= 0.0) { return (nan, nan); }

@@ -10,6 +10,7 @@
 #   replace with ganita's double-double type if it takes the special functions on; parity: every *.ref.tsv row
 
 # (ah + al) + (bh + bl) as a double-double.
+#must_use
 fn _pmn_dd_add(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
     var s, e = _pmn_km_two_sum(ah, bh);
     var t: f64 = al + bl;
@@ -19,6 +20,7 @@ fn _pmn_dd_add(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
 }
 
 # (ah + al)·(bh + bl) as a double-double.
+#must_use
 fn _pmn_dd_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
     var p, e = _pmn_km_two_prod(ah, bh);
     var c1: f64 = ah * bl;
@@ -30,6 +32,7 @@ fn _pmn_dd_mul(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
 }
 
 # (ah + al)·b for a double b, as a double-double.
+#must_use
 fn _pmn_dd_mul_d(ah: f64, al: f64, b: f64): (f64, f64) {
     var p, e = _pmn_km_two_prod(ah, b);
     var c: f64 = al * b;
@@ -39,6 +42,7 @@ fn _pmn_dd_mul_d(ah: f64, al: f64, b: f64): (f64, f64) {
 }
 
 # (ah + al)/(bh + bl) as a double-double: a first quotient, then one correction from its exact remainder.
+#must_use
 fn _pmn_dd_div(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
     var q1: f64 = ah / bh;
     var p, pe = _pmn_km_two_prod(q1, bh);
@@ -53,6 +57,7 @@ fn _pmn_dd_div(ah: f64, al: f64, bh: f64, bl: f64): (f64, f64) {
 }
 
 # ln x as a double-double, for a positive normal x: kimiya's fast core, |h + l − ln x| below about 2^-80·|ln x|.
+#must_use
 fn _pmn_dd_ln(x: f64): (f64, f64) {
     var ui = load64(&x);
     var h, l, err = _pmn_km_ln_core(ui, 0);
@@ -60,6 +65,7 @@ fn _pmn_dd_ln(x: f64): (f64, f64) {
 }
 
 # ln x as a double-double for any positive finite x: a subnormal x is scaled by 2^54 first, as kimiya's core expects.
+#must_use
 fn _pmn_dd_ln_any(x: f64): (f64, f64) {
     var floor: f64 = 0x0010000000000000;    # 0x1p-1022, the least normal
     var eb = 0;
@@ -76,6 +82,7 @@ fn _pmn_dd_ln_any(x: f64): (f64, f64) {
 
 # e^t − 1 for a double-double t: the Taylor sum below |t| = 1/8, stopped under 2^-62 of the value, else kimiya's exp
 # core minus 1. −1 below t = −700.
+#must_use
 fn _pmn_dd_expm1(th: f64, tl: f64): (f64, f64) {
     var at: f64 = f64_abs(th);
     if (at < 0.125) {

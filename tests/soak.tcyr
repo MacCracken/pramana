@@ -1,10 +1,12 @@
-# soak.tcyr — M1's allocation soak (port plan §7's gate, D11; probe P4's measures).
+# soak.tcyr — M1's allocation soak (port plan §7's gate, D11; probe P4's measures), and M2's.
 #
 # Every M1 path that allocates, run 10^4 times after a warm-up: JSON decodes small and large (a large document's
 # arena is a freelist block over 4 KB, mapped and unmapped each time), JSON writes, the error codec and SimpleRng's
 # codec both ways, both bridge fits, and nine nested pool claims (the ninth an overflow block). Afterwards the bump
 # heap, the freelist's arena cursor, the process's mapped size (/proc/self/statm, where the target has it) and the
-# pool's claimed slots must all be where they were: nothing an M1 call took stays taken.
+# pool's claimed slots must all be where they were: nothing an M1 call took stays taken. M2's special functions
+# (M2 part c, its gate) take nothing at all: 10^4 rounds of each of the fourteen, across their branches, leave the same
+# four measures where they were.
 
 include "tests/lib.cyr"
 
@@ -113,6 +115,46 @@ fn doc_of(n, lenp): i64 {
     return load64(sb);
 }
 
+# One round of M2's fourteen special functions, the arguments moved by r so the rounds cross their branches: erf and
+# erfc either side of 0.84375 and in the tail, lnΓ reflected, the incomplete gamma's series, fraction, small-shape Q
+# and Wilson–Hilferty form, and the incomplete beta's fraction, power series and Rust's form past 1e9. The sum of the
+# results, which the caller checks is finite.
+fn m2_round(r): f64 {
+    var k = r % 97;
+    var kf: f64 = f64_from(k);
+    var t: f64 = kf / 97.0;
+    var s: f64 = 0.0;
+    var x1: f64 = 6.0 * t - 3.0;
+    var e1: f64 = _pmn_erf(x1);
+    var e2: f64 = _pmn_erfc(x1);
+    var x2: f64 = 30.0 * t - 10.0;
+    var e3: f64 = _pmn_normal_cdf(x2);
+    var e4: f64 = _pmn_normal_sf(x2);
+    s = s + e1 + e2 + e3 + e4;
+    var x3: f64 = 20.0 * t - 9.7;
+    var l1: f64 = _pmn_ln_gamma(x3);
+    var a1: f64 = 0.05 + 30.0 * t;
+    var l2: f64 = _pmn_stirling_error(a1);
+    var l3: f64 = _pmn_bd0(a1, 7.0);
+    var l4: f64 = _pmn_ln_gamma_kernel(a1, 3.0);
+    var l5: f64 = _pmn_ln_beta(a1, 0.3);
+    s = s + l1 + l2 + l3 + l4 + l5;
+    var g1, g2 = _pmn_gamma_inc(a1, 4.0);
+    var g3, g4 = _pmn_gamma_inc(0.3, 0.2);
+    var g5, g6 = _pmn_gamma_inc(2000000000.0, 2000000000.0);
+    var g7: f64 = _pmn_regularized_lower_incomplete_gamma(a1, 9.0);
+    var g8: f64 = _pmn_regularized_upper_incomplete_gamma(a1, 9.0);
+    s = s + g1 + g2 + g3 + g4 + g5 + g6 + g7 + g8;
+    var xb: f64 = 0.02 + 0.96 * t;
+    var yb: f64 = 1.0 - xb;
+    var b1, b2 = _pmn_beta_inc(a1, 4.0, xb, yb);
+    var b3, b4 = _pmn_beta_inc(0.01, 50.0, 0.001, 0.999);
+    var b5, b6 = _pmn_beta_inc(3000000000.0, 2000000000.0, 0.6, 0.4);
+    var b7: f64 = _pmn_regularized_incomplete_beta(xb, 2.5, a1);
+    s = s + b1 + b2 + b3 + b4 + b5 + b6 + b7;
+    return s;
+}
+
 fn main() {
     alloc_init();
     g_vals = alloc(20000 * 8);
@@ -150,6 +192,27 @@ fn main() {
     }
     assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing left claimed");
     assert(_pmn_scratch_bytes() <= 8 * 2 * 1048576, "and no slot over 2 MiB");
+
+    test_group("10^4 rounds of M2's fourteen special functions (M2 part c): nothing taken");
+    var m2w: f64 = m2_round(1);
+    var mb0 = alloc_used();
+    var mf0 = _fl_arena_pos;
+    var mv0 = vm_kb();
+    var acc: f64 = m2w;
+    for (var r2 = 0; r2 < 10000; r2 = r2 + 1) {
+        var v2: f64 = m2_round(r2);
+        acc = acc + v2;
+    }
+    assert(_pmn_is_finite(acc) == 1, "every result is finite");
+    assert_eq(alloc_used() - mb0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - mf0, 0, "the freelist's arena: 0 bytes carved");
+    var mv1 = vm_kb();
+    if (mv0 >= 0) {
+        assert_eq(mv1 - mv0, 0, "the mapped size: unchanged");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing claimed");
 
     return assert_summary();
 }

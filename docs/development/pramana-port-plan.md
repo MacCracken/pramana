@@ -38,7 +38,8 @@
 > (`7729f5c`), and part a4, the incomplete beta (`f5f006f`), completes T0. T1 has begun: part b1, erf and erfc
 > correctly rounded, is committed (`6a0a201`), part b2, Φ and 1 − Φ within 1 ulp, is committed (`cc0cea5`), part
 > b3, lnΓ within 2 ulp, is committed (`7628c0c`), part b4, the incomplete gamma within 4 ulp, is committed (`0191a05`),
-> and part b5, the incomplete beta within 8 ulp, is done and not committed: T1 is complete.
+> part b5, the incomplete beta within 8 ulp, is committed (`a19e947`), and part c, M2's gate, is done and not
+> committed: **M2 is complete.**
 
 | Thing | Value | Source |
 |---|---|---|
@@ -243,7 +244,8 @@ What it adds to §1.2:
 
 ### 3.1 Method
 
-`scripts/port-baseline/run.sh` reproduces everything in this section. It takes about 12 minutes on one core.
+`scripts/port-baseline/run.sh` reproduces everything in this section, and since M2's gate it measures the port on the
+same rows too (`scripts/port-baseline/port.cyr`). It takes about 4 minutes on ten cores.
 - **Inputs:** seeded inputs over each function's domain.
 - **Rust side:** pramana 1.3.0's `src/math.rs` (with the test-only `erf` enabled) and Rust std's f64 methods, built
   with rustc 1.100.0 against glibc 2.44.
@@ -284,6 +286,12 @@ This is the seed of M0's reference tooling.
 P9 (§5 step 9d-2) re-measured the incomplete gamma rows on all 20,000 pairs, against a 320-bit reference: Rust reaches
 **97** ulp on P and **485** on Q (means 4.82 and 12.4). Outside these sets it is far worse: 2.9×10⁹ ulp on P in the
 deep lower tail, and 2.8×10⁴ on Q for small shapes (`port-parity.md` §6.5).
+
+**Re-measured on the port at M2's gate** (2026-11-16, `port-parity.md` §8.10; `run.sh` now measures both sides on
+identical rows). The primitives, erf, erfc and `normal_cdf` are correctly rounded on every row of their sets (max 0.5,
+0% not CR). `ln_gamma` is within 1.25 ulp on [0.5, 10], 0.98 beside 1 and 2, and 0.93 of max(|lnΓ|, 1) for x < 0.
+`gamma_inc` is within 0.64 ulp on all 20,000 pairs, and `beta_inc` within 0.50 on the 4,000 integer-shape rows, against
+the exact rationals. Every set is inside ADR 009's bound (§3.4).
 
 ### 3.3 What the numbers say
 
@@ -1147,8 +1155,12 @@ operation order on the correctly rounded primitives, at 0 ulp against `special.c
   140,098 rows from shapes of 2⁻¹⁰⁷⁴ to 10⁹ against a reference checked against exact rationals, and identical on three
   targets. Every golden row is within 1 ulp and none is less accurate than 1.3.0 (gated row by row outside the
   committed domain). The wrapper sits downstream on T1's value. `special.ref.tsv` has 20,621 rows ✅;
-- **c:** M2's gate: §3.2's sets re-measured on the T1 functions and recorded in `port-parity.md`, the rows that T1
-  moves remapped once, before M3 records any row against them.
+- **c:** M2's gate ✅: §3.2's sets re-measured on the T1 functions, on the baseline's own rows
+  (`scripts/port-baseline/port.cyr`, `run.sh` measuring both sides), every set within its bound (lnΓ 1.25 ulp at worst,
+  against 1.2×10⁶; the incomplete beta 0.50, against 583); the rows T1 moves all remapped (`special`'s 58,101 rows:
+  37,389 at 1.3.0's bits, 91 corrected, 17,592 at the true value, 3,029 downstream), with M3's to be recorded against
+  T1 from the start; the audit of M2's sources (no aborts, no allocation, `#must_use` added to 58 pure helpers with
+  byte-identical binaries); and a soak group showing M2's fourteen functions allocate nothing.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

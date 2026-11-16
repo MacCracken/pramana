@@ -30,6 +30,7 @@
 # ====================================================
 
 # fdlibm's polynomial for lnΓ near 1 and 2 (x < 2), case i of e_lgamma_r, in its operation order: the value r adds.
+#must_use
 fn _pmn_lg_poly12(y: f64, i): f64 {
     if (i == 0) {
         var a0: f64 = _PMN_LG_A0;
@@ -101,6 +102,7 @@ fn _pmn_lg_poly12(y: f64, i): f64 {
 }
 
 # lnΓ(2 + y) for y in [0, 1), fdlibm's rational form: 0.5·y + P(y)/Q(y).
+#must_use
 fn _pmn_lg_rat23(y: f64): f64 {
     var s0: f64 = _PMN_LG_S0;
     var s1: f64 = _PMN_LG_S1;
@@ -123,6 +125,7 @@ fn _pmn_lg_rat23(y: f64): f64 {
 }
 
 # lnΓ(x) for a finite x ≥ 2^-70, as an unrounded double-double (h, l).
+#must_use
 fn _pmn_lg_pos_dd(x: f64): (f64, f64) {
     var u = load64(&x);
     var ix = (u >> 32) & 0x7FFFFFFF;

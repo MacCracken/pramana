@@ -669,6 +669,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 17.78–18.46 µs a call on small shapes and 33.41–36.20 µs on large ones, both at the mean, 72× and 56× Rust
     and 14–15× T0 (P9: 10–17×). Every continued-fraction step is double-double, which P9 showed the bound needs. The
     bench's 26 digests are all explained, the T1 rows by the T1 model.
+- **M2 part c: M2's gate** (port plan §7; results in `docs/development/port-parity.md` §8.10). **M2 is complete:**
+  - **§3.2's sets, re-measured on the port:** `scripts/port-baseline/run.sh` now measures both sides on identical rows.
+    A new `scripts/port-baseline/port.cyr` reads the Rust baseline's outputs and writes them back with the port's
+    results, and the Rust side reproduces the plan's §3.2 table exactly. Against MPFR, or the exact rationals for the
+    integer-shape incomplete beta:
+
+    | Function | Rust 1.3.0, max | The port, max | ADR 009's bound |
+    |---|---|---|---|
+    | the primitives, `erf`, `erfc` | 2.49 ulp (`erfc`) | 0.5 ulp, 0% not CR | correctly rounded |
+    | `normal_cdf`, z ∈ [−38, 8] | 1,590 ulp | 0.5 ulp, 0% not CR | 1 ulp |
+    | `ln_gamma` on [0.5, 10]; beside 1 and 2 | 1.2×10⁶; 4.3×10¹³ ulp | 1.25; 0.98 ulp | 2 ulp |
+    | `ln_gamma` for x < 0, in ulps of max(\|lnΓ\|, 1) | 1,583 | 0.93 | 2 |
+    | `gamma_inc` P and Q, all 20,000 pairs | 97 and 485 ulp | 0.60 and 0.64 ulp | 4 ulp |
+    | `beta_inc` I and 1 − I, integer shapes | 550 and 583 ulp | 0.50 and 0.50 ulp | 8 ulp |
+
+  - **the rows T1 moves:** all of `special`'s 58,101 are gated, with nothing pending: 37,389 at 1.3.0's own bits, 91
+    corrected for a primitive, 17,592 at a T1 function's true value and 3,029 downstream of one. Only the distributions
+    and hypothesis tests call math.rs besides, and their rows will be recorded against T1 from the start;
+  - **the audit of M2's sources:** no aborts, no allocation, every transcendental correctly rounded, every inline hex
+    word proven by a `--check`, every name prefixed. `#must_use` now marks 58 pure helpers of the T1 files that lacked
+    it; the `crverify` generators compile to byte-identical binaries before and after;
+  - **the soak:** `tests/soak.tcyr` gains 10⁴ rounds of all fourteen of math.rs's functions across their branches.
+    The bump heap, the freelist, the mapped size and the pool are unchanged on all three targets (13 checks).
 
 ### Performance
 

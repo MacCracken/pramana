@@ -26,6 +26,7 @@
 
 # lnΓ(1 + f) for 0 ≤ f < 1 as a double-double: −γf + Σ (−1)^k ζ(k)/k·f^k up to f = 1/2, and with y = f − 1,
 # (1 − γ)y + Σ (−1)^k (ζ(k) − 1)/k·y^k above (terms below 2^-k and 4^-k: the sums stop under 2^-62 of the value).
+#must_use
 fn _pmn_gi_lngamma1p_dd(f: f64): (f64, f64) {
     if (f == 0.0) { return (0.0, 0.0); }
     var gh: f64 = _PMN_ZT_EULER_H;
@@ -81,6 +82,7 @@ fn _pmn_gi_lngamma1p_dd(f: f64): (f64, f64) {
 
 # lnΓ(a) for 0 < a < 20 as a double-double: lnΓ(1 + f) − ln a below 1, else lnΓ(1 + f) + ln((1 + f)…(m − 1 + f))
 # with a = m + f and the product a double-double (the incomplete gamma calls it below 10).
+#must_use
 fn _pmn_gi_lngamma_small_dd(a: f64): (f64, f64) {
     if (a < 1.0) {
         var gh, gl = _pmn_gi_lngamma1p_dd(a);
@@ -111,6 +113,7 @@ fn _pmn_gi_lngamma_small_dd(a: f64): (f64, f64) {
 }
 
 # The prefactor's exponent M = a ln x − x − lnΓ(a) as a double-double.
+#must_use
 fn _pmn_gi_lnpre(a: f64, x: f64): (f64, f64) {
     if (a < 10.0) {
         var lh, ll = _pmn_dd_ln_any(x);
@@ -177,6 +180,7 @@ fn _pmn_gi_lnpre(a: f64, x: f64): (f64, f64) {
 }
 
 # e^M for a double-double M, as (h, l, E) with h + l = e^M/2^E near 2^-70; E = −100000 when e^M underflows.
+#must_use
 fn _pmn_gi_exp_dd(mh: f64, ml: f64): (f64, f64, i64) {
     var lo: f64 = -1100.0;
     if (mh < lo) { return (0.0, 0.0, 0 - 100000); }
@@ -188,6 +192,7 @@ fn _pmn_gi_exp_dd(mh: f64, ml: f64): (f64, f64, i64) {
 # terms after t_n are below t_n·r/(1 − r) with r = x/(a + n + 1), so the test is t_n·x < 2^-62·S·(a + n + 1 − x). P9
 # stopped at t_n < 2^-62·S, which near x = a leaves a tail of t_n/(1 − r), about √a/9 terms' worth: 7 ulp at a = 1e9
 # (M2 part b4's crverify set), 0.07 at 1e5.
+#must_use
 fn _pmn_gi_series(a: f64, x: f64): (f64, f64) {
     var sh: f64 = 1.0;
     var sl: f64 = 0.0;
@@ -219,6 +224,7 @@ fn _pmn_gi_series(a: f64, x: f64): (f64, f64) {
 
 # Legendre's continued fraction for Γ(a, x)·e^x·x^-a by modified Lentz, in double-double, stopping when a step
 # changes the value by under 2^-62.
+#must_use
 fn _pmn_gi_cf(a: f64, x: f64): (f64, f64) {
     var tiny: f64 = 0x0010000000000000;         # 0x1p-1022
     var bh, bl0 = _pmn_km_two_sum(x, -a);
@@ -325,6 +331,7 @@ fn _pmn_gi_small_q(a: f64, x: f64): f64 {
 
 # T1 (P, Q) for 0 < a ≤ 1e9 (special.cyr's gamma_inc keeps Rust's Wilson–Hilferty form past 1e9). (NaN, NaN) for a NaN
 # argument or a ≤ 0; (0, 1) for x ≤ 0 or a = +∞; (1, 0) for x = +∞; each as Rust's.
+#must_use
 fn _pmn_gi_gamma_inc(a: f64, x: f64): (f64, f64) {
     var nan: f64 = _PMN_F64_NAN;
     if (x != x || a != a || a <= 0.0) { return (nan, nan); }
