@@ -174,9 +174,9 @@ int main(void){
     Stat *s=get(nm);
     if(!ok){ s->skipped++; continue; }
     double cr=mpfr_get_d(v,MPFR_RNDN);
-    // Probe P9's erf/erfc rows ("erf/…", "erfc/…", "erf_acc/…") count zero and subnormal results in units of 2^-1074
-    // (ADR 009), as gref's do; every other row keeps the baseline's rule of skipping them.
-    int p9e=strchr(nm,'/')!=NULL && !strncmp(nm,"erf",3);
+    // Probe P9's erf/erfc and normal_cdf rows ("erf/…", "erfc_acc/…", "ncdf_core/t1", …) count zero and subnormal
+    // results in units of 2^-1074 (ADR 009), as gref's do; every other row keeps the baseline's rule of skipping them.
+    int p9e=strchr(nm,'/')!=NULL && (!strncmp(nm,"erf",3) || !strncmp(nm,"ncdf",4));
     if(!isfinite(cr) || (!gr && !p9e && fabs(cr) < 2.2250738585072014e-308) || isnan(r)){ s->skipped++; continue; }
     double u=nextafter(fabs(cr),INFINITY)-fabs(cr);
     // A name ending "_mixed" is measured in ulps of max(|cr|, 1): ADR 009's bound for lnΓ at x < 0 (probe P9).

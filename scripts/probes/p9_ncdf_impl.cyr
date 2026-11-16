@@ -1,0 +1,399 @@
+# p9_ncdf_impl.cyr — probe P9's normal_cdf prototypes (port plan §5 step 9d-4, §3.4; ADR 009). Functions only:
+# p9_ncdf.cyr measures them against MPFR, p9_ncdf.bcyr times them.
+#
+# Φ(z) = ½·erfc(−z/√2). normal_sf(z) is Rust's normal_cdf(−z) bit for bit (−(−z)/√2 is z/√2), and T1's by
+# construction, so one function covers both.
+# - T0, `p9_t0_normal_cdf`: Rust 1.3.0's 0.5·erfc(−z/SQRT_2), its fdlibm erfc in Rust's operation order, on
+#   correctly rounded exp. This is what M2 part a ports.
+# - `p9_cr_normal_cdf`: Rust's 0.5·erfc(−z/SQRT_2) with 9e's correctly rounded erfc: what the rounded argument costs
+#   on its own.
+# - `p9_plan_normal_cdf`: §3.4's sketch as written: −z/√2 as a double-double h + l, the correctly rounded erfc(h) plus
+#   the first-order correction −l·(2/√π)·e^(−h²), rounded, then halved. Two roundings, and the halving rounds again
+#   on the subnormal grid.
+# - T1, `p9_t1_normal_cdf`, the prototype: the same correction applied to CORE-MATH's double-double erfc(h) before it
+#   is rounded, with the ½ folded into one rounding (on the subnormal grid too, exactly). The double-double comes from
+#   CORE-MATH's fast path when its proven bound is under 2^-60 relative, and from its accurate paths otherwise, so the
+#   result is within 0.5 + 2^-7 ulp of Φ(z) plus terms near 2^-80 relative (the argument's double-double, the
+#   correction's second order and rounding).
+
+include "scripts/probes/p9_erf_impl.cyr"
+include "src/constants.cyr"
+
+# ── T0: Rust 1.3.0 ──────────────────────────────────────────────────────────────────────────────────
+
+# c + s·acc: one Horner step, in Rust's order.
+fn p9n_h(c: f64, s: f64, acc: f64): f64 {
+    var t: f64 = s * acc;
+    var r: f64 = c + t;
+    return r;
+}
+
+# Rust's erfc_mid: erfc(|x|) for 0.84375 ≤ |x| < 1.25.
+fn p9n_t0_erfc_mid(x: f64): f64 {
+    var ax: f64 = f64_abs(x);
+    var s: f64 = ax - 1.0;
+    var p: f64 = _PMN_MATH_FDLIBM_PA6;
+    p = p9n_h(_PMN_MATH_FDLIBM_PA5, s, p);
+    p = p9n_h(_PMN_MATH_FDLIBM_PA4, s, p);
+    p = p9n_h(_PMN_MATH_FDLIBM_PA3, s, p);
+    p = p9n_h(_PMN_MATH_FDLIBM_PA2, s, p);
+    p = p9n_h(_PMN_MATH_FDLIBM_PA1, s, p);
+    p = p9n_h(_PMN_MATH_FDLIBM_PA0, s, p);
+    var q: f64 = _PMN_MATH_FDLIBM_QA6;
+    q = p9n_h(_PMN_MATH_FDLIBM_QA5, s, q);
+    q = p9n_h(_PMN_MATH_FDLIBM_QA4, s, q);
+    q = p9n_h(_PMN_MATH_FDLIBM_QA3, s, q);
+    q = p9n_h(_PMN_MATH_FDLIBM_QA2, s, q);
+    q = p9n_h(_PMN_MATH_FDLIBM_QA1, s, q);
+    q = p9n_h(1.0, s, q);
+    var erx: f64 = _PMN_MATH_FDLIBM_ERX;
+    var a: f64 = 1.0 - erx;
+    var pq: f64 = p / q;
+    var r: f64 = a - pq;
+    return r;
+}
+
+# Rust's erfc_tail: erfc(|x|) for 0.84375 ≤ |x| < 28, given the high word of |x|.
+fn p9n_t0_erfc_tail(ix, x0: f64): f64 {
+    if (ix < 0x3FF40000) {
+        var m: f64 = p9n_t0_erfc_mid(x0);
+        return m;
+    }
+    var x: f64 = f64_abs(x0);
+    var xx: f64 = x * x;
+    var s: f64 = 1.0 / xx;
+    var r: f64 = 0.0;
+    var bs: f64 = 0.0;
+    if (ix < 0x4006DB6D) {
+        r = _PMN_MATH_FDLIBM_RA7;
+        r = p9n_h(_PMN_MATH_FDLIBM_RA6, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RA5, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RA4, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RA3, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RA2, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RA1, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RA0, s, r);
+        bs = _PMN_MATH_FDLIBM_SA8;
+        bs = p9n_h(_PMN_MATH_FDLIBM_SA7, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SA6, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SA5, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SA4, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SA3, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SA2, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SA1, s, bs);
+        bs = p9n_h(1.0, s, bs);
+    } else {
+        r = _PMN_MATH_FDLIBM_RB6;
+        r = p9n_h(_PMN_MATH_FDLIBM_RB5, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RB4, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RB3, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RB2, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RB1, s, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_RB0, s, r);
+        bs = _PMN_MATH_FDLIBM_SB7;
+        bs = p9n_h(_PMN_MATH_FDLIBM_SB6, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SB5, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SB4, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SB3, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SB2, s, bs);
+        bs = p9n_h(_PMN_MATH_FDLIBM_SB1, s, bs);
+        bs = p9n_h(1.0, s, bs);
+    }
+    # z = x with the low 32 bits cleared, so −z·z is exact.
+    var zb = load64(&x) & 0xFFFFFFFF00000000;
+    var z: f64 = p9e_bits(zb);
+    var nz: f64 = -z;
+    var a1: f64 = nz * z;
+    var a2: f64 = a1 - 0.5625;
+    var e1: f64 = _km_cr_exp(a2);
+    var zmx: f64 = z - x;
+    var zpx: f64 = z + x;
+    var b1: f64 = zmx * zpx;
+    var rs: f64 = r / bs;
+    var b2: f64 = b1 + rs;
+    var e2: f64 = _km_cr_exp(b2);
+    var pe: f64 = e1 * e2;
+    var res: f64 = pe / x;
+    return res;
+}
+
+# Rust's erfc (fdlibm), operation for operation, with correctly rounded exp.
+fn p9n_t0_erfc(x: f64): f64 {
+    var bits = load64(&x);
+    var hx = (bits >> 32) & 0xFFFFFFFF;
+    var negative = (bits >> 63) & 1;
+    var ix = hx & 0x7FFFFFFF;
+    if (ix >= 0x7FF00000) {
+        if (x != x) { return x; }
+        if (negative == 1) { return 2.0; }
+        return 0.0;
+    }
+    if (ix < 0x3FEB0000) {
+        if (ix < 0x3C700000) {
+            var r0: f64 = 1.0 - x;
+            return r0;
+        }
+        var z: f64 = x * x;
+        var r: f64 = _PMN_MATH_FDLIBM_PP4;
+        r = p9n_h(_PMN_MATH_FDLIBM_PP3, z, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_PP2, z, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_PP1, z, r);
+        r = p9n_h(_PMN_MATH_FDLIBM_PP0, z, r);
+        var s: f64 = _PMN_MATH_FDLIBM_QQ5;
+        s = p9n_h(_PMN_MATH_FDLIBM_QQ4, z, s);
+        s = p9n_h(_PMN_MATH_FDLIBM_QQ3, z, s);
+        s = p9n_h(_PMN_MATH_FDLIBM_QQ2, z, s);
+        s = p9n_h(_PMN_MATH_FDLIBM_QQ1, z, s);
+        s = p9n_h(1.0, z, s);
+        var y: f64 = r / s;
+        var xy: f64 = x * y;
+        if (negative == 1 || ix < 0x3FD00000) {
+            var t1: f64 = x + xy;
+            var r1: f64 = 1.0 - t1;
+            return r1;
+        }
+        var t2: f64 = x - 0.5;
+        var t3: f64 = t2 + xy;
+        var r2: f64 = 0.5 - t3;
+        return r2;
+    }
+    if (ix < 0x403C0000) {
+        var tail: f64 = p9n_t0_erfc_tail(ix, x);
+        if (negative == 1) {
+            var r3: f64 = 2.0 - tail;
+            return r3;
+        }
+        return tail;
+    }
+    if (negative == 1) {
+        var mp: f64 = _PMN_F64_MIN_POSITIVE;
+        var r4: f64 = 2.0 - mp;
+        return r4;
+    }
+    return 0.0;
+}
+
+# Rust's normal_cdf: 0.5·erfc(−z/SQRT_2).
+fn p9_t0_normal_cdf(z: f64): f64 {
+    var nz: f64 = -z;
+    var s2: f64 = _PMN_F64_SQRT_2;
+    var a: f64 = nz / s2;
+    var e: f64 = p9n_t0_erfc(a);
+    var r: f64 = 0.5 * e;
+    return r;
+}
+
+# ── The correctly rounded erfc alone ────────────────────────────────────────────────────────────────
+
+# Rust's 0.5·erfc(−z/SQRT_2), with 9e's correctly rounded erfc.
+fn p9_cr_normal_cdf(z: f64): f64 {
+    var nz: f64 = -z;
+    var s2: f64 = _PMN_F64_SQRT_2;
+    var a: f64 = nz / s2;
+    var e: f64 = p9_cr_erfc(a);
+    var r: f64 = 0.5 * e;
+    return r;
+}
+
+# ── T1 and the plan's sketch ────────────────────────────────────────────────────────────────────────
+
+var _P9N_RS2_H: f64 = 0x3FE6A09E667F3BCD;      # RN(1/√2) = 0x1.6a09e667f3bcdp-1
+var _P9N_RS2_L: f64 = 0xBC8BDD3413B26456;      # RN(1/√2 − RN(1/√2)) = −0x1.bdd3413b26456p-55; p9_ncdf.sh checks both
+
+# −z/√2 as a double-double h + l, to about 2^-104 relative, for |z| ≤ 64 (Dekker's split needs |z| < 2^996).
+fn p9n_arg(z: f64): (f64, f64) {
+    var nz: f64 = -z;
+    var p, e = _km_two_prod(nz, _P9N_RS2_H);
+    var t: f64 = nz * _P9N_RS2_L;
+    var e2: f64 = e + t;
+    var h, l = _km_fast_two_sum(p, e2);
+    return (h, l);
+}
+
+# ρ = −l·(2/√π)·e^(−h²)/E, E ≈ erfc(h): erfc(h + l) = erfc(h)·(1 + ρ) to first order. |ρ| ≤ 2^-42.5 and needs about
+# 2^-25 of relative accuracy, so e^(−h²) of the rounded h² (relative error h²·2^-53) is plenty. For h ≤ 25.86 only,
+# where e^(−h²) is normal.
+fn p9n_rho(h: f64, l: f64, e: f64): f64 {
+    var h2: f64 = h * h;
+    var nh2: f64 = -h2;
+    var t: f64 = _km_cr_exp(nh2);
+    var a: f64 = l * _P9E_D_CH;                 # CH = RN(2/√π)
+    var b: f64 = a * t;
+    var r: f64 = b / e;
+    var nr: f64 = -r;
+    return nr;
+}
+
+# erfc(x) = 2^e·(rh + rl) unrounded, and w with erfc(x) = e^(−x²)·w stored at `wout`, for 0x1.b59ffb450828cp+0 < x <
+# 0x1.b39dc41e48bfdp+4: p9e_erfc_asympt_accurate without its exception table (the inputs where erfc(x) itself is hard
+# to round) or its final rounding.
+fn p9n_asympt_dd(x: f64, wout): (f64, f64, i64) {
+    var uh, ul = _km_two_prod(x, x);
+    var nuh: f64 = -uh;
+    var nul: f64 = -ul;
+    var eh, el, e = p9e_exp_accurate(nuh, nul);
+    var yh: f64 = 1.0 / x;
+    var nx: f64 = -x;
+    var f: f64 = p9e_fma(nx, yh, 1.0);
+    var yl: f64 = yh * f;
+    var thr = &_P9E_ASACC_THR;
+    var i = 0;
+    while (yh > p9e_tab(thr, i)) { i = i + 1; }
+    var p = &_P9E_TACC + i * 30 * 8;
+    var vh, vl = _km_two_prod(yh, yh);
+    var y2: f64 = 2.0 * yh;
+    vl = p9e_fma(y2, yl, vl);
+    var zh: f64 = p9e_tab(p, 14 + 6 + i);
+    var zl: f64 = 0.0;
+    var j = 27 + 2 * i;
+    while (j >= 13) {
+        var h, l = _km_two_prod(zh, vh);
+        l = p9e_fma(zh, vl, l);
+        l = p9e_fma(zl, vh, l);
+        var zh2, zl2 = _km_two_sum(p9e_tab(p, (j - 1) / 2 + 6), h);
+        zh = zh2;
+        zl = zl2 + l;
+        j = j - 2;
+    }
+    j = 11;
+    while (j >= 1) {
+        var h3, l3 = _km_two_prod(zh, vh);
+        l3 = p9e_fma(zh, vl, l3);
+        l3 = p9e_fma(zl, vh, l3);
+        var zh3, zl3 = _km_two_sum(p9e_tab(p, j - 1), h3);
+        zh = zh3;
+        var s3: f64 = l3 + p9e_tab(p, j);
+        zl = zl3 + s3;
+        j = j - 2;
+    }
+    var wh, wl = _km_two_prod(zh, yh);
+    wl = p9e_fma(zh, yl, wl);
+    wl = p9e_fma(zl, yh, wl);
+    var wh2, wl2 = _km_fast_two_sum(wh, wl);
+    var rh, rl = _km_two_prod(wh2, eh);
+    rl = p9e_fma(wh2, el, rl);
+    rl = p9e_fma(wl2, eh, rl);
+    store64(wout, wh2);
+    return (rh, rl, e);
+}
+
+# RN((rh + rl)·2^e) with one rounding, for rh > 0 and |rl| ≤ ulp(rh): a normal result is RN(rh + rl) scaled exactly;
+# a subnormal one is N·2^-1074 with N = RN(2^52 + (rh + rl)·2^(e+1074)) − 2^52 (the grid of [2^52, 2^53) is 1, and
+# both scalings are exact), as p9e_fma_tiny does.
+fn p9n_round_scaled(rh: f64, rl: f64, e): f64 {
+    var r: f64 = rh + rl;
+    var y: f64 = p9e_ldexp(r, e);
+    var dmin: f64 = 0x0010000000000000;        # 0x1p-1022
+    if (y >= dmin) { return y; }
+    var q = e + 1074;
+    var a: f64 = p9e_ldexp(rh, q);
+    var b: f64 = p9e_ldexp(rl, q);
+    var m: f64 = 0x4330000000000000;           # 0x1p52
+    var t: f64 = _km_rn3(m, a, b);
+    var n: f64 = t - m;
+    var tiny: f64 = p9e_bits(1);               # 0x1p-1074
+    var r2: f64 = n * tiny;
+    return r2;
+}
+
+# erfc(h) = 2^e·(rh + rl) before rounding, and ρ for h + l stored at `rout`: from CORE-MATH's fast path when its bound
+# is under 2^-60 relative, else from its accurate paths (about 2^-100). For −0x1.7744f8f74e94bp+2 < h <
+# 0x1.b39dc41e48bfdp+4.
+fn p9n_erfc_dd(h: f64, l: f64, rout): (f64, f64, i64) {
+    var fh, fl, err = p9e_erfc_fast(h);
+    var c60: f64 = 0x3C30000000000000;         # 0x1p-60
+    var lim: f64 = fh * c60;
+    if (err <= lim) {
+        var rho: f64 = p9n_rho(h, l, fh);
+        store64(rout, rho);
+        return (fh, fl, 0);
+    }
+    var mid: f64 = 0x3FFB59FFB450828C;         # 0x1.b59ffb450828cp+0
+    if (h <= mid) {
+        # erfc = 1 ∓ erf(|h|), as cr_erfc_accurate (in practice unused: the fast bound holds below mid)
+        if (h < 0.0) {
+            var nh: f64 = -h;
+            var a, b = p9e_erf_acc_core(nh);
+            var r, t = _km_fast_two_sum(1.0, a);
+            var rl: f64 = t + b;
+            var rho1: f64 = p9n_rho(h, l, r);
+            store64(rout, rho1);
+            return (r, rl, 0);
+        }
+        var a2, b2 = p9e_erf_acc_core(h);
+        var na2: f64 = -a2;
+        var r2, t2 = _km_fast_two_sum(1.0, na2);
+        var rl2: f64 = t2 - b2;
+        var rho2: f64 = p9n_rho(h, l, r2);
+        store64(rout, rho2);
+        return (r2, rl2, 0);
+    }
+    var w: f64 = 0.0;
+    var rh, rl3, e = p9n_asympt_dd(h, &w);
+    var q: f64 = l * _P9E_D_CH;
+    var rho3: f64 = q / w;
+    var nrho3: f64 = -rho3;
+    store64(rout, nrho3);
+    return (rh, rl3, e);
+}
+
+# The cases both forms share: NaN, Φ = 1 (erfc(h) rounds to 2), Φ = 0 (erfc(h) < 2^-1075), and Φ = ½ (erfc(h)
+# rounds to 1), on the thresholds cr_erfc uses. Returns (1, Φ) when one applies, else (0, 0).
+fn p9n_special(h: f64): (i64, f64) {
+    var lo: f64 = 0xC017744F8F74E94B;           # −0x1.7744f8f74e94bp+2
+    if (h <= lo) { return (1, 1.0); }
+    var hi: f64 = 0x403B39DC41E48BFD;           # 0x1.b39dc41e48bfdp+4
+    if (h >= hi) { return (1, 0.0); }
+    var tn: f64 = 0xBC9C5BF891B4EF6A;           # −0x1.c5bf891b4ef6ap-54
+    var tp: f64 = 0x3C8C5BF891B4EF6A;           # 0x1.c5bf891b4ef6ap-55
+    if (h >= tn && h <= tp) { return (1, 0.5); }
+    return (0, 0.0);
+}
+
+# T1: Φ(z) = 2^(e−1)·(rh + rl + rh·ρ), rounded once.
+fn p9_t1_normal_cdf(z: f64): f64 {
+    if (z != z) {
+        var nn: f64 = z + z;
+        return nn;
+    }
+    if (z > 16.0) { return 1.0; }
+    if (z < -40.0) { return 0.0; }
+    var h, l = p9n_arg(z);
+    var sp, sv = p9n_special(h);
+    if (sp == 1) { return sv; }
+    var rho: f64 = 0.0;
+    var rh, rl, e = p9n_erfc_dd(h, l, &rho);
+    var c: f64 = rh * rho;
+    var rl2: f64 = rl + c;
+    var r: f64 = p9n_round_scaled(rh, rl2, e - 1);
+    return r;
+}
+
+# §3.4's sketch: RN(erfc(h) + erfc(h)·ρ) with the correctly rounded erfc(h), then ×½.
+fn p9_plan_normal_cdf(z: f64): f64 {
+    if (z != z) {
+        var nn: f64 = z + z;
+        return nn;
+    }
+    if (z > 16.0) { return 1.0; }
+    if (z < -40.0) { return 0.0; }
+    var h, l = p9n_arg(z);
+    var sp, sv = p9n_special(h);
+    if (sp == 1) { return sv; }
+    var e: f64 = p9_cr_erfc(h);
+    var rho: f64 = 0.0;
+    var top: f64 = 0x4039DB1BB14E15CA;          # 0x1.9db1bb14e15cap+4: e^(−h²) is normal below
+    if (h < top) {
+        rho = p9n_rho(h, l, e);
+    } else {
+        var w: f64 = 0.0;
+        p9n_asympt_dd(h, &w);
+        var q: f64 = l * _P9E_D_CH;
+        var rq: f64 = q / w;
+        rho = -rq;
+    }
+    var c: f64 = e * rho;
+    var s: f64 = e + c;
+    var r: f64 = 0.5 * s;
+    return r;
+}

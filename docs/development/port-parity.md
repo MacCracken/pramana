@@ -1144,3 +1144,87 @@ inputs.
 - The port moves into `src/special.cyr` as it is. `p9_coremath_tables.py` moves to `scripts/golden/`, and its tables
   are regenerated, never edited. The exact fma and the tiny-path rounding join `src/crmath.cyr`.
 - 9d-4's `normal_cdf` can now be prototyped on the correctly rounded erfc, and 9d-2's Temme option can use it.
+
+### 6.8 Part 9d-4: P9, `normal_cdf` (2026-11-15)
+
+**What it compares.** Five forms of Φ(z) = ½·erfc(−z/√2) on the same inputs, against MPFR's at 1,024 bits
+(`check.c`; zero and subnormal results count, in units of 2⁻¹⁰⁷⁴). `normal_sf(z)` is `normal_cdf(−z)` bit for bit,
+in Rust (−(−z)/√2 is z/√2) and in T1, so one function covers both.
+- **Rust 1.3.0's own results** on §3.2's two sets, from the baseline's binary;
+- **T0** (`p9_ncdf_impl.cyr`): Rust's 0.5·erfc(−z/SQRT_2), its fdlibm erfc in Rust's operation order, on correctly
+  rounded exp. It differs from Rust on 69 of §3.2's 100,000 rows, where glibc's exp misrounds;
+- **the correctly rounded erfc alone:** Rust's form with 9e's erfc, which shows what the rounded argument costs;
+- **the plan's sketch,** §3.4 as written: h + l = −z/√2 as a double-double, then the correctly rounded erfc(h) plus
+  erfc(h)·ρ, rounded, then halved. Here ρ = −l·(2/√π)·e^(−h²)/erfc(h) is the first-order correction;
+- **T1, the prototype:** the same ρ, applied to CORE-MATH's double-double erfc(h) before it is rounded, with the ½
+  folded into one rounding. That rounding is exact on the subnormal grid too, as 9e's tiny path is. The
+  double-double comes from CORE-MATH's fast path where its proven bound is under 2⁻⁶⁰ relative, and from its accurate
+  paths otherwise. The thresholds for Φ = 0, ½ and 1 are `cr_erfc`'s, applied to h.
+
+**T1's bound.** The double-double erfc(h) is within 2⁻⁶⁰ relative (2⁻¹⁰⁰ on the accurate paths). Everything T1 adds
+stays under about 2⁻⁸⁵ relative:
+- the error in ρ (|ρ| ≤ 2⁻⁴²·⁴, by the Mills-ratio bound on e^(−h²)/erfc(h));
+- the second-order term;
+- the argument's double-double (about 2⁻¹⁰⁴);
+- the two roundings in rl + rh·ρ.
+
+So T1 is within 0.5 + 2⁻⁷ ≈ 0.508 ulp, against ADR 009's ≤ 1. The sketch rounds twice, and halving a subnormal
+rounds a third time, so it can reach 1.5 ulp where the correction crosses a binade.
+
+**The sets:** §3.2's two, 50,000 each, then nine seeded sets with T1 on every row and the other forms on every fourth:
+- 250,000 in the core, (−5, 5), and 250,000 in the lower tail, (−38.5, −5);
+- 100,000 in (−4.1, −2.5), around (−4.07, −2.96), where CORE-MATH's fast bound passes 2⁻⁶⁰ and T1 takes the
+  accurate path;
+- 100,000 in the deep tail, (−38.5, −36.5), with the subnormal results, and 100,000 in (5, 8.3), where Φ → 1;
+- 150,000 with |z| from 2⁻¹⁰⁷⁴ to 32, and 50,000 of any finite bits;
+- 46,801 on the decimal grid z = k/1000 from −38.5 to 8.3;
+- 100,008 at the eight branch points of `cr_erfc` in h, at ±1,000 ulps and within 2⁻²⁰ relative.
+
+That makes 2,506,918 rows. T1 has 1,246,809 of them, 1,146,809 seeded.
+
+| Set | n (T1) | Rust, max (mean) | T0, max (mean) | CR erfc alone, max | Sketch, max (not CR) | T1, max (mean) | T1 not CR |
+|---|---|---|---|---|---|---|---|
+| §3.2's (−38, 8) | 50,000 | 1,590 (174) | 1,590 (174) | 1,590 | 1.00 (20.7%) | **0.50** (0.246) | 0 |
+| §3.2's (−5, 5) | 50,000 | 29.1 (2.19) | 29.1 (2.19) | 28.7 | 0.99 (13.0%) | **0.50** (0.250) | 0 |
+| (−5, 5) | 250,000 | — | 29.1 (2.19) | 29.5 | 1.00 (13.1%) | **0.50** (0.250) | 1 row |
+| (−38.5, −5) | 250,000 | — | 1,674 (238) | 1,674 | 1.00 (25.2%) | **0.50** (0.242) | 0 |
+| (−4.1, −2.5) | 100,000 | — | 23.4 (5.56) | 22.4 | 0.99 (25.2%) | **0.50** (0.250) | 1 row |
+| (−38.5, −36.5) | 100,000 | — | 1,688 (313) | 1,688 | 1.00 (25.4%) | **0.50** (0.125) | 0 |
+| (5, 8.3) | 100,000 | — | 0.50 (0.251) | 0.50 | 0.50 (0%) | **0.50** (0.250) | 0 |
+| \|z\| from 2⁻¹⁰⁷⁴ to 32 | 150,000 | — | 936 (0.164) | 936 | 0.97 (0.10%) | **0.50** (0.014) | 0 |
+| any finite bits | 50,000 | — | 1,026 (0.191) | 1,026 | 0.84 (0.07%) | **0.50** (0.008) | 0 |
+| z = k/1000 | 46,801 | — | 1,624 (172) | 1,624 | 1.00 (20.9%) | **0.50** (0.245) | 0 |
+| `cr_erfc`'s branch points | 100,008 | — | 1,650 (78.1) | 1,651 | 0.99 (11.7%) | **0.50** (0.281) | 2 rows |
+
+- **T1 is within 0.5 ulp on every row,** against the fixed ≤ 1, and correctly rounded on all but 4 of 1,246,809. Rust
+  reaches 1,590 ulp on §3.2's rows and 1,688 in the deep tail.
+- **The argument's rounding is all of Rust's tail error.** The correctly rounded erfc alone, on Rust's rounded
+  −z/√2, reaches 1,688 ulp, as T0 does. A rounding error of 2⁻⁵³ in h becomes about 2h² times that in erfc(h).
+- **The sketch is at the bound, not under it.** It reaches exactly 1.0 unit on subnormal results (z < −37.5),
+  where its halving rounds again, and 0.996 ulp above them. It misrounds up to 25% of a set. One rounding is what
+  gives T1 its margin.
+- **One answer on every target:** the 2,506,918 rows are byte-identical on x86_64 ELF, PE and aarch64, sha256
+  `67b52ed6…`.
+
+**Cost** (`p9_ncdf.bcyr`): ns per call, pinned, three runs, 10⁶ calls per row over 4,096 seeded inputs.
+
+| Inputs | T0 | CR erfc alone | T1 |
+|---|---|---|---|
+| z ∈ (−5, 5) | 147–154 | 705–738 | 1,283–1,329 |
+| z ∈ (−4.1, −2.5) | 193–198 | 926–952 | 3,769–3,887 |
+| z ∈ (−36, −5) | 179–184 | 2,172–2,253 | 2,285–2,363 |
+| z ∈ (−38.4, −36.6) | 229–239 | 4,473–4,661 | 4,436–4,610 |
+
+- T1 costs 8–20× T0. Against the correctly rounded erfc alone, it adds about 0.6 µs in the core, much of it the
+  accurate path below, and 0.1 µs in the tail (an exp and the argument's double-double).
+- **The 2⁻⁶⁰ bound costs most in (−4.1, −2.5).** There, 1 − erf(h) cancels, CORE-MATH's fast bound passes 2⁻⁶⁰, and
+  T1 takes the accurate path. With a scratch copy at 2⁻⁵⁸ (bound 0.5 + 2⁻⁵ ulp), T1 takes 1,134 ns in the core and
+  2,593 ns there. At 2⁻⁵⁶ (0.5 + 2⁻³ ulp), it takes 927 and 1,475 ns (one pinned run each, timing only).
+
+**What it means for M2 part b:**
+- T1's design stands: CORE-MATH's erfc before it rounds, the first-order correction for the argument's low part, and
+  one rounding with the ½ folded in. `src/special.cyr` therefore exposes erfc's double-double core, not only
+  `cr_erfc`.
+- §3.4's sketch is replaced by T1's form. Its two roundings sit at the bound.
+- The fast bound is a speed knob within the bound. 2⁻⁵⁶ still leaves 0.375 ulp of margin and takes 30% off the core.
+  M2 part b chooses, and its ≥ 1M verification keeps the (−4.1, −2.5) set.

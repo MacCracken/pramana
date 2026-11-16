@@ -178,6 +178,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     is the emulated fma (6.5–20× CORE-MATH's cost in C), so a scalar fma is requested from cyrius (ledger L12).
   - **D3 = C holds:** the port verified inside its slot, so the ≤ 1 ulp fallback is not needed.
 
+- **Probes, part 9d-4: P9's `normal_cdf` prototype** (port plan M0 step 9; `scripts/probes/p9_ncdf*`; results in
+  `docs/development/port-parity.md` §6.8).
+  - **The design:** −z/√2 as a double-double h + l. The first-order correction for l is applied to CORE-MATH's
+    double-double erfc(h) before it rounds, and the ½ is folded into that one rounding, exact on the subnormal grid
+    too. The double-double comes from CORE-MATH's fast path where its proven bound is under 2⁻⁶⁰ relative, and from
+    its accurate paths otherwise. That makes the error provably at most 0.5 + 2⁻⁷ ulp.
+  - **Accuracy:** checked against MPFR 4.2.2 at 1,024 bits on 2,506,918 rows, including §3.2's sets, the deep tail's
+    subnormal results, the decimal grid z = k/1000 and `cr_erfc`'s branch points. T1 is within 0.5 ulp on all
+    1,246,809 of its rows, correctly rounded on all but 4, against ADR 009's fixed ≤ 1. `normal_sf(z)` is
+    `normal_cdf(−z)` bit for bit, so it is covered too.
+  - **What the steps buy:**
+    - Rust 1.3.0 reaches 1,590 ulp on §3.2's rows and 1,688 in the deep tail;
+    - the correctly rounded erfc on Rust's rounded argument reaches the same 1,688: the argument's rounding is the
+      error;
+    - the plan's sketch, which rounds twice, reaches exactly 1.0 ulp and misrounds up to 25% of a set. The plan's
+      §3.4 now gives T1's form.
+  - **Targets:** the same bits on x86_64, PE and aarch64.
+  - **Cost:** 1.3–4.6 µs a call against Rust's form's 0.15–0.24 µs on correctly rounded exp (8–20×). Most of the
+    core's share is CORE-MATH's accurate path for z in (−4.07, −2.96). A looser fast bound of 2⁻⁵⁶ keeps the
+    error under 0.625 ulp and takes 30% off the core; M2 part b chooses.
+  - **`check.c`** counts the zero and subnormal results of probe P9's erf, erfc and `normal_cdf` rows in units of
+    2⁻¹⁰⁷⁴ (ADR 009). `scripts/port-baseline/merge.py` merges its reports from interleaved chunks, so a slow MPFR check
+    runs on ten cores.
+
 ### Changed
 
 - **The Cyrius port scaffold** (port plan M0 steps 1–2).

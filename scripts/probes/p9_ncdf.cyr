@@ -1,0 +1,274 @@
+# p9_ncdf.cyr — probe P9, normal_cdf: verification rows (port plan §5 step 9d-4, §3.4).
+#
+# Prints `ncdf_<set>/<variant> z result` rows (bit patterns) for scripts/port-baseline/check.c (MPFR at 1,024 bits):
+# - §3.2's two sets, from the Rust baseline's output (build/p9/ncdf_rust.txt: z ∈ (−38, 8) and (−5, 5), 50,000
+#   each, with Rust 1.3.0's results): Rust, T0, the correctly rounded erfc alone (`cr`), the plan's sketch and T1;
+# - nine seeded sets, over 10^6 arguments, weighted to the tails, the branch points of CORE-MATH's erfc in
+#   h = −z/√2, the subnormal results, tiny |z| and decimal grids: T1 on every row, and T0, `cr` and `plan` on every
+#   fourth.
+#   bash scripts/probes/p9_ncdf.sh
+
+include "scripts/probes/p9_ncdf_impl.cyr"
+
+var g_rng = 0x2545F4914F6CDD1D;
+var g_out = 0;
+var g_count = 0;
+
+# Every shift here is `>>`, the logical one (`>>>` sign-extends).
+fn p9_word(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+fn p9_unit(): f64 {
+    var top = p9_word() >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+# Uniform in [lo, hi).
+fn p9_range(lo: f64, hi: f64): f64 {
+    var w: f64 = hi - lo;
+    var u: f64 = p9_unit();
+    var r: f64 = lo + w * u;
+    return r;
+}
+
+# 2^u·(1 + f) with u a random integer in [elo, ehi] (2^-1074 granularity below 2^-1022), and a random sign.
+fn p9_scale(elo, ehi): f64 {
+    var span = ehi - elo + 1;
+    var e = elo + (p9_word() >> 1) % span;
+    var m = p9_word() >> 12;
+    var x: f64 = 0.0;
+    if (e >= 0 - 1022) {
+        var bits = ((e + 1023) << 52) | m;
+        x = p9e_bits(bits);
+    } else {
+        var sh = 0 - 1022 - e;
+        var sub = (m | 0x10000000000000) >> sh;
+        if (sub == 0) { sub = 1; }
+        x = p9e_bits(sub);
+    }
+    if ((p9_word() & 1) == 1) { x = -x; }
+    return x;
+}
+
+# Any finite double.
+fn p9_anybits(): f64 {
+    var b = p9_word();
+    if (((b >> 52) & 0x7FF) == 0x7FF) { b = b & 0xBFFFFFFFFFFFFFFF; }
+    var x: f64 = p9e_bits(b);
+    return x;
+}
+
+fn p9_hex64(sb, w): i64 {
+    var i = 60;
+    while (i >= 0) {
+        var d = (w >> i) & 15;
+        if (d < 10) { str_builder_putc(sb, 48 + d); } else { str_builder_putc(sb, 87 + d); }
+        i = i - 4;
+    }
+    return 0;
+}
+
+fn p9_hexval(c): i64 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    return c - 87;
+}
+
+fn p9_flush(): i64 {
+    print(load64(g_out), load64(g_out + 8));
+    store64(g_out + 8, 0);
+    return 0;
+}
+
+fn p9_row(set: cstring, variant: cstring, z: f64, r: f64): i64 {
+    str_builder_add_cstr(g_out, "ncdf_");
+    str_builder_add_cstr(g_out, set);
+    str_builder_putc(g_out, 47);
+    str_builder_add_cstr(g_out, variant);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, z);
+    str_builder_putc(g_out, 32);
+    p9_hex64(g_out, r);
+    str_builder_putc(g_out, 10);
+    if (load64(g_out + 8) > 1048576) { p9_flush(); }
+    return 0;
+}
+
+# T1 on every row; T0, the correctly rounded erfc alone and the plan's sketch on every fourth.
+fn p9_seeded(set: cstring, z: f64): i64 {
+    var r1: f64 = p9_t1_normal_cdf(z);
+    p9_row(set, "t1", z, r1);
+    if (g_count % 4 == 0) {
+        var r0: f64 = p9_t0_normal_cdf(z);
+        p9_row(set, "t0", z, r0);
+        var rc: f64 = p9_cr_normal_cdf(z);
+        p9_row(set, "cr", z, rc);
+        var rp: f64 = p9_plan_normal_cdf(z);
+        p9_row(set, "plan", z, rp);
+    }
+    g_count = g_count + 1;
+    return 0;
+}
+
+# §3.2's sets: each `ncdf… z rust` line of the baseline's output, every variant.
+fn p9_baseline(buf, n): i64 {
+    var i = 0;
+    var start = 0;
+    while (i < n) {
+        if (load8(buf + i) == 10) {
+            # "ncdf zzzz rrrr" or "ncdf_core zzzz rrrr"
+            var core = 0;
+            if (load8(buf + start + 4) == 95) { core = 1; }
+            var p = start + 5;
+            if (core == 1) { p = start + 10; }
+            var zw = 0;
+            var k = 0;
+            while (k < 16) {
+                zw = (zw << 4) | p9_hexval(load8(buf + p + k));
+                k = k + 1;
+            }
+            var rw = 0;
+            k = 0;
+            while (k < 16) {
+                rw = (rw << 4) | p9_hexval(load8(buf + p + 17 + k));
+                k = k + 1;
+            }
+            var z: f64 = p9e_bits(zw);
+            var rr: f64 = p9e_bits(rw);
+            var set = "base";
+            if (core == 1) { set = "basecore"; }
+            p9_row(set, "rust", z, rr);
+            var r0: f64 = p9_t0_normal_cdf(z);
+            p9_row(set, "t0", z, r0);
+            var rc: f64 = p9_cr_normal_cdf(z);
+            p9_row(set, "cr", z, rc);
+            var rp: f64 = p9_plan_normal_cdf(z);
+            p9_row(set, "plan", z, rp);
+            var r1: f64 = p9_t1_normal_cdf(z);
+            p9_row(set, "t1", z, r1);
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 2,001 inputs at z_e + k ulps (k ∈ [−1000, 1000]) and 10,500 within 2^-20·|z_e| of it, for an edge in h = −z/√2.
+fn p9_edge(h: f64): i64 {
+    var s2: f64 = _PMN_F64_SQRT_2;
+    var nh: f64 = -h;
+    var ze: f64 = nh * s2;
+    var b = load64(&ze);
+    var k = 0 - 1000;
+    while (k <= 1000) {
+        var y: f64 = p9e_bits(b + k);
+        p9_seeded("edges", y);
+        k = k + 1;
+    }
+    var aze: f64 = f64_abs(ze);
+    var c20: f64 = 0x3EB0000000000000;          # 0x1p-20
+    var w: f64 = aze * c20;
+    var nw: f64 = -w;
+    var i = 0;
+    while (i < 10500) {
+        var off: f64 = p9_range(nw, w);
+        var y2: f64 = ze + off;
+        p9_seeded("edges", y2);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_out = str_builder_new();
+    var cap = 16777216;
+    var buf = alloc(cap);
+    var n = file_read_all("build/p9/ncdf_rust.txt", buf, cap);
+    if (n <= 0) {
+        var msg = "cannot read build/p9/ncdf_rust.txt\n";
+        print(msg, strlen(msg));
+        return 1;
+    }
+    p9_baseline(buf, n);
+    var i = 0;
+    # the core, (−5, 5): 250,000
+    while (i < 250000) {
+        p9_seeded("core", p9_range(-5.0, 5.0));
+        i = i + 1;
+    }
+    # the lower tail, (−38.5, −5): 250,000 (Rust: 1,590 ulp)
+    i = 0;
+    while (i < 250000) {
+        p9_seeded("tail", p9_range(-38.5, -5.0));
+        i = i + 1;
+    }
+    # where CORE-MATH's fast bound fails and T1 takes the accurate path, h ∈ (1.77, 2.9): 100,000
+    i = 0;
+    while (i < 100000) {
+        p9_seeded("mid", p9_range(-4.1, -2.5));
+        i = i + 1;
+    }
+    # the deep tail, (−38.5, −36.5): the accurate asymptotic path and the subnormal results, 100,000
+    i = 0;
+    while (i < 100000) {
+        p9_seeded("deep", p9_range(-38.5, -36.5));
+        i = i + 1;
+    }
+    # the upper side, (5, 8.3), where Φ → 1: 100,000
+    i = 0;
+    while (i < 100000) {
+        p9_seeded("upper", p9_range(5.0, 8.3));
+        i = i + 1;
+    }
+    # |z| from 2^-1074 to 32, both signs: 150,000
+    i = 0;
+    while (i < 150000) {
+        p9_seeded("scales", p9_scale(0 - 1074, 4));
+        i = i + 1;
+    }
+    # any finite bits: 50,000
+    i = 0;
+    while (i < 50000) {
+        p9_seeded("bits", p9_anybits());
+        i = i + 1;
+    }
+    # z = k/1000 for k ∈ [−38500, 8300]: the decimal inputs callers type, 46,801
+    var k = 0 - 38500;
+    while (k <= 8300) {
+        var kf: f64 = f64_from(k);
+        var zg: f64 = kf / 1000.0;
+        p9_seeded("grid", zg);
+        k = k + 1;
+    }
+    # the branch points of cr_erfc in h, 12,501 each: erfc rounds to 2, the tiny thresholds, 0x1.e861fbb24c00ap-2,
+    # 0x1.b59ffb450828cp+0, THRESHOLD1, the fast asymptotic path's top, erfc's underflow
+    var e1: f64 = 0xC017744F8F74E94B;
+    p9_edge(e1);
+    var e2: f64 = 0xBC9C5BF891B4EF6A;
+    p9_edge(e2);
+    var e3: f64 = 0x3C8C5BF891B4EF6A;
+    p9_edge(e3);
+    var e4: f64 = 0x3FDE861FBB24C00A;
+    p9_edge(e4);
+    var e5: f64 = 0x3FFB59FFB450828C;
+    p9_edge(e5);
+    var e6: f64 = _P9E_D_THRESHOLD1;
+    p9_edge(e6);
+    var e7: f64 = 0x4039DB1BB14E15CA;
+    p9_edge(e7);
+    var e8: f64 = 0x403B39DC41E48BFD;
+    p9_edge(e8);
+    p9_flush();
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

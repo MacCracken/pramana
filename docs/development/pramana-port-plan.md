@@ -19,13 +19,14 @@
 > - step 1, the `cyrius port` scaffold, is committed as `d8e761d`.
 >
 > **Step 2,** the repairs, is committed as `40a8269`, and **step 3**, the full `cyrius.cyml`, as `0e147d3`.
-> **Steps 4–8** are committed (`53078cb`, `30eb41b`, `bb0f938`, `d7941bc`, `aec9861`). **Step 9,** the probes, is in
-> progress: part 9a (P1, P5, P6) is committed (`96ae9d5`, and P6's decision, ADR 007 row 14, as `aa3dc1e`). Part 9b
+> **Steps 4–8** are committed (`53078cb`, `30eb41b`, `bb0f938`, `d7941bc`, `aec9861`). **Step 9,** the probes, is
+> done: part 9a (P1, P5, P6) is committed (`96ae9d5`, and P6's decision, ADR 007 row 14, as `aa3dc1e`). Part 9b
 > (P2, P3, P4) and the D7 amendment it led to (the RNG is generic) are committed as `4a051bf`. Part 9c (P7, P8) is
 > committed as `155dce0`. After it, the maintainer amended D5 (serde_json's text, byte for byte) and accepted ADR 007
 > row 16. Parts 9d-1 and 9d-2, P9's `ln_gamma` and `gamma_inc` prototypes, are committed (`998b64b`, `d424b90`,
-> `2f572be`), and so is part 9d-3, `beta_inc` (`121e182`). Part 9e, the FMA-free CORE-MATH erf/erfc port, is done
-> but not committed: it is correctly rounded, so D3 = C holds without the fallback. The maintainer took each
+> `2f572be`), and so is part 9d-3, `beta_inc` (`121e182`). Part 9e, the FMA-free CORE-MATH erf/erfc port, is
+> committed (`ea7f1a0`): it is correctly rounded, so D3 = C holds without the fallback. Part 9d-4, the `normal_cdf`
+> prototype on it, is done but not committed: it is within 0.5 ulp. **Step 10** is next. The maintainer took each
 > recommendation and chose option C for D3. Nothing has been ported. The one artifact so far is the accuracy-baseline
 > tool, `scripts/port-baseline/`, which produced §3.2.
 
@@ -356,7 +357,7 @@ Rules for every row:
 | ln_1p, exp_m1, tan, log2 | ≤ 0.75 ulp; up to 1.19% misrounded | **0.5 ulp, 0%** | same | kimiya's expm1; new log1p, tan, log2 (D2) |
 | erf | 0.82 max, 3.1% not CR | ≈ Rust: \|x\| < 0.84375 is a pure polynomial (same bits); above, only rows where glibc's exp misrounds change | **0.5 ulp, correctly rounded** (D3 = C) | the FMA-free CORE-MATH port above. **P9 port (§5 step 9e): correctly rounded on all 1,281,250 rows, CORE-MATH's worst cases included** |
 | erfc | **2.49** max, 30.6% not CR | ≈ Rust | **0.5 ulp, correctly rounded** (D3 = C) | as erf. **P9 port: correctly rounded on all 1,487,268 rows** |
-| normal_cdf, normal_sf | 29 ulp in [−5, 5]; **1,590** in the tails | ≈ Rust | **≤ 1 ulp** | carry z/√2 as a double-double, then take the correctly rounded erfc of the high part plus a first-order correction for the low part: erfc(h + l) ≈ erfc(h) − l·(2/√π)e^(−h²). The ×½ is exact |
+| normal_cdf, normal_sf | 29 ulp in [−5, 5]; **1,590** in the tails | ≈ Rust | **≤ 1 ulp** | carry z/√2 as a double-double, then take the correctly rounded erfc of the high part plus a first-order correction for the low part: erfc(h + l) ≈ erfc(h) − l·(2/√π)e^(−h²). The ×½ is exact. **P9 (§5 step 9d-4) refined this:** the correction goes onto CORE-MATH's double-double erfc(h) before it rounds, and the ×½ into that one rounding (it is not exact for subnormal results). The sketch's two roundings reach exactly 1.0 ulp. **P9 prototype: ≤ 0.5 ulp, correctly rounded on all but 4 of 1,246,809 rows (proven ≤ 0.508); 8–20× T0's cost** |
 | ln_gamma, x > 0 | 4.85–8.2 ulp at large and small x; 65 mean / 1.2×10⁶ max on [0.5, 10]; **4.3×10¹³** beside 1 and 2 | ≈ Rust (every term is Rust's) | **≤ 2 ulp** on x > 0, including beside 1 and 2 | rational/series forms of lnΓ(1 + ε) and lnΓ(2 + ε) around the roots (fdlibm's `e_lgamma_r` layout), with double-double logarithms and products and one rounding. **P9 prototype (§5 step 9d-1): ≤ 1.31 ulp, mean 0.26, on 450,000 rows** (Rust: 4.3×10¹³ beside the roots) |
 | ln_gamma, x < 0 | 6.9×10⁴ max | ≈ Rust | ≤ 2 ulp of max(\|lnΓ\|, 1) (mixed; see the bounds above) | reflection with sin(πx) reduced exactly (x − round(x) first), subtracted in double-double. **P9 prototype: ≤ 1.40 ulp of max(\|lnΓ\|, 1)** on 123,655 rows (Rust: 1,583) |
 | gamma_inc P, Q | 4.9 / 12.1 mean; **58 / 246** max (97 / 485 on all of §3.2's pairs; 2.9×10⁹ in the deep lower tail) | ≈ Rust | **≤ 4 ulp** max, ~1 mean | a double-double prefactor exponent and exp of it; the series and continued fraction in double-double to 2⁻⁶²; small-a Q directly, not 1 − P. **P9 prototype (§5 step 9d-2): ≤ 1.0 ulp, mean ≤ 0.25, on 360,000 rows; 10–17× T0's cost.** Plain-double loops miss (to 79 ulp) |
@@ -906,7 +907,21 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
          complement by the far side's slow continued fraction, and Stirling's series in plain double.
        - **The same bits** on three targets.
        - **Cost:** 7.5–71 µs, against T0's 0.75–4.2 µs, which is 10–17×.
-     - **9d-4:** `normal_cdf`, next, on 9e's erfc.
+     - **9d-4 ✅ (2026-11-15): `normal_cdf`** (`port-parity.md` §6.8).
+       - **The prototype:** −z/√2 as a double-double h + l. The first-order correction for l is applied to
+         CORE-MATH's double-double erfc(h) before it rounds: from the fast path where its proven bound is under 2⁻⁶⁰
+         relative, else from the accurate paths. The ½ is folded into one rounding, exact on the subnormal grid too.
+         Proven within 0.5 + 2⁻⁷ ulp.
+       - **Measured against MPFR** on 2,506,918 rows: §3.2's sets and nine seeded sets (tails, the deep tail's
+         subnormal results, the decimal grid z = k/1000, `cr_erfc`'s branch points):
+         - **T1:** within 0.5 ulp on all 1,246,809 of its rows, and correctly rounded on all but 4. The bound is ≤ 1;
+         - **Rust:** 1,590 ulp on §3.2's rows and 1,688 in the deep tail;
+         - **the correctly rounded erfc on Rust's rounded argument:** 1,688 ulp. The argument's rounding is the error;
+         - **§3.4's sketch,** which rounds twice: exactly 1.0 unit on subnormal results, and 25% misrounded.
+       - **The same bits** on x86_64, PE and aarch64.
+       - **Cost:** 1.3 µs in (−5, 5), 3.8 µs where CORE-MATH's accurate path is taken, and 2.3–4.6 µs in the tail,
+         against T0's 0.15–0.24 µs (8–20×). A 2⁻⁵⁶ fast bound (0.5 + 2⁻³ ulp) takes 30% off the core; M2 part b
+         chooses.
    - **9e ✅ (2026-11-15): the CORE-MATH erf/erfc port, without FMA** (`port-parity.md` §6.7).
      - **The port:** CORE-MATH's binary64 `erf.c` and `erfc.c`, function for function, with every table generated
        from the sources (`p9_coremath_tables.py`: 17 tables, 3,929 words). Of the 59 fma sites, 2 are Dekker products
