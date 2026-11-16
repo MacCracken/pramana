@@ -712,6 +712,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 86–90 ns a pdf (3.4× Rust), 1.37–2.58 µs a cdf (51–84×: the T1 Φ), 227–235 ns a draw (8×), 8.7–9.7 µs a
     JSON round trip (48×) and 6.3–6.4 µs a Debug (23.5×: the exact printer, ledger L10), with every bench digest
     explained by the models.
+- **M3 part a2: Uniform, Exponential and Bernoulli** (`src/dist_cont.cyr`, and `src/dist_disc.cyr`, new; port plan
+  §7; D5, D7 as amended, D11, D12; results in `docs/development/port-parity.md` §9.2):
+  - **`PmnUniform`, `PmnExponential`, `PmnBernoulli`:** each constructor fills caller storage or refuses as 1.3.0
+    does (Uniform's three checks: finite bounds, min < max, a finite width), writing nothing; the five trait methods in
+    Rust's operation order, Exponential's on the correctly rounded exp, expm1 and ln; serde_json's text byte for byte,
+    read through each constructor; the derived Debug in both forms;
+  - **golden rows:** 44,739 more `dist` rows (57,621: each constructor's grid, the pdf and cdf across and beyond each
+    support and at its edges, 90 streams), 640 codec rows and 92 Debug rows. `validate.py` models every one, and
+    `dist.cr.tsv` gains 255 rows where glibc's exp, expm1 or ln misrounds (up to 2 ulp). Every row passes on the first
+    replay, at 0 ulp, warning-free, on x86_64 ELF, PE and aarch64;
+  - **tests and checks:** `tests/dist.tcyr`, 162 checks (101 new: 1.3.0's tests of the three, each refusal, the
+    edges, the draws bit for bit, each codec's and Debug's text); all 24 mutants fail, one through two Uniform pairs
+    added for it (a mean that overflows, subnormal bounds); surface parity maps 33 more items (111 pending);
+  - **cost:** 27–83 ns a pdf or cdf and 35–115 ns a draw, 5.9–10.8× Rust. Most of a
+    simple row is the constructor's checks, uninlined calls (24 ns of Uniform's 38), a finding to measure across M3's
+    constructors; every bench digest is explained by the models.
 
 ### Performance
 

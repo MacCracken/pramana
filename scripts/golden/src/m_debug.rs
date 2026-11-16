@@ -6,6 +6,8 @@
 //!   amended), in both forms.
 //!
 //! - `debug::Normal` (M3 part a1): 1.3.0's Normal at 24 (μ, σ), the special parameters among them, in both forms.
+//! - `debug::Uniform`, `debug::Exponential`, `debug::Bernoulli` (M3 part a2): each at up to 16 parameters (a seeded
+//!   Uniform whose width rounds to 0 is dropped), the special ones among them, in both forms.
 //! - `debug::f64` (M3 part a1): an f64 field's form, `{:?}`, on `fmt.tsv`'s 25,200 doubles. `{:#?}` prints an f64
 //!   the same way.
 //!
@@ -15,7 +17,7 @@
 use crate::grids::Rng as Seeds;
 use crate::tsv::{Class, Module, Tok, i, s};
 use crate::tsv::f;
-use pramana::distribution::Normal;
+use pramana::distribution::{Bernoulli, Exponential, Normal, Uniform};
 use pramana::{PramanaError, SimpleRng};
 
 fn both<T: std::fmt::Debug>(x: &T) -> [String; 2] {
@@ -66,6 +68,35 @@ pub fn emit() -> Module {
         let n = Normal::new(mu, sd).expect("valid parameters");
         for (alt, text) in both(&n).iter().enumerate() {
             m.row("debug::Normal", Class::A, &[f(mu), f(sd), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    let mut uniforms: Vec<(f64, f64)> =
+        vec![(0.0, 1.0), (-0.0, 1.0), (-1.0, 5.0), (-f64::MAX, 0.0), (1e-300, 1e300), (1e16, 1e17)];
+    uniforms.extend((0..10).map(|_| {
+        let lo = g.signed_log_uniform(-20.0, 20.0);
+        (lo, lo + g.log_uniform(-20.0, 20.0))
+    }));
+    uniforms.retain(|&(lo, hi)| Uniform::new(lo, hi).is_ok());
+    for &(lo, hi) in &uniforms {
+        let u = Uniform::new(lo, hi).expect("valid parameters");
+        for (alt, text) in both(&u).iter().enumerate() {
+            m.row("debug::Uniform", Class::A, &[f(lo), f(hi), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    let mut lambdas: Vec<f64> = vec![1.0, 2.5, 1e-4, 9.999_999_999_999_999e-5, f64::MAX, f64::from_bits(1)];
+    lambdas.extend((0..10).map(|_| g.log_uniform(-20.0, 20.0)));
+    for &l in &lambdas {
+        let e = Exponential::new(l).expect("valid parameters");
+        for (alt, text) in both(&e).iter().enumerate() {
+            m.row("debug::Exponential", Class::A, &[f(l), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    let mut ps: Vec<f64> = vec![0.0, -0.0, 1.0, 0.7, 1.0 - f64::EPSILON / 2.0, f64::from_bits(1)];
+    ps.extend((0..10).map(|_| g.unit()));
+    for &p in &ps {
+        let b = Bernoulli::new(p).expect("valid parameters");
+        for (alt, text) in both(&b).iter().enumerate() {
+            m.row("debug::Bernoulli", Class::A, &[f(p), i(alt as i64)], &[s(text.clone())]);
         }
     }
     for x in crate::m_fmt::inputs() {

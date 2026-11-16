@@ -3,7 +3,8 @@
 # tests/parity.tcyr replays 1.3.0's own values (tests/golden/dist.tsv), documents (json.tsv) and Debug text
 # (debug.tsv). These tests carry 1.3.0's own unit tests over (distribution.rs) and pin what a replay doesn't: a
 # constructor's refusals, the identities each method keeps bit for bit, a consumer's own generator through the trait,
-# and the codecs' and Debug's exact text. Part a1: Normal, Box–Muller and Debug's f64 form.
+# and the codecs' and Debug's exact text. Part a1: Normal, Box–Muller and Debug's f64 form; part a2: Uniform,
+# Exponential and Bernoulli.
 
 include "tests/lib.cyr"
 
@@ -220,6 +221,246 @@ fn main() {
     assert(dbg_is(sb, nan, "NaN") == 1 && dbg_is(sb, of_bits(0xFFF8000000000000), "NaN") == 1, "NaN, either sign");
     var ninf: f64 = -inf;
     assert(dbg_is(sb, inf, "inf") == 1 && dbg_is(sb, ninf, "-inf") == 1, "inf and -inf");
+
+    test_group("1.3.0's uniform_pdf_and_cdf, exponential_mean_and_variance, bernoulli_pdf");
+    var u: PmnUniform;
+    assert_eq(PmnUniform_new(&u, 0.0, 10.0), PMN_ERR_NONE, "U(0, 10)");
+    var u5: f64 = u.pdf(5.0);
+    var c5: f64 = u.cdf(5.0);
+    assert(u5 == 0.1 && c5 == 0.5, "pdf(5) = 0.1 and cdf(5) = 0.5 exactly (1.3.0: within 1e-10)");
+    var um: f64 = u.pdf(-1.0);
+    var cm: f64 = u.cdf(-1.0);
+    var cp: f64 = u.cdf(11.0);
+    assert(um == 0.0 && cm == 0.0 && cp == 1.0, "pdf(−1) = 0, cdf(−1) = 0, cdf(11) = 1");
+    var ex: PmnExponential;
+    assert_eq(PmnExponential_new(&ex, 2.0), PMN_ERR_NONE, "Exp(2)");
+    var em: f64 = ex.mean();
+    var ev: f64 = ex.variance();
+    assert(em == 0.5 && ev == 0.25, "mean 0.5 and variance 0.25 exactly (1.3.0: within 1e-10)");
+    var be: PmnBernoulli;
+    assert_eq(PmnBernoulli_new(&be, 0.7), PMN_ERR_NONE, "Bernoulli(0.7)");
+    var b1: f64 = be.pdf(1.0);
+    var b0: f64 = be.pdf(0.0);
+    var q7: f64 = 1.0 - 0.7;
+    assert(b1 == 0.7 && bits(b0) == bits(q7), "pmf(1) = 0.7, pmf(0) = 1 − 0.7 bit for bit (1.3.0: within 1e-10)");
+
+    test_group("1.3.0's constructors_reject_non_finite_parameters and exponential_and_weibull_cdf_small_x");
+    var bu: PmnUniform;
+    var ninf2: f64 = -inf;
+    var big: f64 = of_bits(0x7FE1CCF385EBC8A0);
+    var nbig: f64 = -big;
+    assert_eq(PmnUniform_new(&bu, nan, 1.0), PMN_ERR_INVALID_PARAMETER, "a NaN min");
+    assert_eq(PmnUniform_new(&bu, ninf2, 0.0), PMN_ERR_INVALID_PARAMETER, "an infinite min");
+    assert_eq(PmnUniform_new(&bu, nbig, big), PMN_ERR_INVALID_PARAMETER, "[−1e308, 1e308]: the width overflows");
+    var bx: PmnExponential;
+    assert_eq(PmnExponential_new(&bx, nan), PMN_ERR_INVALID_PARAMETER, "a NaN lambda");
+    assert_eq(PmnExponential_new(&bx, inf), PMN_ERR_INVALID_PARAMETER, "an infinite lambda");
+    var bb: PmnBernoulli;
+    assert_eq(PmnBernoulli_new(&bb, nan), PMN_ERR_INVALID_PARAMETER, "a NaN p");
+    assert_eq(PmnExponential_new(&ex, 1.0), PMN_ERR_NONE, "Exp(1)");
+    var e20: f64 = of_bits(0x3BC79CA10C924223);
+    var ce: f64 = ex.cdf(e20);
+    assert(bits(ce) == bits(e20), "cdf(1e-20) = 1e-20 exactly, by exp_m1 (1.3.0: within 1e-15)");
+
+    test_group("the constructors (D11)");
+    assert_eq(PmnUniform_new(0, 0.0, 1.0), PMN_ERR_INVALID_PARAMETER, "Uniform: a null out");
+    assert_eq(PmnExponential_new(0, 1.0), PMN_ERR_INVALID_PARAMETER, "Exponential: a null out");
+    assert_eq(PmnBernoulli_new(0, 0.5), PMN_ERR_INVALID_PARAMETER, "Bernoulli: a null out");
+    bu.min = 7.0;
+    bu.max = 8.0;
+    assert_eq(PmnUniform_new(&bu, 1.0, 1.0), PMN_ERR_INVALID_PARAMETER, "min = max refused");
+    var bu1: f64 = bu.min;
+    var bu2: f64 = bu.max;
+    assert(bu1 == 7.0 && bu2 == 8.0, "a refusal writes nothing");
+    assert_eq(PmnUniform_new(&bu, 0.0, mz), PMN_ERR_INVALID_PARAMETER, "[0, −0] refused: 0 ≥ −0");
+    assert_eq(PmnUniform_new(&bu, 2.0, 1.0), PMN_ERR_INVALID_PARAMETER, "min > max refused");
+    assert_eq(PmnUniform_new(&bu, nbig, 0.0), PMN_ERR_NONE, "[−1e308, 0]: a finite width");
+    var mxu: f64 = of_bits(0x7FEFFFFFFFFFFFFF);
+    var nmxu: f64 = -mxu;
+    assert_eq(PmnUniform_new(&bu, nmxu, 0.0), PMN_ERR_NONE, "[−f64::MAX, 0]");
+    assert_eq(PmnUniform_new(&bu, nmxu, tiny), PMN_ERR_NONE, "[−f64::MAX, 5e-324]: the width rounds to f64::MAX");
+    assert_eq(PmnUniform_new(&bu, nmxu, mxu), PMN_ERR_INVALID_PARAMETER, "[−f64::MAX, f64::MAX]: it overflows");
+    assert_eq(PmnExponential_new(&bx, 0.0), PMN_ERR_INVALID_PARAMETER, "lambda 0 refused");
+    assert_eq(PmnExponential_new(&bx, mz), PMN_ERR_INVALID_PARAMETER, "lambda −0 refused");
+    assert_eq(PmnExponential_new(&bx, tiny), PMN_ERR_NONE, "a subnormal lambda is positive");
+    var e1: f64 = of_bits(0x3FF0000000000001);
+    var eps: f64 = of_bits(0x3CB0000000000000);
+    var neps: f64 = -eps;
+    assert_eq(PmnBernoulli_new(&bb, e1), PMN_ERR_INVALID_PARAMETER, "p = 1 + ε refused");
+    assert_eq(PmnBernoulli_new(&bb, neps), PMN_ERR_INVALID_PARAMETER, "p = −ε refused");
+    assert_eq(PmnBernoulli_new(&bb, 1.0), PMN_ERR_NONE, "p = 1");
+    assert_eq(PmnBernoulli_new(&bb, mz), PMN_ERR_NONE, "p = −0.0: −0 ≥ 0");
+    var bp: f64 = bb.p;
+    assert_eq(bits(bp), bits(mz), "kept with its sign");
+
+    test_group("the methods' edges");
+    assert_eq(PmnUniform_new(&u, -1.0, 5.0), PMN_ERR_NONE, "U(−1, 5)");
+    var ulo: f64 = u.cdf(-1.0);
+    var uhi: f64 = u.cdf(5.0);
+    var plo: f64 = u.pdf(-1.0);
+    var phi6: f64 = u.pdf(5.0);
+    var sixth: f64 = 1.0 / 6.0;
+    assert(ulo == 0.0 && uhi == 1.0, "cdf is 0 at min and 1 at max");
+    assert(plo == sixth && phi6 == sixth, "pdf is 1/(max − min) at both ends: the support is closed");
+    var unan: f64 = u.pdf(nan);
+    var cnan: f64 = u.cdf(nan);
+    assert(unan == 0.0 && cnan != cnan, "pdf(NaN) = 0, cdf(NaN) = NaN, as Rust's comparisons give");
+    var uinf: f64 = u.cdf(inf);
+    var uninf: f64 = u.cdf(ninf2);
+    assert(uinf == 1.0 && uninf == 0.0, "cdf(±∞) = 1 and 0");
+    var umv: f64 = mean_and_variance(&u);
+    var umw: f64 = 2.0 + 3.0;
+    assert(bits(umv) == bits(umw), "mean (min + max)/2 and variance (max − min)²/12 through a bound generic");
+    var ov: PmnUniform;
+    assert_eq(PmnUniform_new(&ov, big, mxu), PMN_ERR_NONE, "U(1e308, f64::MAX): a finite width");
+    var ovm: f64 = ov.mean();
+    assert(ovm == inf, "its mean is ∞, as Rust's (min + max)/2 overflows before the halving");
+    var tw: f64 = of_bits(2);
+    assert_eq(PmnUniform_new(&ov, tiny, tw), PMN_ERR_NONE, "U(5e-324, 1e-323)");
+    var tm: f64 = ov.mean();
+    var tp1: f64 = ov.pdf(tiny);
+    assert(bits(tm) == 2 && tp1 == inf, "mean 1.5·5e-324 rounds to 1e-323, and the pdf 1/5e-324 overflows");
+    assert_eq(PmnExponential_new(&ex, 2.5), PMN_ERR_NONE, "Exp(2.5)");
+    var x0: f64 = ex.cdf(0.0);
+    var p0e: f64 = ex.pdf(0.0);
+    assert(bits(x0) == 0 && p0e == 2.5, "cdf(0) = +0.0 and pdf(0) = lambda");
+    var xin: f64 = ex.cdf(inf);
+    var pin: f64 = ex.pdf(inf);
+    assert(xin == 1.0 && pin == 0.0, "cdf(∞) = 1 and pdf(∞) = 0");
+    var xneg: f64 = ex.cdf(-1.0);
+    var pneg: f64 = ex.pdf(-1.0);
+    assert(xneg == 0.0 && pneg == 0.0, "0 below the support");
+    var xnan: f64 = ex.cdf(nan);
+    var pnan: f64 = ex.pdf(nan);
+    assert(xnan != xnan && pnan != pnan, "NaN at NaN");
+    var half: f64 = of_bits(0x3CA0000000000000);
+    var below1: f64 = of_bits(0x3FEFFFFFFFFFFFFF);
+    assert_eq(PmnBernoulli_new(&be, 0.7), PMN_ERR_NONE, "Bernoulli(0.7)");
+    var w1: f64 = be.pdf(half);
+    var w2: f64 = be.pdf(eps);
+    var w3: f64 = be.pdf(below1);
+    var w4: f64 = be.pdf(e1);
+    var w5: f64 = be.pdf(nan);
+    assert(bits(w1) == bits(q7) && w2 == 0.0, "pmf: 1 − p within ε of 0, not at ε");
+    assert(w3 == 0.7 && w4 == 0.0 && w5 == 0.0, "p within ε of 1, not at 1 + ε; 0 at NaN");
+    var k0: f64 = be.cdf(mz);
+    var k1: f64 = be.cdf(below1);
+    var k2: f64 = be.cdf(1.0);
+    var k3: f64 = be.cdf(nan);
+    var k4: f64 = be.cdf(neps);
+    assert(bits(k0) == bits(q7) && bits(k1) == bits(q7), "cdf: 1 − p on [0, 1), −0.0 included");
+    assert(k2 == 1.0 && k3 != k3 && k4 == 0.0, "1 from 1, NaN at NaN, 0 below 0");
+    var bmv: f64 = mean_and_variance(&be);
+    var bmw: f64 = 0.7 + 0.7 * q7;
+    assert(bits(bmv) == bits(bmw), "mean p and variance p·(1 − p) through a bound generic");
+
+    test_group("sampling (D7)");
+    assert_eq(PmnUniform_new(&u, -1.0, 5.0), PMN_ERR_NONE, "U(−1, 5)");
+    PmnSimpleRng_new(&g, 12345);
+    PmnSimpleRng_new(&h, 12345);
+    var us_ok = 1;
+    for (var j2 = 0; j2 < 1000; j2 = j2 + 1) {
+        var ua: f64 = u.sample(&g);
+        var uu: f64 = h.next_f64();
+        var ut: f64 = uu * 6.0;
+        var ub: f64 = -1.0 + ut;
+        if (bits(ua) != bits(ub)) { us_ok = 0; }
+    }
+    assert_eq(us_ok, 1, "a Uniform draw is min + u·(max − min), u from the same stream, bit for bit");
+    assert_eq(PmnExponential_new(&ex, 2.5), PMN_ERR_NONE, "Exp(2.5)");
+    PmnSimpleRng_new(&g, 42);
+    PmnSimpleRng_new(&h, 42);
+    var es_ok = 1;
+    for (var j3 = 0; j3 < 1000; j3 = j3 + 1) {
+        var ea: f64 = ex.sample(&g);
+        var eu: f64 = h.next_f64();
+        var ec: f64 = 1.0 - eu;
+        var el: f64 = _pmn_ln(ec);
+        var en: f64 = -el;
+        var eb: f64 = en / 2.5;
+        if (bits(ea) != bits(eb) || ea < 0.0) { es_ok = 0; }
+    }
+    assert_eq(es_ok, 1, "an Exponential draw is −ln(1 − u)/lambda, bit for bit, and never negative");
+    e8.k = 0;
+    e8.calls = 0;
+    var es0: f64 = ex.sample(&e8);
+    assert_eq(e8.calls, 1, "one uniform a draw");
+    assert_eq(bits(es0), bits(mz), "a uniform of 0 (kept to f64::MIN_POSITIVE) draws −0.0, as Rust's −ln(1)/λ");
+    assert_eq(PmnBernoulli_new(&be, 0.5), PMN_ERR_NONE, "Bernoulli(0.5)");
+    e8.k = 0;
+    e8.calls = 0;
+    var ones: f64 = 0.0;
+    for (var j4 = 0; j4 < 8; j4 = j4 + 1) {
+        var bs8: f64 = be.sample(&e8);
+        ones = ones + bs8;
+    }
+    assert(ones == 4.0 && e8.calls == 8, "a success when u < p: 0, 1/8, 2/8 and 3/8 of the eighths");
+    assert_eq(PmnBernoulli_new(&be, 0.0), PMN_ERR_NONE, "Bernoulli(0)");
+    e8.k = 0;
+    var bz0: f64 = be.sample(&e8);
+    assert(bz0 == 0.0, "p = 0 never succeeds, even at u = 0");
+
+    test_group("JSON (1.3.0's serde_roundtrip_uniform, _exponential, _bernoulli and deserialize_rejects; D5)");
+    assert_eq(PmnUniform_new(&u, -1.0, 5.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(u.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"min\":-1.0,\"max\":5.0}") == 1, "as serde_json writes it");
+    var ru: PmnUniform;
+    assert_eq(PmnUniform_from_json(&ru, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rmin: f64 = ru.min;
+    var rmax: f64 = ru.max;
+    assert(rmin == -1.0 && rmax == 5.0, "the same bounds");
+    var j1 = "{\"min\":2.0,\"max\":1.0}";
+    assert_eq(PmnUniform_from_json(&ru, j1, strlen(j1)), PMN_ERR_DESERIALIZE, "min > max");
+    var j1b = "{\"min\":-1e308,\"max\":1e308}";
+    assert_eq(PmnUniform_from_json(&ru, j1b, strlen(j1b)), PMN_ERR_DESERIALIZE, "a width that overflows");
+    assert_eq(PmnUniform_from_json(0, j1, strlen(j1)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnExponential_new(&ex, 2.5), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(ex.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"lambda\":2.5}") == 1, "as serde_json writes it");
+    var rx: PmnExponential;
+    assert_eq(PmnExponential_from_json(&rx, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rl: f64 = rx.lambda;
+    assert(rl == 2.5, "the same lambda");
+    var j2d = "{\"lambda\":0.0}";
+    assert_eq(PmnExponential_from_json(&rx, j2d, strlen(j2d)), PMN_ERR_DESERIALIZE, "lambda 0");
+    assert_eq(PmnExponential_from_json(0, j2d, strlen(j2d)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnBernoulli_new(&be, 0.7), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(be.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"p\":0.7}") == 1, "as serde_json writes it");
+    var rb: PmnBernoulli;
+    assert_eq(PmnBernoulli_from_json(&rb, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rp: f64 = rb.p;
+    assert(rp == 0.7, "the same p");
+    var j3d = "{\"p\":-0.1}";
+    assert_eq(PmnBernoulli_from_json(&rb, j3d, strlen(j3d)), PMN_ERR_DESERIALIZE, "p = −0.1");
+    var j4d = "{\"p\":1.0000000000000002}";
+    assert_eq(PmnBernoulli_from_json(&rb, j4d, strlen(j4d)), PMN_ERR_DESERIALIZE, "p = 1 + ε");
+    var j5d = "{\"p\":1.00000000000000001}";
+    assert_eq(PmnBernoulli_from_json(&rb, j5d, strlen(j5d)), PMN_ERR_NONE, "a p that rounds to 1");
+    assert_eq(PmnBernoulli_from_json(0, j3d, strlen(j3d)), PMN_ERR_INVALID_PARAMETER, "a null out");
+
+    test_group("Debug (D12)");
+    store64(sb + 8, 0);
+    assert_eq(u.debug(sb, 0), PMN_ERR_NONE, "Uniform {:?}");
+    assert(text_is(sb, "Uniform { min: -1.0, max: 5.0 }") == 1, "Uniform { min: -1.0, max: 5.0 }");
+    store64(sb + 8, 0);
+    assert_eq(u.debug(sb, 1), PMN_ERR_NONE, "Uniform {:#?}");
+    assert(text_is(sb, "Uniform {\n    min: -1.0,\n    max: 5.0,\n}") == 1, "one field a line");
+    store64(sb + 8, 0);
+    assert_eq(ex.debug(sb, 0), PMN_ERR_NONE, "Exponential {:?}");
+    assert(text_is(sb, "Exponential { lambda: 2.5 }") == 1, "Exponential { lambda: 2.5 }");
+    store64(sb + 8, 0);
+    assert_eq(ex.debug(sb, 1), PMN_ERR_NONE, "Exponential {:#?}");
+    assert(text_is(sb, "Exponential {\n    lambda: 2.5,\n}") == 1, "one field a line");
+    store64(sb + 8, 0);
+    assert_eq(be.debug(sb, 0), PMN_ERR_NONE, "Bernoulli {:?}");
+    assert(text_is(sb, "Bernoulli { p: 0.7 }") == 1, "Bernoulli { p: 0.7 }");
+    store64(sb + 8, 0);
+    assert_eq(be.debug(sb, 1), PMN_ERR_NONE, "Bernoulli {:#?}");
+    assert(text_is(sb, "Bernoulli {\n    p: 0.7,\n}") == 1, "one field a line");
 
     return assert_summary();
 }

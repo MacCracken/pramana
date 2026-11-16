@@ -7,7 +7,7 @@
 //!   taskset -c 5 cargo run --release --locked --features roundtrip --bin m3_dist
 
 use pramana::SimpleRng;
-use pramana::distribution::{Distribution, Normal};
+use pramana::distribution::{Bernoulli, Distribution, Exponential, Normal, Uniform};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -80,4 +80,13 @@ fn main() {
         wide,
         sd,
     );
+    // part a2
+    row(&mut r, "Uniform::cdf, U(-1, 5), x in [-2, 6)", |x, _, _| Uniform::new(-1.0, 5.0).unwrap().cdf(x), (-2.0, 6.0), u);
+    row(&mut r, "Uniform::sample, min in [-10, 10), width in [0.1, 10)", |x, y, g| Uniform::new(x, x + y).unwrap().sample(g), wide, sd);
+    row(&mut r, "Exponential::pdf, Exp(2.5), x in [0, 10)", |x, _, _| Exponential::new(2.5).unwrap().pdf(x), (0.0, 10.0), u);
+    row(&mut r, "Exponential::cdf, Exp(2.5), x in [0, 10)", |x, _, _| Exponential::new(2.5).unwrap().cdf(x), (0.0, 10.0), u);
+    row(&mut r, "Exponential::cdf, Exp(2.5), x in [0, 0.01)", |x, _, _| Exponential::new(2.5).unwrap().cdf(x), (0.0, 0.01), u);
+    row(&mut r, "Exponential::sample, lambda in [0.1, 10)", |_, y, g| Exponential::new(y).unwrap().sample(g), u, sd);
+    row(&mut r, "Bernoulli::cdf, p = 0.3, x in [-1, 2)", |x, _, _| Bernoulli::new(0.3).unwrap().cdf(x), (-1.0, 2.0), u);
+    row(&mut r, "Bernoulli::sample, p in [0, 1)", |_, y, g| Bernoulli::new(y).unwrap().sample(g), u, u);
 }

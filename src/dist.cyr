@@ -65,3 +65,17 @@ fn _pmn_standard_normal<R: PmnRng>(rng: *R): f64 {
     var c: f64 = _pmn_cos(t);
     return r * c;
 }
+
+# Reads n f64 fields of a struct by serde's rules (names[i] into the words at vals, at most 8), for the distributions'
+# decoders, which then call their constructor.
+#must_use
+fn _pmn_dist_fields(root, names, n, vals): i64 {
+    var sl[64];
+    var e = _pmn_json_struct(root, names, n, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    for (var i = 0; i < n; i = i + 1) {
+        e = _pmn_json_f64(load64(&sl + i * 8), vals + i * 8);
+        if (e != PMN_ERR_NONE) { return e; }
+    }
+    return PMN_ERR_NONE;
+}

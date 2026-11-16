@@ -3334,3 +3334,109 @@ The bench's six digests are all explained by the models.
 doesn't compile there. So `src/dist.cyr` includes `src/rng.cyr`, and `src/dist_cont.cyr` includes `src/dist.cyr`. A
 repeated include is skipped, and `cyrius distlib` leaves project includes out of the bundle. CLAUDE.md now names this
 as the second exception to "source files need no includes".
+
+### 9.2 Part a2: Uniform, Exponential and Bernoulli (2026-11-16)
+
+**The modules.**
+- **`src/dist_cont.cyr`:** `PmnUniform { min, max }` and `PmnExponential { lambda }`, with Normal's methods, codec
+  and Debug.
+  - `PmnUniform_new` makes 1.3.0's three checks: both bounds finite, min < max (so [0, −0] is refused), and a finite
+    width. The pdf is 1/(max − min) on the closed support, the cdf (x − min)/(max − min) between 0 and 1, and a draw
+    min + u·(max − min).
+  - `PmnExponential_new` takes a finite, positive lambda. The pdf λ·exp(−λx) and the cdf −expm1(−λx) are 0 below 0,
+    on the correctly rounded exp and expm1. A draw is −ln(1 − u)/λ, with u kept from 0 by f64::MIN_POSITIVE, as
+    Rust's. The guard changes nothing: 1 − MIN_POSITIVE rounds to 1, so a u of 0 draws −0.0 either way.
+- **`src/dist_disc.cyr`,** new, for the discrete distributions: `PmnBernoulli { p }`. The constructor takes
+  0 ≤ p ≤ 1, −0.0 kept. The mass is 1 − p within f64::EPSILON of 0 and p within f64::EPSILON of 1. The cdf is NaN at
+  NaN, then 0, 1 − p and 1. A draw is 1 when u < p.
+- **Shared:** `_pmn_dist_fields`, serde's struct rules on a decoder's f64 fields, moves to `src/dist.cyr`.
+
+**The golden rows.**
+- **`dist`, 44,739 more rows (57,621 in all):**
+  - each constructor on a 20-value grid (part a1's 16, ±1e308, 0.5 and 2), every pair for Uniform's two bounds, and
+    Bernoulli's with p = ±ε and 1 ± ε. The fields, or the error; class A;
+  - `Uniform::pdf` and `Uniform::cdf`, 3,099 rows each: eleven fixed (min, max) and 40 seeded pairs at
+    x = min + w·k/16 for k from −8 to 24, and at each bound and its two neighbours; the fixed pairs at the specials
+    too; 1,000 seeded triples. Among the fixed pairs: [0, f64::MAX], [1e308, f64::MAX], [5e-324, 1e-323] and
+    [1e6, 1e6 + 1]. Class A;
+  - `Exponential::pdf` and `Exponential::cdf`, 17,800 rows each: ten fixed lambdas (from 1e-300 to f64::MAX, and
+    MIN_POSITIVE) and 40 seeded ones at λx = k/8 on [−1, 40] and at five tiny x; the fixed ones at the specials too;
+    1,000 seeded pairs with λx from 10⁻¹² to 100. Class C: glibc's exp and expm1;
+  - `Bernoulli::pdf` and `Bernoulli::cdf`, 1,073 rows each: nine fixed p (0, 1, 1 − 2⁻⁵³ and 5e-324 among them) and
+    20 seeded ones, at the specials, at the ε/2 steps around 0 and 1, and at seven more points. Class A;
+  - every mean and variance, class A;
+  - 90 streams: 10⁴ draws of U(0, 1), Exp(1) and Bernoulli(0.5) from three seeds, and 256 of each other fixed case.
+    Uniform's and Bernoulli's are class A, Exponential's class C (glibc's ln).
+- **`json`,** 640 more rows (7,270 in all): 511 documents and 129 writes. The documents are `struct_docs`'s variants
+  on each field's 22 number forms, serde's sequence form, and seeded documents, half of them refused by the
+  constructor. Bernoulli's also take 1 ± an ulp and a p that rounds to 1.
+- **`debug`,** 92 more rows (25,400 in all): each type in both forms, at up to 16 parameters.
+
+**The models.** `validate.py` re-derives every row in Rust's operation order, three ways as in part a1. `Prims` gains
+expm1.
+- `dist.cr.tsv` gains 255 rows where glibc misrounds: 36 Exponential pdf values (three of them 2 ulp apart, after
+  the product with λ), 216 cdf values (expm1) and 3 streams (ln). It has 269 rows in all.
+- No a2 row is downstream of a T1 function, so `dist.ref.tsv` is unchanged (2,699 rows).
+- Each codec's model is its `Repr`'s fields, then the constructor's test. Thirty documents serde_json reads only by
+  skipping a member unchecked join `json.map.tsv` (70 rows) under ADR 007 row 16, ten per type, as Normal's did.
+
+**The result.** Every row passed on the first replay. The replay is now ten modules: 193,479 rows ok and 23,826
+accepted (23,756 under ADR 9, 70 under ADR 7), warning-free. Every a2 row is at 0 ulp, against 1.3.0's bits or its
+correction, and every Debug and JSON text matches byte for byte.
+
+**The harness.** `_par_dist` drives every method through one bounded generic, `_par_dist_call<D: PmnDistribution>`,
+as a consumer's generic code calls them. Normal's rows now go through it too, with the same results.
+
+**Mutation checks** (`build/handoff/mut_a2.py`: the replay and `tests/dist.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| Uniform: min = max accepted | 20 | 3 |
+| Uniform: no width check | 4 | 3 |
+| Uniform's pdf open at max | 101 | 1 |
+| Uniform's cdf as x/w − min/w | 771 | 0 |
+| Uniform's mean as min/2 + max/2 | 2 | 2 |
+| Uniform's variance as r·(r/12) | 14 | 0 |
+| Uniform's draw as max − (1 − u)·w | 18 | 1 |
+| Exponential: lambda only finite | 57 | 3 |
+| Exponential's pdf 0 at 0 | 71 | 1 |
+| Exponential's cdf as 1 − exp | 1,306 | 1 |
+| Exponential's variance as (1/λ)/λ | 7 | 0 |
+| Exponential's draw as −ln(u)/λ | 30 | 2 |
+| Bernoulli: p = 0 refused | 91 | 4 |
+| Bernoulli's pmf with ε in the window | 56 | 1 |
+| Bernoulli's pmf p at 1 exactly | 28 | 1 |
+| Bernoulli's cdf without the NaN arm | 29 | 1 |
+| Bernoulli's cdf 1 − p at 1 | 104 | 1 |
+| Bernoulli's variance as p − p·p | 6 | 0 |
+| Bernoulli's draw on u ≤ p | 0 | 2 |
+| Uniform's JSON fields written in reverse | 39 | 1 |
+| Uniform's JSON names read swapped | 116 | 3 |
+| Bernoulli's refusal decoded as `INVALID_PARAMETER` | 53 | 2 |
+| Exponential's Debug field named `rate` | 32 | 2 |
+| Uniform's Debug with max as a first field | 14 | 1 |
+
+- **All 24 fail.** One more, the unused MIN_POSITIVE guard in Exponential's draw, is equivalent (above) and wasn't run.
+- **Uniform's mean** first survived: min/2 + max/2 and (min + max)/2 differ only when min + max overflows or the bounds
+  are subnormal. Two fixed pairs were added for it: [1e308, f64::MAX], whose mean is ∞ in 1.3.0, and
+  [5e-324, 1e-323]. They fail it on 2 rows, and a unit test pins both.
+- **The draw on u ≤ p** fails unit checks only. No golden stream draws a u equal to p, but a consumer's generator of
+  eighths does, at p = 0 and p = 0.5.
+
+**Tests.** `tests/dist.tcyr` has 162 checks, 101 of them new:
+- 1.3.0's tests: `uniform_pdf_and_cdf`, `exponential_mean_and_variance` and `bernoulli_pdf`, now exact or bit for
+  bit; the three types' lines of `constructors_reject_non_finite_parameters` and
+  `deserialize_rejects_invalid_parameters`; `serde_roundtrip_uniform`, `_exponential` and `_bernoulli`; and
+  `exponential_and_weibull_cdf_small_x`'s Exponential line, now exactly 1e-20;
+- the constructors: a null `out`, a refusal that writes nothing, [0, −0], a width that rounds to f64::MAX against
+  one that overflows, a lambda of −0 or 5e-324, p = ±ε, 1 + ε and −0.0;
+- the edges: the closed support, NaN, ±∞, the ε windows, the mean's overflow and the subnormal pdf's;
+- the draws, bit for bit against their formulas on the same stream; one uniform a draw; a u of 0 drawing −0.0;
+- each codec's text and refusals, and each Debug's two forms.
+
+**Surface parity.** 33 more items are mapped (50 of `distribution`'s 161), and 111 are pending until M3's gate.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 38–39 ns a Uniform cdf and 27–28 ns a Bernoulli cdf (7.2× and 6.4×
+Rust), 79–83 ns an Exponential pdf or cdf (5.9–10.7×: the correctly rounded exp and expm1), and 35–115 ns a draw
+(9–11×). Most of a simple row is the constructor's checks, uninlined calls: `Uniform::new` alone is 24 ns over the
+loop's 6. The bench's fourteen digests are all explained by the models.

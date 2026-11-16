@@ -556,3 +556,37 @@ to core 5, each started under a load average of 3 (2.21, 2.60, 2.60).
   (ledger L10 asks the stdlib for a faster one); the JSON row also parses through bayan's tree.
 
 These are findings to measure against, not changes for this part: the cdf's cost is T1's, which ADR 009 accepts.
+
+## M3 part a2: Uniform, Exponential and Bernoulli (2026-11-16)
+
+**Bodies.** `tests/dist.bcyr` and its twin `m3_dist.rs` gain eight rows, with part a1's loop. Each row builds its
+distribution on every call, as the twin does. Three rounds, interleaved and pinned to core 5, each started under a
+load average of 3 (1.98, 1.99, 2.06). Every row's sum is the same in all three rounds.
+- **The digests:** all fourteen are explained by `validate.py`'s models (`build/handoff/bench_digests_dist.py`).
+  Exponential's differ from 1.3.0's where glibc misrounds: the pdf on 2 of 4,096 values (exp), the cdf on 61 and 18
+  (expm1), the draws on 4 (ln). Uniform's and Bernoulli's rows don't differ at all.
+- **Part a1's rows,** re-measured: within its record (the pdf 89–90 ns, the cdf 1.39 µs and 2.51–2.53 µs, a draw
+  228–231 ns, JSON 8.73–8.80 µs, Debug 6.40–6.42 µs).
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `Uniform::cdf`, U(−1, 5), x in [−2, 6) | 5.3–5.4 ns | 38–39 ns | 7.2× |
+| `Uniform::sample`, min in [−10, 10), width in [0.1, 10) | 4.6–4.7 ns | 46 ns | 9.9× |
+| `Exponential::pdf`, Exp(2.5), x in [0, 10) | 8.1–8.3 ns | 79–80 ns | 9.7× |
+| `Exponential::cdf`, Exp(2.5), x in [0, 10) | 13.4–13.6 ns | 80–81 ns | 5.9× |
+| `Exponential::cdf`, Exp(2.5), x in [0, 0.01) | 7.7–7.8 ns | 83 ns | 10.7× |
+| `Exponential::sample`, λ in [0.1, 10) | 10.5–10.8 ns | 112–115 ns | 10.8× |
+| `Bernoulli::cdf`, p = 0.3, x in [−1, 2) | 4.3 ns | 27–28 ns | 6.4× |
+| `Bernoulli::sample`, p in [0, 1) | 3.8–3.9 ns | 35 ns | 9.1× |
+
+**Where the time goes.** A one-off split of the Uniform row, pinned, in the same loop: the loop alone is 6 ns,
+`Uniform::new` alone 30 ns, and the cdf on a prebuilt U(−1, 5) 12 ns. Bernoulli's cdf on a prebuilt one is also
+12 ns.
+- **The constructor is most of a simple row:** about 24 ns over the loop. Rust inlines the checks, the constructor and
+  the method into one body of about 5 ns. The port calls `_pmn_require_finite`, and through it `_pmn_is_finite`, for
+  each parameter, then the method.
+- **Exponential's pdf and cdf** add one correctly rounded exp or expm1, kimiya's, to the constructor.
+- **A draw** adds SimpleRng's uniform, and Exponential's a correctly rounded ln.
+
+This is a finding to measure against, not a change for this part. `#inline` on the parameter checks is the candidate
+fix. It applies to every constructor M3 ports, so it should be measured once, across them.

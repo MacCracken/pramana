@@ -12,13 +12,23 @@
 //!   other fixed (μ, σ) from the same seeds. Class C: Box–Muller takes glibc's ln and cos.
 //! - `standard_normal`: the oracle's hook, 1,024 draws from three seeds. Class C.
 //!
+//! Part a2, `Uniform`, `Exponential` and `Bernoulli`, the same kinds of rows:
+//! - `X::new` on the parameter grid (with ±1e308, so Uniform's width can overflow): the fields, or the error;
+//! - `X::pdf` and `X::cdf` at fixed parameters across and beyond the support, at its edges and their neighbours, at
+//!   the specials, and Bernoulli's at the f64::EPSILON windows around 0 and 1; at 40 seeded parameters; at 1,000
+//!   seeded points;
+//! - `X::mean` and `X::variance` at every parameter above;
+//!   Class A, but Exponential's pdf, cdf and sample, class C (glibc's exp, expm1 and ln);
+//! - `X::sample`: 10^4 draws of the standard case (U(0, 1), Exp(1), Bernoulli(0.5)) from three seeds, and 256 of
+//!   each other fixed case.
+//!
 //! Inputs: the parameters, then x (or the seed and the count). Outputs: the value, or the draws as a sequence.
 
 use std::hint::black_box;
 
 use crate::grids::{Rng as Seeds, specials};
 use crate::tsv::{Class, Module, Tok, err, f, i};
-use pramana::distribution::{Distribution, Normal};
+use pramana::distribution::{Bernoulli, Distribution, Exponential, Normal, Uniform};
 use pramana::{SimpleRng, oracle};
 
 const SEEDS: [u64; 3] = [42, 0x9e37_79b9_7f4a_7c15, 12345];
@@ -109,9 +119,179 @@ fn normal(m: &mut Module, g: &mut Seeds) {
     }
 }
 
+/// The parameter grid the constructors get: the specials, then values either side of every check.
+fn param_grid() -> Vec<f64> {
+    let mut grid = specials();
+    grid.extend([0.25, 1e-300, -1e-300, 1e300, -1e300, -3.5, 1e308, -1e308, 0.5, 2.0]);
+    grid
+}
+
+/// x and its two neighbours (the bit patterns either side), for a finite x.
+fn around(x: f64) -> [f64; 3] {
+    let up = if x == 0.0 { f64::from_bits(1) } else { f64::from_bits(x.to_bits() + 1) };
+    let down = if x == 0.0 { -f64::from_bits(1) } else { f64::from_bits(x.to_bits() - 1) };
+    if x < 0.0 { [up, x, down] } else { [down, x, up] }
+}
+
+/// The streams: 10^4 draws of the first case and 256 of the others, from each seed.
+#[allow(clippy::cast_possible_wrap)]
+fn streams<D: Distribution>(m: &mut Module, func: &str, class: Class, cases: &[(Vec<f64>, D)]) {
+    for &seed in &SEEDS {
+        for (k, (ins, d)) in cases.iter().enumerate() {
+            let count = if k == 0 { 10_000 } else { 256 };
+            let mut r = SimpleRng::new(seed);
+            let xs: Vec<f64> = (0..count).map(|_| d.sample(&mut r)).collect();
+            let mut toks: Vec<Tok> = ins.iter().map(|&v| f(v)).collect();
+            toks.push(i(seed as i64));
+            toks.push(i(count as i64));
+            m.row(func, class, &toks, &draws(&xs));
+        }
+    }
+}
+
+fn uniform(m: &mut Module, g: &mut Seeds) {
+    for &lo in &param_grid() {
+        for &hi in &param_grid() {
+            match Uniform::new(black_box(lo), black_box(hi)) {
+                Ok(u) => m.row("Uniform::new", Class::A, &[f(lo), f(hi)], &[f(u.min), f(u.max)]),
+                Err(e) => m.row("Uniform::new", Class::A, &[f(lo), f(hi)], &[err(&e)]),
+            }
+        }
+    }
+    let fixed: Vec<(f64, f64)> = vec![
+        (0.0, 1.0),
+        (-1.0, 5.0),
+        (0.0, 10.0),
+        (-3.5, 0.25),
+        (-0.0, 1.0),
+        (1e-300, 2e-300),
+        (-1e300, 1e300),
+        (0.0, f64::MAX),
+        (1e6, 1e6 + 1.0),
+        (1e308, f64::MAX),
+        (f64::from_bits(1), f64::from_bits(2)),
+    ];
+    let seeded: Vec<(f64, f64)> = (0..40)
+        .map(|_| {
+            let lo = g.signed_log_uniform(-6.0, 6.0);
+            (lo, lo + g.log_uniform(-4.0, 4.0))
+        })
+        .collect();
+    let point = |m: &mut Module, lo: f64, hi: f64, x: f64| {
+        let u = Uniform::new(lo, hi).expect("valid parameters");
+        m.row("Uniform::pdf", Class::A, &[f(lo), f(hi), f(x)], &[f(u.pdf(black_box(x)))]);
+        m.row("Uniform::cdf", Class::A, &[f(lo), f(hi), f(x)], &[f(u.cdf(black_box(x)))]);
+    };
+    for &(lo, hi) in fixed.iter().chain(&seeded) {
+        let w = hi - lo;
+        for k in -8..=24 {
+            point(m, lo, hi, lo + w * (f64::from(k) / 16.0));
+        }
+        for x in around(lo).into_iter().chain(around(hi)) {
+            point(m, lo, hi, x);
+        }
+    }
+    for &(lo, hi) in &fixed {
+        for &x in &specials() {
+            point(m, lo, hi, x);
+        }
+    }
+    for _ in 0..1000 {
+        let lo = g.signed_log_uniform(-3.0, 3.0);
+        let hi = lo + g.log_uniform(-3.0, 3.0);
+        let x = lo + (hi - lo) * g.uniform(-0.5, 1.5);
+        point(m, lo, hi, x);
+    }
+    for &(lo, hi) in fixed.iter().chain(&seeded) {
+        let u = Uniform::new(lo, hi).expect("valid parameters");
+        m.row("Uniform::mean", Class::A, &[f(lo), f(hi)], &[f(u.mean())]);
+        m.row("Uniform::variance", Class::A, &[f(lo), f(hi)], &[f(u.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, Uniform)> =
+        fixed.iter().map(|&(lo, hi)| (vec![lo, hi], Uniform::new(lo, hi).expect("valid"))).collect();
+    streams(m, "Uniform::sample", Class::A, &cases);
+}
+
+fn exponential(m: &mut Module, g: &mut Seeds) {
+    for &l in &param_grid() {
+        match Exponential::new(black_box(l)) {
+            Ok(e) => m.row("Exponential::new", Class::A, &[f(l)], &[f(e.lambda)]),
+            Err(e) => m.row("Exponential::new", Class::A, &[f(l)], &[err(&e)]),
+        }
+    }
+    let fixed: Vec<f64> = vec![1.0, 2.0, 0.5, 2.5, 1e-3, 1e3, 1e-300, 1e300, f64::MIN_POSITIVE, f64::MAX];
+    let seeded: Vec<f64> = (0..40).map(|_| g.log_uniform(-6.0, 6.0)).collect();
+    let point = |m: &mut Module, l: f64, x: f64| {
+        let e = Exponential::new(l).expect("valid parameters");
+        m.row("Exponential::pdf", Class::C, &[f(l), f(x)], &[f(e.pdf(black_box(x)))]);
+        m.row("Exponential::cdf", Class::C, &[f(l), f(x)], &[f(e.cdf(black_box(x)))]);
+    };
+    for &l in fixed.iter().chain(&seeded) {
+        for k in -8..=320 {
+            point(m, l, (f64::from(k) / 8.0) / l);
+        }
+        for x in [1e-20, 1e-300, f64::from_bits(1), 1e-10 / l, 1e-16 / l] {
+            point(m, l, x);
+        }
+    }
+    for &l in &fixed {
+        for &x in &specials() {
+            point(m, l, x);
+        }
+    }
+    for _ in 0..1000 {
+        let l = g.log_uniform(-3.0, 3.0);
+        let x = g.log_uniform(-12.0, 2.0) / l;
+        point(m, l, x);
+    }
+    for &l in fixed.iter().chain(&seeded) {
+        let e = Exponential::new(l).expect("valid parameters");
+        m.row("Exponential::mean", Class::A, &[f(l)], &[f(e.mean())]);
+        m.row("Exponential::variance", Class::A, &[f(l)], &[f(e.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, Exponential)> =
+        fixed.iter().map(|&l| (vec![l], Exponential::new(l).expect("valid"))).collect();
+    streams(m, "Exponential::sample", Class::C, &cases);
+}
+
+fn bernoulli(m: &mut Module, g: &mut Seeds) {
+    let eps = f64::EPSILON;
+    let mut grid = param_grid();
+    grid.extend([1.0 - eps, eps, 0.7, 1.0 + eps, -eps]);
+    for &p in &grid {
+        match Bernoulli::new(black_box(p)) {
+            Ok(b) => m.row("Bernoulli::new", Class::A, &[f(p)], &[f(b.p)]),
+            Err(e) => m.row("Bernoulli::new", Class::A, &[f(p)], &[err(&e)]),
+        }
+    }
+    let fixed: Vec<f64> = vec![0.5, 0.0, 1.0, 0.3, 0.7, 1e-300, 1.0 - eps / 2.0, f64::from_bits(1), 0.1];
+    let seeded: Vec<f64> = (0..20).map(|_| g.unit()).collect();
+    let mut xs: Vec<f64> = specials();
+    for k in 0..=4 {
+        let d = f64::from(k) * eps / 2.0;
+        xs.extend([d, -d, 1.0 + d, 1.0 - d]);
+    }
+    xs.extend([0.5, 2.0, -1.0, 0.999_999, 1e-300, 3.0, 1.5]);
+    for &p in fixed.iter().chain(&seeded) {
+        let b = Bernoulli::new(p).expect("valid parameters");
+        for &x in &xs {
+            m.row("Bernoulli::pdf", Class::A, &[f(p), f(x)], &[f(b.pdf(black_box(x)))]);
+            m.row("Bernoulli::cdf", Class::A, &[f(p), f(x)], &[f(b.cdf(black_box(x)))]);
+        }
+        m.row("Bernoulli::mean", Class::A, &[f(p)], &[f(b.mean())]);
+        m.row("Bernoulli::variance", Class::A, &[f(p)], &[f(b.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, Bernoulli)> =
+        fixed.iter().map(|&p| (vec![p], Bernoulli::new(p).expect("valid"))).collect();
+    streams(m, "Bernoulli::sample", Class::A, &cases);
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("dist");
     let mut g = Seeds::new(0x510e_527f_ade6_82d1);
     normal(&mut m, &mut g);
+    uniform(&mut m, &mut g);
+    exponential(&mut m, &mut g);
+    bernoulli(&mut m, &mut g);
     m
 }

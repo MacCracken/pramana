@@ -805,6 +805,9 @@ JSON_STRUCTS = {
 JSON_VALIDATED = {
     "Normal": ([("mean", "f64"), ("std_dev", "f64")],
                lambda m, s: math.isfinite(m) and math.isfinite(s) and s > 0.0),
+    "Uniform": ([("min", "f64"), ("max", "f64")], lambda lo, hi: d_uniform_new(lo, hi)),
+    "Exponential": ([("lambda", "f64")], lambda la: math.isfinite(la) and la > 0.0),
+    "Bernoulli": ([("p", "f64")], lambda p: 0.0 <= p <= 1.0),
 }
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
@@ -2282,12 +2285,14 @@ class Prims:
         if mode == "glibc":
             self.exp, self.ln, self.ln1p, self.sin = _libm.exp, _libm.log, _libm.log1p, _libm.sin
             self.cos = _libm.cos                    # Box–Muller (M3)
+            self.expm1 = _libm.expm1                # Exponential::cdf (M3)
         else:
             self.exp = lambda x: mpfr_ref.cr("exp", x)
             self.ln = lambda x: mpfr_ref.cr("log", x)
             self.ln1p = lambda x: mpfr_ref.cr("log1p", x)
             self.sin = lambda x: mpfr_ref.cr("sin", x)
             self.cos = lambda x: mpfr_ref.cr("cos", x)
+            self.expm1 = lambda x: mpfr_ref.cr("expm1", x)
         if mode == "ref":
             self.erf = lambda x: mpfr_ref.cr("erf", x)
             self.erfc = lambda x: mpfr_ref.cr("erfc", x)
@@ -2641,6 +2646,44 @@ def d_normal_pdf(L, mu, sd, x):
     return fdiv(1.0, sd * math.sqrt(2.0 * math.pi)) * L.exp((-0.5 * z) * z)
 
 
+def d_uniform_new(lo, hi):
+    return math.isfinite(lo) and math.isfinite(hi) and lo < hi and math.isfinite(hi - lo)
+
+
+def d_uniform_cdf(lo, hi, x):
+    if x < lo:
+        return 0.0
+    if x > hi:
+        return 1.0
+    return fdiv(x - lo, hi - lo)
+
+
+def d_exponential_sample(L, la, u):
+    v = max(next(u), MIN_POSITIVE)
+    return fdiv(-L.ln(1.0 - v), la)
+
+
+def d_bernoulli_pdf(p, x):
+    eps = 2.220446049250313e-16
+    if abs(x) < eps:
+        return 1.0 - p
+    if abs(x - 1.0) < eps:
+        return p
+    return 0.0
+
+
+def d_bernoulli_cdf(p, x):
+    if math.isnan(x):
+        return math.nan
+    if x < 0.0:
+        return 0.0
+    return 1.0 - p if x < 1.0 else 1.0
+
+
+def d_new(ok, fields):
+    return fields if ok else ["E:InvalidParameter"]
+
+
 def d_sample(L, draw, seed, n):
     u = d_uniforms(seed)
     return [draw(L, u) for _ in range(n)]
@@ -2655,6 +2698,28 @@ DIST = {  # name: model(L, *inputs) -> outputs (a list)
     "Normal::sample": lambda L, mu, sd, seed, n: [f"v:{n}"] + d_sample(
         L, lambda L, u: mu + sd * d_standard_normal(L, u), seed, n),
     "standard_normal": lambda L, seed, n: [f"v:{n}"] + d_sample(L, d_standard_normal, seed, n),
+    # part a2
+    "Uniform::new": lambda L, lo, hi: d_new(d_uniform_new(lo, hi), [lo, hi]),
+    "Uniform::pdf": lambda L, lo, hi, x: [fdiv(1.0, hi - lo) if lo <= x <= hi else 0.0],
+    "Uniform::cdf": lambda L, lo, hi, x: [d_uniform_cdf(lo, hi, x)],
+    "Uniform::mean": lambda L, lo, hi: [(lo + hi) / 2.0],
+    "Uniform::variance": lambda L, lo, hi: [(hi - lo) * (hi - lo) / 12.0],
+    "Uniform::sample": lambda L, lo, hi, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: lo + next(u) * (hi - lo), seed, n),
+    "Exponential::new": lambda L, la: d_new(math.isfinite(la) and la > 0.0, [la]),
+    "Exponential::pdf": lambda L, la, x: [0.0 if x < 0.0 else la * L.exp(-la * x)],
+    "Exponential::cdf": lambda L, la, x: [0.0 if x < 0.0 else -L.expm1(-la * x)],
+    "Exponential::mean": lambda L, la: [fdiv(1.0, la)],
+    "Exponential::variance": lambda L, la: [fdiv(1.0, la * la)],
+    "Exponential::sample": lambda L, la, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_exponential_sample(L, la, u), seed, n),
+    "Bernoulli::new": lambda L, p: d_new(0.0 <= p <= 1.0, [p]),
+    "Bernoulli::pdf": lambda L, p, x: [d_bernoulli_pdf(p, x)],
+    "Bernoulli::cdf": lambda L, p, x: [d_bernoulli_cdf(p, x)],
+    "Bernoulli::mean": lambda L, p: [p],
+    "Bernoulli::variance": lambda L, p: [p * (1.0 - p)],
+    "Bernoulli::sample": lambda L, p, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: 1.0 if next(u) < p else 0.0, seed, n),
 }
 DIST_T1 = {"Normal::cdf": "Φ"}   # rows downstream of a T1 function (ADR 009 as amended)
 
@@ -2807,6 +2872,13 @@ def debug_text(fn, ins):
     if fn == "debug::Normal":
         return debug_struct("Normal", [("mean", rust_debug_f64(ins[0])), ("std_dev", rust_debug_f64(ins[1]))],
                             ins[2] == 1)
+    if fn == "debug::Uniform":
+        return debug_struct("Uniform", [("min", rust_debug_f64(ins[0])), ("max", rust_debug_f64(ins[1]))],
+                            ins[2] == 1)
+    if fn == "debug::Exponential":
+        return debug_struct("Exponential", [("lambda", rust_debug_f64(ins[0]))], ins[1] == 1)
+    if fn == "debug::Bernoulli":
+        return debug_struct("Bernoulli", [("p", rust_debug_f64(ins[0]))], ins[1] == 1)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:

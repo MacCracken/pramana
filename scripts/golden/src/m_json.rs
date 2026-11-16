@@ -10,7 +10,7 @@
 //!   row 8);
 //! - 1.3.0's `SimpleRng` (e1), read through its repr and `new`, so a state of 0 reads as 1.
 //! - 1.3.0's `Normal` (M3 part a1), read through `NormalRepr` and `Normal::new`, so a std_dev it refuses is an error;
-//!   and written.
+//!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2) the same way.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -44,7 +44,7 @@
 
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
-use pramana::distribution::Normal;
+use pramana::distribution::{Bernoulli, Exponential, Normal, Uniform};
 use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
 use serde::{Deserialize, Serialize};
@@ -593,6 +593,9 @@ pub fn emit() -> Module {
     writes(&mut m, &mut g);
     simple_rng(&mut m, &mut g);
     normal(&mut m, &mut g);
+    uniform(&mut m, &mut g);
+    exponential(&mut m, &mut g);
+    bernoulli(&mut m, &mut g);
     m
 }
 
@@ -626,6 +629,72 @@ fn normal(m: &mut Module, g: &mut Rng) {
     for &(mu, sd) in &pairs {
         let n = Normal::new(mu, sd).expect("valid parameters");
         m.row("json::write::Normal", Class::A, &[f(mu), f(sd)], &[text(&n)]);
+    }
+}
+
+// ── M3 a2: Uniform's, Exponential's and Bernoulli's codecs ──
+
+fn uniform(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Uniform::new(-1.0, 5.0).expect("valid")).expect("a Uniform");
+    let forms = f64_forms();
+    let mut docs = struct_docs(&base, &["min", "max"], &[forms.clone(), forms]);
+    docs.extend(bytes(&["[0.5,2.0]", "[0.5]", "[2.0,0.5]", "[0.5,2.0,1]", r#"{"min":-1e308,"max":1e308}"#]));
+    let mut pairs: Vec<(f64, f64)> = vec![(0.0, 1.0), (-0.0, 1.0), (-f64::MAX, 0.0), (f64::MIN_POSITIVE, 1e300)];
+    pairs.extend((0..40).map(|_| {
+        let lo = g.signed_log_uniform(-20.0, 20.0);
+        (lo, lo + g.log_uniform(-20.0, 20.0))
+    }));
+    pairs.retain(|&(lo, hi)| Uniform::new(lo, hi).is_ok());
+    for &(lo, hi) in &pairs {
+        docs.push(format!("{{\"min\":{},\"max\":{}}}", ryu_like(lo), ryu_like(hi)).into_bytes());
+        docs.push(format!("{{\"min\":{},\"max\":{}}}", ryu_like(hi), ryu_like(lo)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Uniform", d, serde_json::from_slice::<Uniform>(d), |u| vec![f(u.min), f(u.max)]);
+    }
+    for &(lo, hi) in &pairs {
+        let u = Uniform::new(lo, hi).expect("valid parameters");
+        m.row("json::write::Uniform", Class::A, &[f(lo), f(hi)], &[text(&u)]);
+    }
+}
+
+fn exponential(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Exponential::new(2.5).expect("valid")).expect("an Exponential");
+    let mut docs = struct_docs(&base, &["lambda"], &[f64_forms()]);
+    docs.extend(bytes(&["[2.5]", "[]", "[2.5,1]", "[-2.5]"]));
+    let mut ls: Vec<f64> = vec![1.0, f64::MIN_POSITIVE, f64::from_bits(1), f64::MAX];
+    ls.extend((0..40).map(|_| g.log_uniform(-20.0, 20.0)));
+    for &l in &ls {
+        docs.push(format!("{{\"lambda\":{}}}", ryu_like(l)).into_bytes());
+        docs.push(format!("{{\"lambda\":{}}}", ryu_like(-l)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Exponential", d, serde_json::from_slice::<Exponential>(d), |e| vec![f(e.lambda)]);
+    }
+    for &l in &ls {
+        let e = Exponential::new(l).expect("valid parameters");
+        m.row("json::write::Exponential", Class::A, &[f(l)], &[text(&e)]);
+    }
+}
+
+fn bernoulli(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Bernoulli::new(0.7).expect("valid")).expect("a Bernoulli");
+    let mut forms = f64_forms();
+    forms.extend(bytes(&["0.9999999999999999", "1.0000000000000002", "1.00000000000000001", "-5e-324", "0.5"]));
+    let mut docs = struct_docs(&base, &["p"], &[forms]);
+    docs.extend(bytes(&["[0.7]", "[]", "[0.7,1]", "[1.5]"]));
+    let mut ps: Vec<f64> = vec![0.0, -0.0, 1.0, 0.5, 1.0 - f64::EPSILON / 2.0, f64::from_bits(1)];
+    ps.extend((0..40).map(|_| g.unit()));
+    for &p in &ps {
+        docs.push(format!("{{\"p\":{}}}", ryu_like(p)).into_bytes());
+        docs.push(format!("{{\"p\":{}}}", ryu_like(p + 1.0)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Bernoulli", d, serde_json::from_slice::<Bernoulli>(d), |b| vec![f(b.p)]);
+    }
+    for &p in &ps {
+        let b = Bernoulli::new(p).expect("valid parameters");
+        m.row("json::write::Bernoulli", Class::A, &[f(p)], &[text(&b)]);
     }
 }
 

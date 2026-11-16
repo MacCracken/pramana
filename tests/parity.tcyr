@@ -428,6 +428,25 @@ fn _par_json_write(fp, fl): i64 {
         if (PmnNormal_new(&wn, wm, ws) != PMN_ERR_NONE) { return 0 - 1; }
         _par_json_k = 2;
         e = wn.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::Uniform") == 1) {
+        var wu: PmnUniform;
+        var wlo: f64 = _par_in(0);
+        var whi: f64 = _par_in(1);
+        if (PmnUniform_new(&wu, wlo, whi) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 2;
+        e = wu.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::Exponential") == 1) {
+        var we: PmnExponential;
+        var wl: f64 = _par_in(0);
+        if (PmnExponential_new(&we, wl) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 1;
+        e = we.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::Bernoulli") == 1) {
+        var wb: PmnBernoulli;
+        var wp: f64 = _par_in(0);
+        if (PmnBernoulli_new(&wb, wp) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 1;
+        e = wb.to_json(sb);
     } elif (_par_eq(fp, fl, "json::write::PramanaError") == 1) {
         var en[40];
         store64(&en, "InvalidParameter");
@@ -503,6 +522,41 @@ fn _par_json_normal(): i64 {
     return 1;
 }
 
+# json::Uniform, json::Exponential and json::Bernoulli rows (M3 part a2): each one's from_json, the fields it holds.
+fn _par_json_dist(fp, fl): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var e = 0 - 1;
+    var a: f64 = 0.0;
+    var b: f64 = 0.0;
+    var two = 0;
+    if (_par_eq(fp, fl, "json::Uniform") == 1) {
+        var u: PmnUniform;
+        e = PmnUniform_from_json(&u, doc, n);
+        a = u.min;
+        b = u.max;
+        two = 1;
+    } elif (_par_eq(fp, fl, "json::Exponential") == 1) {
+        var x: PmnExponential;
+        e = PmnExponential_from_json(&x, doc, n);
+        a = x.lambda;
+    } elif (_par_eq(fp, fl, "json::Bernoulli") == 1) {
+        var y: PmnBernoulli;
+        e = PmnBernoulli_from_json(&y, doc, n);
+        a = y.p;
+    } else {
+        return 0;
+    }
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_f(a);
+    if (two == 1) { _par_got_f(b); }
+    return 1;
+}
+
 fn _par_json_value(fp, fl, root): i64 {
     if (_par_eq(fp, fl, "json::Pair") == 1) { return _par_json_pair(root); }
     if (_par_eq(fp, fl, "json::Shapes") == 1) { return _par_json_shapes(root); }
@@ -518,6 +572,8 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::PramanaError::code") == 1) { return _par_json_err_code(); }
     if (_par_eq(fp, fl, "json::SimpleRng") == 1) { return _par_json_simple_rng(); }
     if (_par_eq(fp, fl, "json::Normal") == 1) { return _par_json_normal(); }
+    var jd = _par_json_dist(fp, fl);
+    if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
     if (_par_json_doc == 0) {
         _par_json_doc = alloc(_PMN_JSON_DOC_SIZE);
@@ -601,9 +657,30 @@ fn _par_debug(fp, fl): i64 {
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
     }
+    if (_par_eq(fp, fl, "debug::Uniform") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var du: PmnUniform;
+        var dlo: f64 = _par_in(0);
+        var dhi: f64 = _par_in(1);
+        if (PmnUniform_new(&du, dlo, dhi) != PMN_ERR_NONE) { return 0 - 1; }
+        e = du.debug(sb, _par_in(2));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
     if (_par_in_n != 2) { return 0 - 1; }
     var alt = _par_in(1);
-    if (_par_eq(fp, fl, "debug::SimpleRng") == 1) {
+    if (_par_eq(fp, fl, "debug::Exponential") == 1) {
+        var de: PmnExponential;
+        var dl: f64 = _par_in(0);
+        if (PmnExponential_new(&de, dl) != PMN_ERR_NONE) { return 0 - 1; }
+        e = de.debug(sb, alt);
+    } elif (_par_eq(fp, fl, "debug::Bernoulli") == 1) {
+        var db: PmnBernoulli;
+        var dp: f64 = _par_in(0);
+        if (PmnBernoulli_new(&db, dp) != PMN_ERR_NONE) { return 0 - 1; }
+        e = db.debug(sb, alt);
+    } elif (_par_eq(fp, fl, "debug::SimpleRng") == 1) {
         var g: PmnSimpleRng;
         if (PmnSimpleRng_new(&g, _par_in(0)) != PMN_ERR_NONE) { return 0 - 1; }
         e = g.debug(sb, alt);
@@ -869,11 +946,71 @@ fn _par_special(fp, fl): i64 {
     return 0;
 }
 
-# `dist` rows (M3): src/dist.cyr and src/dist_cont.cyr, each distribution built by its constructor from the row's
-# parameters. Part a1: Normal, and Box–Muller's `standard_normal` through a bounded generic.
+# `dist` rows (M3): src/dist.cyr, src/dist_cont.cyr and src/dist_disc.cyr, each distribution built by its constructor
+# from the row's parameters. Part a1: Normal, and Box–Muller's `standard_normal` through a bounded generic; part a2:
+# Uniform, Exponential and Bernoulli.
 fn _par_std_normal<R: PmnRng>(g: *R): f64 {
     var z: f64 = _pmn_standard_normal(g);
     return z;
+}
+
+# A trait method of a built distribution d, through the bound as a consumer's generic code calls it: the method's
+# name at mp (the row's `X::method` past `X::`), x (pdf, cdf) or the seed and count (sample) from input xi on.
+fn _par_dist_call<D: PmnDistribution>(d: *D, mp, ml, xi): i64 {
+    if (_par_eq(mp, ml, "pdf") == 1) {
+        var x0: f64 = _par_in(xi);
+        var r0: f64 = d.pdf(x0);
+        _par_got_f(r0);
+        return 1;
+    }
+    if (_par_eq(mp, ml, "cdf") == 1) {
+        var x1: f64 = _par_in(xi);
+        var r1: f64 = d.cdf(x1);
+        _par_got_f(r1);
+        return 1;
+    }
+    if (_par_eq(mp, ml, "mean") == 1) {
+        var r2: f64 = d.mean();
+        _par_got_f(r2);
+        return 1;
+    }
+    if (_par_eq(mp, ml, "variance") == 1) {
+        var r3: f64 = d.variance();
+        _par_got_f(r3);
+        return 1;
+    }
+    if (_par_eq(mp, ml, "sample") == 1) {
+        var g: PmnSimpleRng;
+        if (PmnSimpleRng_new(&g, _par_in(xi)) != PMN_ERR_NONE) { return 0 - 1; }
+        var n = _par_in(xi + 1);
+        _par_got_seq(n);
+        for (var j = 0; j < n; j = j + 1) {
+            var r4: f64 = d.sample(&g);
+            _par_got_f(r4);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+# X::new rows: the constructor's error, or the fields it holds (np of them, at f).
+fn _par_dist_new(e, f, np): i64 {
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    for (var k = 0; k < np; k = k + 1) {
+        var v: f64 = load64(f + k * 8);
+        _par_got_f(v);
+    }
+    return 1;
+}
+
+# The length of a `X::` prefix at fp naming one of the distributions (its name's length plus 2), or 0.
+fn _par_dist_prefix(fp, fl, name): i64 {
+    var n = strlen(name);
+    if (fl <= n + 2 || memeq(fp, name, n) != 1 || memeq(fp + n, "::", 2) != 1) { return 0; }
+    return n + 2;
 }
 
 fn _par_dist(fp, fl): i64 {
@@ -889,55 +1026,43 @@ fn _par_dist(fp, fl): i64 {
         }
         return 1;
     }
-    if (fl < 8 || memeq(fp, "Normal::", 8) != 1) { return 0; }
-    var m: f64 = _par_in(0);
-    var s: f64 = _par_in(1);
-    var d: PmnNormal;
-    var e = PmnNormal_new(&d, m, s);
-    if (_par_eq(fp, fl, "Normal::new") == 1) {
-        if (e != PMN_ERR_NONE) {
-            _par_got_err(e);
-            return 1;
-        }
-        var dm: f64 = d.mean;
-        var ds: f64 = d.std_dev;
-        _par_got_f(dm);
-        _par_got_f(ds);
-        return 1;
+    var px = _par_dist_prefix(fp, fl, "Normal");
+    if (px > 0) {
+        var m: f64 = _par_in(0);
+        var s: f64 = _par_in(1);
+        var dn: PmnNormal;
+        var en = PmnNormal_new(&dn, m, s);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(en, &dn, 2); }
+        if (en != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&dn, fp + px, fl - px, 2);
     }
-    if (e != PMN_ERR_NONE) { return 0 - 1; }
-    if (_par_eq(fp, fl, "Normal::pdf") == 1) {
-        var x0: f64 = _par_in(2);
-        var r0: f64 = d.pdf(x0);
-        _par_got_f(r0);
-        return 1;
+    px = _par_dist_prefix(fp, fl, "Uniform");
+    if (px > 0) {
+        var lo: f64 = _par_in(0);
+        var hi: f64 = _par_in(1);
+        var du: PmnUniform;
+        var eu = PmnUniform_new(&du, lo, hi);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(eu, &du, 2); }
+        if (eu != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&du, fp + px, fl - px, 2);
     }
-    if (_par_eq(fp, fl, "Normal::cdf") == 1) {
-        var x1: f64 = _par_in(2);
-        var r1: f64 = d.cdf(x1);
-        _par_got_f(r1);
-        return 1;
+    px = _par_dist_prefix(fp, fl, "Exponential");
+    if (px > 0) {
+        var l: f64 = _par_in(0);
+        var de: PmnExponential;
+        var ee = PmnExponential_new(&de, l);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(ee, &de, 1); }
+        if (ee != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&de, fp + px, fl - px, 1);
     }
-    if (_par_eq(fp, fl, "Normal::mean") == 1) {
-        var r2: f64 = d.mean();
-        _par_got_f(r2);
-        return 1;
-    }
-    if (_par_eq(fp, fl, "Normal::variance") == 1) {
-        var r3: f64 = d.variance();
-        _par_got_f(r3);
-        return 1;
-    }
-    if (_par_eq(fp, fl, "Normal::sample") == 1) {
-        var g: PmnSimpleRng;
-        if (PmnSimpleRng_new(&g, _par_in(2)) != PMN_ERR_NONE) { return 0 - 1; }
-        var n = _par_in(3);
-        _par_got_seq(n);
-        for (var j = 0; j < n; j = j + 1) {
-            var r4: f64 = d.sample(&g);
-            _par_got_f(r4);
-        }
-        return 1;
+    px = _par_dist_prefix(fp, fl, "Bernoulli");
+    if (px > 0) {
+        var p: f64 = _par_in(0);
+        var db: PmnBernoulli;
+        var eb = PmnBernoulli_new(&db, p);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(eb, &db, 1); }
+        if (eb != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&db, fp + px, fl - px, 1);
     }
     return 0;
 }
@@ -1062,6 +1187,9 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "Normal::cdf") == 1) { return 0; }      # downstream of the T1 Φ (ADR 009 as amended)
     if (_par_eq(fp, fl, "Normal::sample") == 1) { return 0; }   # Box–Muller: ln and cos
     if (_par_eq(fp, fl, "standard_normal") == 1) { return 0; }
+    if (_par_eq(fp, fl, "Exponential::pdf") == 1) { return 0; }      # exp (part a2)
+    if (_par_eq(fp, fl, "Exponential::cdf") == 1) { return 0; }      # exp_m1
+    if (_par_eq(fp, fl, "Exponential::sample") == 1) { return 0; }   # ln
     return 0 - 1;
 }
 
