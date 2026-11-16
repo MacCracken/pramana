@@ -801,3 +801,75 @@ toolchain's stdlib, so that copy is neither vendored nor locked.
 - consumers get both bundles and their sidecars, the same as ushma's form;
 - pramana's own compiles stay at the core's cost;
 - only the `ai` test carries sandhi.
+
+### 6.4 Part 9d-1: P9, `ln_gamma` (2026-11-15)
+
+**What it compares.** Three `ln_gamma`s, on the same inputs, against MPFR 4.2.2's lgamma at 1,024 bits
+(`scripts/port-baseline/check.c`, errors in ulps of the correctly rounded value):
+- **Rust 1.3.0's own results**, taken from the accuracy baseline's binary (§3.2's five sets);
+- **T0** (`p9_lgamma_impl.cyr`): Rust's Lanczos form (g = 7, nine terms, reflection below ½) in Rust's operation
+  order, on correctly rounded ln and sin. This is what M2 part a ports;
+- **T1**, the prototype: fdlibm's `e_lgamma_r` layout, with polynomials centred on the roots at 1 and 2 and on the
+  minimum at 1.4616, on correctly rounded ln. There are three changes from fdlibm where a rounding would cost an ulp:
+  - every logarithm is kimiya's double-double ln core (`_km_ln_core`, relative error near 2⁻⁸⁰);
+  - the product (y + 2)(y + 3)… on [3, 8), and (x − ½)(ln x − 1) for x ≥ 8 at every magnitude up to lnΓ's overflow,
+    are double-doubles. fdlibm drops the −½ past 2⁵⁸;
+  - for x < 0, sin(πx) is reduced exactly, as r = |x| − round(|x|), and the reflection subtracts in double-double.
+
+  The result is rounded once. The coefficients come from `p9_fdlibm_consts.py`, which reads the libm crate's
+  `lgamma_r.rs` and checks each decimal literal against the bits in its comment.
+
+`p9_lgamma.cyr` adds six seeded sets weighted to the hard regions:
+- 100,000 within 2⁻⁵² … ¼ of 1 or 2;
+- 100,000 on [2, 8);
+- 50,000 from 8 to 8·2¹⁰¹⁰;
+- 50,000 from 2⁻¹⁰⁷⁰ to 2, subnormals included;
+- 48,655 for x < 0, half of them within 2⁻⁵⁰ … 1/10 of a pole (1,345 more rounded onto a pole);
+- 50,000 on (−8, −2), where lnΓ crosses zero.
+
+For x < 0, the `mixed` rows measure ADR 009's bound: ulps of max(|lnΓ|, 1). `p9_lgamma.sh` runs it all, and the
+1,675,000 rows take about 25 minutes to check.
+
+| Set | n | Rust 1.3.0, max (mean) | T0, max | T1, max (mean) | T1 not CR |
+|---|---|---|---|---|---|
+| (0.5, 10) | 100,000 | 1.2×10⁶ (65.2) | 1.2×10⁶ | **1.25** (0.258) | 5.1% |
+| \|x − 1\| or \|x − 2\| ∈ [1e-12, 0.1] | 25,000 | 4.3×10¹³ (3.8×10¹¹) | 4.3×10¹³ | **0.98** (0.270) | 11.3% |
+| [10, 1e15] | 25,000 | 4.85 (0.578) | 4.85 | **0.54** (0.251) | 0.04% |
+| (1e-300, 0.5) | 25,000 | 8.21 (0.028) | 8.21 | **0.50** (0.013) | 0.004% |
+| P9: within 2⁻⁵² … ¼ of 1 or 2 | 100,000 | — | 8.0×10¹⁶ | **1.15** (0.274) | 11.4% |
+| P9: [2, 8) | 100,000 | — | 9.7×10⁵ | **1.31** (0.258) | 4.6% |
+| P9: 8 … 8·2¹⁰¹⁰ | 50,000 | — | 4.35 | **0.50** (0.249) | 0% |
+| P9: 2⁻¹⁰⁷⁰ … 2 | 50,000 | — | +∞ on 8.4% | **0.78** (0.022) | 0.03% |
+| (−20, 0), ulps of max(\|lnΓ\|, 1) | 25,000 | 1,583 (5.36) | 1,583 | **0.93** (0.250) | 9.0% |
+| P9: x < 0 to −170, near poles | 48,655 | — | 1.3×10¹⁵ | **1.14** (0.250) | 1.2% |
+| P9: (−8, −2), across the zeros | 50,000 | — | 4.1×10⁴ | **1.40** (0.247) | 20.8% |
+
+- **T1 meets ADR 009's fixed bound everywhere:** at most 1.31 ulp for x > 0, against ≤ 2, and at most 1.40 ulp of
+  max(|lnΓ|, 1) for x < 0, against ≤ 2. Beside the roots, where Rust is off by 4.3×10¹³ ulp, T1 is within 0.98.
+- **The margin** is smallest on [2, 3), where lnΓ(2 + y) = ½y + P(y)/Q(y) is evaluated in plain double. M2 part b can
+  carry that sum in double-double if the ≥ 1M verification finds less margin.
+- **T0 is Rust.** On §3.2's sets T0 has Rust's maxima, and only one row's rounding differs (the negative set's
+  not-CR share is 84.952% against 84.948%). The Lanczos form's error doesn't come from the primitives.
+- **Rust 1.3.0 returns +∞ for 0 < x < 1e-300/π** (about 3.2e-301). It reflects below ½ and gives up when
+  |sin(πx)| < 1e-300, where lnΓ(x) ≈ −ln x ≈ 690. T0 inherits it, on 8.4% of the 2⁻¹⁰⁷⁰ … 2 set. §3.2's small set
+  starts at 1e-300, so it never met this. T1 returns −ln x there, correctly rounded.
+- **One answer on every target:** the probe's 1,675,000 rows are byte-identical on x86_64 ELF, PE (wine) and
+  aarch64 (qemu), sha256 `1526c4c1…`.
+
+**Cost** (`p9_lgamma.bcyr`): ns per call, pinned, three runs, 10⁶ calls per row over 4,096 seeded inputs.
+
+| Inputs | T0 | T1 |
+|---|---|---|
+| (0.9, 1.1) | 168 | 72–73 |
+| (0.5, 10) | 167–168 | 169–170 |
+| [2, 8) | 167–168 | 190–192 |
+| [10, 1e6) | 167–168 | 152–154 |
+| (−20, −0.5) | 397–400 | 568–573 |
+
+T1 costs about what T0 does for x > 0. It is 2.3× faster beside 1, where no logarithm is taken, and 15% slower on
+[2, 8). The reflection costs 1.4× T0's: three double-double logs, sin and cos.
+
+**What it means for M2 part b:**
+- T1's design stands: fdlibm's layout, double-double logarithms and products, and one rounding.
+- `src/crmath.cyr` keeps the double-double ln core (kimiya's `_km_ln_core`) callable inside pramana, beside the
+  correctly rounded ln. The prototype is its first consumer.

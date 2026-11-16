@@ -23,7 +23,8 @@
 > progress: part 9a (P1, P5, P6) is committed (`96ae9d5`, and P6's decision, ADR 007 row 14, as `aa3dc1e`). Part 9b
 > (P2, P3, P4) and the D7 amendment it led to (the RNG is generic) are committed as `4a051bf`. Part 9c (P7, P8) is
 > committed as `155dce0`. After it, the maintainer amended D5 (serde_json's text, byte for byte) and accepted ADR 007
-> row 16. The maintainer took each recommendation and chose option C for D3. Nothing has been ported. The one artifact
+> row 16. Part 9d-1, P9's `ln_gamma` prototype, is done: its probe is committed as `998b64b`, its record not yet. The
+> maintainer took each recommendation and chose option C for D3. Nothing has been ported. The one artifact
 > so far is the accuracy-baseline tool, `scripts/port-baseline/`, which produced §3.2.
 
 | Thing | Value | Source |
@@ -345,8 +346,8 @@ Rules for every row:
 | erf | 0.82 max, 3.1% not CR | ≈ Rust: \|x\| < 0.84375 is a pure polynomial (same bits); above, only rows where glibc's exp misrounds change | **0.5 ulp, correctly rounded** (D3 = C) | the FMA-free CORE-MATH port above |
 | erfc | **2.49** max, 30.6% not CR | ≈ Rust | **0.5 ulp, correctly rounded** (D3 = C) | as erf |
 | normal_cdf, normal_sf | 29 ulp in [−5, 5]; **1,590** in the tails | ≈ Rust | **≤ 1 ulp** | carry z/√2 as a double-double, then take the correctly rounded erfc of the high part plus a first-order correction for the low part: erfc(h + l) ≈ erfc(h) − l·(2/√π)e^(−h²). The ×½ is exact |
-| ln_gamma, x > 0 | 4.85–8.2 ulp at large and small x; 65 mean / 1.2×10⁶ max on [0.5, 10]; **4.3×10¹³** beside 1 and 2 | ≈ Rust (every term is Rust's) | **≤ 2 ulp** on x > 0, including beside 1 and 2 | rational/series forms of lnΓ(1 + ε) and lnΓ(2 + ε) around the roots (fdlibm's `e_lgamma_r` layout); `stirling_error` (already in pramana) for large x |
-| ln_gamma, x < 0 | 6.9×10⁴ max | ≈ Rust | ≤ 2 ulp of max(\|lnΓ\|, 1) (mixed; see the bounds above) | reflection with sin(πx) reduced exactly (x − round(x) first) |
+| ln_gamma, x > 0 | 4.85–8.2 ulp at large and small x; 65 mean / 1.2×10⁶ max on [0.5, 10]; **4.3×10¹³** beside 1 and 2 | ≈ Rust (every term is Rust's) | **≤ 2 ulp** on x > 0, including beside 1 and 2 | rational/series forms of lnΓ(1 + ε) and lnΓ(2 + ε) around the roots (fdlibm's `e_lgamma_r` layout), with double-double logarithms and products and one rounding. **P9 prototype (§5 step 9d-1): ≤ 1.31 ulp, mean 0.26, on 450,000 rows** (Rust: 4.3×10¹³ beside the roots) |
+| ln_gamma, x < 0 | 6.9×10⁴ max | ≈ Rust | ≤ 2 ulp of max(\|lnΓ\|, 1) (mixed; see the bounds above) | reflection with sin(πx) reduced exactly (x − round(x) first), subtracted in double-double. **P9 prototype: ≤ 1.40 ulp of max(\|lnΓ\|, 1)** on 123,655 rows (Rust: 1,583) |
 | gamma_inc P, Q | 4.9 / 12.1 mean; **58 / 246** max | ≈ Rust | **≤ 4 ulp** max, ~1 mean | double-double prefactor exponent plus a correctly rounded exp of it; stop at 2⁻⁵⁶ with compensated sums; small-a Q directly (Temme / DiDonato–Morris form, not 1 − P) |
 | beta_inc I, 1 − I | 13–14 mean; **550 / 583** max | ≈ Rust | **≤ 8 ulp** max, ~1–2 mean | TOMS 708-style prefactor in double-double; a tightened continued fraction |
 | Gamma, Beta, χ², t, F pdfs | inherit lnΓ's absolute error (~1e-14 relative, from §3.3) | ≈ Rust | ~1–3 ulp | from the lnΓ fix |
@@ -848,7 +849,22 @@ Shared mechanics are as pravash's §4; the pramana specifics follow.
        - **Decided for D8:** the `[lib.ai]` profile, with sandhi out of `[deps]`. The `ai` test includes
          `lib/sandhi.cyr` itself, and `distlib --check`, `deps --locked` and `audit` pass.
        - **PE and aarch64:** dead code is NOPed, not compacted (cyrius's roadmap: "the DCE compaction arc").
-   - **9d:** P9's prototypes.
+   - **9d: P9's prototypes**, one part per function. `normal_cdf` comes last, after 9e, because its T1 calls the
+     correctly rounded erfc that 9e ports.
+     - **9d-1 ✅ (2026-11-15): `ln_gamma`** (`port-parity.md` §6.4; the probe is `998b64b`).
+       - **The prototype:** fdlibm's `e_lgamma_r` layout on correctly rounded ln, with double-double logarithms
+         (kimiya's ln core), a double-double product on [3, 8) and for x ≥ 8, and an exact sin(πx) reduction and a
+         double-double subtraction for x < 0.
+       - **Measured against MPFR** on 1,675,000 rows (§3.2's sets plus six seeded sets weighted to the roots,
+         [2, 8), huge and subnormal x, the poles and the negative-axis zeros):
+         - **x > 0:** at most 1.31 ulp (mean 0.26), against the fixed ≤ 2. Rust is off by up to 4.3×10¹³;
+         - **x < 0:** at most 1.40 ulp of max(|lnΓ|, 1), against ≤ 2.
+       - **The same bits** on x86_64, PE and aarch64.
+       - **Cost:** 72–192 ns for x > 0, against T0's 168; 570 ns for x < 0, against 400.
+       - **Found:** Rust 1.3.0 returns +∞ for 0 < x < about 3.2e-301. Its reflection gives up when |sin(πx)| < 1e-300.
+     - **9d-2:** `gamma_inc`.
+     - **9d-3:** `beta_inc`.
+     - **9d-4:** `normal_cdf`, after 9e.
    - **9e:** the CORE-MATH erf/erfc port.
 
    The probes as planned:
@@ -978,6 +994,7 @@ These are every std f64 method in `src/` outside tests, as of 1.3.0.
 | `iter().sum::<f64>()` | a loop that **starts at −0.0**, as rustc 1.100's `Sum for f64` does (`sum([]) = −0.0`) | A on the sign of zero (probed) |
 | `is_finite` (39), `is_nan` (23) | `x - x == 0`, `x != x` on typed locals | exact |
 | `exp` (32), `ln` (53), `powf` (7), `sin` (2), `cos` (3) | kimiya's correctly rounded primitives (D2, L1) | C, 0 ulp against `*.cr.tsv` |
+| the T1 special functions' logarithms (M2 part b) | kimiya's double-double ln core (`_km_ln_core`: ln x as hi + lo, relative error near 2⁻⁸⁰), kept callable inside pramana beside the correctly rounded ln (P9, §5 step 9d-1) | the T1 bounds (ADR 009) |
 | `ln_1p` (11), `exp_m1` (2), `tan` (1), `atan` (1), `log2` (1) | correctly rounded: expm1 from kimiya; log1p, tan and log2 new; atan as atan2(x, 1) | C, 0 ulp |
 | `cbrt` (1, Wilson–Hilferty) | `ganita_f64_cbrt`, exact like Rust's compiler_builtins | C, expected 0 (probe 4) |
 | `powi` (17: exponents 2, 3, 4, 9, 25, 49) | explicit products in LLVM's square-and-multiply order: the result accumulates the set bits low to high, e.g. x²⁵ = (x · x⁸) · x¹⁶ | exact (probed) |
