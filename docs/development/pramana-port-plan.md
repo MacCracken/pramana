@@ -34,7 +34,8 @@
 > the JSON core, the work-table pool, the RNG, combinatorics and the bridges, gated by 75,266 golden rows on three
 > targets. The maintainer took each recommendation and chose option C for D3. **M2, the special functions, is in
 > progress** (its parts are in §7): part a1, fdlibm's erf and erfc and Φ and 1 − Φ at T0, is committed (`569dfa5`),
-> and part a2, lnΓ and its relatives, is done and not committed.
+> part a2, lnΓ and its relatives, is committed (`acdbbee`), and part a3, the incomplete gamma, is done and not
+> committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1110,7 +1111,9 @@ operation order on the correctly rounded primitives, at 0 ulp against `special.c
   `ln_beta`, against 1.3.0 on 16,780 rows (its +∞ cutoff near 0, the switches at ½ and 10, shapes from 10⁻³ to
   10¹²), 92 of them corrected for log1p and ln ✅;
 - **a3:** `gamma_inc`: the series, the Lentz continued fraction, the Wilson–Hilferty branch, `iteration_budget`, and
-  the regularized lower and upper wrappers;
+  the regularized lower and upper wrappers, against 1.3.0 on 6,771 rows (the switches at x = a + 1 and a = 10⁹, the
+  mode at x = a ± j√a, shapes from 10⁻³⁰⁰ to 10¹², the prefactor's underflow), 36 of them corrected for log1p and
+  exp ✅;
 - **a4:** `beta_inc`, `beta_cf` and `regularized_incomplete_beta`;
 - **b1:** erf and erfc correctly rounded: P9's FMA-free CORE-MATH port (§5 step 9e) replaces fdlibm;
 - **b2:** `normal_cdf` and `normal_sf` ≤ 1 ulp, P9's prototype on b1 (step 9d-4);

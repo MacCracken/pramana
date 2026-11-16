@@ -310,3 +310,24 @@ a1's record (12.3× and 10.6× for erf's two rationals, 7.0–7.6× for the tail
 
 None of these functions is a public API in 1.3.0: they are the inner terms of the distributions and tests that M3
 and M4 port. T1 (part b) replaces `ln_gamma` with P9's fdlibm-layout prototype, 72–192 ns (§5 step 9d-1).
+
+## M2 part a3: the regularized incomplete gamma, T0 (2026-11-15)
+
+**Bodies.** `tests/special.bcyr` and its twin `m2_special.rs`, as in parts a1 and a2. The gamma rows sum P − Q, so
+both outputs reach the sum, and all 24 rows' sums agree. Three rounds, interleaved, pinned to core 5, at a load
+average of 3.4–3.5 on 16 cores. The earlier rows ran 1–6 ns slower than their own records under this load; their
+ratios held (5–13×).
+
+| Row | Rust | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `gamma_inc`, a in [0.5, 10), x in [0.1, 20) | 125.1–126.9 ns | 564–565 ns | 4.5× |
+| `gamma_inc`, a in [10, 1000), x in [5, 1500) | 126.2–126.8 ns | 610–615 ns | 4.8× |
+| `gamma_inc`, Wilson–Hilferty, a and x in [10⁹, 1.0001·10⁹) | 58.5–59.0 ns | 315 ns | 5.4× |
+
+**Where the time goes.** The series and the continued fraction are a division or two per iteration, and divisions
+cost about the same in both compilers' code, so these rows sit closer to Rust than the special functions'
+polynomials do. The prefactor adds the kernel (part a2) and a correctly rounded exp. The Wilson–Hilferty row is a
+cbrt, a sqrt and part a1's Φ and 1 − Φ, which make four correctly rounded exps.
+
+**A first form of the Wilson–Hilferty row was dropped.** It drew a and x independently over [10⁹, 10¹²), so z was
+almost always far out, P − Q was ±1, and both sums came to exactly 0. The narrowed range keeps |z| ≲ 3.

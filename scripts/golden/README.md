@@ -38,8 +38,9 @@ files. This README records what is specific to pramana.
 - **`rust-old/` is never built in place or edited.** This crate depends on it by path, with `oracle` and
   `soorat-compat` on. `ai` is off: its rows use a recorded transport. `Cargo.lock` was seeded from
   `rust-old/Cargo.lock`, so every shared dependency is the version the oracle was tested with (hisab 1.4.0).
-- **The output is deterministic.** Two runs give byte-identical files. Grids use only + − × ÷, `floor`, decimal
-  parsing, bit construction and seeded xorshift. Never a transcendental std method, a timestamp or a hash-map order.
+- **The output is deterministic.** Two runs give byte-identical files. Grids use only + − × ÷, `sqrt` (correctly
+  rounded by IEEE 754, so the same everywhere; from M2 part a3), `floor`, decimal parsing, bit construction and seeded
+  xorshift. Never a transcendental std method, a timestamp or a hash-map order.
 - **The provenance is pinned.** Every header records the oracle, hisab, the rustc that built the generator
   (`build.rs`), and the libm platform (`glibc.rs`: `glibc 2.44 x86_64 fma`). `--check` refuses a corpus recorded
   under any other provenance, naming both, because the rows hold that compiler's and that glibc's bits.
@@ -99,9 +100,12 @@ files. This README records what is specific to pramana.
   k/16 on [−40, 40] and seeds. Part a2 records `ln_gamma` (its switch at ½, its 1e-300 cutoff near 0, the negative
   integers and half-integers, the roots, sweeps to ±10³⁰⁶), `stirling_error` (its switch at 10), `bd0` and
   `ln_gamma_kernel` on x = m·r and x = a·r for fixed ratios over seeded scales, and `ln_beta` on a pairwise shape grid
-  from 10⁻³ to 10¹², seeds, and NaN, ±0 and negative shapes. All class C. `validate.py` transcribes each function and
-  re-derives every row through glibc's exp, ln, log1p and sin; `special.cr.tsv` holds the rows that move when they are
-  correctly rounded.
+  from 10⁻³ to 10¹², seeds, and NaN, ±0 and negative shapes. Part a3 records `gamma_inc` (P and Q, two outputs) at
+  its switches x = a + 1 and a = 10⁹, near the mode x = a ± j√a, on fixed ratios x = a·r over seeded shapes, for the
+  χ² shapes k/2, for shapes from 10⁻³⁰⁰ to 10⁻⁸ (where the series' clamp binds), and where the prefactor underflows;
+  and the two regularized wrappers on seeds. All class C. `validate.py` transcribes each function and re-derives
+  every row through glibc's exp, ln, log1p and sin (and the correctly rounded cbrt, as Rust's compiler_builtins
+  gives); `special.cr.tsv` holds the rows that move when they are correctly rounded.
 - **`json.map.tsv`** (ADR 007 row 16), written by `validate.py --write-cr`. These are the rows serde_json reads only
   by skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
   surrogate. `validate.py` finds them with its own model of bayan's three whole-document refusals. They map to
@@ -140,7 +144,7 @@ files. This README records what is specific to pramana.
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `debug` | M1 f | 60 | `src/m_debug.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
-| `special` | M2 a1–a2 | 45,070 | `src/m_special.rs` | `special.cr.tsv`, 102 rows (exp misrounded in erfc's deep tail and in Φ and 1 − Φ there, 10; log1p in bd0, the kernel and ln B, 91; ln in ln B, 1) |
+| `special` | M2 a1–a3 | 51,841 | `src/m_special.rs` | `special.cr.tsv`, 138 rows (exp misrounded in erfc's deep tail and in Φ and 1 − Φ there, 10, and in the incomplete gamma's prefactor, 10; log1p in bd0, the kernel, ln B and the incomplete gamma, 117; ln in ln B, 1) |
 
 ## Format 1
 

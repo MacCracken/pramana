@@ -538,7 +538,7 @@ fn _par_report_fns() {
     while (k < _par_fn_n) {
         var at = k * 8;
         print("  ", 2);
-        _par_print_pad(load64(_par_fn_p + at), load64(_par_fn_l + at), 40);
+        _par_print_pad(load64(_par_fn_p + at), load64(_par_fn_l + at), 44);
         var cls = load64(_par_fn_cls + at);
         var cb[8];
         store8(&cb, cls);

@@ -2,7 +2,7 @@
 //!
 //! Every input here must be reproducible bit for bit on any machine, so the inputs of every
 //! row are the same wherever the generator runs. Only correctly rounded or exact operations
-//! are used: + − × ÷, `floor`, `str::parse::<f64>` (correctly rounded, in core) and bit
+//! are used: + − × ÷, `sqrt`, `floor`, `str::parse::<f64>` (correctly rounded, in core) and bit
 //! construction. **Never a transcendental std f64 method** — those call the platform's
 //! glibc libm, which is what the `math` module *records*, not what a grid may depend on.
 //! Log-uniform values are built from a binary exponent and a mantissa, without `10^x`.

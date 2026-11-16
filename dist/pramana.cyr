@@ -7062,11 +7062,13 @@ fn pmn_response_times_to_hick_params(data, n, out): i64 {
 # - a1: fdlibm's erf and erfc (FreeBSD msun s_erf.c, via the Rust libm crate, as 1.3.0 carries it), and Φ and 1 − Φ
 #   on erfc;
 # - a2: the Lanczos lnΓ (g = 7, n = 9, reflection below ½), the Stirling remainder, Loader's bd0, the incomplete
-#   gamma's prefactor kernel, and ln B.
+#   gamma's prefactor kernel, and ln B;
+# - a3: the regularized incomplete gamma P and Q: the series below x = a + 1, Lentz's continued fraction above, and
+#   Wilson–Hilferty's normal approximation past a = 10⁹.
 # The coefficients are src/constants.cyr's, generated from rust-old/src and proven against the oracle (M0 step 6). The
-# primitives are exp, ln, ln_1p and sin, each correctly rounded (src/crmath.cyr, src/crmath_ext.cyr), so a row
-# differs from 1.3.0 only where glibc misrounds one. 1.3.0's math.rs is crate-private, so these names are too
-# (`_pmn_`).
+# primitives are exp, ln, ln_1p and sin, each correctly rounded (src/crmath.cyr, src/crmath_ext.cyr), and sqrt and
+# cbrt, so a row differs from 1.3.0 only where glibc misrounds one. 1.3.0's math.rs is crate-private, so these names
+# are too (`_pmn_`).
 #
 # UPSTREAM(L8): ganita:docs/development/issues/2026-11-15-special-functions-scope-request.md
 #   replace with ganita's special functions if it takes them on; parity: every special row, and every *.ref.tsv row
@@ -7461,4 +7463,137 @@ fn _pmn_ln_beta(a: f64, b: f64): f64 {
     var gab: f64 = _pmn_ln_gamma(ab);
     var g1: f64 = ga + gb;
     return g1 - gab;
+}
+
+# ── part a3: the regularized incomplete gamma ───────────────────────────────────────────────────────────────────
+
+# Rust's `iteration_budget`: min(200 + 20·√shape, 10⁶) iterations, truncated as `as usize` truncates; √shape is 0
+# for a shape that is not finite and positive. Bounds every series and continued fraction's worst-case time.
+#must_use
+fn _pmn_iteration_budget(shape: f64): i64 {
+    var root: f64 = 0.0;
+    if (_pmn_is_finite(shape) == 1 && shape > 0.0) { root = f64_sqrt(shape); }
+    var t: f64 = 20.0 * root;
+    var b: f64 = 200.0 + t;
+    var mx: f64 = _PMN_MATH_MAX_ITERATIONS;
+    var m: f64 = _pmn_min(b, mx);
+    return _pmn_sat_usize(m);
+}
+
+# Rust's `gamma_series_p`: P(a, x) = e^kernel · Σ xⁿ / (a(a + 1)…(a + n)), stopped when a term falls below 1e-15 of
+# the sum or the budget runs out, then clamped to [0, 1]. 0 when the prefactor underflows.
+#must_use
+fn _pmn_gamma_series_p(a: f64, x: f64): f64 {
+    var k: f64 = _pmn_ln_gamma_kernel(a, x);
+    var prefix: f64 = _pmn_exp(k);
+    if (prefix == 0.0) { return 0.0; }
+    var eps: f64 = _PMN_MATH_CONVERGENCE_EPS;
+    var ap: f64 = a;
+    var sum: f64 = 1.0 / a;
+    var del: f64 = sum;
+    var n = _pmn_iteration_budget(a);
+    for (var i = 0; i < n; i = i + 1) {
+        ap = ap + 1.0;
+        var q: f64 = x / ap;
+        del = del * q;
+        sum = sum + del;
+        var adel: f64 = f64_abs(del);
+        var asum: f64 = f64_abs(sum);
+        var lim: f64 = asum * eps;
+        if (adel < lim) { break; }
+    }
+    var r: f64 = sum * prefix;
+    return _pmn_clamp(r, 0.0, 1.0);
+}
+
+# Rust's `gamma_cf_q`: Q(a, x) by the modified Lentz continued fraction, each denominator kept from 0 by 1e-300,
+# stopped when a factor is within 1e-15 of 1 or the budget runs out, then clamped. 0 when the prefactor underflows.
+#must_use
+fn _pmn_gamma_cf_q(a: f64, x: f64): f64 {
+    var k: f64 = _pmn_ln_gamma_kernel(a, x);
+    var prefix: f64 = _pmn_exp(k);
+    if (prefix == 0.0) { return 0.0; }
+    var tiny: f64 = _PMN_MATH_LENTZ_TINY;
+    var eps: f64 = _PMN_MATH_CONVERGENCE_EPS;
+    var x1: f64 = x + 1.0;
+    var b: f64 = x1 - a;
+    var c: f64 = 1.0 / tiny;
+    var d: f64 = 1.0 / b;
+    var h: f64 = d;
+    var n = _pmn_iteration_budget(a);
+    for (var i = 1; i <= n; i = i + 1) {
+        var fi: f64 = f64_from(i);
+        var nfi: f64 = -fi;
+        var ima: f64 = fi - a;
+        var an: f64 = nfi * ima;
+        b = b + 2.0;
+        var ad: f64 = an * d;
+        d = ad + b;
+        var dabs: f64 = f64_abs(d);
+        if (dabs < tiny) { d = tiny; }
+        var ac: f64 = an / c;
+        c = b + ac;
+        var cabs: f64 = f64_abs(c);
+        if (cabs < tiny) { c = tiny; }
+        d = 1.0 / d;
+        var del: f64 = d * c;
+        h = h * del;
+        var dm: f64 = del - 1.0;
+        var dma: f64 = f64_abs(dm);
+        if (dma < eps) { break; }
+    }
+    var r: f64 = h * prefix;
+    return _pmn_clamp(r, 0.0, 1.0);
+}
+
+# Rust's `gamma_inc`: (P(a, x), Q(a, x)), each computed without cancellation: the series for P below x = a + 1 and the
+# continued fraction for Q from there, the other as 1 − it. Past a = 10⁹, Wilson–Hilferty: (x/a)^⅓ is close to
+# N(1 − 1/(9a), 1/(9a)). (NaN, NaN) for a NaN argument or a ≤ 0; (0, 1) for x ≤ 0 or a = +∞; (1, 0) for x = +∞.
+#must_use
+fn _pmn_gamma_inc(a: f64, x: f64): (f64, f64) {
+    if (x != x || a != a || a <= 0.0) {
+        var nan: f64 = _PMN_F64_NAN;
+        return (nan, nan);
+    }
+    if (x <= 0.0) { return (0.0, 1.0); }
+    var inf: f64 = _PMN_F64_INFINITY;
+    if (x == inf) { return (1.0, 0.0); }
+    if (a == inf) { return (0.0, 1.0); }
+    var wh: f64 = _PMN_MATH_GAMMA_WILSON_HILFERTY_SHAPE;
+    if (a > wh) {
+        var a9: f64 = 9.0 * a;
+        var v: f64 = 1.0 / a9;
+        var xa: f64 = x / a;
+        var cr: f64 = _pmn_cbrt(xa);
+        var mv: f64 = 1.0 - v;
+        var num: f64 = cr - mv;
+        var sv: f64 = f64_sqrt(v);
+        var z: f64 = num / sv;
+        var pz: f64 = _pmn_normal_cdf(z);
+        var qz: f64 = _pmn_normal_sf(z);
+        return (pz, qz);
+    }
+    var a1: f64 = a + 1.0;
+    if (x < a1) {
+        var p: f64 = _pmn_gamma_series_p(a, x);
+        var q: f64 = 1.0 - p;
+        return (p, q);
+    }
+    var q2: f64 = _pmn_gamma_cf_q(a, x);
+    var p2: f64 = 1.0 - q2;
+    return (p2, q2);
+}
+
+# Rust's `regularized_lower_incomplete_gamma`: P(a, x) = γ(a, x)/Γ(a), gamma_inc's first value.
+#must_use
+fn _pmn_regularized_lower_incomplete_gamma(a: f64, x: f64): f64 {
+    var p, q = _pmn_gamma_inc(a, x);
+    return p;
+}
+
+# Rust's `regularized_upper_incomplete_gamma`: Q(a, x) = 1 − P(a, x), computed directly, gamma_inc's second value.
+#must_use
+fn _pmn_regularized_upper_incomplete_gamma(a: f64, x: f64): f64 {
+    var p, q = _pmn_gamma_inc(a, x);
+    return q;
 }

@@ -469,6 +469,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 5–8× 1.3.0 where ln and sin lead, 11–12× where the correctly rounded log1p does (`bd0`, the
     large-shape kernel, the both-large ln B); all 21 bench rows give the same sums as the twin.
 
+- **M2 part a3: the regularized incomplete gamma, T0** (`src/special.cyr`; port plan D3 = C, ADR 009; results in
+  `docs/development/port-parity.md` §8.3):
+  - **the functions:** 1.3.0's `gamma_inc` (P and Q as two values: the series below x = a + 1, Lentz's continued
+    fraction above, Wilson–Hilferty past a = 10⁹), its `iteration_budget` (min(200 + 20√a, 10⁶), truncated as Rust's
+    `as usize`), and the two regularized wrappers, in Rust's operation order on the correctly rounded primitives.
+    Probe P9's T0 transcription had no Wilson–Hilferty branch, so the port follows Rust's source;
+  - **golden rows:** 6,771 more in `special` (51,841 in all): the switches at x = a + 1 and a = 10⁹, the mode
+    x = a ± j√a, fixed ratios over seeded shapes from 10⁻³ to 10¹², the χ² shapes, the prefactor's underflow, and
+    shapes down to 10⁻³⁰⁰, where 1.3.0's series overshoots 1 before its clamp. `validate.py` transcribes the loops.
+    `special.cr.tsv` gains 36 rows (log1p 26, exp 10), up to 1,417 ulp in the deep tails, where exp turns the
+    kernel's absolute rounding into relative error. Every row matches at 0 ulp on x86_64, PE and aarch64;
+  - **mutation checks:** eleven mutants fail rows (14–1,114). The clamp mutant passed until the tiny-shape rows were
+    added. The three that pass are code no reachable input runs: the budget's base (the loops take at most 8.16√a
+    iterations, measured) and the continued fraction's two 1e-300 guards;
+  - **tests:** `tests/special.tcyr` has 62 checks: 1.3.0's four incomplete-gamma tests, the budget's values, the
+    edges, the wrappers bit for bit, and P(1, x) = 1 − e^-x. Its 1e-13 bound was widened from my first 1e-14, after
+    MPFR showed 1.3.0's own algorithm is 1.4·10⁻¹⁴ off at x = 300 on correctly rounded primitives;
+  - **cost:** 4.5–5.4× 1.3.0; all 24 bench rows give the same sums as the twin. The harness pads names to 44
+    columns, for the wrappers' 41-character names.
+
 ### Performance
 
 - **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),

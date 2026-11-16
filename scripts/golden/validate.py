@@ -1390,6 +1390,85 @@ def sp_ln_beta(K, L, a, b):
     return sp_ln_gamma(K, L, a) + sp_ln_gamma(K, L, b) - sp_ln_gamma(K, L, a + b)
 
 
+def sp_budget(K, shape):
+    """1.3.0's iteration_budget: min(200 + 20·√shape, 10⁶), truncated."""
+    root = math.sqrt(shape) if math.isfinite(shape) and shape > 0.0 else 0.0
+    return int(sp_min(200.0 + 20.0 * root, K["MAXIT"]))
+
+
+def sp_clamp01(v):
+    """Rust's clamp(0.0, 1.0): a NaN and −0.0 pass through."""
+    if v < 0.0:
+        return 0.0
+    if v > 1.0:
+        return 1.0
+    return v
+
+
+def sp_series_p(K, L, a, x):
+    prefix = L.exp(sp_kernel(K, L, a, x))
+    if prefix == 0.0:
+        return 0.0
+    ap = a
+    total = 1.0 / a
+    d = total
+    for _ in range(sp_budget(K, a)):
+        ap += 1.0
+        d *= x / ap
+        total += d
+        if abs(d) < abs(total) * K["EPS"]:
+            break
+    return sp_clamp01(total * prefix)
+
+
+def sp_cf_q(K, L, a, x):
+    prefix = L.exp(sp_kernel(K, L, a, x))
+    if prefix == 0.0:
+        return 0.0
+    tiny, eps = K["TINY"], K["EPS"]
+    b = x + 1.0 - a
+    c = 1.0 / tiny
+    d = fdiv(1.0, b)
+    h = d
+    for i in range(1, sp_budget(K, a) + 1):
+        fi = float(i)
+        an = -fi * (fi - a)
+        b += 2.0
+        d = an * d + b
+        if abs(d) < tiny:
+            d = tiny
+        c = b + fdiv(an, c)
+        if abs(c) < tiny:
+            c = tiny
+        d = fdiv(1.0, d)
+        dl = d * c
+        h *= dl
+        if abs(dl - 1.0) < eps:
+            break
+    return sp_clamp01(h * prefix)
+
+
+def sp_gamma_inc(K, L, a, x):
+    """1.3.0's gamma_inc: (P, Q). Rust's cbrt is compiler_builtins', correctly rounded, so both models take MPFR's."""
+    if math.isnan(x) or math.isnan(a) or a <= 0.0:
+        return (math.nan, math.nan)
+    if x <= 0.0:
+        return (0.0, 1.0)
+    if math.isinf(x):
+        return (1.0, 0.0)
+    if math.isinf(a):
+        return (0.0, 1.0)
+    if a > K["WH"]:
+        v = 1.0 / (9.0 * a)
+        z = fdiv(mpfr_ref.cr("cbrt", x / a) - (1.0 - v), math.sqrt(v))
+        return (0.5 * sp_erfc(K["F"], L.exp, -z / math.sqrt(2.0)), 0.5 * sp_erfc(K["F"], L.exp, z / math.sqrt(2.0)))
+    if x < a + 1.0:
+        p = sp_series_p(K, L, a, x)
+        return (p, 1.0 - p)
+    q = sp_cf_q(K, L, a, x)
+    return (1.0 - q, q)
+
+
 SPECIAL = {  # name: (inputs, model(K, L, *inputs))
     "math::erf": (1, lambda K, L, x: sp_erf(K["F"], L.exp, x)),
     "math::erfc": (1, lambda K, L, x: sp_erfc(K["F"], L.exp, x)),
@@ -1400,6 +1479,9 @@ SPECIAL = {  # name: (inputs, model(K, L, *inputs))
     "math::bd0": (2, sp_bd0),
     "math::ln_gamma_kernel": (2, sp_kernel),
     "math::ln_beta": (2, sp_ln_beta),
+    "math::gamma_inc": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)),
+    "math::regularized_lower_incomplete_gamma": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)[0]),
+    "math::regularized_upper_incomplete_gamma": (2, lambda K, L, a, x: sp_gamma_inc(K, L, a, x)[1]),
 }
 
 
@@ -1412,24 +1494,36 @@ def check_special(root, rows):
         "LG": [consts[f"math::ln_gamma::COEFFICIENTS[{i}]"] for i in range(9)],
         "G": consts["math::ln_gamma::G"],
         "LS": consts["math::LN_SQRT_2PI"],
+        "EPS": consts["math::CONVERGENCE_EPS"],
+        "TINY": consts["math::LENTZ_TINY"],
+        "MAXIT": consts["math::MAX_ITERATIONS"],
+        "WH": consts["math::GAMMA_WILSON_HILFERTY_SHAPE"],
     }
     glibc, cr = Prims(False), Prims(True)
     failures, by_fn, crs = [], {}, []
+
+    def shown(v):
+        return repr(v[0]) if len(v) == 1 else repr(tuple(v))
+
     for fn, cls, ins, outs, raw in rows:
         n, model = SPECIAL.get(fn, (None, None))
-        if model is None or len(ins) != n or len(outs) != 1:
+        if model is None or len(ins) != n:
             failures.append(f"special: no model for {fn}({raw[:60]})")
             continue
         want = model(K, glibc, *ins)
-        ok = same(outs[0], want)
+        wants = list(want) if isinstance(want, tuple) else [want]
+        ok = len(outs) == len(wants) and all(same(g, w) for g, w in zip(outs, wants))
         stat = by_fn.setdefault(fn, [0, 0])
         stat[0 if ok else 1] += 1
         if not ok:
-            failures.append(f"special: {fn}{tuple(ins)!r} recorded {outs[0]!r}, modelled {want!r}")
+            failures.append(f"special: {fn}{tuple(ins)!r} recorded {outs!r}, modelled {wants!r}")
+            continue
         want_cr = model(K, cr, *ins)
-        if not same(outs[0], want_cr):
-            ulps = abs(ordered(bits(outs[0])) - ordered(bits(want_cr)))
-            crs.append(f"{fn}\t{raw}\tf:{bits(want_cr):016x}\t1.3.0 {outs[0]!r} through glibc; {want_cr!r} with every "
+        crv = list(want_cr) if isinstance(want_cr, tuple) else [want_cr]
+        if not all(same(g, w) for g, w in zip(outs, crv)):
+            ulps = max(abs(ordered(bits(g)) - ordered(bits(w))) for g, w in zip(outs, crv))
+            toks = " ".join(f"f:{bits(w):016x}" for w in crv)
+            crs.append(f"{fn}\t{raw}\t{toks}\t1.3.0 {shown(outs)} through glibc; {shown(crv)} with every "
                        f"primitive correctly rounded, {ulps} ulp apart")
     return failures, by_fn, crs
 

@@ -26,6 +26,22 @@
 //!   [10, 60), where the Stirling corrections are largest against the result; and NaN, ±0 and negative shapes, which
 //!   pin Rust's NaN-ignoring min and max.
 //!
+//! Part a3, the regularized incomplete gamma (`gamma_inc(a, x)`, two outputs, P then Q):
+//! - the specials in either argument;
+//! - the switch x = a + 1, with three doubles either side, on 20 shapes from 10^-3 to 10^6;
+//! - the Wilson–Hilferty switch: a = 10^9 with its neighbours and a(1 ± 10^-12), against x = a + j√a;
+//! - 50 seeded shapes past 10^9 (to 10^12) against x = a + j√a, |j| ≤ 6;
+//! - x = a·r for eleven ratios r from 10^-3 to 100 on 300 seeded a in [10^-3, 10^9];
+//! - x = a + j√a, |j| ≤ 4, near the mode, on 60 seeded a in [1, 10^9], where the loops run longest;
+//! - the χ² shapes a = k/2 (k to 120) against x = a·r, and the prefactor's underflow at both ends (x to 10^4, and x
+//!   down to the smallest subnormal);
+//! - shapes from 10^-300 to 10^-8 against x up to 3, where P below x = a + 1 is within about 0.2a of 1, so the series'
+//!   clamp to [0, 1] can bind;
+//! - seeded pairs.
+//!
+//! `regularized_lower_incomplete_gamma` and `regularized_upper_incomplete_gamma` get 400 seeded pairs each. √a is
+//! correctly rounded (IEEE 754), as × and ÷ are, so it may build a grid.
+//!
 //! Every row is class C: each function calls glibc's exp, ln, ln_1p or sin. `validate.py` transcribes them,
 //! re-derives every row through glibc, and writes `special.cr.tsv` with the rows whose value changes when every
 //! primitive is correctly rounded.
@@ -256,6 +272,75 @@ fn ln_beta_pairs() -> Vec<(f64, f64)> {
     v
 }
 
+fn gamma_pairs() -> Vec<(f64, f64)> {
+    let mids = [0.5, 1.0, 30.0];
+    let mut v = cross(&specials(), &mids);
+    v.extend(cross(&mids, &specials()));
+    let shapes = [
+        0.001, 0.01, 0.1, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 5.0, 9.5, 10.0, 10.5, 20.0, 50.0, 100.0, 1e3, 1e4, 1e5, 1e6,
+    ];
+    for &a in &shapes {
+        let mut xs = Vec::new();
+        around(&mut xs, a + 1.0, 3);
+        v.extend(xs.iter().map(|&x| (a, x)));
+    }
+    let wh = 1e9;
+    let mut was = Vec::new();
+    around(&mut was, wh, 2);
+    was.push(wh * (1.0 - 1e-12));
+    was.push(wh * (1.0 + 1e-12));
+    for &a in &was {
+        for j in [-6.0, -3.0, -1.0, 0.0, 1.0, 3.0, 6.0] {
+            v.push((a, wh + j * wh.sqrt()));
+        }
+    }
+    let mut g = Rng::new(0x9b05_688c_2b3e_6c1f);
+    for _ in 0..50 {
+        let a = g.log_uniform(9.0, 12.0);
+        for j in -6..=6 {
+            v.push((a, a + f64::from(j) * a.sqrt()));
+        }
+    }
+    let ratios = [0.001, 0.1, 0.5, 0.9, 0.99, 1.0, 1.01, 1.1, 2.0, 10.0, 100.0];
+    for _ in 0..300 {
+        let a = g.log_uniform(-3.0, 9.0);
+        v.extend(ratios.iter().map(|&r| (a, a * r)));
+    }
+    for _ in 0..60 {
+        let a = g.log_uniform(0.0, 9.0);
+        for j in -4..=4 {
+            v.push((a, a + f64::from(j) * a.sqrt()));
+        }
+    }
+    for k in 1..=120 {
+        let a = f64::from(k) / 2.0;
+        for r in [0.25, 0.5, 1.0, 2.0, 4.0] {
+            v.push((a, a * r));
+        }
+    }
+    v.extend(cross(&[0.5, 1.0, 5.0, 50.0], &[700.0, 750.0, 800.0, 1000.0, 1e4]));
+    v.extend(cross(&[0.001, 0.5, 1.0, 100.0, 1000.0], &[1e-300, 1e-310, f64::from_bits(1)]));
+    v.extend(cross(
+        &[1e-300, 1e-100, 1e-30, 1e-20, 1e-16, 1e-12, 1e-8],
+        &[1e-10, 0.001, 0.1, 0.5, 0.9, 0.99, 0.999_999, 1.0, 1.5, 3.0],
+    ));
+    for _ in 0..500 {
+        v.push((g.log_uniform(-3.0, 6.0), g.log_uniform(-3.0, 6.0)));
+    }
+    v
+}
+
+/// Seeded (a, x) pairs for the two wrappers: a in [10^-2, 10^4], x = a·u with u in [0.1, 3).
+fn wrapper_pairs(seed: u64) -> Vec<(f64, f64)> {
+    let mut g = Rng::new(seed);
+    (0..400)
+        .map(|_| {
+            let a = g.log_uniform(-2.0, 4.0);
+            (a, a * g.uniform(0.1, 3.0))
+        })
+        .collect()
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("special");
     let xs = erf_grid();
@@ -287,6 +372,18 @@ pub fn emit() -> Module {
     }
     for &(a, b) in &ln_beta_pairs() {
         m.row("math::ln_beta", Class::C, &[f(a), f(b)], &[f(oracle::ln_beta(black_box(a), black_box(b)))]);
+    }
+    for &(a, x) in &gamma_pairs() {
+        let (p, q) = oracle::gamma_inc(black_box(a), black_box(x));
+        m.row("math::gamma_inc", Class::C, &[f(a), f(x)], &[f(p), f(q)]);
+    }
+    for &(a, x) in &wrapper_pairs(0x1f83_d9ab_fb41_bd6b) {
+        let p = oracle::regularized_lower_incomplete_gamma(black_box(a), black_box(x));
+        m.row("math::regularized_lower_incomplete_gamma", Class::C, &[f(a), f(x)], &[f(p)]);
+    }
+    for &(a, x) in &wrapper_pairs(0x5be0_cd19_137e_2179) {
+        let q = oracle::regularized_upper_incomplete_gamma(black_box(a), black_box(x));
+        m.row("math::regularized_upper_incomplete_gamma", Class::C, &[f(a), f(x)], &[f(q)]);
     }
     m
 }

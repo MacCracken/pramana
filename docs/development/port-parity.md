@@ -2344,3 +2344,101 @@ ELF, PE (wine) and aarch64 (qemu). Every `math::` result line is identical on th
 
 **Cost** (`docs/benchmarks-rust-v-cyrius.md`): 5–8× Rust where ln and sin lead, and 11–12× where the correctly
 rounded log1p does (`bd0`, the large-shape kernel, the both-large ln B). All 21 rows' sums agree with the twin.
+
+### 8.3 Part a3: the regularized incomplete gamma, T0 (2026-11-15)
+
+**The module** adds `gamma_inc(a, x)`, which returns (P, Q). Each value is computed without cancellation:
+- **the series** for P below x = a + 1, with Q = 1 − P;
+- **Lentz's continued fraction** for Q from x = a + 1, with P = 1 − Q;
+- **past a = 10⁹, Wilson–Hilferty:** (x/a)^⅓ is close to N(1 − 1/(9a), 1/(9a)), through part a1's Φ and 1 − Φ.
+
+Both loops start from part a2's kernel through exp, and they stop at a relative 1e-15. Each runs for at most
+`iteration_budget(a)` = min(200 + 20√a, 10⁶) iterations, truncated, and then clamps its result to [0, 1].
+- **Rust's semantics** come through mathx: the budget's `min` and saturating `as usize`, and `clamp`, which passes a
+  NaN through.
+- **The two wrappers,** `regularized_lower_incomplete_gamma` and `regularized_upper_incomplete_gamma`, are
+  gamma_inc's two halves.
+- **The primitives** are exp, ln and ln_1p (correctly rounded), sqrt, and ganita's correctly rounded cbrt, which is
+  what Rust's compiler_builtins cbrt gives.
+
+Probe P9's T0 transcription had no Wilson–Hilferty branch, so the port starts from Rust's source rather than from P9.
+
+**The golden rows.** The `special` module grows to 51,841 rows. `gamma_inc` has 5,971, each with two outputs:
+- the specials in either argument;
+- the switch x = a + 1 on 20 shapes from 10⁻³ to 10⁶, with three doubles on either side;
+- the Wilson–Hilferty switch: a = 10⁹ with its neighbours and a(1 ± 10⁻¹²), against x = a + j√a;
+- 50 seeded shapes past 10⁹ (to 10¹²);
+- x = a·r for eleven ratios on 300 seeded shapes in [10⁻³, 10⁹];
+- x = a + j√a near the mode on 60 seeded shapes in [1, 10⁹], where the loops run longest;
+- the χ² shapes k/2;
+- the prefactor's underflow at both ends;
+- 70 rows with a from 10⁻³⁰⁰ to 10⁻⁸ against x up to 3, added for the clamp (below);
+- seeded pairs.
+
+The two wrappers get 400 seeded rows each. The grid uses √a, which IEEE 754 rounds correctly; the golden README's rule
+now names it.
+
+**The model.** `validate.py` transcribes the loops, the budget and Rust's clamp. Every row is re-derived through
+glibc, and all 6,771 agree. With correctly rounded primitives, 36 rows move, so `special.cr.tsv` has 138:
+
+| Function | Rows corrected | Max | The glibc primitive that moves them |
+|---|---|---|---|
+| `gamma_inc` | 22 of 5,971 | 237 ulp | log1p (13), exp (9) |
+| `regularized_lower_incomplete_gamma` | 3 of 400 | 1,417 ulp | log1p |
+| `regularized_upper_incomplete_gamma` | 11 of 400 | 1,101 ulp | log1p (10), exp (1) |
+
+The large distances are in the deep tails, at results from 10⁻¹³³ to 10⁻²¹⁰. There the kernel is a few hundred in
+size, and exp turns its absolute rounding into the result's relative error. A 101-ulp kernel difference (§8.2)
+becomes a thousand ulp of P or Q. These are Rust's operations on correctly rounded primitives, as ADR 009 accepts. T1
+(part b4) replaces the prefactor with a double-double one.
+
+**The result.** Every row matches at 0 ulp, both of `gamma_inc`'s outputs included: 6,735 against 1.3.0's own bits
+and 36 against `special.cr.tsv`. The replay is nine modules: 126,969 rows ok and 244 accepted (214 under ADR 9, 30
+under ADR 7), warning-free, on x86_64 ELF, PE (wine) and aarch64 (qemu). Every `math::` result line is identical on
+the three.
+
+**Mutation checks** (the whole corpus replayed with each change; the unmutated run passes):
+
+| Mutant | Rows failed |
+|---|---|
+| the series used at x ≤ a + 1 | 48 |
+| Wilson–Hilferty from a ≥ 10⁹ | 14 |
+| Wilson–Hilferty's mean 1 + 1/(9a) | 632 |
+| the budget without √a (200 flat) | 614 |
+| the series stopped at 2·10⁻¹⁵ | 1,114 |
+| the series' term as (del·x)/ap | 785 |
+| the continued fraction stopped at 2·10⁻¹⁵ | 563 |
+| the continued fraction's an/c as an·(1/c) | 516 |
+| the continued fraction's b as x + (1 − a) | 34 |
+| the series unclamped | 19 (after the tiny-shape rows; 0 before) |
+| the budget's base 100, not 200 | 0 |
+| the continued fraction's guard on d dropped | 0 |
+| the continued fraction's guard on c dropped | 0 |
+
+The three survivors are code that no reachable input runs:
+- **The budget's base:** no row comes near running a loop out. Counted near the mode (x = a + j√a, |j| ≤ 6, a from
+  10³ to 10⁹), the loops take at most 8.16√a iterations: 218,875 at a = 10⁹, of the 632,655 allowed.
+  `tests/special.tcyr` pins the budget's values directly instead.
+- **The two guards:** c starts at 10³⁰⁰, b grows from 2 by 2 each step, and d = an·d + b would need an exact
+  cancellation. Neither can approach 10⁻³⁰⁰ for gamma's fraction. They stay because 1.3.0 has them, and `beta_cf`
+  (part a4) shares the form.
+
+The tiny-shape rows exist because of the clamp mutant. For a near 0, P just below x = a + 1 is within about 0.2a of 1,
+and 1.3.0's series overshoots 1 on 19 of those rows before its clamp.
+
+**Tests.** `tests/special.tcyr` grows to 62 checks:
+- 1.3.0's four tests: the known values, the upper tail against 50-digit references to a = 5·10⁵, the
+  Wilson–Hilferty switch continuous at 10⁹, and the invalid arguments;
+- the budget: 200 for 0, NaN, ±∞ and negative shapes, 220 at 1, 400 at 100, 20,200 at 10⁶, 632,655 at 10⁹, and the
+  10⁶ cap at 10¹⁰;
+- the edges: x = −0 and −∞ give (0, 1), x = +∞ gives (1, 0), and a = 0 gives (NaN, NaN);
+- the wrappers equal gamma_inc's halves bit for bit, on both branches;
+- P(1, x) = 1 − e^-x and Q(1, x) = e^-x within 1e-13, for x from 0.05 to 300. My first bound, 1e-14, failed at
+  x ≳ 190. MPFR shows the cause is 1.3.0's own algorithm, not the port: Q(1, 300) is 1.4·10⁻¹⁴ off with every
+  primitive correctly rounded, because exp(kernel) turns the kernel's absolute rounding into relative error. T1
+  (part b4) removes it.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 4.5–5.4× Rust, all 24 bench rows' sums agreeing with the twin.
+
+**The harness** now pads function names to 44 columns, since the wrappers' names (41 characters) ran into the class
+letter.
