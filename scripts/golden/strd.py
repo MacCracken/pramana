@@ -1,15 +1,22 @@
-"""NIST StRD (port plan §3.6, decision D4): the univariate and one-way ANOVA sets, fetched from NIST into build/strd/
-(public domain; never committed), each pinned by its sha256 here. The emitters replay each set through the port as
+"""NIST StRD (port plan §3.6, decision D4): the univariate, one-way ANOVA and linear least squares sets, NIST's files
+as NIST publishes them (public domain), each pinned by its sha256 here. They are committed in
+scripts/golden/strd.tar.xz (12 KB), and unpacked into build/strd/: NIST's server refuses GitHub's runners (HTTP 403),
+so CI can't fetch them, and the corpus can't depend on the network. The emitters replay each set through the port as
 golden rows (the replay proves the port computes what 1.3.0's model does, bit for bit), and `report` measures that
 model against NIST's certified values as LRE, the number of correct significant digits: D4 keeps Rust's operation
 order in 2.0 and files any shortfall as a 2.1 candidate, with these numbers.
 
-    python3 -I -B scripts/golden/strd.py .           # fetch what is missing, verify, print the LRE table
+    python3 -I -B scripts/golden/strd.py .           # unpack what is missing, verify, print the LRE table
+
+The archive, rebuilt from NIST's files in build/strd/ (BASE + univ/data/, anova/ or lls/data/LINKS/DATA/ + <set>.dat):
+
+    tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX -C build -cf - strd \\
+        | xz -9e -T1 > scripts/golden/strd.tar.xz
 """
 import hashlib
 import math
 import sys
-import urllib.request
+import tarfile
 from fractions import Fraction
 from pathlib import Path
 
@@ -54,14 +61,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def path(name, root=ROOT):
-    """The set's file in build/strd/, fetched and verified if it isn't there yet; a hash mismatch refuses."""
+    """The set's file in build/strd/, unpacked from scripts/golden/strd.tar.xz if it isn't there yet; a hash mismatch
+    refuses."""
     d = root / "build" / "strd"
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{name}.dat"
     if not p.exists():
-        sub = "univ/data/" if name in UNIVARIATE else "anova/" if name in ANOVA else "lls/data/LINKS/DATA/"
-        with urllib.request.urlopen(BASE + sub + name + ".dat", timeout=60) as r:
-            p.write_bytes(r.read())
+        with tarfile.open(root / "scripts" / "golden" / "strd.tar.xz", "r:xz") as t:
+            p.write_bytes(t.extractfile(f"strd/{name}.dat").read())
     got = hashlib.sha256(p.read_bytes()).hexdigest()
     if got != SHA256[name]:
         raise SystemExit(f"strd: {p} has sha256 {got}, expected {SHA256[name]}")

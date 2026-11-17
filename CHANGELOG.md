@@ -1196,6 +1196,10 @@ brief ([ADR 007](docs/decisions/007-port-api-divergences.md)):
     the frozen oracle. The MPFR checker `check.c` and its merger moved to `scripts/crverify/`. The benchmark record
     keeps every twin's numbers; from M4 the Rust column is 1.3.0's criterion record, `rust-old/benchmarks.md`.
   - **`validate.py`** reads the lnΓ coefficients from `src/lgamma_data.cyr` instead of the Rust baseline.
+  - **NIST StRD is committed** in `scripts/golden/strd.tar.xz` (12 KB, the 28 sets as NIST publishes them, public
+    domain), and `strd.py` unpacks it into `build/strd/` instead of fetching. NIST's server answers GitHub's runners
+    with HTTP 403, which failed CI's corpus step. Each set is still pinned by its sha256. The whole workflow passes
+    on Ubuntu 26.04 (glibc 2.43, the runner's), with every corpus digest as recorded.
 
 ## [1.3.0] - 2026-11-14
 

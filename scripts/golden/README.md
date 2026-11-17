@@ -175,8 +175,9 @@ the same result. The models are that proof's record: change one and its rows mov
   test's CDF is an `e:Cdf.<Name>` token (validate.py's `KS_CDFS`, the harness's twins); b2, the private `t_quantile`
   and `z_quantile` and the three intervals; c, NIST StRD's eleven ANOVA sets. Class C; the models are `HYP` and
   `HYP_B2`. `linalg.tsv` gains hisab's `eigen_symmetric` (part a3), modelled by `LINALG_C`.
-- **NIST StRD** (M4 part c, `strd.py`): the univariate and ANOVA sets, fetched from NIST into `build/strd/` when
-  missing and pinned by sha256 (never committed). `python3 -I -B scripts/golden/strd.py .` prints each certified
+- **NIST StRD** (M4 part c, `strd.py`): the univariate, ANOVA and linear least squares sets, NIST's files committed
+  in `strd.tar.xz` (12 KB; NIST's server refuses GitHub's runners) and unpacked into `build/strd/` when missing, each
+  pinned by sha256. `python3 -I -B scripts/golden/strd.py .` prints each certified
   value's LRE from the models, which the replay proves equal to the port (port-parity §10.3).
 - **`json.map.tsv`** (ADR 007 row 16), written by `validate.py --write-cr`. These are the rows serde_json reads only
   by skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
