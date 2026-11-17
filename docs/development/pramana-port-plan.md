@@ -45,7 +45,15 @@
 > ChiSquared and Marsaglia–Tsang, is committed (`ded8c4b`), part b2, Beta, StudentT and FDistribution, is committed
 > (`97abf28`), part c1, Poisson, is committed (`6a3da1b`), part c2, Binomial, is committed (`f7c9bef`), part d1,
 > the Cholesky factor and solve, is committed (`f7b9fb9`), part d2, MultivariateNormal, is committed (`db91663`),
-> and part e, M3's gate, is done and not committed: with it, M3 is complete.
+> and part e, M3's gate, is committed (`fe90885`): **M3 is complete.**
+>
+> ▶ **ADR 010 (2026-11-16) changed the method.** Python's models of 1.3.0 (`scripts/golden/gen.py`, on
+> `validate.py`) write the golden corpus; they matched the Rust generator's corpus on all 329,431 rows before it was
+> removed. Every Rust script went with it: the generator, the probes' Rust twins, the bench twins and the Rust
+> baseline. `rust-old/` is read as text and never built. The corpus is generated and never committed;
+> `scripts/golden/digests.txt` holds its sha256. Where this plan says "the oracle" for M4 onward, read "Python's model
+> of 1.3.0, from `rust-old/src`", and where it says "Rust twin", read "the twin's recorded numbers"; new proofs are
+> Python models with MPFR, exact arithmetic or NIST StRD as the reference. M4 is next.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -84,7 +92,9 @@
     (`*.cr.tsv`), compared at **0 ulp**. A port value that matches glibc's misround is a failure.
   - §3 extends this to pramana's own special functions (D3).
 - **Performance is measured, not gated.** Every Rust bench gets a Cyrius twin, and both columns are recorded per
-  milestone in `docs/benchmarks-rust-v-cyrius.md`. A slow row is a finding to file, with its numbers.
+  milestone in `docs/benchmarks-rust-v-cyrius.md`. A slow row is a finding to file, with its numbers. Since ADR 010
+  no Rust is run: from M4 the Rust column is 1.3.0's criterion record (`rust-old/benchmarks.md`, 2026-11-14, same
+  host), and each module's Cyrius bench does the same work as its criterion bench.
 - **Three targets at every milestone:** x86_64 ELF, x86_64 PE (wine) and aarch64 (qemu). pravash's PE `chdir` gap
   surfaced only when its release gate first ran every suite cross-target.
 
@@ -250,8 +260,9 @@ What it adds to §1.2:
 
 ### 3.1 Method
 
-`scripts/port-baseline/run.sh` reproduces everything in this section, and since M2's gate it measures the port on the
-same rows too (`scripts/port-baseline/port.cyr`). It takes about 4 minutes on ten cores.
+`scripts/port-baseline/run.sh` reproduced everything in this section, and from M2's gate it measured the port on the
+same rows too. ADR 010 removed it with the Rust tooling; this section is its record, and `scripts/crverify/run.sh`
+re-measures the port against MPFR (its `check.c`).
 - **Inputs:** seeded inputs over each function's domain.
 - **Rust side:** pramana 1.3.0's `src/math.rs` (with the test-only `erf` enabled) and Rust std's f64 methods, built
   with rustc 1.100.0 against glibc 2.44.

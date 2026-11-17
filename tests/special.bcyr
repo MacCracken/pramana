@@ -2,12 +2,13 @@
 #
 # 4,096 seeded arguments (or pairs) per row, cycled 250 times (1,024,000 calls): one row per branch of 1.3.0's fdlibm
 # erf and erfc and the two normal tails (part a1), per branch of lnΓ and its relatives (part a2), and the incomplete
-# functions (parts a3, a4). The Rust twin is scripts/probes/rust/src/bin/m2_special.rs: the same xorshift, regions and
-# loop, 1.3.0's functions through the oracle hooks (glibc's primitives). Each side prints the row's sum and, from part
-# b1, an FNV-1a digest of its 4,096 results' bits: the sum can't see a 1-ulp change in one value, the digest can. They
-# differ where a row hits an argument on which a glibc primitive misrounds, and wherever a T1 function (erf and erfc
-# are CORE-MATH's, correctly rounded, from part b1) or Rust's formula on one moves the value. The record is
-# docs/benchmarks-rust-v-cyrius.md.
+# functions (parts a3, a4). The Rust twin is `m2_special.rs`: the same xorshift, regions and loop, 1.3.0's functions
+# through the oracle hooks (glibc's primitives). Each side prints the row's sum and, from part b1, an FNV-1a digest of
+# its 4,096 results' bits: the sum can't see a 1-ulp change in one value, the digest can. They differ where a row hits
+# an argument on which a glibc primitive misrounds, and wherever a T1 function (erf and erfc are CORE-MATH's,
+# correctly rounded, from part b1) or Rust's formula on one moves the value. The record is
+# docs/benchmarks-rust-v-cyrius.md, which keeps the twin's numbers: the Rust twins went with the Rust tooling (ADR
+# 010).
 
 include "tests/lib.cyr"
 

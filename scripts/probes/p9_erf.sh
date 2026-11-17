@@ -71,7 +71,7 @@ gcc -O2 -o "$s1/cmp2" "$c/cmp2.c" "$s1"/orig_erf.o "$s1"/orig_erfc.o -lm
 printf 'x86_64  %s\n' "$(sha256sum < build/p9/erf_rows.txt | cut -c1-16)"
 printf 'PE      %s\n' "$(wine ./build/p9/p9_erf.exe 2>/dev/null | tr -d '\r' | sha256sum | cut -c1-16)"
 printf 'aarch64 %s\n' "$(qemu-aarch64 ./build/p9/p9_erf_a64 | sha256sum | cut -c1-16)"
-gcc -O2 -o build/p9/checker scripts/port-baseline/check.c -lmpfr -lgmp -lm
+gcc -O2 -o build/p9/checker scripts/crverify/check.c -lmpfr -lgmp -lm
 # MPFR's erfc at 1,024 bits checks about 500 rows a second for large x: ten interleaved chunks at once, then merged.
 mkdir -p build/p9/chunks
 pids=()
@@ -81,7 +81,7 @@ for k in 0 1 2 3 4 5 6 7 8 9; do
     pids+=($!)
 done
 for p in "${pids[@]}"; do wait "$p"; done
-python3 -I -B scripts/port-baseline/merge.py build/p9/chunks/report?.txt | tee build/p9_erf_report.txt
+python3 -I -B scripts/crverify/merge.py build/p9/chunks/report?.txt | tee build/p9_erf_report.txt
 
 say "4. the cost (ns per call, pinned)"
 taskset -c 5 cyrius bench scripts/probes/p9_erf.bcyr 2>&1 | grep -E '^\s+erf'

@@ -219,7 +219,7 @@ def zeta_table():
     return euler, zeta, zm1
 
 
-# P(a, x) and Q(a, x) (M2 part b4's reference rows): scripts/port-baseline/check.c's `gref`, through ctypes. pre =
+# P(a, x) and Q(a, x) (M2 part b4's reference rows): scripts/crverify/check.c's `gref`, through ctypes. pre =
 # x^a e^-x / Γ(a) at prec = 320 bits. For x <= a or x < 1, P = pre·Σ_{n>=0} x^n/(a(a+1)…(a+n)), positive and falling
 # terms stopped under 2^-(prec + 10) of the sum (tested every 16th term, as the ctypes calls are the cost; the few more
 # only add accuracy), and Q = 1 − P; otherwise Q = pre·(Legendre's continued fraction by modified Lentz, stopped when
@@ -324,7 +324,7 @@ def gamma_pq(a, x):
             _m.mpfr_clear(ctypes.byref(r))
 
 
-# I_x(a, b) and 1 − I_x(a, b) (M2 part b5's reference rows): scripts/port-baseline/check.c's `bref`, through ctypes.
+# I_x(a, b) and 1 − I_x(a, b) (M2 part b5's reference rows): scripts/crverify/check.c's `bref`, through ctypes.
 # MPFR has no incomplete beta. The smaller of x and y is exact and the other is 1 − it, both held exactly (1,200 bits).
 # On the side x < (a + 1)/(a + b + 2), V = x^a y^b/(a B(a, b)) times Lentz's continued fraction (Rust's even and odd
 # steps) at prec bits, stopped when a step changes it by under 2^-(prec - 10); else the same for I_y(b, a). The other

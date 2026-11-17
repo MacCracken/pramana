@@ -2,7 +2,7 @@
 # ADR 009: P and Q within 4 ulp for a in [1e-3, 1e5] and x > 0; for any other a up to 1e9, no row less accurate than
 # Rust's).
 #
-# Prints `gref_p/<set>/t1 a x P` and `gref_q/<set>/t1 a x Q` rows (bit patterns) for scripts/port-baseline/check.c,
+# Prints `gref_p/<set>/t1 a x P` and `gref_q/<set>/t1 a x Q` rows (bit patterns) for scripts/crverify/check.c,
 # which compares each with its 320-bit reference (`gref`: the series below x = a, Legendre's continued fraction above,
 # taken wider for a tiny shape). Zero and subnormal results count in units of 2^-1074. The sets:
 # - probe P9's five seeded sets over ADR 009's domain (scripts/probes/p9_gamma.cyr), drawn in the same order from the

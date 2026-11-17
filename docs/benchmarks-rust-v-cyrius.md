@@ -1,10 +1,12 @@
 # Benchmarks — Rust 1.3.0 vs the Cyrius port
 
 Each row times one benchmark body twice:
-- **Rust:** the same work in Rust, either `rust-old/`'s criterion benches or a twin in `scripts/probes/rust/`;
-- **Cyrius:** a `tests/*.bcyr` file, run by `cyrius bench`.
+- **Rust:** the same work in Rust. Through M3, a twin run beside the Cyrius bench (`scripts/probes/rust/`); ADR 010
+  removed the twins with the rest of the Rust tooling, and their numbers stay here. From M4, 1.3.0's own criterion
+  record, `rust-old/benchmarks.md` (2026-11-14, this host), whose bodies `rust-old/benches/benchmarks.rs` defines;
+- **Cyrius:** a `tests/*.bcyr` file, run by `cyrius bench`, doing the same work.
 
-Port milestones append rows as their modules land; M8 part b records Rust's 34 criterion benches in both columns.
+Port milestones append rows as their modules land; M8 part b sets all 34 criterion benches against the port.
 Numbers are host-specific, so compare within a column set, never across hosts.
 
 Speed is measured, not gated (CLAUDE.md; port plan §0). A slow row is a finding to file, with its numbers, not a

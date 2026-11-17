@@ -1,8 +1,9 @@
 # pool.bcyr — the work-table pool (M1 part d2; port plan D11, §8.5).
 #
 # ns per operation, 10^6 operations per row (10^5 for the nested row). The Rust twin's `pool` rows
-# (scripts/probes/rust/src/bin/m1_primitives.rs) time what a Rust function does instead: a 256-byte Vec allocated and
-# dropped. The record is docs/benchmarks-rust-v-cyrius.md.
+# (`m1_primitives.rs`) time what a Rust function does instead: a 256-byte Vec allocated and dropped. The record is
+# docs/benchmarks-rust-v-cyrius.md, which keeps the twin's numbers: the Rust twins went with the Rust tooling (ADR
+# 010).
 
 include "tests/lib.cyr"
 

@@ -1,7 +1,8 @@
 # combinatorics.bcyr — counting (M1 part e2): ns per call, 10^5 calls per row.
 #
-# The Rust twin (scripts/probes/rust/src/bin/m1_primitives.rs, its `comb` rows) calls 1.3.0's functions on the same
-# arguments; each side prints every result's words. The record is docs/benchmarks-rust-v-cyrius.md.
+# The Rust twin (`m1_primitives.rs`, its `comb` rows) calls 1.3.0's functions on the same arguments; each side prints
+# every result's words. The record is docs/benchmarks-rust-v-cyrius.md, which keeps the twin's numbers: the Rust twins
+# went with the Rust tooling (ADR 010).
 
 include "tests/lib.cyr"
 

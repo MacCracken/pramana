@@ -1,6 +1,6 @@
 # rows.cyr — the correct-rounding check of pramana's primitives (M1 part b; port plan D2, ADR 009).
 #
-# Prints `cr:<fn>/<set> x [y] result` rows (bit patterns) for scripts/port-baseline/check.c, which compares each with
+# Prints `cr:<fn>/<set> x [y] result` rows (bit patterns) for scripts/crverify/check.c, which compares each with
 # MPFR's correctly rounded value at 1,024 bits, zero and subnormal results included. Over 10^6 seeded arguments per
 # function, weighted to each one's hard regions: the overflow and underflow ends, tiny and subnormal inputs, arguments
 # near 1, huge and near-π/2 arguments for sin and cos, pow near its overflow edge, and any finite bit pattern.

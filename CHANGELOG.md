@@ -918,6 +918,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **dead-code elimination on:** the skeleton builds to 407,872 bytes, with 806,256 bytes eliminated;
   - **the lock:** 43 files, and 51 since M1 part d2 added `thread` to the test-only leaves.
 - **Toolchain pinned**: `rust-toolchain.toml` moves from `stable` to `1.100.0`, the toolchain that records the port's golden values. The CI coverage job adds `llvm-tools-preview` to the pinned toolchain
+- **Python is the parity proof; the Rust tooling is removed** ([ADR 010](docs/decisions/010-python-proof-rust-tooling-removed.md)).
+  - **The golden generator** is `scripts/golden/gen.py`, with an emitter per module in `scripts/golden/emit/` on
+    `validate.py`'s models of 1.3.0: glibc 2.44 through ctypes for 1.3.0's own bits, MPFR for the correctly rounded and
+    T1 rows. Before the Rust generator was removed, `gen.py --compare` matched its corpus on all 329,431 rows in 11
+    modules (fn, class, inputs and outputs; a NaN's payload aside, as class A compares it), and after `validate.py
+    --write-cr` the overlays were byte-identical: `dist.cr` 1,283, `dist.ref` 31,437, `json.map` 170, `math.cr` 76,
+    `special.cr` 91 and `special.ref` 20,621 rows.
+  - **The corpus is generated, never committed**: `tests/golden/` (about 100 MB) is in `.gitignore`, and CI generates
+    it before the build. `scripts/golden/digests.txt` holds the sha256 of every file, so a machine whose libm gives
+    other bits fails `gen.py --digests`; `gen.py` refuses a machine other than x86_64 with FMA.
+  - **Removed:** the Rust generator (`scripts/golden/src/`, its Cargo files), the probes' Rust twins and their Cyrius
+    halves (P0, P1, P5, P7, P9's prototypes), the Rust baseline (`scripts/port-baseline/`) and the CI job that built
+    the frozen oracle. The MPFR checker `check.c` and its merger moved to `scripts/crverify/`. The benchmark record
+    keeps every twin's numbers; from M4 the Rust column is 1.3.0's criterion record, `rust-old/benchmarks.md`.
+  - **`validate.py`** reads the lnΓ coefficients from `src/lgamma_data.cyr` instead of the Rust baseline.
 
 ## [1.3.0] - 2026-11-14
 

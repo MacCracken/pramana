@@ -1,8 +1,9 @@
 # crmath.bcyr — the correctly rounded primitives (M1 part b; port plan D2, §3.7).
 #
 # ns per call on 4,096 seeded arguments per row, cycled 250 times (1,024,000 calls). The Rust twin is
-# scripts/probes/rust/src/bin/m1_primitives.rs: the same xorshift, the same regions, Rust's f64 methods (glibc 2.44).
-# The record is docs/benchmarks-rust-v-cyrius.md.
+# `m1_primitives.rs`: the same xorshift, the same regions, Rust's f64 methods (glibc 2.44). The record is
+# docs/benchmarks-rust-v-cyrius.md, which keeps the twin's numbers: the Rust twins went with the Rust tooling (ADR
+# 010).
 
 include "tests/lib.cyr"
 

@@ -1,6 +1,6 @@
 # dd.cyr — double-double arithmetic for the T1 special functions (M2 part b; port plan §5 step 9d, ADR 009).
 #
-# Probe P9's toolkit (scripts/probes/p9_lgamma_impl.cyr, p9_gamma_impl.cyr), moved here unchanged but for names, so
+# Probe P9's toolkit (from its retired lnΓ and incomplete gamma prototypes), moved here unchanged but for names, so
 # lnΓ (src/lgamma.cyr), the incomplete gamma (src/gammainc.cyr) and the incomplete beta share it. A double-double
 # (h, l) is the unevaluated sum h + l with |l| at most about ulp(h)/2. Sums and products use the error-free
 # transformations of src/crmath.cyr (kimiya's TwoSum, Fast2Sum and Dekker's product), so each operation is near 2^-104

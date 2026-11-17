@@ -3,13 +3,13 @@
 # than Rust's).
 #
 # Prints `bref_i/<set>/t1 a b x y I` and `bref_c/<set>/t1 a b x y C` rows (bit patterns) for
-# scripts/port-baseline/check.c, which compares each with its reference (`bref`: Lentz's continued fraction on the side
+# scripts/crverify/check.c, which compares each with its reference (`bref`: Lentz's continued fraction on the side
 # x < (a + 1)/(a + b + 2), the other value as 1 − it, at 320 bits or more; the smaller of x and y exact). Zero and
 # subnormal results count in units of 2^-1074. In every row the smaller of x and y is the exact one, and the other its
 # rounded complement, as a caller passes them. The sets:
-# - probe P9's five sets (scripts/probes/p9_beta.cyr), in the same order and from the same seed, so these rows are
-#   byte for byte P9's own T1 rows: §3.2's 4,000 integer-shape rows (a and b in 1 … 60, x = k/2^20, drawn as
-#   scripts/port-baseline/main.rs draws them), then 20,000 draws of x = μ ± 5σ (12,757 inside (0, 1)), 10,000 in each
+# - probe P9's five sets (its retired p9_beta.cyr's), in the same order and from the same seed, so these rows are
+#   byte for byte P9's own T1 rows: §3.2's 4,000 integer-shape rows (a and b in 1 … 60, x = k/2^20, drawn as the
+#   Rust baseline drew them, port plan §3.2), then 20,000 draws of x = μ ± 5σ (12,757 inside (0, 1)), 10,000 in each
 #   tail down to 1e-10 of the mean, 10,000 with one shape in [1e-3, 1], and 5,000 at the switch, x = (a + 1)/(a + b +
 #   2)·(1 ± δ) with δ down to 1e-12 (4,929 inside);
 # - beyond P9 (M2 part b5), continuing the same generator: 2,000 with the larger shape log-uniform in [1e5, 1e9], where
@@ -112,8 +112,8 @@ fn cb_upper(set: cstring, a: f64, b: f64, s: f64): i64 {
     return 0;
 }
 
-# §3.2's 4,000 integer-shape rows as scripts/port-baseline/main.rs's `beta` mode draws them, on its own generator
-# from the same seed: a = ⌊60u⌋ + 1, b likewise, k = ⌊(2^20 − 1)u⌋ + 1, x = k/2^20, y = 1 − x (exact).
+# §3.2's 4,000 integer-shape rows as the retired Rust baseline's `beta` mode drew them (port plan §3.2), on its own
+# generator from the same seed: a = ⌊60u⌋ + 1, b likewise, k = ⌊(2^20 − 1)u⌋ + 1, x = k/2^20, y = 1 − x (exact).
 fn cb_baseline(): i64 {
     var i = 0;
     while (i < 4000) {

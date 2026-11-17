@@ -1,6 +1,6 @@
 # p9_erf.cyr — probe P9, erf and erfc: verification rows (port plan §5 step 9e, §3.4).
 #
-# Prints `name/set x result` rows (bit patterns) for scripts/port-baseline/check.c (MPFR at 1,024 bits) and for the
+# Prints `name/set x result` rows (bit patterns) for scripts/crverify/check.c (MPFR at 1,024 bits) and for the
 # C oracle (build/p9/stage1: CORE-MATH's own build with hardware FMA):
 # - CORE-MATH's worst cases, both signs (build/p9/erf_wc.bits, erfc_wc.bits: one input per line);
 # - over 10^6 seeded arguments per function, weighted to every branch point, the subnormal range and the tails;

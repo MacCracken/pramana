@@ -8,9 +8,8 @@
 **1.3.0** (`VERSION`), on its way to **2.0.0**, the Cyrius library. `cyrius.cyml` reads the version through
 `version = "${file:VERSION}"`, and the release workflow checks both against the tag.
 
-The last Rust release is **1.3.0**, tagged at `284eb18` (2026-11-14); `release.yml` publishes on a tag. The oracle
-is commit `94a7153`: the audited 1.3.0 plus the hidden `oracle` hooks, with the toolchain pinned to 1.100.0. It is
-frozen in `rust-old/` and never published (port plan D1).
+The last Rust release is **1.3.0**, tagged at `284eb18` (2026-11-14); `release.yml` publishes on a tag. Its source,
+with the hidden `oracle` hooks (`94a7153`), is frozen in `rust-old/`: read as text, never built or run (ADR 010).
 
 ## Port progress
 
@@ -29,7 +28,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 - **Cyrius pin**: 6.7.18 (`cyrius.cyml` `[package].cyrius`)
 - **ganita**: 1.2.15, bundled in the 6.7.18 stdlib
 - **hisab**: none. The four hisab 1.4.0 routines pramana used are transcribed in M3–M5 (port plan §8.2)
-- **Rust oracle**: rustc 1.100.0 (`rust-old/rust-toolchain.toml`), hisab 1.4.0 (`rust-old/Cargo.lock`), glibc 2.44
+- **Golden corpus**: Python's models of 1.3.0 (`scripts/golden/`), on glibc 2.44 (x86_64, FMA) and MPFR 4.2.2 (ADR 010)
 
 ## Source
 
@@ -71,9 +70,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 
 ## Tests
 
-- **Rust oracle**: run from inside `rust-old/` with `cargo test --all-features`: 301 unit, 15 integration, 11
-  oracle and 3 doc tests (330).
-- **Golden corpus** (`tests/golden/`): `constants.tsv` 112 rows, `fmt.tsv` 25,200 rows (serde_json's f64 text),
+- **Golden corpus** (`tests/golden/`, generated and never committed; ADR 010): `constants.tsv` 112 rows, `fmt.tsv` 25,200 rows (serde_json's f64 text),
   `json.tsv` 9,392 rows (serde_json's reading and writing of each value type, two test structs, 1.3.0's two enums,
   the error codec's reading, SimpleRng's codec and the distributions'), `json.map.tsv` 170 rows (ADR 007 row 16), `rng.tsv` 46 rows
   (SimpleRng's streams and 10⁶-draw digests), `combinatorics.tsv` 2,405 rows and `combinatorics.cr.tsv` 0 rows,
@@ -81,14 +78,15 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
   166,631 rows, `dist.cr.tsv` 1,283 rows and `dist.ref.tsv` 31,437 rows (1.3.0's distribution.rs, from M3), `special.tsv` 58,101 rows,
   `special.cr.tsv` 91 rows and `special.ref.tsv` 20,621 rows (1.3.0's math.rs; the reference rows from M2 part b1),
   `linalg.tsv` 682 rows (hisab 1.4.0's Cholesky factor and solve, from M3 part d1),
-  `math.tsv` 35,597 rows and `math.cr.tsv` 76 rows. They are checked locally by
-  `(cd scripts/golden && cargo run --release --locked -- --check)` and `python3 -I -B scripts/golden/validate.py .`.
+  `math.tsv` 35,597 rows and `math.cr.tsv` 76 rows. `gen.py` writes them
+  and `validate.py` checks them; `scripts/golden/digests.txt` holds their sha256.
 - **Cyrius**: `tests/parity.tcyr` replays the whole corpus, 11 modules (275,753 rows ok, 53,508 accepted under ADR 9 (52,058 of them reference rows) and
   170 under ADR 7, nothing failed, measured or pending), and fails a module that leaves a pool slot claimed; `tests/error.tcyr` and
   `tests/mathx.tcyr` (30 checks each); `tests/pool.tcyr` (26) and `tests/pool_threads.tcyr` (6, four racing
   threads); `tests/json.tcyr` (140); `tests/rng.tcyr` (26); `tests/combinatorics.tcyr` (40); `tests/bridge.tcyr` (44); `tests/soak.tcyr` (28: M1's allocation soak, M2's functions, M3's linalg and its thirteen caller-storage distributions allocating nothing, and M3's MultivariateNormal freeing every block); `tests/special.tcyr` (126); `tests/dist.tcyr` (550); `tests/linalg.tcyr` (43); `tests/dist_mvn.tcyr` (68); `tests/crmath.bcyr`, `tests/mathx.bcyr`, `tests/fmtf.bcyr`, `tests/pool.bcyr` and
-  `tests/json.bcyr`, `tests/rng.bcyr`, `tests/combinatorics.bcyr`, `tests/bridge.bcyr` (with the Rust twin
-  `scripts/probes/rust/src/bin/m1_primitives.rs`); `tests/special.bcyr` (with the twin `m2_special.rs`); `tests/dist.bcyr` (with the twin `m3_dist.rs`); `tests/linalg.bcyr` (with the twin `m3_linalg.rs`); the scaffold's `tests/pramana.{tcyr,bcyr,fcyr}` stubs.
+  `tests/json.bcyr`, `tests/rng.bcyr`, `tests/combinatorics.bcyr`, `tests/bridge.bcyr`, `tests/special.bcyr`,
+  `tests/dist.bcyr` and `tests/linalg.bcyr` (their Rust twins' numbers are kept in `docs/benchmarks-rust-v-cyrius.md`;
+  the twins were removed by ADR 010); the scaffold's `tests/pramana.{tcyr,bcyr,fcyr}` stubs.
 - **Correct rounding**: `bash scripts/crverify/run.sh` checks 11.6M seeded rows of the primitives (`primitives`) and
   2,768,534 of erf and erfc (`erf`, CORE-MATH's worst cases among them, also compared with CORE-MATH's own build)
   and 1,146,809 of Φ (`ncdf`, against ADR 009's ≤ 1 ulp), 1,000,000 of lnΓ (`lgamma`, against ≤ 2 ulp, mixed for
@@ -99,9 +97,9 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 
 ## Accuracy baseline
 
-Rust 1.3.0 against MPFR 4.2.2: [port plan §3.2](pramana-port-plan.md), reproduced by
-`scripts/port-baseline/run.sh`, which since M2's gate also measures the port on the same rows: every set within ADR
-009's bound ([`port-parity.md`](port-parity.md) §8.10).
+Rust 1.3.0 against MPFR 4.2.2: [port plan §3.2](pramana-port-plan.md), measured by the Rust baseline that ADR 010
+removed; its record stays. Since M2's gate the port meets ADR 009's bound on every set
+([`port-parity.md`](port-parity.md) §8.10), and `scripts/crverify/run.sh` re-measures the port against MPFR.
 
 ## Upstream requests and stand-ins
 

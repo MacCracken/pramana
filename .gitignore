@@ -39,6 +39,8 @@ supply-chain/.cache/
 /rust-old/**/__pycache__/
 /build/
 
-# The golden-value generator (port plan M0 step 5)
-/scripts/golden/target/
-/scripts/probes/rust/target/
+# The golden corpus is generated, never committed (ADR 010): python3 -I -B scripts/golden/gen.py . then
+# python3 -I -B scripts/golden/validate.py . --write-cr
+/tests/golden/
+/scripts/golden/__pycache__/
+/scripts/golden/emit/__pycache__/

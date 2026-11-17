@@ -4,7 +4,8 @@
 
 > ⚠ **Being ported to Cyrius as 2.0.0.**
 > - Until the port lands, this README describes the **Rust 1.3.0** crate. That crate is on crates.io, and its source
->   is frozen in [`rust-old/`](rust-old/) as the parity oracle.
+>   is frozen in [`rust-old/`](rust-old/) as the parity reference, read and never run: Python's models of it
+>   generate the golden corpus (ADR 010).
 > - The plan of record is [`docs/development/pramana-port-plan.md`](docs/development/pramana-port-plan.md), and
 >   progress is in [`docs/development/state.md`](docs/development/state.md).
 > - Rust users: stay on `pramana = "1"`. The full Cyrius README arrives with the 2.0.0 release.
@@ -55,17 +56,17 @@ let sample = normal.sample(&mut rng);
 
 ## Building
 
-The Rust 1.3.0 crate now lives in `rust-old/`. Run it from inside that directory, so rustup applies its pinned
-toolchain:
+The Cyrius port builds from the root (CONTRIBUTING.md):
 
 ```bash
-cd rust-old
-cargo build
-cargo test --all-features
-make check    # fmt + clippy + test + audit
+cyrius deps
+python3 -I -B scripts/golden/gen.py . && python3 -I -B scripts/golden/validate.py . --write-cr   # the golden corpus
+cyrius build src/main.cyr build/pramana
+cyrius test
 ```
 
-The Cyrius port builds from the root with `cyrius deps && cyrius build && cyrius test` (CONTRIBUTING.md).
+The Rust 1.3.0 crate's source stays in `rust-old/` as the parity reference until 2.0.0. Nothing runs it: the golden
+corpus comes from Python's models of it (ADR 010).
 
 ## MSRV
 

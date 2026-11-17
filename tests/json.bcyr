@@ -2,9 +2,10 @@
 #
 # Each row decodes one document 10^4 times through _pmn_json_decode (the pre-pass, a pool claim, bayan's parse, the
 # reader, the release). The documents are built from mathx.bcyr's xorshift with src/fmtf.cyr, which writes
-# serde_json's text, so the Rust twin (scripts/probes/rust/src/bin/m1_primitives.rs, its `json` rows:
-# serde_json::from_slice with float_roundtrip) parses byte-identical text: each side prints every document's length
-# and FNV-1a hash. The record is docs/benchmarks-rust-v-cyrius.md.
+# serde_json's text, so the Rust twin (`m1_primitives.rs`, its `json` rows: serde_json::from_slice with
+# float_roundtrip) parses byte-identical text: each side prints every document's length and FNV-1a hash. The record is
+# docs/benchmarks-rust-v-cyrius.md, which keeps the twin's numbers: the Rust twins went with the Rust tooling (ADR
+# 010).
 
 include "tests/lib.cyr"
 

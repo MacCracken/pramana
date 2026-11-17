@@ -1,8 +1,9 @@
 # fmtf.bcyr — serde_json's f64 text (M1 part d1; src/fmtf.cyr).
 #
 # ns per value written into a reused builder, 4,096 seeded values per row, cycled 250 times (1,024,000 writes). The
-# Rust twin is scripts/probes/rust/src/bin/m1_primitives.rs (its `fmt` rows: serde_json::to_writer into a reused
-# buffer). The record is docs/benchmarks-rust-v-cyrius.md.
+# Rust twin is `m1_primitives.rs` (its `fmt` rows: serde_json::to_writer into a reused buffer). The record is
+# docs/benchmarks-rust-v-cyrius.md, which keeps the twin's numbers: the Rust twins went with the Rust tooling (ADR
+# 010).
 
 include "tests/lib.cyr"
 

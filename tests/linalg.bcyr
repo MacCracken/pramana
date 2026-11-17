@@ -1,10 +1,10 @@
 # linalg.bcyr — src/linalg.cyr's Cholesky factorization and solve (M3 part d1): ns per call.
 #
-# The Rust twin is scripts/probes/rust/src/bin/m3_linalg.rs: hisab 1.4.0's `cholesky` and `cholesky_solve`, each
-# result a fresh Vec, on the same seeded SPD matrices (A = BᵀB + n·I, B uniform in [−1, 1), summed in k order, from the
-# same xorshift64*) at n = 4, 16 and 64. Here both run on caller buffers. Each side prints the sum of one output
-# element over the calls and an FNV-1a digest of one call's output bits, which agree bit for bit (class A). The record
-# is docs/benchmarks-rust-v-cyrius.md.
+# The Rust twin is `m3_linalg.rs`: hisab 1.4.0's `cholesky` and `cholesky_solve`, each result a fresh Vec, on the same
+# seeded SPD matrices (A = BᵀB + n·I, B uniform in [−1, 1), summed in k order, from the same xorshift64*) at n = 4, 16
+# and 64. Here both run on caller buffers. Each side prints the sum of one output element over the calls and an FNV-1a
+# digest of one call's output bits, which agree bit for bit (class A). The record is docs/benchmarks-rust-v-cyrius.md,
+# which keeps the twin's numbers: the Rust twins went with the Rust tooling (ADR 010).
 
 include "tests/lib.cyr"
 

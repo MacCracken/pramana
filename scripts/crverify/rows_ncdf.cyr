@@ -1,6 +1,6 @@
 # rows_ncdf.cyr — the accuracy check of pramana's Φ (M2 part b2; port plan D3 = C, §3.4, ADR 009: ≤ 1 ulp).
 #
-# Prints `cr:ncdf/<set> z result` rows (bit patterns) for scripts/port-baseline/check.c, which compares each with
+# Prints `cr:ncdf/<set> z result` rows (bit patterns) for scripts/crverify/check.c, which compares each with
 # MPFR's ½·erfc(−z/√2) at 1,024 bits, zero and subnormal results in units of 2^-1074. Probe P9's nine seeded sets
 # (scripts/probes/cn_ncdf.cyr, its seed and order, T1 only), 1,146,809 arguments: the core and the lower tail, where
 # CORE-MATH's fast bound fails and Φ takes the accurate path, the deep tail's subnormal results, the upper side, |z|

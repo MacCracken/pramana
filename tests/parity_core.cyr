@@ -314,7 +314,7 @@ fn _par_got_s(p, len) {
     _par_got_n = _par_got_n + 1;
 }
 
-# Appends text as a golden `s:` token: percent-encoded as scripts/golden/src/tsv.rs does
+# Appends text as a golden `s:` token: percent-encoded as scripts/golden/emit/tsv.py does
 # (every byte outside 0x21..0x7e, and `%`, as %XX), since the harness compares the raw body.
 fn _par_got_text(p, len) {
     var out = alloc(len * 3 + 8);

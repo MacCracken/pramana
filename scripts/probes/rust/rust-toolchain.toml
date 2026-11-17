@@ -1,4 +1,0 @@
-# The recording toolchain, the same as rust-old/rust-toolchain.toml (port plan M0 step 0.3). Run cargo from this
-# directory: rustup reads the toolchain file from the current directory, not from --manifest-path.
-[toolchain]
-channel = "1.100.0"

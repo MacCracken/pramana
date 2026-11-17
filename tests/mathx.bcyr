@@ -1,8 +1,9 @@
 # mathx.bcyr — the Rust f64 surface of src/mathx.cyr (M1 part c).
 #
 # ns per call on 4,096 seeded arguments per row, cycled 250 times (1,024,000 calls). The Rust twin is
-# scripts/probes/rust/src/bin/m1_primitives.rs (its `mathx` rows): the same xorshift and regions, Rust's own
-# operations, which compile to a few instructions each. The record is docs/benchmarks-rust-v-cyrius.md.
+# `m1_primitives.rs` (its `mathx` rows): the same xorshift and regions, Rust's own operations, which compile to a few
+# instructions each. The record is docs/benchmarks-rust-v-cyrius.md, which keeps the twin's numbers: the Rust twins
+# went with the Rust tooling (ADR 010).
 
 include "tests/lib.cyr"
 

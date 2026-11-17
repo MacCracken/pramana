@@ -1,7 +1,7 @@
 # rows_lgamma.cyr — the accuracy check of pramana's lnΓ (M2 part b3; port plan D3 = C, §3.4; ADR 009: ≤ 2 ulp for
 # x > 0, ≤ 2 ulp of max(|lnΓ|, 1) for x < 0).
 #
-# Prints `cr:lgamma/<set> x result` rows (bit patterns) for scripts/port-baseline/check.c, which compares each with
+# Prints `cr:lgamma/<set> x result` rows (bit patterns) for scripts/crverify/check.c, which compares each with
 # MPFR's lgamma at 1,024 bits. A negative-x row is printed twice, the second as `<set>_mixed`, which check.c measures
 # in ulps of max(|lnΓ|, 1). Probe P9's six seeded sets (scripts/probes/p9_lgamma.cyr), 2.5 times as many, so over 10^6
 # arguments, and the large set carried past lnΓ's overflow to f64::MAX:

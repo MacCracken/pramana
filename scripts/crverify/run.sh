@@ -3,7 +3,7 @@
 # erfc (M2 part b1; D3 = C), and of the T1 special functions that follow.
 #
 # For each row set, builds its generator for x86_64, PE and aarch64, compares the three outputs (sha256), and checks
-# every row against MPFR at 1,024 bits (scripts/port-baseline/check.c, ten interleaved chunks merged by merge.py). A
+# every row against MPFR at 1,024 bits (scripts/crverify/check.c, ten interleaved chunks merged by merge.py). A
 # function passes when its rows are all correctly rounded: max 0.5 ulp and 0% not CR.
 # - `primitives`: scripts/crverify/rows.cyr, the ten correctly rounded primitives.
 # - `erf`: scripts/crverify/rows_erf.cyr, erf and erfc (CORE-MATH's, src/crerf.cyr) with their accurate paths. These
@@ -15,11 +15,11 @@
 #   max(|lnΓ|, 1) for x < 0 (its `_mixed` rows).
 # - `gamma`: scripts/crverify/rows_gamma.cyr, the incomplete gamma's P and Q (M2 part b4), against check.c's 320-bit
 #   `gref`; the bound is ≤ 4 ulp for a in [1e-3, 1e5]. Its first 120,000 rows are probe P9's five sets; when P9's own
-#   output is at hand (build/p9/gamma_rows.txt, from scripts/probes/p9_gamma.sh), the rows that differ from its T1 rows
+#   output is at hand (build/p9/gamma_rows.txt, from the retired p9_gamma.sh), the rows that differ from its T1 rows
 #   are counted (the port was byte for byte P9 until M2 part b4 made the series' stop tail-aware).
 # - `beta`: scripts/crverify/rows_beta.cyr, the incomplete beta's I and 1 − I (M2 part b5), against check.c's `bref`
 #   (320 bits, more for a tiny complement); the bound is ≤ 8 ulp for a and b in [1e-3, 1e5]. Its first 103,372 rows are
-#   probe P9's five sets; when P9's own output is at hand (build/p9/beta_rows.txt, from scripts/probes/p9_beta.sh), the
+#   probe P9's five sets; when P9's own output is at hand (build/p9/beta_rows.txt, from the retired p9_beta.sh), the
 #   rows that differ from its T1 rows are counted.
 # Needs gcc with MPFR (and FMA for CORE-MATH's build), wine and qemu-aarch64.
 #   bash scripts/crverify/run.sh               # every set
@@ -32,7 +32,7 @@ cd "$root"
 sets=("$@")
 [ ${#sets[@]} -gt 0 ] || sets=(primitives erf ncdf lgamma gamma beta)
 quiet() { grep -v -e '^note' -e '^OK' -e 'warning:lib/' -e 'unreachable fns' || true; }
-gcc -O2 -o "$work/check" scripts/port-baseline/check.c -lmpfr -lgmp -lm
+gcc -O2 -o "$work/check" scripts/crverify/check.c -lmpfr -lgmp -lm
 
 # verify NAME SOURCE: the three targets' outputs, then MPFR.
 verify() {
@@ -73,7 +73,7 @@ verify() {
     done
     for p in "${pids[@]}"; do wait "$p"; done
     echo "## MPFR $(pkg-config --modversion mpfr 2>/dev/null || echo '?')"
-    python3 -I -B scripts/port-baseline/merge.py "$out"/chunks/report?.txt | tee "$out/report.txt"
+    python3 -I -B scripts/crverify/merge.py "$out"/chunks/report?.txt | tee "$out/report.txt"
 }
 
 for s in "${sets[@]}"; do

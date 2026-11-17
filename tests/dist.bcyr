@@ -1,13 +1,13 @@
 # dist.bcyr — the distributions of src/dist*.cyr (M3): ns per call.
 #
 # 4,096 seeded arguments (or pairs) per row, cycled 250 times (1,024,000 calls), as tests/special.bcyr. The Rust twin
-# is scripts/probes/rust/src/bin/m3_dist.rs: the same xorshift, regions and loop, 1.3.0's distributions on glibc's
-# primitives. Each side prints the row's sum and an FNV-1a digest of its 4,096 results' bits; they differ where a
-# glibc primitive misrounds or a T1 function (here Φ, M2 part b2) moves a value. The record is
-# docs/benchmarks-rust-v-cyrius.md. Part a1: Normal; part a2: Uniform, Exponential and Bernoulli; part a3: Cauchy and
-# Weibull; part b1: Gamma and ChiSquared; part b2: Beta, StudentT and FDistribution; part c1: Poisson; part c2:
-# Binomial; part d2: MultivariateNormal, mostly built once (1.3.0's own criterion benches do), its density and draws
-# then a call each.
+# is `m3_dist.rs`: the same xorshift, regions and loop, 1.3.0's distributions on glibc's primitives. Each side prints
+# the row's sum and an FNV-1a digest of its 4,096 results' bits; they differ where a glibc primitive misrounds or a T1
+# function (here Φ, M2 part b2) moves a value. The record is docs/benchmarks-rust-v-cyrius.md, which keeps the twin's
+# numbers: the Rust twins went with the Rust tooling (ADR 010). Part a1: Normal; part a2: Uniform, Exponential and
+# Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma and ChiSquared; part b2: Beta, StudentT and FDistribution;
+# part c1: Poisson; part c2: Binomial; part d2: MultivariateNormal, mostly built once (1.3.0's own criterion benches
+# do), its density and draws then a call each.
 
 include "tests/lib.cyr"
 

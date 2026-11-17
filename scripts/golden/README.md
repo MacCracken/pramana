@@ -1,63 +1,78 @@
-# scripts/golden: what the port derives from the Rust oracle
+# scripts/golden: the golden corpus, from Python's models of pramana 1.3.0
 
-`golden` drives the frozen Rust pramana 1.3.0 in [`rust-old/`](../../rust-old/), with its hidden `oracle` hooks (port
-plan §5 step 0), and writes two kinds of output:
+`gen.py` writes what the port is held to, from Python's models of the frozen Rust pramana 1.3.0 in
+[`rust-old/`](../../rust-old/) (ADR 010). Nothing builds or runs the Rust: the models are transcribed from
+`rust-old/src`'s text, and `rust-old/` is read by path. It writes two kinds of output:
 - **The golden corpus, `tests/golden/<module>.tsv`** (port plan §5 step 5). It has one row per call, with every float
-  as its IEEE-754 bit pattern. The Cyrius parity harness (`tests/parity.tcyr`, from M0 step 7) replays every row
-  against the port and checks it within its tolerance class.
-- **The generated Cyrius sources**: `src/constants.cyr` from step 6, and data modules as milestones need them. No
-  value the port reads is typed by hand.
+  as its IEEE-754 bit pattern. The Cyrius parity harness (`tests/parity.tcyr`) replays every row against the port and
+  checks it within its tolerance class. **It is generated, never committed** (`.gitignore`): about 100 MB, rebuilt in
+  about three minutes.
+- **The generated Cyrius sources**: `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr`. No value
+  the port reads is typed by hand.
 
-`validate.py` re-checks the corpus without the oracle. It also writes the correctly rounded rows,
-`tests/golden/<module>.cr.tsv`, from MPFR (`mpfr_ref.py`).
+`validate.py` holds the models (`gen.py`'s emitters in `emit/` call them) and re-checks every row. It also writes the
+correctly rounded rows, `tests/golden/<module>.cr.tsv`, and the T1 reference rows, `<module>.ref.tsv`, from MPFR
+(`mpfr_ref.py`), and `json.map.tsv`.
 
 ```sh
-cd scripts/golden
-cargo run --release --locked                  # write
-cargo run --release --locked -- --check       # verify; exit 1 on any difference
-cd ../..
-python3 -I -B scripts/golden/validate.py .              # independent re-check, and the .cr.tsv files
-python3 -I -B scripts/golden/validate.py . --write-cr   # rewrite the .cr.tsv and .map.tsv files
-python3 -I -B scripts/golden/mpfr_ref.py                # MPFR binding self-checks
-python3 -I -B scripts/golden/probe_tables.py .          # compile src/constants.cyr; every value against its row
-(cd scripts/golden && GOLDEN_NUDGE='math::fdlibm::RB3' cargo run --release --locked)   # mutation hook: never writes
+python3 -I -B scripts/golden/gen.py .                         # write tests/golden/ and the generated Cyrius sources
+python3 -I -B scripts/golden/gen.py . --only dist,json        # some modules
+python3 -I -B scripts/golden/gen.py . --compare DIR           # compare every row with DIR's files; exit 1 on a difference
+python3 -I -B scripts/golden/validate.py . --write-cr         # check every row; write the .cr, .ref and .map overlays
+python3 -I -B scripts/golden/validate.py .                    # check every row and the overlays; exit 1 on a difference
+python3 -I -B scripts/golden/mpfr_ref.py                      # MPFR binding self-checks
+python3 -I -B scripts/golden/probe_tables.py .                # compile src/constants.cyr; every value against its row
 ```
 
-Run cargo **from this directory**: rustup reads `rust-toolchain.toml` (the recording toolchain, 1.100.0) from the
-current directory, not from `--manifest-path`.
+Generating needs Python 3, glibc 2.44 on x86_64 (1.3.0's own bits are glibc's) and MPFR (libmpfr6, through ctypes).
+CI runs both commands before the build.
 
-These are **local gates, not CI**. The corpus holds glibc 2.44's bits, and a runner with another glibc is refused by
-design.
+The format and the comparison rules are pravash's (`/home/macro/Repos/pravash`, at its tag 2.0.0, `scripts/oracle/`),
+which are impetus's, kimiya's and tanmatra's: every port's harness reads the same files. This README records what is
+specific to pramana.
 
-The format, the comparison rules and the generator's structure are pravash's (`/home/macro/Repos/pravash`, at its
-tag 2.0.0, `scripts/oracle/`), which are impetus's, kimiya's and tanmatra's: every port's harness reads the same
-files. This README records what is specific to pramana.
+## How the corpus was proven
+
+Until ADR 010, a Rust generator linked against `rust-old/` wrote the corpus through 1.3.0's `oracle` hooks (the
+private functions the corpus names, such as `sample_gamma_standard`). Before it was removed, `gen.py --compare`
+matched its corpus on every row of every module: 329,431 rows, fn, class, inputs and outputs, a NaN's payload aside
+(class A matches any NaN). After `validate.py --write-cr`, the overlays were byte-identical and the parity replay gave
+the same result. The models are that proof's record: change one and its rows move.
 
 ## Rules
 
-- **`rust-old/` is never built in place or edited.** This crate depends on it by path, with `oracle` and
-  `soorat-compat` on. `ai` is off: its rows use a recorded transport. `Cargo.lock` was seeded from
-  `rust-old/Cargo.lock`, so every shared dependency is the version the oracle was tested with (hisab 1.4.0).
+- **`rust-old/` is read, never built or edited.** A model is transcribed from its source text, in its operation order.
+  A wrong 1.3.0 value is fixed in Rust as 1.3.x by the maintainer, its model updated, and the corpus regenerated. It is
+  never patched in a `.tsv`.
+- **No Rust** (ADR 010): no Cargo crate, no Rust script and no Rust toolchain. A new proof is a Python model, with
+  MPFR, exact arithmetic or NIST StRD as the reference.
 - **The output is deterministic.** Two runs give byte-identical files. Grids use only + − × ÷, `sqrt` (correctly
-  rounded by IEEE 754, so the same everywhere; from M2 part a3), `floor`, decimal parsing, bit construction and seeded
-  xorshift. Never a transcendental std method, a timestamp or a hash-map order.
-- **The provenance is pinned.** Every header records the oracle, hisab, the rustc that built the generator
-  (`build.rs`), and the libm platform (`glibc.rs`: `glibc 2.44 x86_64 fma`). `--check` refuses a corpus recorded
-  under any other provenance, naming both, because the rows hold that compiler's and that glibc's bits.
-- **Where the transcendentals come from** (`nm -D` on the generator, rustc 1.100.0):
+  rounded by IEEE 754), `floor`, decimal parsing, bit construction and seeded xorshift. Never a transcendental, a
+  timestamp or a hash order.
+- **The provenance is pinned.** Every header records `pramana 1.3.0's models in Python (scripts/golden), libm: glibc
+  2.44 x86_64 fma`. `gen.py` refuses to run on another glibc, machine or a CPU without FMA, and `validate.py` refuses a
+  corpus whose header names another, because the rows hold
+  that glibc's bits.
+- **Where 1.3.0's transcendentals came from** (`nm -D` on 1.3.0's build, rustc 1.100.0), and so how the models compute
+  them:
 
-  | Source | Functions | Rows |
+  | Source | Functions | Model |
   |---|---|---|
-  | glibc's libm (dynamic) | `exp`, `log` (`ln`), `log1p` (`ln_1p`), `expm1` (`exp_m1`), `pow` (`powf`), `sin`, `cos`, `tan`, `atan`, `log2` | glibc's bits; `validate.py` recomputes them through ctypes |
-  | compiler_builtins (linked into the binary) | `cbrt` | platform-free; `validate.py` proves every one correctly rounded |
-  | inline code | `sqrt`, `abs`, `floor`, `fract`, `min`, `max`, `clamp`, `is_nan`, `is_finite`, `total_cmp`, `powi` with a literal exponent, the casts, the fdlibm word operations | exact; `validate.py` recomputes them in Python |
+  | glibc's libm (dynamic) | `exp`, `log` (`ln`), `log1p` (`ln_1p`), `expm1` (`exp_m1`), `pow` (`powf`), `sin`, `cos`, `tan`, `atan`, `log2` | the same glibc function, through ctypes |
+  | compiler_builtins (linked in) | `cbrt` | MPFR's correctly rounded cbrt, which every row matched |
+  | inline code | `sqrt`, `abs`, `floor`, `fract`, `min`, `max`, `clamp`, `is_nan`, `is_finite`, `total_cmp`, `powi` with a literal exponent, the casts, the fdlibm word operations | exact, in Python |
+- **Modules arrive with their milestone.** Each starts with its emitter, `emit/m_<module>.py` with the grid from the
+  port plan §7, its models in `validate.py`, and its name in `gen.py`'s `MODULES`. A model is written from
+  `rust-old/src` and checked against an independent reference where one exists (MPFR, exact rationals, NIST StRD).
 
-- **`fmt.tsv`** (M1 part d1, `src/m_fmt.rs`): serde_json 1.0.154's text for 25,200 doubles: every power of two and
+## The modules
+
+- **`fmt.tsv`** (M1 part d1, `emit/m_fmt.py`): serde_json 1.0.154's text for 25,200 doubles: every power of two and
   of ten with its neighbours, the integers to 1,000, short decimals, a log-uniform sweep across the form switches,
   and seeded bit patterns. pramana's JSON writes this text byte for byte (port plan D5). serde_json is a dependency
   here, pinned to `rust-old/Cargo.lock`'s version. `validate.py` rebuilds every row from Python's own shortest
   digits (`repr`, ties to even as serde_json's zmij), and 62 of the inputs are exact ties.
-- **`json.tsv`** (M1 parts d3a, d3b and d4, `src/m_json.rs`; from M3 part a1, Normal's codec, from part a2, Uniform's,
+- **`json.tsv`** (M1 parts d3a, d3b and d4, `emit/m_json.py`; from M3 part a1, Normal's codec, from part a2, Uniform's,
   Exponential's and Bernoulli's, from a3, Cauchy's and Weibull's, from b1, Gamma's and ChiSquared's, from b2, Beta's,
   StudentT's and FDistribution's, from c1, Poisson's, from c2, Binomial's, and from d2, MultivariateNormal's, written
   with its cached fields and read without them), 9,392 rows. The reading rows are
@@ -79,7 +94,7 @@ files. This README records what is specific to pramana.
     value's tokens in and serde_json's text out. `PramanaError`'s variants are written with an empty message, as
     pramana writes a code (ADR 007 row 8, amended). `validate.py` re-writes each with its own model of serde_json's
     writing: the escape table, the f64 text model it checks `fmt.tsv` with, and the struct and enum forms.
-- **`debug.tsv`** (M1 part f, `src/m_debug.rs`): Rust's derived `Debug`, `{:?}` and `{:#?}` (D12), of 1.3.0's types
+- **`debug.tsv`** (M1 part f, `emit/m_debug.py`): Rust's derived `Debug`, `{:?}` and `{:#?}` (D12), of 1.3.0's types
   as each milestone ports them: in M1, `SimpleRng` from 25 seeds and each `PramanaError` variant with an empty
   message; from M3 part a1, `Normal` at 24 parameter pairs, and `debug::f64`, Rust's `{:?}` of `fmt.tsv`'s 25,200
   doubles (an f64 field's form); from part a2, `Uniform`, `Exponential` and `Bernoulli` at up to 16 parameters
@@ -88,8 +103,8 @@ files. This README records what is specific to pramana.
   `MultivariateNormal` at the codec's 12 cases, its lists nested. The last input is 0 for `{:?}` and 1 for `{:#?}`.
   `validate.py` models the derive's struct and tuple text, and an f64's from Python's shortest digits, with an exact
   tie, which `repr` breaks to even, redone with Rust's upper choice.
-- **`dist.tsv`** (M3, `src/m_dist.rs`): 1.3.0's distributions, named by Rust's path (`Normal::pdf`), and the oracle's
-  `standard_normal`. Part a1, 12,882 rows: `Normal::new` on a 16-value grid of each parameter (the fields, or the
+- **`dist.tsv`** (M3, `emit/m_dist.py`): 1.3.0's distributions, named by Rust's path (`Normal::pdf`), and 1.3.0's
+  `standard_normal` hook. Part a1, 12,882 rows: `Normal::new` on a 16-value grid of each parameter (the fields, or the
   error); the pdf and cdf of N(0, 1) at x = k/16 on [−40, 40], of eight more fixed (μ, σ) at z = k/4 on [−40, 40] and
   the specials, of 40 seeded pairs at z = −40 … 40 by 2.5, and at 1,000 seeded triples; the mean and variance; 10⁴ draws
   of N(0, 1) and 256 of each other fixed pair from three seeds; 1,024 Box–Muller variates from three seeds. The
@@ -100,41 +115,41 @@ files. This README records what is specific to pramana.
   Cauchy's pdf at far z where z² overflows, and Weibull's mean and variance also at 221 shapes from 5e-324 to f64::MAX.
   Class C but the constructors and Cauchy's pdf, mean and variance. Part b1, 19,461 rows: `Gamma` and `ChiSquared` the
   same way, the pdf and cdf also around the mode, shapes from 5e-324 to f64::MAX (2e9 and 4e9 past T1's 10⁹), and
-  `sample_gamma_standard`, the oracle's Marsaglia–Tsang hook. Class C but the constructors, means and variances. Part
-  b2, 36,081 rows: `Beta`, `StudentT` and `FDistribution` the same way, and the oracle's Student-t and F tails
+  `sample_gamma_standard`, 1.3.0's Marsaglia–Tsang hook. Class C but the constructors, means and variances. Part
+  b2, 36,081 rows: `Beta`, `StudentT` and `FDistribution` the same way, and 1.3.0's Student-t and F tails
   (`student_t_two_tailed`, `student_t_cdf`, `f_cdf_sf`, both of the last's values) on their own grids. Class C but the
   constructors, means and variances. Part c1, 8,463 rows: `Poisson` the same way, the pmf and cdf at the integers, off
   them and around the mean, streams either side of the sampler's switch at λ = 30, and `sample_poisson_ptrs`, the
-  oracle's PTRS hook. Part c2, 8,070 rows: `Binomial` the same way, n an `i:` token holding its u64 word (u64::MAX is
-  `i:-1`), for n from 1 to u64::MAX, and streams either side of 64 trials. Part d2, 3,575 rows (`src/m_mvn.rs`):
-  `MultivariateNormal`'s constructor (L and log det Σ through the oracle's `mvn_factor`, or the error), `log_pdf`,
+  1.3.0's PTRS hook. Part c2, 8,070 rows: `Binomial` the same way, n an `i:` token holding its u64 word (u64::MAX is
+  `i:-1`), for n from 1 to u64::MAX, and streams either side of 64 trials. Part d2, 3,575 rows (`emit/m_mvn.py`):
+  `MultivariateNormal`'s constructor (L and log det Σ through 1.3.0's `mvn_factor`, or the error), `log_pdf`,
   `pdf` and draws, the inputs `i:d`, the mean as `v:d`, the covariance's rows and columns as `i:` tokens and its
   entries as `v:rows·cols`, row-major. M3's gate gives 10⁴ draws a seed to the first case of each further sampling
   algorithm: Gamma's boost below α = 1, PTRS, Beta splitting and MultivariateNormal's vectors.
   `validate.py` models every row three ways, as `special`'s, and writes `dist.cr.tsv` (a glibc primitive's misround)
   and `dist.ref.tsv` (Normal's cdf on the T1 Φ; Weibull's moments and the gamma family's pdfs on the T1 lnΓ or ln B;
   their cdfs and the tails on the T1 incomplete gamma or beta).
-- **`linalg.tsv`** (M3 part d1, `src/m_linalg.rs`): hisab 1.4.0's `cholesky` and `cholesky_solve`, which 1.3.0
+- **`linalg.tsv`** (M3 part d1, `emit/m_linalg.py`): hisab 1.4.0's `cholesky` and `cholesky_solve`, which 1.3.0
   calls, through its `pub use hisab`. The factor on the empty matrix, 1×1 and 2×2 edges (every pivot class; singular,
   indefinite and non-symmetric matrices; NaN and ∞ off the diagonal), seeded SPD matrices to n = 64, the Hilbert
   matrices to n = 14 and Lehmer's and the [2, −1] tridiagonal, scaled; 13 of its 70 rows are hisab's refusal,
   `E:InvalidParameter`. The solve with every factor against unit, seeded, zero and NaN-bearing right sides, with hand
   factors (a zero diagonal, junk above it) and at n = 0: 612 rows. A matrix is `v:n²` and its entries row-major. All
   class A; `validate.py` recomputes each row in hisab's order.
-- **`bridge.tsv`** (M1 part e3, `src/m_bridge.rs`): the eleven bridges on special-value grids, the 1e-15 floors and
+- **`bridge.tsv`** (M1 part e3, `emit/m_bridge.py`): the eleven bridges on special-value grids, the 1e-15 floors and
   their neighbours, empty, single, mismatched and NaN-bearing slices, the fits' skipped records, and seeds. Class B,
   except the likelihood and the two fits (class C). A slice of pairs is `v:n` then each pair's `i:` and `f:` tokens;
   a tuple is its elements in order. `validate.py` models all eleven in Rust's operation order, through glibc and
   MPFR.
-- **`combinatorics.tsv`** (M1 part e2, `src/m_combinatorics.rs`): `factorial`, `permutations` and `combinations` on
+- **`combinatorics.tsv`** (M1 part e2, `emit/m_combinatorics.py`): `factorial`, `permutations` and `combinations` on
   probe P1's grid (n from 0 to 40, the u128 edge 130–133, 2³², 2⁶³, u64::MAX, each against an r grid, and 200 seeded
   pairs), and `stirling_approx` (class C) on 315 n. A u128 result is two `i:` tokens, its low word then its high
   word. `validate.py` recomputes the counts with exact integers in 1.3.0's checked loops, Stirling through glibc's
   pow, and its correctly rounded rows through MPFR's.
-- **`rng.tsv`** (M1 part e1, `src/m_rng.rs`): 1.3.0's `SimpleRng`: the first 256 draws from 40 seeds, and 10⁶-draw
+- **`rng.tsv`** (M1 part e1, `emit/m_rng.py`): 1.3.0's `SimpleRng`: the first 256 draws from 40 seeds, and 10⁶-draw
   FNV-1a digests from six. `validate.py` re-draws each with its own xorshift. `json.tsv` gains SimpleRng's codec
   rows in the same part.
-- **`special.tsv`** (M2, `src/m_special.rs`): 1.3.0's `src/math.rs` through the `oracle` hooks, its rows named by
+- **`special.tsv`** (M2, `emit/m_special.py`): 1.3.0's `src/math.rs` through its `oracle` hooks, its rows named by
   Rust's path, `math::<fn>`. Part a1 records `erf` and `erfc` at every high word fdlibm branches on, with the five
   doubles either side and 24 seeded low words in the high word at and below it, both signs, then seeded sweeps of
   each branch, tiny and wide sweeps and k/32 on [−30, 30]; and `normal_cdf` and `normal_sf` on that grid times √2,
@@ -154,29 +169,16 @@ files. This README records what is specific to pramana.
   by skipping a member unchecked, which bayan refuses whole: a duplicate key, nesting past 128 levels, or a lone
   surrogate. `validate.py` finds them with its own model of bayan's three whole-document refusals. They map to
   `E:Deserialize` and pass as accepted (ADR 7).
-- **The constants come from the source, and the tables are proven** (`src/consts.rs`, `src/p_constants.rs`).
-  - **Why from the source:** pramana's constants are private, so no API exposes them. The generator reads every
-    `const` item in the library code, function-local tables included, through Rust's own literal parser, and proves
-    the list complete against a plain count.
-  - **The proofs:** before writing anything, it recomputes the oracle's functions with the extracted values and
-    compares bit for bit with the oracle's hooks:
-    - the fdlibm table against `erf` and `erfc`;
-    - Lanczos, `G` and `LN_SQRT_2PI` against `ln_gamma`;
-    - Acklam, `P_LOW` and `P_HIGH` against `z_quantile`;
-    - the KS constants against `kolmogorov_sf`;
-    - the two sampler thresholds by their draws.
-
-    A failed proof writes nothing.
-  - **The mutation hook:** `GOLDEN_NUDGE=<path>` moves one extracted f64 by an ulp, reports which proof catches it,
-    and never writes.
-  - **Two more checks:** `validate.py` re-reads every constant with its own Python extractor, and `probe_tables.py`
-    compiles `src/constants.cyr` and checks each value's bits.
-- **The corpus is regenerated only from the oracle.** A wrong oracle value is fixed in Rust as 1.3.x, then
-  regenerated. It is never patched in a `.tsv`.
-- **Modules arrive with their milestone.** Each one starts by adding its golden emitter (`src/m_<module>.rs`, with
-  the grid from the port plan §7) and registering it in `src/main.rs`. Its `validate.py` rules come in the same part.
-  The special-function rows (`special.tsv`) arrive with M2 part a, and their reference rows (`special.ref.tsv`) with
-  part b.
+- **The constants come from the source** (`emit/m_constants.py`, on `validate.py`'s `python_constants`).
+  - **Why from the source:** pramana's constants are private, so no API exposes them. The extractor reads every
+    `const` item in the library code, function-local tables included, parses each literal as Rust does (correctly
+    rounded decimal), and proves the list complete against a plain count.
+  - **The proofs:** the models compute with the extracted values, so every row that uses a constant checks it: the
+    fdlibm table through `erf` and `erfc`; Lanczos, `G` and `LN_SQRT_2PI` through `ln_gamma`; Acklam, `P_LOW` and
+    `P_HIGH` through `z_quantile`; the KS constants through `kolmogorov_sf`; the two sampler thresholds through the
+    draws. All of them matched the Rust corpus.
+  - **Two more checks:** `probe_tables.py` compiles `src/constants.cyr` and checks each value's bits, and
+    `scripts/crverify/consts.py` proves the port's own derived constants from MPFR.
 - **`special.ref.tsv`** (M2 part b, ADR 009's T1), written by `validate.py --write-cr`: for each `special` row a T1
   function moves, its true value (MPFR), or downstream Rust's formula on the T1 functions' values as the port computes
   them, and correctly rounded primitives. `validate.py` models every row three ways (glibc, correctly rounded primitives, and the
@@ -209,17 +211,17 @@ files. This README records what is specific to pramana.
 
 | Module | Milestone | Golden rows | Golden emitter | Generated Cyrius / correctly rounded rows |
 |---|---|---|---|---|
-| `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
-| `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
-| `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
-| `json` | M1 d3a–d4, e1, M3 a1–d2 | 9,392 | `src/m_json.rs` | `json.map.tsv`, 170 rows (ADR 007 row 16) |
-| `rng` | M1 e1 | 46 | `src/m_rng.rs` | — |
-| `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
-| `debug` | M1 f, M3 a1–d2 | 25,712 | `src/m_debug.rs` | — |
-| `dist` | M3 a1–e | 166,631 | `src/m_dist.rs`, `src/m_mvn.rs` | `dist.cr.tsv`, 1,283 rows (glibc's exp, expm1, ln, ln_1p, cos, tan or pow misrounded in a pdf or cdf value, a moment or a draw); `dist.ref.tsv`, 31,437 rows (Normal's cdf on the T1 Φ, 2,699; Weibull's moments on the T1 lnΓ, 1,100; the gamma family's and the discrete distributions' pdfs on the T1 lnΓ or ln B, 9,947; their cdfs and the Student-t and F tails on the T1 incomplete gamma or beta, 17,691) |
-| `linalg` | M3 d1 | 682 | `src/m_linalg.rs` | — |
-| `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
-| `special` | M2 a1–a4, b1–b5 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 20,621 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; b5: the incomplete beta's I and 1 − I at theirs, 4,834; and the rows downstream of them on T1's values, 3,029, among them gamma_inc's 510 Wilson–Hilferty rows and the three wrappers' 777); `special.cr.tsv`, 91 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel and ln B, 87; two `beta_inc` rows whose true value is Rust's form on correctly rounded primitives; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
+| `constants` | M0 | 112 | `emit/m_constants.py` | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` |
+| `math` | M0 | 35,597 | `emit/m_math.py` | `math.cr.tsv`, 76 rows |
+| `fmt` | M1 d1 | 25,200 | `emit/m_fmt.py` | — |
+| `json` | M1 d3a–d4, e1, M3 a1–d2 | 9,392 | `emit/m_json.py` | `json.map.tsv`, 170 rows (ADR 007 row 16) |
+| `rng` | M1 e1 | 46 | `emit/m_rng.py` | — |
+| `bridge` | M1 e3 | 5,553 | `emit/m_bridge.py` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
+| `debug` | M1 f, M3 a1–d2 | 25,712 | `emit/m_debug.py` | — |
+| `dist` | M3 a1–e | 166,631 | `emit/m_dist.py`, `emit/m_mvn.py` | `dist.cr.tsv`, 1,283 rows (glibc's exp, expm1, ln, ln_1p, cos, tan or pow misrounded in a pdf or cdf value, a moment or a draw); `dist.ref.tsv`, 31,437 rows (Normal's cdf on the T1 Φ, 2,699; Weibull's moments on the T1 lnΓ, 1,100; the gamma family's and the discrete distributions' pdfs on the T1 lnΓ or ln B, 9,947; their cdfs and the Student-t and F tails on the T1 incomplete gamma or beta, 17,691) |
+| `linalg` | M3 d1 | 682 | `emit/m_linalg.py` | — |
+| `combinatorics` | M1 e2 | 2,405 | `emit/m_combinatorics.py` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
+| `special` | M2 a1–a4, b1–b5 | 58,101 | `emit/m_special.py` | `special.ref.tsv`, 20,621 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; b5: the incomplete beta's I and 1 − I at theirs, 4,834; and the rows downstream of them on T1's values, 3,029, among them gamma_inc's 510 Wilson–Hilferty rows and the three wrappers' 777); `special.cr.tsv`, 91 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel and ln B, 87; two `beta_inc` rows whose true value is Rust's form on correctly rounded primitives; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
 
 ## Format 1
 
@@ -231,7 +233,7 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
 
 - **Header:**
   1. `# pramana golden corpus, format 1: <module>`
-  2. `# oracle: <provenance>. Generated by scripts/golden; do not edit.`
+  2. `# oracle: <provenance>. Generated by scripts/golden; do not edit.` (the word `oracle` is the format's)
   3. the regenerate command
   4. the column legend
   5. `# rows: <n>`
@@ -262,7 +264,8 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
 
 ## validate.py
 
-Standard library plus ctypes. It never runs the Rust oracle:
+Standard library plus ctypes (glibc's libm and MPFR). It holds the models `gen.py` writes with, and re-checks a corpus
+independently of how it was written:
 - it parses every file (header, row count, five fields, classes, tokens), and checks that `modules.txt` lists
   exactly the generator's files;
 - it recomputes every class-A/B `math` row in Python, in Rust's operation order. That includes LLVM's
@@ -276,6 +279,6 @@ Standard library plus ctypes. It never runs the Rust oracle:
   rows where glibc's differs.
 
 **Tamper checks (2026-11-15):**
-- a one-bit change to an `exp` row fails it and `--check`;
+- a one-bit change to an `exp` row fails it;
 - an edited `.cr.tsv` row fails it;
-- a header naming glibc 2.45 is refused by `--check` with a `PROVENANCE` line.
+- a header naming glibc 2.45 is refused with a `PROVENANCE` line.

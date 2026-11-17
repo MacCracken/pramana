@@ -14,13 +14,14 @@
 - **License**: GPL-3.0-only
 - **Language**: Cyrius. The toolchain is pinned in `cyrius.cyml` `[package].cyrius`
 - **Version**: `VERSION` at the project root is the source of truth. Don't inline the number here
-- **Rust oracle**: pramana 1.3.0 plus the hidden `oracle` hooks, frozen at `rust-old/`. Its `Cargo.lock` and
-  its `rust-toolchain.toml` (pinned to 1.100.0) are both tracked
+- **Rust reference**: pramana 1.3.0's source, frozen at `rust-old/`, read and never run (ADR 010). The golden
+  corpus comes from Python's models of it (`scripts/golden/gen.py`) and is never committed
 - **Plan of record**: [`docs/development/pramana-port-plan.md`](docs/development/pramana-port-plan.md), with these ADRs:
   - [006](docs/decisions/006-cyrius-port-with-rust-oracle.md): the method;
   - [007](docs/decisions/007-port-api-divergences.md): the 2.0 API changes;
   - [008](docs/decisions/008-local-stand-ins-for-library-gaps.md): stand-ins for library gaps;
-  - [009](docs/decisions/009-correct-rounding-and-fixed-accuracy-bounds.md): the accuracy target.
+  - [009](docs/decisions/009-correct-rounding-and-fixed-accuracy-bounds.md): the accuracy target;
+  - [010](docs/decisions/010-python-proof-rust-tooling-removed.md): Python as the parity proof, the Rust tooling removed.
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md) · [First-Party Documentation](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-documentation.md)
 
 ## Goal
@@ -45,15 +46,15 @@ crates.io 1.x until they port.
 
 ```sh
 cyrius deps                                    # resolve dependencies (vendors lib/)
+python3 -I -B scripts/golden/gen.py .          # the golden corpus, from Python's models of 1.3.0 (ADR 010)
+python3 -I -B scripts/golden/validate.py . --write-cr   # check every row; the MPFR overlays the port is held to
 cyrius build src/main.cyr build/pramana        # compile
-cyrius test                                    # run tests/*.tcyr
+cyrius test                                    # run tests/*.tcyr (the parity replay among them)
 cyrius bench                                   # run tests/*.bcyr
-(cd rust-old && cargo test --locked --all-features)              # the Rust oracle, read-only, on its pinned 1.100.0
-(cd rust-old && cargo test --locked --features oracle --test oracle)   # the oracle hooks alone
 ```
 
-Run the Rust oracle **from inside `rust-old/`**. rustup reads `rust-toolchain.toml` from the current directory, not
-from the manifest's, so `--manifest-path rust-old/Cargo.toml` run from the root would use the wrong toolchain.
+The corpus (`tests/golden/`) is generated, never committed. Generating it needs MPFR (libmpfr6) and takes about 3
+minutes.
 
 ## Development Process
 
@@ -187,8 +188,8 @@ and `build` drive, never from `cyrius lint`. Each one is a bug:
   - The stdlib `F64_*` constants are untyped. Use the generated typed globals.
   - Use the canonical `ganita_f64_*` names, never the legacy aliases, which ganita M4 deletes.
   - Every transcendental goes through the correctly rounded functions in `src/crmath.cyr` (port plan §8.1).
-- **Constants are generated, never typed by hand.** `scripts/golden/` writes them from the oracle. Regenerate them;
-  never edit them.
+- **Constants are generated, never typed by hand.** `scripts/golden/gen.py` writes them from `rust-old/`'s source
+  text. Regenerate them; never edit them.
 - **Names.** Every public global carries the `PMN_` prefix (constants, enum members, tables). Private helpers use
   `_pmn_`. Public structs are `Pmn<Name>`, and free functions are `pmn_<name>`. A bundle shares one namespace with
   its consumers, and the last definition of a name silently wins.
@@ -206,9 +207,11 @@ and `build` drive, never from `cyrius lint`. Each one is a bug:
 
 - **Do not commit or push** — the user handles all git operations (commit, push, tag)
 - **NEVER use `gh` CLI** — use `curl` to the GitHub API only
-- **Do not modify `rust-old/`.** It is the parity oracle. Tools that drive it (the golden-value and table generators)
-  live in `scripts/golden/` and depend on it by path. A wrong oracle value is fixed as Rust 1.3.x, by the
-  maintainer, and the corpus regenerated
+- **Do not modify `rust-old/`.** It is the parity reference, read as source text; the golden generator
+  (`scripts/golden/`, Python) reads it by path. A wrong value in 1.3.0 is fixed as Rust 1.3.x, by the maintainer,
+  and the corpus regenerated
+- **Do not add Rust code, Rust scripts or a Rust toolchain dependency** (ADR 010). A proof is a Python model, with
+  MPFR, exact arithmetic or NIST StRD as the reference
 - Do not modify `lib/` files (vendored stdlib / dep symlinks)
 - Do not hardcode toolchain versions in CI YAML — `cyrius = "X.Y.Z"` in `cyrius.cyml` is the source of truth
 - Do not widen a parity tolerance class to make a row pass, and do not loosen an ADR 009 bound. Class-C bounds are
@@ -219,8 +222,7 @@ and `build` drive, never from `cyrius lint`. Each one is a bug:
 - Do not break backward compatibility without a major version bump
 - Do not skip benchmarks before claiming performance improvements
 - Do not skip tests before claiming changes work
-- Do not commit `build/` or `rust-old/target/`. `rust-old/Cargo.lock` and `rust-old/rust-toolchain.toml` **are**
-  committed: the frozen oracle needs its exact dependency versions and toolchain (ADR 006)
+- Do not commit `build/`, `rust-old/target/` or `tests/golden/` (the generated corpus, ADR 010)
 
 ## Documentation Structure
 
@@ -239,7 +241,8 @@ docs/:
   guides/                          — task-oriented how-tos
   examples/                        — runnable examples
 rust-old/docs/                     — the Rust 1.3.0 overview, testing guide, threat model and dependency watch
-scripts/port-baseline/             — the accuracy baseline of Rust 1.3.0 against MPFR (port plan §3)
+scripts/golden/                    — the golden corpus generator: Python's models of 1.3.0 (ADR 010)
+scripts/crverify/                  — the port against MPFR: correct rounding and the ADR 009 bounds
 ```
 
 ADR format: `# NNN. Title`, then Date, Status, Context, Decision, Consequences, Alternatives considered (see
