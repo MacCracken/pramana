@@ -397,6 +397,9 @@ fn PmnHiddenMarkovModel_drop(h: *PmnHiddenMarkovModel): i64 {
     if (h == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (h.buf != 0) { fl_free(h.buf); }
     h.buf = 0;
+    h.ta = 0;
+    h.eb = 0;
+    h.ip = 0;
     h.n = 0;
     h.m = 0;
     return PMN_ERR_NONE;
@@ -499,19 +502,21 @@ impl PmnHiddenMarkovModel {
         return self.m;
     }
 
-    # The transition matrix A (borrowed, n × n), the emission matrix B (n × m) and the initial distribution π (n).
+    # The transition matrix A (borrowed, n × n row-major), or 0 for a dropped one.
     #must_use
     fn transition(self): i64 {
         if (self == 0) { return 0; }
         return self.ta;
     }
 
+    # The emission matrix B (borrowed, n × m row-major), or 0 for a dropped one.
     #must_use
     fn emission(self): i64 {
         if (self == 0) { return 0; }
         return self.eb;
     }
 
+    # The initial distribution π (borrowed, n entries), or 0 for a dropped one.
     #must_use
     fn initial(self): i64 {
         if (self == 0) { return 0; }

@@ -6,6 +6,7 @@
 
 include "tests/lib.cyr"
 
+# x's bit pattern.
 fn bits(x: f64): i64 {
     return load64(&x);
 }
@@ -16,11 +17,13 @@ fn fill(buf, vals, n): i64 {
     return 0;
 }
 
+# Entry (r, c) of the n × n row-major matrix m.
 fn at(m, n, r, c): f64 {
     var v: f64 = load64(m + (r * n + c) * 8);
     return v;
 }
 
+# Runs the Cholesky tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var a = alloc(64 * 64 * 8);

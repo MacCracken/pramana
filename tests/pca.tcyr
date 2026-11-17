@@ -6,17 +6,20 @@
 
 include "tests/lib.cyr"
 
+# Stores x as entry k of the f64 buffer buf.
 fn put(buf, k, x: f64): i64 {
     store64(buf + k * 8, x);
     return 0;
 }
 
+# 1 when |x − y| < tol, else 0.
 fn near(x: f64, y: f64, tol: f64): i64 {
     var d: f64 = x - y;
     if (f64_abs(d) < tol) { return 1; }
     return 0;
 }
 
+# Runs the Jacobi and PCA tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var a = alloc(64 * 8);

@@ -65,6 +65,7 @@ fn worker(rec): i64 {
     return 0;
 }
 
+# Runs the pool's contention tests; returns the number that failed, the exit status.
 fn main(): i64 {
     alloc_init();
     var recs = alloc(WORKERS * 48);

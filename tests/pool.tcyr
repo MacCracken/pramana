@@ -5,6 +5,7 @@
 
 include "tests/lib.cyr"
 
+# Runs the pool's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
 

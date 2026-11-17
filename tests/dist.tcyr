@@ -10,10 +10,12 @@
 
 include "tests/lib.cyr"
 
+# x's bit pattern.
 fn bits(x: f64): i64 {
     return load64(&x);
 }
 
+# The f64 with bit pattern b.
 fn of_bits(b): f64 {
     var x: f64 = 0.0;
     store64(&x, b);
@@ -38,6 +40,7 @@ struct Eighths {
 }
 
 impl PmnRng for Eighths {
+    # k/8, then k advances, wrapping from 7 to 0; counts the call.
     fn next_f64(self): f64 {
         var a: f64 = f64_from(self.k);
         var d: f64 = 8.0;
@@ -54,6 +57,7 @@ struct Counted {
 }
 
 impl PmnRng for Counted {
+    # The SimpleRng's next draw; counts the call.
     fn next_f64(self): f64 {
         var r: *PmnSimpleRng = self.g;
         self.calls = self.calls + 1;
@@ -69,6 +73,7 @@ struct Cycle3 {
 }
 
 impl PmnRng for Cycle3 {
+    # 0.3, 0.6 and 0.5 in turn.
     fn next_f64(self): f64 {
         var r: f64 = 0.3;
         if (self.k == 1) { r = 0.6; }
@@ -100,6 +105,7 @@ fn text_is(sb, want: cstring): i64 {
     return memeq(load64(sb), want, strlen(want));
 }
 
+# Runs the distributions' tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var nan: f64 = _PMN_F64_NAN;

@@ -22,6 +22,7 @@ var fz_n = 0;
 var fz_x = 88172645463325252;
 var fz_fail = 0;
 
+# Registers a reader: its name, its seed document, its decoder, its writer and its drop.
 fn fz_add(name, seed, dec, enc, drop): i64 {
     store64(fz_name + fz_n * 8, name);
     store64(fz_seed + fz_n * 8, seed);
@@ -35,8 +36,10 @@ fn fz_add(name, seed, dec, enc, drop): i64 {
 # Kernel and PramanaError read and write a word, not a struct: adapters to the (out, buf, len) and (value, sb) forms.
 fn fz_kernel_dec(out, buf, len): i64 { return pmn_kernel_from_json(out, buf, len); }
 
+# Writes the Kernel at v.
 fn fz_kernel_enc(v, sb): i64 { return pmn_kernel_to_json(load64(v), sb); }
 
+# Reads a PramanaError into out: the code.
 fn fz_err_dec(out, buf, len): i64 {
     var t, c = pmn_err_from_json(buf, len);
     if (t == Err) { return c; }
@@ -44,8 +47,10 @@ fn fz_err_dec(out, buf, len): i64 {
     return PMN_ERR_NONE;
 }
 
+# Writes the error code at v.
 fn fz_err_enc(v, sb): i64 { return pmn_err_to_json(load64(v), sb); }
 
+# The next xorshift64 word of fz_x, the fuzz's seeded generator.
 fn fz_rand(): i64 {
     var x = fz_x;
     x = x ^ (x << 13);
@@ -179,6 +184,7 @@ fn fz_pass(rounds, buf, cap, v1, v2, sb1, sb2, accp): i64 {
     return digest;
 }
 
+# Runs every reader's two fuzz passes; 1 on a failure, a differing pass or a heap that grew.
 fn main() {
     alloc_init();
     fz_name = alloc(FZ_MAX * 8);

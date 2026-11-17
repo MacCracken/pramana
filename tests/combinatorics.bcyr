@@ -34,6 +34,7 @@ fn row(name: cstring, which): i64 {
     return 0;
 }
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     row("factorial(34)", 0);

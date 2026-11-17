@@ -12,6 +12,7 @@ fn is(x: *PmnU128, lo, hi): i64 {
     return 0;
 }
 
+# Runs counting's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var x: PmnU128;

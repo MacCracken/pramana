@@ -14,10 +14,12 @@ fn near(x: f64, want: f64, tol: f64): i64 {
     return 0;
 }
 
+# x's bit pattern.
 fn bits(x: f64): i64 {
     return load64(&x);
 }
 
+# Runs the bridges' tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var out[40];

@@ -36,6 +36,7 @@ fn open(s: cstring): i64 {
 
 var g_rng = 0x9E3779B97F4A7C15;
 
+# The next xorshift64* word of g_rng, the round trips' seeded generator.
 fn next(): i64 {
     var x = g_rng;
     x = x ^ (x >> 12);
@@ -87,6 +88,7 @@ fn dec_sum(root, ctx): i64 {
     return PMN_ERR_NONE;
 }
 
+# Runs the JSON core's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     g_buf = alloc(1048576);

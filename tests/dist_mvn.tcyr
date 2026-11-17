@@ -7,26 +7,31 @@
 
 include "tests/lib.cyr"
 
+# x's bit pattern.
 fn bits(x: f64): i64 {
     return load64(&x);
 }
 
+# The f64 with bit pattern b.
 fn of_bits(b): f64 {
     var x: f64 = 0.0;
     store64(&x, b);
     return x;
 }
 
+# Stores x as entry k of the f64 buffer buf.
 fn put(buf, k, x: f64): i64 {
     store64(buf + k * 8, x);
     return 0;
 }
 
+# Entry k of the f64 buffer buf.
 fn at(buf, k): f64 {
     var x: f64 = load64(buf + k * 8);
     return x;
 }
 
+# 1 when the builder sb holds exactly the C string want, else 0.
 fn text_is(sb, want: cstring): i64 {
     if (load64(sb + 8) != strlen(want)) { return 0; }
     return memeq(load64(sb), want, strlen(want));
@@ -68,6 +73,7 @@ struct Eighths {
 }
 
 impl PmnRng for Eighths {
+    # k/8, then k advances, wrapping from 7 to 0; counts the call.
     fn next_f64(self): f64 {
         var a: f64 = f64_from(self.k);
         var d: f64 = 8.0;
@@ -77,6 +83,7 @@ impl PmnRng for Eighths {
     }
 }
 
+# 1.3.0's tests of MultivariateNormal, from distribution.rs; mean, cov and x are scratch.
 fn rust_tests(mean, cov, x): i64 {
     test_group("1.3.0's tests (distribution.rs)");
     var m: PmnMultivariateNormal;
@@ -174,6 +181,7 @@ fn rust_tests(mean, cov, x): i64 {
     return z + en + eg;
 }
 
+# The serde_json codec: round trips, the cached factor recomputed on reading, the refusals.
 fn codec_tests(mean, cov): i64 {
     test_group("serde_json's codec (serde_roundtrip_mvn, the cached factor recomputed, the refusals)");
     var sb = str_builder_new();
@@ -255,6 +263,7 @@ fn codec_tests(mean, cov): i64 {
     return z + d1 + eg;
 }
 
+# The constructor: 1.3.0's check order, the buffer rules, and a refusal leaving out as it was.
 fn constructor_tests(mean, cov, x): i64 {
     test_group("the constructor: its order, the buffer rules, a refusal writing nothing");
     var m: PmnMultivariateNormal;
@@ -331,6 +340,7 @@ fn constructor_tests(mean, cov, x): i64 {
     return z;
 }
 
+# The owned block: a clone has its own, and a dropped model refuses every call.
 fn life_tests(mean, cov, x): i64 {
     test_group("the owned block: clone, drop, and every call refused after the drop");
     var m: PmnMultivariateNormal;
@@ -369,6 +379,7 @@ fn life_tests(mean, cov, x): i64 {
     return z + eg;
 }
 
+# log_pdf and pdf: known values, the refusals, and pdf as exp(log_pdf).
 fn density_tests(mean, cov, x): i64 {
     test_group("log_pdf and pdf");
     var m: PmnMultivariateNormal;
@@ -418,6 +429,7 @@ fn density_tests(mean, cov, x): i64 {
     return z + t0 + t1 + t2;
 }
 
+# sample: Box–Muller's pairs in 1.3.0's order, and the buffer rules.
 fn sample_tests(mean, cov, x): i64 {
     test_group("sample: Box–Muller's pairs, the buffer rules");
     var m: PmnMultivariateNormal;
@@ -472,6 +484,7 @@ fn sample_tests(mean, cov, x): i64 {
     return z + eg + eh;
 }
 
+# Runs MultivariateNormal's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var mean = alloc(64 * 8);

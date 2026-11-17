@@ -58,8 +58,8 @@
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
 > begun:** parts a–d are done: **M5 is complete.** **M6 has begun:** parts a (the Markov chains and HMMs), b (Monte Carlo) and c, the gate, are done: **M6 is
 > complete.** **M7 has begun:** parts a (the soorat shapes), b (the AI client) and c, the gate, are done: **M7 is complete.**
-> **M8 has begun:** parts a (the Rust-test ledger), b (the benchmark record), c (the docs) and d (the JSON fuzz
-> harness) are done.
+> **M8 has begun:** parts a (the Rust-test ledger), b (the benchmark record), c (the docs), d (the JSON fuzz
+> harness) and e (the release gate) are done: **M8 is complete, and 2.0.0 is ready to tag.**
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1328,7 +1328,7 @@ Rust's operation order with its refusals, each type with its codec and Debug; go
 - **d:** the fuzz harness for the JSON readers: each type's decoder on mutated documents, refusing without a crash,
   deterministic, every claim released. `tests/pramana.fcyr`: 38 readers, 76,000 documents a pass, every accepted
   one round-tripping byte for byte, a repeated pass growing nothing; in CI ✅;
-- **e:** the release gate: the whole corpus on three targets, every check, VERSION 2.0.0.
+- **e:** the release gate: the whole corpus on three targets, every check, VERSION 2.0.0 ✅. **M8 is complete.**
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

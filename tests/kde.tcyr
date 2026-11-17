@@ -6,15 +6,18 @@
 
 include "tests/lib.cyr"
 
+# x's bit pattern.
 fn bits(x: f64): i64 {
     return load64(&x);
 }
 
+# Stores x as entry k of the f64 buffer buf.
 fn put(buf, k, x: f64): i64 {
     store64(buf + k * 8, x);
     return 0;
 }
 
+# Runs src/kde.cyr's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var a = alloc(256 * 8);

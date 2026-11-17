@@ -6,6 +6,7 @@
 
 include "tests/lib.cyr"
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     var n = 10000;

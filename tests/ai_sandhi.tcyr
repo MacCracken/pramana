@@ -7,6 +7,7 @@ include "lib/sandhi.cyr"
 include "src/error.cyr"
 include "src/ai_sandhi.cyr"
 
+# Runs sandhi's transport tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     test_group("sandhi's transport: a closed port");

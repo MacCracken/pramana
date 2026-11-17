@@ -10,6 +10,7 @@ include "tests/lib.cyr"
 
 var g_rng = 0x2545F4914F6CDD1D;
 
+# The next xorshift64* word of g_rng, the bench's seeded generator.
 fn next(): i64 {
     var x = g_rng;
     x = x ^ (x >> 12);
@@ -19,6 +20,7 @@ fn next(): i64 {
     return x * 0x2545F4914F6CDD1D;
 }
 
+# A uniform draw in [0, 1): next()'s top 53 bits over 2^53.
 fn unit(): f64 {
     var top = next() >> 11;
     var a: f64 = f64_from(top);
@@ -26,6 +28,7 @@ fn unit(): f64 {
     return a / d;
 }
 
+# A uniform draw in [−1, 1).
 fn uni(): f64 {
     var u: f64 = unit();
     var t: f64 = 2.0 * u;
@@ -55,12 +58,14 @@ fn spd(a, bm, n): i64 {
     return 0;
 }
 
+# FNV-1a over the bit patterns of the n words at p.
 fn digest(p, n): i64 {
     var d = 0xCBF29CE484222325;
     for (var k = 0; k < n; k = k + 1) { d = (d ^ load64(p + k * 8)) * 0x100000001B3; }
     return d;
 }
 
+# Prints a row's sum's bit pattern and its digest in hex, so a run can be checked against 1.4.0's.
 fn show(name, sum: f64, dg): i64 {
     var sb: f64 = sum;
     print("  ", 2);
@@ -76,6 +81,7 @@ fn show(name, sum: f64, dg): i64 {
     return 0;
 }
 
+# Times reps factorizations of a random n × n SPD matrix, then reps solves with its factor.
 fn row(n, reps, cname, sname, a, bm, l, b, x): i64 {
     spd(a, bm, n);
     for (var k = 0; k < n; k = k + 1) {
@@ -107,6 +113,7 @@ fn row(n, reps, cname, sname, a, bm, l, b, x): i64 {
     return 0;
 }
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     var a = alloc(64 * 64 * 8);

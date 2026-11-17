@@ -42,12 +42,14 @@ fn vm_kb(): i64 {
     return v * 4;
 }
 
+# Reads a Vec<f64> of up to 20,000 entries into g_vals, for the soak's decodes.
 fn dec_vec(root, ctx): i64 {
     var n = _pmn_json_arr_len(root);
     if (n < 0 || n > 20000) { return PMN_ERR_DESERIALIZE; }
     return _pmn_json_vec_f64(root, g_vals, 20000);
 }
 
+# Reads a {"mean", "std_dev"} struct, for the soak's decodes.
 fn dec_pair(root, ctx): i64 {
     var names[16];
     store64(&names, "mean");
@@ -220,6 +222,7 @@ fn codec_normal(d: *PmnNormal, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_uniform(d: *PmnUniform, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -230,6 +233,7 @@ fn codec_uniform(d: *PmnUniform, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_exponential(d: *PmnExponential, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -240,6 +244,7 @@ fn codec_exponential(d: *PmnExponential, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_bernoulli(d: *PmnBernoulli, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -250,6 +255,7 @@ fn codec_bernoulli(d: *PmnBernoulli, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_cauchy(d: *PmnCauchy, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -260,6 +266,7 @@ fn codec_cauchy(d: *PmnCauchy, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_weibull(d: *PmnWeibull, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -270,6 +277,7 @@ fn codec_weibull(d: *PmnWeibull, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_gamma(d: *PmnGamma, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -280,6 +288,7 @@ fn codec_gamma(d: *PmnGamma, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_chisquared(d: *PmnChiSquared, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -290,6 +299,7 @@ fn codec_chisquared(d: *PmnChiSquared, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_beta(d: *PmnBeta, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -300,6 +310,7 @@ fn codec_beta(d: *PmnBeta, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_studentt(d: *PmnStudentT, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -310,6 +321,7 @@ fn codec_studentt(d: *PmnStudentT, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_fdistribution(d: *PmnFDistribution, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -320,6 +332,7 @@ fn codec_fdistribution(d: *PmnFDistribution, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_poisson(d: *PmnPoisson, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -330,6 +343,7 @@ fn codec_poisson(d: *PmnPoisson, sb): i64 {
     return e;
 }
 
+# Writes d's JSON, reads it back, and writes both Debug forms into sb; the sum of the codes.
 fn codec_binomial(d: *PmnBinomial, sb): i64 {
     store64(sb + 8, 0);
     var e = d.to_json(sb);
@@ -468,6 +482,7 @@ fn m2_round(r): f64 {
     return s;
 }
 
+# Φ, the KS test's cdf.
 fn m4_cdf(ctx, x: f64): f64 {
     var r: f64 = _pmn_normal_cdf(x);
     return r;
@@ -608,6 +623,7 @@ fn m6_f(ctx, x: f64): f64 {
     return r;
 }
 
+# N(0, 1)'s log-density up to a constant, −x²/2: the soak's MH target.
 fn m6_target(ctx, xs, dim): f64 {
     var x: f64 = load64(xs);
     var h: f64 = -0.5 * x;
@@ -615,6 +631,7 @@ fn m6_target(ctx, xs, dim): f64 {
     return r;
 }
 
+# A Gibbs conditional, one uniform draw from rp.
 fn m6_cond(ctx, state, dim, rp: *PmnRngRef): f64 {
     var u: f64 = rp.o.next_f64();
     return u;
@@ -845,6 +862,7 @@ fn m7_round(r, a, b, sb): f64 {
     return acc;
 }
 
+# Runs the soak's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     g_vals = alloc(20000 * 8);

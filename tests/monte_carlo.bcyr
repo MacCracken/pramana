@@ -7,6 +7,7 @@
 
 include "tests/lib.cyr"
 
+# Prints a row's result's bit pattern in hex, so a run can be checked against the model.
 fn show(name, r: f64): i64 {
     var x: f64 = r;
     print("  ", 2);
@@ -25,6 +26,7 @@ fn lt_normal(ctx, xs, dim): f64 {
     return r;
 }
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     var g: PmnSimpleRng;

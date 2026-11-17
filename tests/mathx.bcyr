@@ -12,6 +12,7 @@ var g_xs = 0;
 var g_ys = 0;
 var g_ws = 0;
 
+# The next xorshift64* word of g_rng, the bench's seeded generator.
 fn next(): i64 {
     var x = g_rng;
     x = x ^ (x >> 12);
@@ -21,6 +22,7 @@ fn next(): i64 {
     return x * 0x2545F4914F6CDD1D;
 }
 
+# A uniform draw in [0, 1): next()'s top 53 bits over 2^53.
 fn unit(): f64 {
     var top = next() >> 11;
     var a: f64 = f64_from(top);
@@ -74,6 +76,7 @@ fn row(name: cstring, which): i64 {
     return 0;
 }
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     g_xs = alloc(4096 * 8);

@@ -13,6 +13,7 @@
 # `SimpleRngRepr` and `SimpleRng::new`, so a state of 0, xorshift's one fixed point, becomes 1 (port plan D5).
 
 trait PmnRng {
+    # The next draw, in [0, 1): the one method a generator implements, as Rust's `Rng::next_f64`.
     fn next_f64(self): f64;
 }
 

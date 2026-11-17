@@ -12,6 +12,7 @@ struct Eighths {
 }
 
 impl PmnRng for Eighths {
+    # k/8, then k advances, wrapping from 7 to 0.
     fn next_f64(self): f64 {
         var a: f64 = f64_from(self.k);
         var d: f64 = 8.0;
@@ -30,6 +31,7 @@ fn draw_sum<R: PmnRng>(g: *R, n): f64 {
     return s;
 }
 
+# Runs the RNG's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var g: PmnSimpleRng;

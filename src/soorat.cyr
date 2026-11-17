@@ -350,6 +350,7 @@ fn PmnMcmcTrace_new(out: *PmnMcmcTrace, samples, ns, lls, nl, parameter, nparame
     return PMN_ERR_NONE;
 }
 
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src.
 #must_use
 fn PmnMcmcTrace_clone(out: *PmnMcmcTrace, src: *PmnMcmcTrace): i64 {
     if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -357,6 +358,7 @@ fn PmnMcmcTrace_clone(out: *PmnMcmcTrace, src: *PmnMcmcTrace): i64 {
     return PmnMcmcTrace_new(out, src.samples, src.ns, src.lls, src.nll, src.parameter, src.nparameter);
 }
 
+# Frees t's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null t.
 fn PmnMcmcTrace_drop(t: *PmnMcmcTrace): i64 {
     if (t == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (t.buf != 0) { fl_free(t.buf); }
@@ -367,6 +369,7 @@ fn PmnMcmcTrace_drop(t: *PmnMcmcTrace): i64 {
     return PMN_ERR_NONE;
 }
 
+# Rust's derived PartialEq: 1 when every field is equal, else 0 (a dropped or null one equals nothing).
 #must_use
 fn PmnMcmcTrace_eq(a: *PmnMcmcTrace, b: *PmnMcmcTrace): i64 {
     if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
@@ -425,6 +428,8 @@ fn _pmn_trace_from_root(root, out: *PmnMcmcTrace): i64 {
     return e;
 }
 
+# Reads an McmcTrace document, buf[0, len), into out (caller storage, owning a new block: drop it):
+# PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
 #must_use
 fn PmnMcmcTrace_from_json(out: *PmnMcmcTrace, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -470,6 +475,7 @@ fn PmnRegressionFit_new(out: *PmnRegressionFit, recs, r_squared: f64): i64 {
     return PMN_ERR_NONE;
 }
 
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src.
 #must_use
 fn PmnRegressionFit_clone(out: *PmnRegressionFit, src: *PmnRegressionFit): i64 {
     if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -478,6 +484,7 @@ fn PmnRegressionFit_clone(out: *PmnRegressionFit, src: *PmnRegressionFit): i64 {
     return PmnRegressionFit_new(out, src.vec, r);
 }
 
+# Frees f's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null f.
 fn PmnRegressionFit_drop(f: *PmnRegressionFit): i64 {
     if (f == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (f.buf != 0) { fl_free(f.buf); }
@@ -486,6 +493,7 @@ fn PmnRegressionFit_drop(f: *PmnRegressionFit): i64 {
     return PMN_ERR_NONE;
 }
 
+# Rust's derived PartialEq: 1 when every field is equal, else 0 (a dropped or null one equals nothing).
 #must_use
 fn PmnRegressionFit_eq(a: *PmnRegressionFit, b: *PmnRegressionFit): i64 {
     if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
@@ -519,6 +527,7 @@ impl PmnRegressionFit {
         return load64(self.vec + i * 16);
     }
 
+    # Vector i's length (0 … 4, Rust's field order), or −1 out of range or dropped.
     #must_use
     fn field_len(self, i): i64 {
         if (self == 0 || self.buf == 0 || i < 0 || i > 4) { return 0 - 1; }
@@ -592,6 +601,8 @@ fn _pmn_fit_from_root(root, out: *PmnRegressionFit): i64 {
     return e;
 }
 
+# Reads a RegressionFit document, buf[0, len), into out (caller storage, owning a new block: drop it):
+# PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
 #must_use
 fn PmnRegressionFit_from_json(out: *PmnRegressionFit, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -706,6 +717,7 @@ fn PmnHistogramData_from_data(out: *PmnHistogramData, data, n, n_bins): i64 {
     return PMN_ERR_NONE;
 }
 
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src.
 #must_use
 fn PmnHistogramData_clone(out: *PmnHistogramData, src: *PmnHistogramData): i64 {
     if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -713,6 +725,7 @@ fn PmnHistogramData_clone(out: *PmnHistogramData, src: *PmnHistogramData): i64 {
     return PmnHistogramData_new(out, src.edges, src.nedges, src.counts, src.ncounts, src.total);
 }
 
+# Frees h's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null h.
 fn PmnHistogramData_drop(h: *PmnHistogramData): i64 {
     if (h == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (h.buf != 0) { fl_free(h.buf); }
@@ -722,6 +735,7 @@ fn PmnHistogramData_drop(h: *PmnHistogramData): i64 {
     return PMN_ERR_NONE;
 }
 
+# Rust's derived PartialEq: 1 when every field is equal, else 0 (a dropped or null one equals nothing).
 #must_use
 fn PmnHistogramData_eq(a: *PmnHistogramData, b: *PmnHistogramData): i64 {
     if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
@@ -785,6 +799,8 @@ fn _pmn_hist_from_root(root, out: *PmnHistogramData): i64 {
     return e;
 }
 
+# Reads a HistogramData document, buf[0, len), into out (caller storage, owning a new block: drop it):
+# PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
 #must_use
 fn PmnHistogramData_from_json(out: *PmnHistogramData, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -844,6 +860,7 @@ fn PmnCorrelationMatrix_new(out: *PmnCorrelationMatrix, values, nv, size, labels
     return PMN_ERR_NONE;
 }
 
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src.
 #must_use
 fn PmnCorrelationMatrix_clone(out: *PmnCorrelationMatrix, src: *PmnCorrelationMatrix): i64 {
     if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -851,6 +868,7 @@ fn PmnCorrelationMatrix_clone(out: *PmnCorrelationMatrix, src: *PmnCorrelationMa
     return PmnCorrelationMatrix_new(out, src.values, src.nvalues, src.size, src.labels, src.nlabels);
 }
 
+# Frees c's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null c.
 fn PmnCorrelationMatrix_drop(c: *PmnCorrelationMatrix): i64 {
     if (c == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (c.buf != 0) { fl_free(c.buf); }
@@ -860,6 +878,7 @@ fn PmnCorrelationMatrix_drop(c: *PmnCorrelationMatrix): i64 {
     return PMN_ERR_NONE;
 }
 
+# Rust's derived PartialEq: 1 when every field is equal, else 0 (a dropped or null one equals nothing).
 #must_use
 fn PmnCorrelationMatrix_eq(a: *PmnCorrelationMatrix, b: *PmnCorrelationMatrix): i64 {
     if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
@@ -947,6 +966,8 @@ fn _pmn_corr_from_root(root, out: *PmnCorrelationMatrix): i64 {
     return e;
 }
 
+# Reads a CorrelationMatrix document, buf[0, len), into out (caller storage, owning a new block: drop it):
+# PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
 #must_use
 fn PmnCorrelationMatrix_from_json(out: *PmnCorrelationMatrix, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }

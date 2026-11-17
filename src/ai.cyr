@@ -272,6 +272,7 @@ fn PmnQueryResult_new(out: *PmnQueryResult, answer, nanswer, operation, noperati
     return PMN_ERR_NONE;
 }
 
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src.
 #must_use
 fn PmnQueryResult_clone(out: *PmnQueryResult, src: *PmnQueryResult): i64 {
     if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -279,6 +280,7 @@ fn PmnQueryResult_clone(out: *PmnQueryResult, src: *PmnQueryResult): i64 {
     return PmnQueryResult_new(out, src.answer, src.nanswer, src.operation, src.noperation, src.values, src.nvalues);
 }
 
+# Frees r's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null r.
 fn PmnQueryResult_drop(r: *PmnQueryResult): i64 {
     if (r == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (r.buf != 0) { fl_free(r.buf); }
@@ -701,6 +703,7 @@ fn PmnStatQuery_new(out: *PmnStatQuery, base, nbase, model, nmodel, fp, ctx): i6
     return PMN_ERR_NONE;
 }
 
+# Frees q's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null q.
 fn PmnStatQuery_drop(q: *PmnStatQuery): i64 {
     if (q == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (q.buf != 0) { fl_free(q.buf); }

@@ -6,11 +6,13 @@
 
 include "tests/lib.cyr"
 
+# Stores x as entry k of the f64 buffer buf.
 fn put(buf, k, x: f64): i64 {
     store64(buf + k * 8, x);
     return 0;
 }
 
+# 1 when |x − y| < tol, else 0.
 fn near(x: f64, y: f64, tol: f64): i64 {
     var d: f64 = x - y;
     if (f64_abs(d) < tol) { return 1; }
@@ -23,6 +25,7 @@ struct AlmostOne {
 }
 
 impl PmnRng for AlmostOne {
+    # 1 − 1e-12, every draw.
     fn next_f64(self): f64 {
         var r: f64 = 0.999999999999;
         return r;
@@ -49,6 +52,7 @@ fn example_hmm(h: *PmnHiddenMarkovModel): i64 {
     return PmnHiddenMarkovModel_new(h, &a, 2, 2, &b, 2, 3, &p, 2);
 }
 
+# h's forward log-likelihood of obs[0, t), or NaN on a refusal.
 fn ll_of(h: *PmnHiddenMarkovModel, obs, t): f64 {
     var tg, v = h.forward_log_likelihood(obs, t);
     if (tg == Err) {
@@ -85,6 +89,7 @@ fn brute(h: *PmnHiddenMarkovModel, obs, t): f64 {
     return total;
 }
 
+# 1 when every entry of the rows × cols matrix p is finite and non-negative, and each row sums to 1 within tol.
 fn rows_stochastic(p, rows, cols, tol: f64): i64 {
     for (var r = 0; r < rows; r = r + 1) {
         var s: f64 = pmn_sum(p + r * cols * 8, cols);
@@ -97,6 +102,7 @@ fn rows_stochastic(p, rows, cols, tol: f64): i64 {
     return 1;
 }
 
+# Runs src/markov.cyr's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var o = alloc(8192 * 8);
@@ -404,6 +410,7 @@ fn main() {
     PmnHiddenMarkovModel_drop(&hc);
     PmnHiddenMarkovModel_drop(&h);
     assert(h.num_states() == 0 && h.num_symbols() == 0, "a dropped model");
+    assert(h.transition() == 0 && h.emission() == 0 && h.initial() == 0, "a dropped model lends no matrix");
     var td, vd = h.forward_log_likelihood(obs, 1);
     assert(td == Err && vd == PMN_ERR_INVALID_PARAMETER, "refuses");
     assert_eq(PmnHiddenMarkovModel_drop(&h), PMN_ERR_NONE, "a second drop");

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-17
+
 ### Breaking
 
 2.0.0 is pramana 1.3.0 ported from Rust to Cyrius. Its values are 1.3.0's, row by row (the golden corpus, 369,563
@@ -1128,6 +1130,20 @@ brief ([ADR 007](docs/decisions/007-port-api-divergences.md)):
     may stay claimed.
   - **Two passes:** a second pass over the same documents gives the same digest and grows neither the bump heap nor
     the freelist's arena.
+- **M8 part e: the release gate** (port plan §7). Every check passes on the release tree:
+  - the golden corpus generated and validated, 369,563 rows in 20 modules, every one replayed at 0 ulp on x86_64 ELF,
+    PE and aarch64;
+  - `cyrius test` warning-free, and `test --bounds`, the fuzz harness, the five examples, `distlib --check` and
+    `deps --locked`;
+  - the upstream ledger, surface parity (374 items, none pending) and the Rust-test ledger (330 tests);
+  - `cyrius audit`. Its doc check found 200 public functions without a doc comment: 23 in `src/` (among them the
+    soorat shapes' clone, drop, eq and from_json, and the AI types' drops) and 177 test and bench helpers. Each now
+    has one.
+
+  Writing those comments found a bug in M6 part a: `HiddenMarkovModel`'s drop freed its block but left `transition`,
+  `emission` and `initial` returning pointers into it. The drop now clears them, so a dropped model lends 0, as every
+  other owned type's accessor does. `tests/markov.tcyr` (111 checks) pins it, and the check fails without the fix.
+  VERSION is 2.0.0.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

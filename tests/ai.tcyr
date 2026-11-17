@@ -7,11 +7,13 @@
 
 include "tests/lib.cyr"
 
+# 1 when the builder sb holds exactly the C string want, else 0.
 fn text_is(sb, want): i64 {
     if (load64(sb + 8) == strlen(want) && memeq(load64(sb), want, strlen(want)) == 1) { return 1; }
     return 0;
 }
 
+# 1 when the n bytes at p are exactly the C string want, else 0.
 fn bytes_is(p, n, want): i64 {
     if (n == strlen(want) && memeq(p, want, n) == 1) { return 1; }
     return 0;
@@ -26,10 +28,12 @@ fn canned(ctx, url, nurl, body, nbody, resp): i64 {
     return PMN_ERR_NONE;
 }
 
+# Runs the tool name on the JSON arguments args over the nc columns cols, into out.
 fn tool(out, name, args, cols, nc): i64 {
     return _pmn_ai_execute_tool(out, name, strlen(name), args, strlen(args), cols, nc);
 }
 
+# Runs src/ai.cyr's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     # 1.3.0's dataset(): "series", sin(0.4i) + 0.05i for i < 40

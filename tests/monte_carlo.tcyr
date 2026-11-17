@@ -6,16 +6,19 @@
 
 include "tests/lib.cyr"
 
+# 1 when |x − y| < tol, else 0.
 fn near(x: f64, y: f64, tol: f64): i64 {
     var d: f64 = x - y;
     if (f64_abs(d) < tol) { return 1; }
     return 0;
 }
 
+# f(x) = x, the integrand.
 fn f_ident(ctx, x: f64): f64 {
     return x;
 }
 
+# f(x) = x², the integrand.
 fn f_square(ctx, x: f64): f64 {
     var r: f64 = x * x;
     return r;
@@ -34,10 +37,12 @@ fn f_scaled(ctx, x: f64): f64 {
     return r;
 }
 
+# A flat log-density, 0 everywhere.
 fn lt_flat(ctx, xs, dim): f64 {
     return 0.0;
 }
 
+# N(0, 1)'s log-density up to a constant, −x²/2.
 fn lt_normal1(ctx, xs, dim): f64 {
     var x: f64 = load64(xs);
     var h: f64 = -0.5 * x;
@@ -45,6 +50,7 @@ fn lt_normal1(ctx, xs, dim): f64 {
     return r;
 }
 
+# The 2-D standard normal's log-density up to a constant, −(x² + y²)/2.
 fn lt_normal2(ctx, xs, dim): f64 {
     var x: f64 = load64(xs);
     var y: f64 = load64(xs + 8);
@@ -80,6 +86,7 @@ struct SeqRng {
 }
 
 impl PmnRng for SeqRng {
+    # The next scripted word, wrapping after n.
     fn next_f64(self): f64 {
         var r: f64 = load64(self.p + (self.i % self.n) * 8);
         self.i = self.i + 1;
@@ -95,6 +102,7 @@ fn lt_box(ctx, xs, dim): f64 {
     return ninf;
 }
 
+# A Gibbs conditional: a standard normal draw by Box–Muller on two of rp's uniforms.
 fn cond_normal(ctx, state, dim, rp: *PmnRngRef): f64 {
     var d1: f64 = rp.o.next_f64();
     var mp: f64 = _PMN_F64_MIN_POSITIVE;
@@ -110,10 +118,12 @@ fn cond_normal(ctx, state, dim, rp: *PmnRngRef): f64 {
     return z;
 }
 
+# A Gibbs conditional that is always 0.
 fn cond_zero(ctx, state, dim, rp: *PmnRngRef): f64 {
     return 0.0;
 }
 
+# The mean of column k of r's samples, dim to a row.
 fn column_mean(r: *PmnMcmcResult, dim, k): f64 {
     var n = r.n_samples();
     var s: f64 = 0.0;
@@ -126,6 +136,7 @@ fn column_mean(r: *PmnMcmcResult, dim, k): f64 {
     return m;
 }
 
+# Runs src/monte_carlo.cyr's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var g: PmnSimpleRng;

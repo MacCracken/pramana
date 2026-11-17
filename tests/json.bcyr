@@ -12,6 +12,7 @@ include "tests/lib.cyr"
 var g_rng = 0x2545F4914F6CDD1D;
 var g_out = 0;
 
+# The next xorshift64* word of g_rng, the bench's seeded generator.
 fn next(): i64 {
     var x = g_rng;
     x = x ^ (x >> 12);
@@ -21,6 +22,7 @@ fn next(): i64 {
     return x * 0x2545F4914F6CDD1D;
 }
 
+# A uniform draw in [0, 1): next()'s top 53 bits over 2^53.
 fn unit(): f64 {
     var top = next() >> 11;
     var a: f64 = f64_from(top);
@@ -51,20 +53,24 @@ fn dec_u64(x, buf): i64 {
     return k;
 }
 
+# FNV-1a over the n bytes at p.
 fn fnv(p, n): i64 {
     var h = 0xCBF29CE484222325;
     for (var i = 0; i < n; i = i + 1) { h = (h ^ load8(p + i)) * 0x100000001B3; }
     return h;
 }
 
+# Reads a Vec<f64> into g_out.
 fn dec_vec_f64(root, ctx): i64 {
     return _pmn_json_vec_f64(root, g_out, 4096);
 }
 
+# Reads a Vec<u64> into g_out.
 fn dec_vec_u64(root, ctx): i64 {
     return _pmn_json_vec_u64(root, g_out, 4096);
 }
 
+# Reads a Vec<Vec<f64>> into g_out, row-major.
 fn dec_mat(root, ctx): i64 {
     var sh[24];
     var e = _pmn_json_mat_shape(root, &sh);
@@ -72,6 +78,7 @@ fn dec_mat(root, ctx): i64 {
     return _pmn_json_mat_f64(root, g_out, load64(&sh), load64(&sh + 8));
 }
 
+# Reads a String into g_out.
 fn dec_str(root, ctx): i64 {
     var w[16];
     var e = _pmn_json_str(root, &w);
@@ -80,6 +87,7 @@ fn dec_str(root, ctx): i64 {
     return PMN_ERR_NONE;
 }
 
+# Reads an f64 into g_out.
 fn dec_f64(root, ctx): i64 {
     return _pmn_json_f64(root, g_out);
 }
@@ -103,6 +111,7 @@ fn dec_normal(root, ctx): i64 {
     return PMN_ERR_NONE;
 }
 
+# Reads a Kernel, serde's unit-variant form, into g_out.
 fn dec_kernel(root, ctx): i64 {
     var kn[32];
     store64(&kn, "Gaussian");
@@ -112,6 +121,7 @@ fn dec_kernel(root, ctx): i64 {
     return _pmn_json_unit_variant(root, &kn, 4, g_out);
 }
 
+# Prints the length and FNV-1a hash of the document in sb, then times 10^4 decodes of it by fp.
 fn row(name: cstring, sb, fp): i64 {
     var p = load64(sb);
     var n = load64(sb + 8);
@@ -168,6 +178,7 @@ fn wrow(name: cstring, which, vals, sp, sn): i64 {
     return 0;
 }
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     g_out = alloc(4096 * 8);

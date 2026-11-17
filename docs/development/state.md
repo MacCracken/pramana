@@ -5,11 +5,13 @@
 
 ## Version
 
-**1.3.0** (`VERSION`), on its way to **2.0.0**, the Cyrius library. `cyrius.cyml` reads the version through
-`version = "${file:VERSION}"`, and the release workflow checks both against the tag.
+**2.0.0** (`VERSION`), the Cyrius library, pending its tag. `cyrius.cyml` reads the version through
+`version = "${file:VERSION}"`, and the release workflow checks both against the tag. The zugot recipe
+(`~/Repos/zugot/marketplace/pramana.cyml`) is at 2.0.0, its sha256 to be filled from the release tarball.
 
-The last Rust release is **1.3.0**, tagged at `284eb18` (2026-11-14); `release.yml` publishes on a tag. Its source,
-with the hidden `oracle` hooks (`94a7153`), is frozen in `rust-old/`: read as text, never built or run (ADR 010).
+The last Rust release is **1.3.0**, tagged at `284eb18` (2026-11-14). Its source, with the hidden `oracle` hooks
+(`94a7153`), is frozen in `rust-old/`: read as text, never built or run (ADR 010). crates.io keeps 1.3.x for Rust
+users.
 
 ## Port progress
 
@@ -25,7 +27,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 | M5 Regression, time series, Bayesian | ✅ **every part done; the gate passes** (port plan §7's parts a–d; port-parity §11). **Part a**: `src/regression.cyr` (linear, polynomial on hisab's MGS, ledger L5, logistic); golden `regression`, 562 rows, 264 codec and 48 Debug rows, at 0 ulp on three targets. **Part b**: `src/timeseries.cyr`; golden `timeseries`, 1,322 rows, 97 codec and 16 Debug rows, at 0 ulp on three targets. **Part c**: `src/bayesian.cyr`; golden `bayesian`, 2,005 rows, 97 codec and 10 Debug rows, at 0 ulp on three targets. **Part d**, the gate: NIST StRD's regression sets and r(1) replayed and measured, the soak's M5 group, surface parity |
 | M6 Markov chains, Monte Carlo | ✅ **every part done; the gate passes** (port plan §7's parts a–c; port-parity §12). **Part a** ✅: `src/markov.cyr` (MarkovChain, HiddenMarkovModel); golden `markov`, 2,884 rows, 226 codec and 20 Debug rows, at 0 ulp on three targets. **Part b** ✅: `src/monte_carlo.cyr` (integration, π, Metropolis–Hastings, Gibbs; ADR 007 row 18); golden `monte_carlo`, 1,608 rows (`monte_carlo.cr.tsv` 19), 174 codec and 18 Debug rows, at 0 ulp on three targets. **Part c**, the gate: the soak's M6 group, surface parity, every row at 0 ulp on three targets |
 | M7 soorat, ai | ✅ **every part done; the gate passes** (port plan §7's parts a–c; port-parity §13). **Part a** ✅: `src/soorat.cyr` (the five shapes, `HistogramData::from_data`); golden `soorat`, 363 rows, 465 codec and 20 Debug rows, at 0 ulp. **Part b** ✅: `src/ai.cyr` and `src/ai_sandhi.cyr` in `[lib.ai]` (StatQuery with 1.3.0's tool-less wire behavior, QueryResult, the five tools, Rust's float text); golden `ai`, 2,721 rows (`ai.ref.tsv` 13), 89 codec and 6 Debug rows, at 0 ulp. **Part c**, the gate: the soak's M7 group, a `[lib.ai]` consumer on three targets, surface parity, every row at 0 ulp on three targets |
-| M8 Release 2.0.0 | in progress (port plan §7's parts a–e). **Part a** ✅: the Rust-test ledger (`scripts/rust_test_ledger.py`, `docs/development/rust-test-ledger.md`): all 330 of 1.3.0's tests accounted for, 319 carried, 11 retired with the `oracle` feature; `tests/integration.tcyr`. **Part b** ✅: the benchmark record, all 34 of 1.3.0's criterion rows in both columns (`tests/criterion.bcyr`; 1.8–66× Rust, geometric mean 10.0×). **Part c** ✅: the README, `docs/guides/migration-2.0.md`, the CHANGELOG's *Breaking* section, five examples in `docs/examples/` (run in CI). **Part d** ✅: `tests/pramana.fcyr`, the fuzz harness for the 38 JSON readers (76,000 mutated documents a pass, 0 failures) |
+| M8 Release 2.0.0 | ✅ **every part done; the release gate passes** (port plan §7's parts a–e). **Part a** ✅: the Rust-test ledger (`scripts/rust_test_ledger.py`, `docs/development/rust-test-ledger.md`): all 330 of 1.3.0's tests accounted for, 319 carried, 11 retired with the `oracle` feature; `tests/integration.tcyr`. **Part b** ✅: the benchmark record, all 34 of 1.3.0's criterion rows in both columns (`tests/criterion.bcyr`; 1.8–66× Rust, geometric mean 10.0×). **Part c** ✅: the README, `docs/guides/migration-2.0.md`, the CHANGELOG's *Breaking* section, five examples in `docs/examples/` (run in CI). **Part d** ✅: `tests/pramana.fcyr`, the fuzz harness for the 38 JSON readers (76,000 mutated documents a pass, 0 failures). **Part e** ✅: the release gate, every check green on the release tree (the whole corpus on three targets, `cyrius audit` among them, whose doc check found 200 public functions without a doc comment, now each with one; writing them found HiddenMarkovModel's drop leaving its three matrix accessors pointing into the freed block, fixed and tested); VERSION 2.0.0 |
 
 ## Toolchain
 
@@ -104,7 +106,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
     (43);
   - M4: `tests/descriptive.tcyr` (42), `tests/kde.tcyr` (43), `tests/pca.tcyr` (37), `tests/hypothesis.tcyr` (113);
   - M5: `tests/regression.tcyr` (46), `tests/timeseries.tcyr` (45), `tests/bayesian.tcyr` (19);
-  - M6: `tests/markov.tcyr` (110), `tests/monte_carlo.tcyr` (69);
+  - M6: `tests/markov.tcyr` (111), `tests/monte_carlo.tcyr` (69);
   - M7: `tests/soorat.tcyr` (47), `tests/ai.tcyr` (40), `tests/ai_sandhi.tcyr` (2);
   - M8: `tests/integration.tcyr` (35: 1.3.0's `tests/integration.rs` and its doc tests). The Rust-test ledger
     (`docs/development/rust-test-ledger.md`) accounts for all 330 of 1.3.0's tests;
@@ -155,6 +157,6 @@ Direct (declared in `cyrius.cyml`; 51 files locked in `cyrius.lock`):
 
 ## Next
 
-M8 (port plan §7's M8 row): the release. a: the Rust-test ledger; b: the benchmark record; c: the surface diff, the
-README, `docs/guides/migration-2.0.md`, the CHANGELOG's *Breaking* section and the examples; d: the fuzz harness for
-the JSON readers; e: the release gate on three targets and VERSION 2.0.0.
+2.0.0 is ready to tag; the maintainer tags and releases it. After that: the 2.1 candidates on the roadmap (the AI
+client's tools, D4's StRD shortfalls, the accuracy findings), and the upstream requests in the port plan's §10 as
+their libraries ship.

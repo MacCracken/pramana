@@ -7,10 +7,12 @@
 
 include "tests/lib.cyr"
 
+# x's bit pattern.
 fn bits(x: f64): i64 {
     return load64(&x);
 }
 
+# The f64 with bit pattern b.
 fn of_bits(b): f64 {
     var x: f64 = 0.0;
     store64(&x, b);
@@ -66,6 +68,7 @@ fn bi_ok(ab, bb, xb, yb, ib, cb, bound): i64 {
     return 0;
 }
 
+# Runs the special functions' tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var t7: f64 = 0.0000001;

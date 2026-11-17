@@ -20,6 +20,7 @@ var g_m16 = 0;    # a d = 16 one, built once
 var g_pt = 0;     # a point, a draw or a mean: 16 f64s
 var g_cv = 0;     # a covariance: 16 × 16 f64s
 
+# The next xorshift64* word of g_rng, the bench's seeded generator.
 fn next(): i64 {
     var x = g_rng;
     x = x ^ (x >> 12);
@@ -29,6 +30,7 @@ fn next(): i64 {
     return x * 0x2545F4914F6CDD1D;
 }
 
+# A uniform draw in [0, 1): next()'s top 53 bits over 2^53.
 fn unit(): f64 {
     var top = next() >> 11;
     var a: f64 = f64_from(top);
@@ -218,18 +220,21 @@ fn cov3(cov, s: f64): i64 {
     return 0;
 }
 
+# m's log_pdf at p[0, n), the value alone.
 fn log_density(m: *PmnMultivariateNormal, p, n): f64 {
     var t, v = m.log_pdf(p, n);
     var r: f64 = v;
     return r;
 }
 
+# m's pdf at p[0, n), the value alone.
 fn density(m: *PmnMultivariateNormal, p, n): f64 {
     var t, v = m.pdf(p, n);
     var r: f64 = v;
     return r;
 }
 
+# The sum of one 3-D draw of m.
 fn draw_sum(m: *PmnMultivariateNormal, g: *PmnSimpleRng): f64 {
     var e = m.sample(g, g_pt, 3);
     var a: f64 = load64(g_pt);
@@ -291,6 +296,7 @@ fn eval_d2(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
     return r;
 }
 
+# Times call `which` on 4,096 points drawn in [lo, hi) × [lo2, hi2), in 250 passes, and prints the sum and the digest.
 fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
     for (var j = 0; j < 4096; j = j + 1) {
         var w: f64 = hi - lo;
@@ -340,6 +346,7 @@ fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
     return 0;
 }
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     g_xs = alloc(4096 * 8);

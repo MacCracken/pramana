@@ -9,11 +9,13 @@
 
 include "tests/lib.cyr"
 
+# Stores x as entry k of the f64 buffer buf.
 fn put(buf, k, x: f64): i64 {
     store64(buf + k * 8, x);
     return 0;
 }
 
+# Prints a row's result's bit pattern in hex, so a run can be checked against the model.
 fn show(name, r: f64): i64 {
     var x: f64 = r;
     print("  ", 2);
@@ -24,6 +26,7 @@ fn show(name, r: f64): i64 {
     return 0;
 }
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     var m = alloc(9 * 8);

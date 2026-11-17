@@ -6,11 +6,13 @@
 
 include "tests/lib.cyr"
 
+# Stores x as entry k of the f64 buffer buf.
 fn put(buf, k, x: f64): i64 {
     store64(buf + k * 8, x);
     return 0;
 }
 
+# Fills buf[0, n) with the arithmetic sequence a0, a0 + step, ….
 fn fill(buf, n, a0: f64, step: f64): i64 {
     for (var i = 0; i < n; i = i + 1) {
         var fi: f64 = f64_from(i);
@@ -21,6 +23,7 @@ fn fill(buf, n, a0: f64, step: f64): i64 {
     return 0;
 }
 
+# |x − y| / |y|, the relative difference.
 fn rel(x: f64, y: f64): f64 {
     var d: f64 = x - y;
     var q: f64 = d / y;
@@ -44,20 +47,24 @@ fn tr_doc(buf): i64 {
     return n;
 }
 
+# The uniform cdf on [0, 1], for the KS test.
 fn cdf_uniform(ctx, x: f64): f64 {
     var r: f64 = _pmn_clamp(x, 0.0, 1.0);
     return r;
 }
 
+# The identity, a cdf only on [0, 1], for the KS test.
 fn cdf_identity(ctx, x: f64): f64 {
     return x;
 }
 
+# A cdf that is NaN everywhere, which the KS test refuses.
 fn cdf_nan(ctx, x: f64): f64 {
     var n: f64 = _PMN_F64_NAN;
     return n;
 }
 
+# Runs src/hypothesis.cyr's tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     var a = alloc(64 * 8);

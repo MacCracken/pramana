@@ -6,6 +6,7 @@ include "tests/lib.cyr"
 
 var sink: f64 = 0.0;
 
+# Adds x to the sink, so the timed call is not optimised away.
 fn keep(x: f64): i64 {
     var a: f64 = sink;
     var s: f64 = a + x;
@@ -13,6 +14,7 @@ fn keep(x: f64): i64 {
     return 0;
 }
 
+# Runs the bench rows below, printing each one's timing and the result a run can be checked by.
 fn main(): i64 {
     alloc_init();
     var g: PmnSimpleRng;
