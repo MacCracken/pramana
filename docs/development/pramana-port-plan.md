@@ -57,7 +57,8 @@
 > parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
 > begun:** parts a–d are done: **M5 is complete.** **M6 has begun:** parts a (the Markov chains and HMMs), b (Monte Carlo) and c, the gate, are done: **M6 is
-> complete.** **M7 has begun:** parts a (the soorat shapes) and b (the AI client) are done.
+> complete.** **M7 has begun:** parts a (the soorat shapes), b (the AI client) and c, the gate, are done: **M7 is complete.**
+> M8, the release, is next.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1309,7 +1310,9 @@ Rust's operation order with its refusals, each type with its codec and Debug; go
   tools and returns no tool calls, so 1.3.0's `query` always answers directly. The port keeps that wire behavior,
   with the tools ported and proven on golden rows; turning them on is a 2.1 candidate. A new golden module, `ai`
   (2,721 rows; `ai.ref.tsv` 13), 89 codec and 6 Debug rows, every row at 0 ulp; D8 and ADR 007 row 9 amended ✅;
-- **c:** M7's gate: the soak, surface parity, the `[lib.ai]` bundle, three targets.
+- **c:** M7's gate: the soak, surface parity, the `[lib.ai]` bundle, three targets. The soak's M7 group takes nothing
+  (the AI client's text builders moved onto pool claims); a `[lib.ai]` consumer runs on three targets; both modules
+  ported in surface parity; every row at 0 ulp on three targets ✅. **M7 is complete.**
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

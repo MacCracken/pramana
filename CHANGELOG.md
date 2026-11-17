@@ -1065,6 +1065,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **Tests:** `tests/ai.tcyr` (40 checks) carries 1.3.0's four tests over. `tests/ai_sandhi.tcyr` drives sandhi's
     transport in a binary of its own: sandhi's static data alone fills cyrius's 128 KiB advisory, a request filed
     in sandhi.
+- **M7 part c: M7's gate** (port plan §7; results in `docs/development/port-parity.md` §13.3). **M7 is complete:**
+  1.3.0's `integration/soorat.rs` and `ai.rs` are ported.
+  - **Three targets:** the whole corpus (20 modules) replays at 0 ulp on x86_64 ELF, PE and aarch64, with nothing
+    failed, measured or pending;
+  - **the soak** gains 10⁴ rounds of every M7 call, and nothing is taken (`tests/soak.tcyr`, 48 checks). Each round
+    builds, compares, writes, reads back and drops the five shapes and a histogram, makes a query over a recorded
+    reply, and calls the five tools. Its first draft found the AI client's text builders on the bump heap; they now
+    sit on pool claims;
+  - **the `[lib.ai]` bundle:** a consumer of `dist/pramana-ai.cyr` that includes `lib/sandhi.cyr` builds and runs on
+    the three targets, its query to a closed port refused as `ComputationError`;
+  - **surface parity:** `integration/soorat` and `ai` are ported (374 items in fourteen modules, none pending).
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

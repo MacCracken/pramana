@@ -24,7 +24,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 | M4 Descriptive and hypothesis | ✅ **every part done; the gate passes** (port plan §7's parts a1–c; port-parity §10). **Part a1**: `src/sort.cyr` (the stable sort and O(n) stable selection, ledger L3) and `src/descriptive.cyr` (the fourteen statistics); golden `descriptive`, 23,180 rows at 0 ulp on three targets; `_pmn_copy_words` for the byte-wise `memcpy` (ledger L15). **Part a2**: `src/kde.cyr` (Kernel, KernelDensity, correlation_matrix); 1,212 more rows, 145 codec and 40 Debug rows, at 0 ulp on three targets. **Part a3**: hisab's Jacobi (`src/linalg.cyr`, ledger L6) and `src/pca.cyr`; 201 more rows, 136 codec and Debug rows; ADR 007 row 17. **Part b1**: `src/hypothesis.cyr` (the six tests, three result types); golden `hypothesis`, 1,202 rows (391 on T1's p-values), 382 codec and 60 Debug rows, at 0 ulp on three targets. **Part b2**: the CIs and the quantiles; 395 more rows, 117 codec and Debug rows; the quantiles measured against MPFR (roadmap). **Part c**, the gate: NIST StRD fetched, replayed and measured (`scripts/golden/strd.py`; ANOVA's higher-difficulty shortfalls on the roadmap), the soak's M4 group, surface parity |
 | M5 Regression, time series, Bayesian | ✅ **every part done; the gate passes** (port plan §7's parts a–d; port-parity §11). **Part a**: `src/regression.cyr` (linear, polynomial on hisab's MGS, ledger L5, logistic); golden `regression`, 562 rows, 264 codec and 48 Debug rows, at 0 ulp on three targets. **Part b**: `src/timeseries.cyr`; golden `timeseries`, 1,322 rows, 97 codec and 16 Debug rows, at 0 ulp on three targets. **Part c**: `src/bayesian.cyr`; golden `bayesian`, 2,005 rows, 97 codec and 10 Debug rows, at 0 ulp on three targets. **Part d**, the gate: NIST StRD's regression sets and r(1) replayed and measured, the soak's M5 group, surface parity |
 | M6 Markov chains, Monte Carlo | ✅ **every part done; the gate passes** (port plan §7's parts a–c; port-parity §12). **Part a** ✅: `src/markov.cyr` (MarkovChain, HiddenMarkovModel); golden `markov`, 2,884 rows, 226 codec and 20 Debug rows, at 0 ulp on three targets. **Part b** ✅: `src/monte_carlo.cyr` (integration, π, Metropolis–Hastings, Gibbs; ADR 007 row 18); golden `monte_carlo`, 1,608 rows (`monte_carlo.cr.tsv` 19), 174 codec and 18 Debug rows, at 0 ulp on three targets. **Part c**, the gate: the soak's M6 group, surface parity, every row at 0 ulp on three targets |
-| M7 soorat, ai | in progress (port plan §7's parts a–c; port-parity §13). **Part a** ✅: `src/soorat.cyr` (the five shapes, `HistogramData::from_data`); golden `soorat`, 363 rows, 465 codec and 20 Debug rows, at 0 ulp. **Part b** ✅: `src/ai.cyr` and `src/ai_sandhi.cyr` in `[lib.ai]` (StatQuery with 1.3.0's tool-less wire behavior, QueryResult, the five tools, Rust's float text); golden `ai`, 2,721 rows (`ai.ref.tsv` 13), 89 codec and 6 Debug rows, at 0 ulp. Next: part c, M7's gate |
+| M7 soorat, ai | ✅ **every part done; the gate passes** (port plan §7's parts a–c; port-parity §13). **Part a** ✅: `src/soorat.cyr` (the five shapes, `HistogramData::from_data`); golden `soorat`, 363 rows, 465 codec and 20 Debug rows, at 0 ulp. **Part b** ✅: `src/ai.cyr` and `src/ai_sandhi.cyr` in `[lib.ai]` (StatQuery with 1.3.0's tool-less wire behavior, QueryResult, the five tools, Rust's float text); golden `ai`, 2,721 rows (`ai.ref.tsv` 13), 89 codec and 6 Debug rows, at 0 ulp. **Part c**, the gate: the soak's M7 group, a `[lib.ai]` consumer on three targets, surface parity, every row at 0 ulp on three targets |
 | M8 | not started |
 
 ## Toolchain
@@ -106,7 +106,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
   - M5: `tests/regression.tcyr` (46), `tests/timeseries.tcyr` (45), `tests/bayesian.tcyr` (19);
   - M6: `tests/markov.tcyr` (110), `tests/monte_carlo.tcyr` (69);
   - M7: `tests/soorat.tcyr` (47), `tests/ai.tcyr` (40), `tests/ai_sandhi.tcyr` (2);
-  - `tests/soak.tcyr` (43: every allocating path through M6, nothing taken), and the scaffold's
+  - `tests/soak.tcyr` (48: every allocating path through M7, nothing taken), and the scaffold's
     `tests/pramana.{tcyr,bcyr,fcyr}` stubs.
 
   The benches, on 1.3.0's criterion bodies (the Rust numbers are kept in `docs/benchmarks-rust-v-cyrius.md`; the
@@ -152,5 +152,6 @@ Direct (declared in `cyrius.cyml`; 51 files locked in `cyrius.lock`):
 
 ## Next
 
-M7 (port plan §7): the soorat data shapes (`src/soorat.cyr`, D9) and the AI client (`src/ai.cyr` in `[lib.ai]`, D8).
-Its parts are set at its start, in the plan's §7. Then M8, the 2.0.0 release gate.
+M8 (port plan §7's M8 row): the release. a: the Rust-test ledger; b: the benchmark record; c: the surface diff, the
+README, `docs/guides/migration-2.0.md`, the CHANGELOG's *Breaking* section and the examples; d: the fuzz harness for
+the JSON readers; e: the release gate on three targets and VERSION 2.0.0.

@@ -24,10 +24,10 @@ SRC = ROOT / "src"
 
 # The modules ported so far, in the plan's order. A milestone adds its modules here with their SURFACE entries.
 PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptive", "hypothesis", "regression",
-          "timeseries", "bayesian", "markov", "monte_carlo"]   # M6's gate
+          "timeseries", "bayesian", "markov", "monte_carlo", "integration/soorat", "ai"]   # M7's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {"integration/soorat": "M7", "ai": "M7"}
+PARTIAL = {}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)

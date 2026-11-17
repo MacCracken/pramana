@@ -15,7 +15,8 @@
 # back and dropped, the six tests, the intervals and a decoded TestResult's owned name, 10^4 rounds at up to 300 points.
 # M5's gate (part d) adds every M5 call: the fits, the time series, ARIMA and its codec, the Bayesian calls. M6's gate
 # (part c) adds every M6 call: a Markov chain and an HMM built, run, written, read back and dropped, and the Monte
-# Carlo calls with their McmcResults cloned, written, read back and dropped.
+# Carlo calls with their McmcResults cloned, written, read back and dropped. M7's gate (part c) adds every M7 call:
+# the five soorat shapes and a histogram, a StatQuery over a recorded reply and its QueryResult, and the five tools.
 
 include "tests/lib.cyr"
 
@@ -718,6 +719,132 @@ fn m6_round(r, a, o, obs, sb): f64 {
     return acc;
 }
 
+# M7's recorded reply for the soak: ctx holds the status, the body and its length.
+fn m7_reply(ctx, url, nurl, body, nbody, resp): i64 {
+    store64(resp, load64(ctx));
+    store64(resp + 8, load64(ctx + 8));
+    store64(resp + 16, load64(ctx + 16));
+    return PMN_ERR_NONE;
+}
+
+# One round of every M7 call (M7 part c): a histogram, the five soorat shapes built, compared, cloned, written, read
+# back and dropped; a StatQuery over a recorded reply, its QueryResult written, read back and dropped; and each of the
+# five tools. Up to 200 values a column.
+fn m7_round(r, a, b, sb): f64 {
+    var n = 10 + r % 190;
+    for (var i = 0; i < n; i = i + 1) {
+        var fi: f64 = f64_from(i);
+        var w: f64 = f64_from((i * 7919 + r * 31) % 101);
+        var y: f64 = w * 0.03;
+        var s: f64 = 0.5 * fi;
+        var yv: f64 = s + y;
+        store64(a + i * 8, fi);
+        store64(b + i * 8, yv);
+    }
+    var acc: f64 = 0.0;
+    var h: PmnHistogramData;
+    if (PmnHistogramData_from_data(&h, b, n, 1 + r % 40) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var h2: PmnHistogramData;
+    if (PmnHistogramData_clone(&h2, &h) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (PmnHistogramData_eq(&h, &h2) != 1) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (h2.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var h3: PmnHistogramData;
+    if (PmnHistogramData_from_json(&h3, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    acc = acc + f64_from(h3.total);
+    PmnHistogramData_drop(&h3);
+    PmnHistogramData_drop(&h2);
+    PmnHistogramData_drop(&h);
+    var c: PmnDistributionCurve;
+    if (PmnDistributionCurve_new(&c, a, n, b, n, b, n / 2, "Normal(0,1)", 11) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (c.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var c2: PmnDistributionCurve;
+    if (PmnDistributionCurve_from_json(&c2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (PmnDistributionCurve_eq(&c, &c2) != 1) { return 0.0 / 0.0; }
+    PmnDistributionCurve_drop(&c2);
+    PmnDistributionCurve_drop(&c);
+    var t: PmnMcmcTrace;
+    if (PmnMcmcTrace_new(&t, a, n, b, n, "mu", 2) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var t2: PmnMcmcTrace;
+    if (PmnMcmcTrace_clone(&t2, &t) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnMcmcTrace_drop(&t2);
+    PmnMcmcTrace_drop(&t);
+    var recs[80];
+    for (var k = 0; k < 5; k = k + 1) {
+        store64(&recs + k * 16, b);
+        store64(&recs + k * 16 + 8, n - k);
+    }
+    var f: PmnRegressionFit;
+    if (PmnRegressionFit_new(&f, &recs, 0.5) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (f.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var f2: PmnRegressionFit;
+    if (PmnRegressionFit_from_json(&f2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnRegressionFit_drop(&f2);
+    PmnRegressionFit_drop(&f);
+    var lab[32];
+    store64(&lab, "x");
+    store64(&lab + 8, 1);
+    store64(&lab + 16, "y");
+    store64(&lab + 24, 1);
+    var cm: PmnCorrelationMatrix;
+    if (PmnCorrelationMatrix_new(&cm, b, 4, 2, &lab, 2) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (cm.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var cm2: PmnCorrelationMatrix;
+    if (PmnCorrelationMatrix_from_json(&cm2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnCorrelationMatrix_drop(&cm2);
+    PmnCorrelationMatrix_drop(&cm);
+    var cols[64];
+    store64(&cols, "x");
+    store64(&cols + 8, 1);
+    store64(&cols + 16, a);
+    store64(&cols + 24, n);
+    store64(&cols + 32, "y");
+    store64(&cols + 40, 1);
+    store64(&cols + 48, b);
+    store64(&cols + 56, n);
+    var reply = "{\"choices\":[{\"message\":{\"content\":\"The mean of x is 3.0.\"}}],\"usage\":{\"total_tokens\":9}}";
+    var ctx[24];
+    store64(&ctx, 200);
+    store64(&ctx + 8, reply);
+    store64(&ctx + 16, strlen(reply));
+    var q: PmnStatQuery;
+    if (PmnStatQuery_new(&q, "http://h:1/", 11, "llama3", 6, &m7_reply, &ctx) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var qr: PmnQueryResult;
+    if (q.query(&cols, 2, "What is the mean of x?", 22, &qr) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (qr.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var qr2: PmnQueryResult;
+    if (PmnQueryResult_from_json(&qr2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnQueryResult_drop(&qr2);
+    PmnQueryResult_drop(&qr);
+    PmnStatQuery_drop(&q);
+    var tools[48];
+    store64(&tools, "describe");
+    store64(&tools + 8, "{\"column\":\"y\"}");
+    store64(&tools + 16, "correlate");
+    store64(&tools + 24, "{\"column_a\":\"x\",\"column_b\":\"y\"}");
+    store64(&tools + 32, "regress");
+    store64(&tools + 40, "{\"x_column\":\"x\",\"y_column\":\"y\"}");
+    for (var u = 0; u < 3; u = u + 1) {
+        var tn = load64(&tools + u * 16);
+        var ta = load64(&tools + u * 16 + 8);
+        if (_pmn_ai_execute_tool(&qr, tn, strlen(tn), ta, strlen(ta), &cols, 2) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+        var v0: f64 = load64(qr.values + 16);
+        acc = acc + v0;
+        PmnQueryResult_drop(&qr);
+    }
+    var tt = "{\"column_a\":\"x\",\"column_b\":\"y\"}";
+    if (_pmn_ai_execute_tool(&qr, "t_test", 6, tt, strlen(tt), &cols, 2) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnQueryResult_drop(&qr);
+    var fa = "{\"column\":\"y\",\"steps\":12,\"ar_order\":2}";
+    if (_pmn_ai_execute_tool(&qr, "forecast", 8, fa, strlen(fa), &cols, 2) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnQueryResult_drop(&qr);
+    return acc;
+}
+
 fn main() {
     alloc_init();
     g_vals = alloc(20000 * 8);
@@ -944,6 +1071,34 @@ fn main() {
     var zv1 = vm_kb();
     if (zv0 >= 0) {
         assert_eq(zv1 - zv0, 0, "the mapped size: unchanged");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing claimed");
+
+    test_group("10^4 rounds of every M7 call: shapes, histograms, queries and the tools (M7 part c)");
+    var m7a = alloc(200 * 8);
+    var m7b = alloc(200 * 8);
+    var m7sb = str_builder_new();
+    var m7w: f64 = 0.0;
+    for (var re = 0; re < 400; re = re + 1) {   # every size the loop makes, so the pool's slots reach their marks
+        var we: f64 = m7_round(re, m7a, m7b, m7sb);
+        m7w = m7w + we;
+    }
+    var wb0 = alloc_used();
+    var wf0 = _fl_arena_pos;
+    var wv0 = vm_kb();
+    var m7acc: f64 = m7w;
+    for (var rf = 0; rf < 10000; rf = rf + 1) {
+        var vf: f64 = m7_round(rf, m7a, m7b, m7sb);
+        m7acc = m7acc + vf;
+    }
+    assert(_pmn_is_finite(m7acc) == 1, "every call succeeds, every value finite");
+    assert_eq(alloc_used() - wb0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - wf0, 0, "the freelist's arena: 0 bytes carved");
+    var wv1 = vm_kb();
+    if (wv0 >= 0) {
+        assert_eq(wv1 - wv0, 0, "the mapped size: unchanged");
     } else {
         println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
     }

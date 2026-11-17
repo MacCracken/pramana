@@ -56,12 +56,13 @@
 ## 2.0.0 — Cyrius port (planned)
 
 Rust 1.3.0 is the final Rust release; the Cyrius port ships as 2.0.0. Plan of record:
-[pramana-port-plan.md](pramana-port-plan.md). Every decision in its §0.2 was taken on 2026-11-15; M0–M6 are done, and M7 is next.
+[pramana-port-plan.md](pramana-port-plan.md). Every decision in its §0.2 was taken on 2026-11-15; M0–M7 are done, and M8 is next.
 
 - [x] M0: oracle hooks on Rust 1.3.0, `cyrius port`, the repairs, `cyrius.cyml`, the semantics probe, the golden generator with MPFR's correctly rounded rows, the proven constants, the parity harness, the cross-target baselines (steps 0–8 done 2026-11-15); the probes (9a–9e done 2026-11-15), the upstream requests and the ledger (step 10 done 2026-11-15; the gate passes)
 - [x] M1 foundation (done 2026-11-15, parts a–f: the error codes; every primitive correctly rounded, kimiya's vendored and log1p, tan and log2 new; the Rust f64 surface, so the whole golden corpus is gated; serde_json's f64 text; the work-table pool; the JSON core, reading and writing every shape, and the error codec; e1 the RNG and its codec; e2 combinatorics with `PmnU128`; e3 the bridges; f the gate: Debug, surface parity, the soak) · M2 special functions (done 2026-11-16: T0 parity, then T1 accuracy; a1 done: erf, erfc, Φ and 1 − Φ at T0; a2 done: lnΓ, the Stirling remainder, bd0, the kernel, ln B at T0; a3 done: the incomplete gamma at T0; a4 done: the incomplete beta at T0, completing T0; b1 done: erf and erfc correctly rounded, CORE-MATH's, with the reference rows; b2 done: Φ and 1 − Φ within 1 ulp, correctly rounded on every golden row; b3 done: lnΓ within 2 ulp, fdlibm's layout in double-double, with the rows downstream of it gated on Rust's formulas fed its value; b4 done: the incomplete gamma within 1 ulp measured (bound 4) from a = 2⁻¹⁰⁷⁴ to 10⁹, never less accurate than 1.3.0; b5 done: the incomplete beta within 1 ulp measured (bound 8) from shapes of 2⁻¹⁰⁷⁴ to 10⁹, never less accurate than 1.3.0, completing T1; c done, the gate: §3.2's sets re-measured on T1, every one within its bound) · M3 distributions (done 2026-11-16, in parts: a1 done, the trait, Box–Muller and Normal, with Debug's f64 form; a2 done, Uniform, Exponential and Bernoulli; a3 done, Cauchy and Weibull; b1 done, Gamma, ChiSquared and Marsaglia–Tsang; b2 done, Beta, StudentT and FDistribution with their tails; c1 done, Poisson; c2 done, Binomial; d1 done, the Cholesky factor and solve in `src/linalg.cyr`; d2 done, MultivariateNormal; e done, M3's gate)
 - [x] M4 descriptive + hypothesis (done 2026-11-17, parts a1–a3, b1–b2, c) · M5 regression, time series, Bayesian (done 2026-11-17, parts a–d, NIST StRD measured) · M6 Markov + Monte Carlo (done 2026-11-17, parts a–c)
-- [ ] M7 soorat shapes + `ai` · M8 release 2.0.0
+- [x] M7 soorat shapes + `ai` (done 2026-11-17, parts a–c; hoosh 1.3.0's tool-less wire behavior kept)
+- [ ] M8 release 2.0.0
 
 - [ ] The AI client's tools (2.1 candidate, M7 part b's finding): hoosh 1.3.0's client drops `tools` and returns no
       tool calls, so 1.3.0's `StatQuery::query` always answers directly, and 2.0 keeps that. Sending the five tools in

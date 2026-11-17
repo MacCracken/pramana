@@ -4626,3 +4626,23 @@ the direct-answer branch. The port posts the same bytes and reads the reply as `
 
 The twelfth, the bounded argument taking 0, is equivalent: steps or an AR order of 0 is refused with the same code by
 `arima_forecast` or `arima_fit`.
+
+### 13.3 Part c: M7's gate (2026-11-17)
+
+- **Three targets.** The whole corpus replays on x86_64 ELF, PE and aarch64: 20 modules, 315,210 rows ok, 54,353
+  accepted (ADR 9: 53,972; ADR 7: 381). Nothing is failed, measured or pending.
+- **The soak.** 10⁴ rounds of every M7 call after a 400-round warm-up. Each round:
+  - builds a histogram of up to 200 values in up to 40 bins, clones it, compares it, writes it, reads it back and
+    drops it;
+  - does the same for the four other shapes;
+  - makes a StatQuery over a recorded reply, then writes, reads back and drops its QueryResult;
+  - calls each of the five tools.
+
+  Afterwards the bump heap, the freelist's arena, the mapped size and the pool's slots are where they were.
+- **The `[lib.ai]` bundle.** A consumer that includes `lib/sandhi.cyr` and `dist/pramana-ai.cyr` and queries a closed
+  port builds and runs on the three targets (exit 0, the query refused as `ComputationError`). Its build prints
+  sandhi's static-data advisory, the request in ledger §10.
+- **Surface parity.** `integration/soorat` (31 items) and `ai` (8) are ported: 374 items in fourteen modules, none
+  pending. The script now counts the PartialEq derive and `pub async fn`.
+- **The audit.** No aborting construct in `src/soorat.cyr`, `src/ai.cyr` or `src/ai_sandhi.cyr`. Every buffer is
+  checked for null and aliasing, and every temporary is a pool claim or a freelist block freed on every path.
