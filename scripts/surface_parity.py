@@ -26,7 +26,7 @@ SRC = ROOT / "src"
 PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptive", "hypothesis"]   # M4's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {"regression": "M5"}
+PARTIAL = {"regression": "M5", "timeseries": "M5"}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
@@ -60,6 +60,19 @@ SURFACE = {
     "descriptive::KernelDensity.evaluate": ["method PmnKernelDensity.evaluate"],
     "descriptive::KernelDensity.evaluate_grid": ["method PmnKernelDensity.evaluate_grid"],
     "descriptive::correlation_matrix": ["fn pmn_correlation_matrix"],
+    # timeseries.rs (M5 part b; D11's caller buffers)
+    "timeseries::moving_average": ["fn pmn_moving_average"],
+    "timeseries::exponential_smoothing": ["fn pmn_exponential_smoothing"],
+    "timeseries::autocorrelation": ["fn pmn_autocorrelation"],
+    "timeseries::difference": ["fn pmn_difference"],
+    "timeseries::integrate": ["fn pmn_integrate"],
+    "timeseries::ArimaModel": ["struct PmnArimaModel", "fn PmnArimaModel_drop", "method PmnArimaModel.ar_coefficients"],
+    "timeseries::ArimaModel#Clone": ["fn PmnArimaModel_clone"],
+    "timeseries::ArimaModel#Debug": ["method PmnArimaModel.debug"],
+    "timeseries::ArimaModel#Serialize": ["method PmnArimaModel.to_json"],
+    "timeseries::ArimaModel#Deserialize": ["fn PmnArimaModel_from_json"],
+    "timeseries::arima_fit": ["fn pmn_arima_fit"],
+    "timeseries::arima_forecast": ["fn pmn_arima_forecast"],
     # regression.rs (M5 part a; hisab's least_squares_poly, ledger L5)
     "regression::LinearModel": ["struct PmnLinearModel"],
     "regression::LinearModel#Clone": "a plain struct: copying it clones it",

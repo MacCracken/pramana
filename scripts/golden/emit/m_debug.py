@@ -124,4 +124,10 @@ def emit():
         cs = [g5.signed_log_uniform(-10.0, 10.0) for _ in range(k % 4)]
         both("debug::PolynomialModel", [v(len(cs))] + [f(c) for c in cs] + [i(g5.int(0, 9)), f(g5.unit())])
         both("debug::LogisticModel", [v(len(cs))] + [f(c) for c in cs] + [i(g5.int(0, 100)), i(k % 2)])
+    # M5 part b: ArimaModel
+    g6 = Rng(0x34E90C6CC0AC29B7)
+    for k in range(8):
+        cs = [g6.signed_log_uniform(-5.0, 5.0) for _ in range(k % 4)]
+        both("debug::ArimaModel", [v(len(cs))] + [f(c) for c in cs] + [i(g6.int(0, 3)), f(g6.signed_log_uniform(-5.0, 5.0)),
+                                                                         f(g6.unit())])
     return m

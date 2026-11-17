@@ -807,6 +807,7 @@ JSON_STRUCTS = {
     "LinearModel": [("slope", "f64"), ("intercept", "f64"), ("r_squared", "f64")],
     "PolynomialModel": [("coefficients", "Vec<f64>"), ("degree", "usize"), ("r_squared", "f64")],
     "LogisticModel": [("coefficients", "Vec<f64>"), ("iterations", "usize"), ("converged", "bool")],
+    "ArimaModel": [("ar_coefficients", "Vec<f64>"), ("d", "usize"), ("intercept", "f64"), ("residual_variance", "f64")],
     "PcaResult": [("components", "Vec<Vec<f64>>"), ("eigenvalues", "Vec<f64>"), ("explained_variance_ratio", "Vec<f64>")],
     "Pair": [("mean", "f64"), ("std_dev", "f64")],
     "Shapes": [("x", "f64"), ("n", "u64"), ("k", "usize"), ("flag", "bool"), ("name", "String"), ("xs", "Vec<f64>"),
@@ -3685,7 +3686,7 @@ def debug_text(fn, ins):
         return debug_struct("KernelDensity", [("data", rust_debug_list([rust_debug_f64(x) for x in data], alt, 1)),
                                               ("bandwidth", rust_debug_f64(h)), ("kernel", k)], alt)
     if fn in ("debug::TestResult", "debug::AnovaResult", "debug::KsResult", "debug::ConfidenceInterval",
-              "debug::LinearModel", "debug::PolynomialModel", "debug::LogisticModel"):
+              "debug::LinearModel", "debug::PolynomialModel", "debug::LogisticModel", "debug::ArimaModel"):
         ty = fn[len("debug::"):]
         alt = ins[-1] == 1
         vals = iter(ins[:-1])
@@ -4701,6 +4702,165 @@ REG = {
 }
 
 
+# ── timeseries (M5 part b): 1.3.0's timeseries.rs in its operation order ──
+
+def ts_ma(x, w):
+    if w == 0 or w > len(x):
+        return ["E:InvalidParameter"]
+    s = rsum(x[:w])
+    out = [s / float(w)]
+    for i in range(w, len(x)):
+        s += x[i] - x[i - w]
+        out.append(s / float(w))
+    return [f"v:{len(out)}"] + out
+
+
+def ts_smooth(x, a):
+    if not x:
+        return ["E:InvalidSample"]
+    if not (0.0 < a <= 1.0):
+        return ["E:InvalidParameter"]
+    out = [x[0]]
+    for v in x[1:]:
+        out.append(a * v + (1.0 - a) * out[-1])
+    return [f"v:{len(out)}"] + out
+
+
+def ts_acf(x, lag):
+    if len(x) < 2:
+        return ["E:InvalidSample"]
+    if lag == 0:
+        return [1.0]
+    if lag >= len(x):
+        return ["E:InvalidParameter"]
+    n = float(len(x))
+    m = rsum(x) / n
+    c0 = rsum([(v - m) * (v - m) for v in x]) / n
+    if c0 == 0.0:
+        return [0.0]
+    ck = rsum([(a - m) * (b - m) for a, b in zip(x, x[lag:])]) / n
+    return [ck / c0]
+
+
+def ts_diff(x, d):
+    """`difference(x, d)` as a list, or an error token."""
+    if d == 0:
+        return "E:InvalidParameter"
+    if len(x) <= d:
+        return "E:InvalidSample"
+    r = list(x)
+    for _ in range(d):
+        r = [r[i + 1] - r[i] for i in range(len(r) - 1)]
+    return r
+
+
+def ts_integrate(diff, prefix, d):
+    if d == 0:
+        return "E:InvalidParameter"
+    if len(prefix) < d:
+        return "E:InvalidSample"
+    level = list(prefix[:d])
+    seeds = []
+    for _ in range(d):
+        seeds.append(level[0] if level else 0.0)
+        level = [level[i + 1] - level[i] for i in range(len(level) - 1)]
+    r = list(diff)
+    for seed in reversed(seeds):
+        acc = seed
+        nxt = [acc]
+        for v in r:
+            acc += v
+            nxt.append(acc)
+        r = nxt
+    return r
+
+
+def ts_out(r):
+    return [r] if isinstance(r, str) else [f"v:{len(r)}"] + r
+
+
+def ts_arima_fit(x, p, d):
+    if p == 0:
+        return "E:InvalidParameter"
+    if any(not math.isfinite(v) for v in x):
+        return "E:InvalidSample"
+    z = ts_diff(x, d) if d > 0 else list(x)
+    if isinstance(z, str):
+        return z
+    if len(z) <= p:
+        return "E:InvalidSample"
+    n = float(len(z))
+    mz = rsum(z) / n
+    cen = [v - mz for v in z]
+    c0 = rsum([v * v for v in cen]) / n
+    if c0 < 1e-30:
+        return "E:InvalidSample"
+    ac = [c0] + [rsum([a * b for a, b in zip(cen, cen[lag:])]) / n for lag in range(1, p + 1)]
+    rm = [ac[abs(i - j)] / c0 for i in range(p) for j in range(p)]
+    rhs = [ac[k] / c0 for k in range(1, p + 1)]
+    lf = lin_cholesky(p, rm)
+    if lf is None:
+        return "E:ComputationError"
+    phi = lin_cholesky_solve(p, lf, rhs)
+    icpt = mz * (1.0 - rsum(phi))
+    rss, count = 0.0, 0.0
+    for t in range(p, len(z)):
+        pred = icpt
+        for k, ph in enumerate(phi):
+            pred += ph * z[t - 1 - k]
+        res = z[t] - pred
+        rss += res * res
+        count += 1.0
+    return phi, d, icpt, (rss / count if count > 0.0 else 0.0)
+
+
+def ts_forecast(phi, d, icpt, history, steps):
+    if steps == 0:
+        return "E:InvalidParameter"
+    p = len(phi)
+    z = ts_diff(history, d) if d > 0 else list(history)
+    if isinstance(z, str):
+        return z
+    if len(z) < p:
+        return "E:InvalidSample"
+    fz = []
+    for _ in range(steps):
+        pred = icpt
+        ln = len(z)
+        for k, ph in enumerate(phi):
+            pred += ph * z[ln - 1 - k]
+        fz.append(pred)
+        z.append(pred)
+    if d > 0:
+        r = ts_integrate(fz, history[max(len(history) - d, 0):], d)
+        return r if isinstance(r, str) else r[d:]
+    return fz
+
+
+def ts_out_fit(L, sl, sc):
+    r = ts_arima_fit(sl[0], sc[0], sc[1])
+    if isinstance(r, str):
+        return [r]
+    phi, d, icpt, rv = r
+    return [f"v:{len(phi)}"] + phi + [d, icpt, rv]
+
+
+def ts_out_forecast(L, sl, sc):
+    """Inputs: the model's coefficients (a slice), d, the intercept and residual variance, the history, steps."""
+    return ts_out(ts_forecast(sl[0], sc[0] % (1 << 64), sc[1], sl[1], sc[3]))
+
+
+TS = {
+    "timeseries::moving_average": lambda L, sl, sc: ts_ma(sl[0], sc[0]),
+    "timeseries::exponential_smoothing": lambda L, sl, sc: ts_smooth(sl[0], sc[0]),
+    "timeseries::autocorrelation": lambda L, sl, sc: ts_acf(sl[0], sc[0]),
+    "timeseries::difference": lambda L, sl, sc: ts_out(ts_diff(sl[0], sc[0])),
+    "timeseries::integrate": lambda L, sl, sc: ts_out(ts_integrate(sl[0], sl[1], sc[0])),
+    "timeseries::arima_fit": ts_out_fit,
+    "timeseries::arima_forecast": ts_out_forecast,
+}
+
+
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
 STATS_T1 = {"hypothesis::t_test_one_sample": "incomplete beta", "hypothesis::t_test_two_sample": "incomplete beta",
             "hypothesis::chi_squared_test": "incomplete gamma", "hypothesis::one_way_anova": "incomplete beta",
@@ -4759,7 +4919,7 @@ def check_stats(root, module, table, rows):
     return failures, by_fn, crs, refs
 
 
-STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG}
+STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG, "timeseries": TS}
 
 
 def main(argv):

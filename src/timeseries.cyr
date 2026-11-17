@@ -1,0 +1,471 @@
+# timeseries.cyr — Rust 1.3.0's time series (src/timeseries.rs; port plan §4.1, D5, D11, D12; M5 part b):
+# `moving_average`, `exponential_smoothing`, `autocorrelation`, `difference`, `integrate`, `arima_fit`,
+# `arima_forecast` and `ArimaModel` with its serde_json codec and derived Debug.
+#
+# Every function is 1.3.0's in its operation order, with its refusals in Rust's order. The series a function returns
+# go into a caller buffer (out, cap) whose length follows from the inputs (D11): n − window + 1 for the moving
+# average, n for the smoothing, n − d for a difference, n + d for an integration, steps for a forecast; a cap below it
+# is PMN_ERR_INVALID_PARAMETER, as Rust's forecast reports a failed reservation. The working copies come from the
+# work-table pool. `ArimaModel` owns its AR coefficients (one freelist block, `_drop`); its derive reads any document
+# of the right types. The ARIMA fit solves Yule–Walker with hisab 1.4.0's Cholesky pair (src/linalg.cyr), bit for bit.
+# Everything is arithmetic and the correctly rounded √: every row is class A.
+
+# 1 for a slice Rust could be given.
+#must_use
+#pure
+fn _pmn_ts_slice_ok(p, n): i64 {
+    if (n < 0 || (p == 0 && n > 0)) { return 0; }
+    return 1;
+}
+
+# Rust's `moving_average(data, window)`: the window's sum from −0.0, then slid (sum += x[i] − x[i − window]), each
+# over window, into out[0, n − window + 1). PMN_ERR_INVALID_PARAMETER for window 0 or past n, in Rust's order, and
+# for a null buffer, an invalid slice, cap too small or out overlapping data (the slide re-reads x[i − window]).
+#must_use
+fn pmn_moving_average(data, n, window, out, cap): i64 {
+    if (_pmn_ts_slice_ok(data, n) == 0 || window < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (window == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (window > n) { return PMN_ERR_INVALID_PARAMETER; }
+    var m = n - window + 1;
+    if (out == 0 || cap < m) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, m * 8, data, n * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var wf: f64 = f64_from(window);
+    var sum: f64 = pmn_sum(data, window);
+    var first: f64 = sum / wf;
+    store64(out, first);
+    var k = 1;
+    for (var i = window; i < n; i = i + 1) {
+        var a: f64 = load64(data + i * 8);
+        var b: f64 = load64(data + (i - window) * 8);
+        var dd: f64 = a - b;
+        sum = sum + dd;
+        var r: f64 = sum / wf;
+        store64(out + k * 8, r);
+        k = k + 1;
+    }
+    return PMN_ERR_NONE;
+}
+
+# Rust's `exponential_smoothing(data, alpha)`: s₀ = x₀, sₜ = α·xₜ + (1 − α)·sₜ₋₁, into out[0, n). PMN_ERR_INVALID_SAMPLE
+# for no data, then PMN_ERR_INVALID_PARAMETER for α outside (0, 1] or NaN; PMN_ERR_INVALID_PARAMETER first for a null
+# buffer, an invalid slice or cap < n. out may be data.
+#must_use
+fn pmn_exponential_smoothing(data, n, alpha: f64, out, cap): i64 {
+    if (_pmn_ts_slice_ok(data, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    var ok = 0;
+    if (alpha > 0.0 && alpha <= 1.0) { ok = 1; }
+    if (ok == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (out == 0 || cap < n) { return PMN_ERR_INVALID_PARAMETER; }
+    var om: f64 = 1.0 - alpha;
+    var prev: f64 = load64(data);
+    store64(out, prev);
+    for (var i = 1; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        var a: f64 = alpha * x;
+        var b: f64 = om * prev;
+        var s: f64 = a + b;
+        store64(out + i * 8, s);
+        prev = s;
+    }
+    return PMN_ERR_NONE;
+}
+
+# Rust's `autocorrelation(data, lag)`: c(k)/c(0), c(k) = Σ (xᵢ − m)(xᵢ₊ₖ − m)/n from −0.0; Ok(1) at lag 0, Ok(0) for
+# c(0) = 0. PMN_ERR_INVALID_SAMPLE for fewer than 2 points, then PMN_ERR_INVALID_PARAMETER for lag ≥ n;
+# PMN_ERR_INVALID_PARAMETER first for an invalid slice or a negative lag.
+#must_use
+fn pmn_autocorrelation(data, n, lag): Result {
+    if (_pmn_ts_slice_ok(data, n) == 0 || lag < 0) { return Err(PMN_ERR_INVALID_PARAMETER); }
+    if (n < 2) { return Err(PMN_ERR_INVALID_SAMPLE); }
+    if (lag == 0) { return Ok(1.0); }
+    if (lag >= n) { return Err(PMN_ERR_INVALID_PARAMETER); }
+    var nf: f64 = f64_from(n);
+    var s: f64 = pmn_sum(data, n);
+    var m: f64 = s / nf;
+    var ss: f64 = _pmn_desc_ss(data, n, m);
+    var c0: f64 = ss / nf;
+    if (c0 == 0.0) { return Ok(0.0); }
+    var acc: f64 = -0.0;
+    for (var i = 0; i + lag < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        var y: f64 = load64(data + (i + lag) * 8);
+        var dx: f64 = x - m;
+        var dy: f64 = y - m;
+        var p: f64 = dx * dy;
+        acc = acc + p;
+    }
+    var ck: f64 = acc / nf;
+    var r: f64 = ck / c0;
+    return Ok(r);
+}
+
+# d passes of first differences in place on w[0, n): w[i] = w[i + 1] − w[i], the length one shorter each time.
+fn _pmn_ts_diff_in_place(w, n, d): i64 {
+    var len = n;
+    for (var k = 0; k < d; k = k + 1) {
+        for (var i = 0; i + 1 < len; i = i + 1) {
+            var a: f64 = load64(w + (i + 1) * 8);
+            var b: f64 = load64(w + i * 8);
+            var r: f64 = a - b;
+            store64(w + i * 8, r);
+        }
+        len = len - 1;
+    }
+    return len;
+}
+
+# Rust's `difference(data, d)`: d-th order differencing, into out[0, n − d). PMN_ERR_INVALID_PARAMETER for d = 0, then
+# PMN_ERR_INVALID_SAMPLE for n ≤ d; PMN_ERR_INVALID_PARAMETER first for a null buffer, an invalid slice, a negative d
+# or cap < n − d; PMN_ERR_OUT_OF_MEMORY when the working copy can't be had.
+#must_use
+fn pmn_difference(data, n, d, out, cap): i64 {
+    if (_pmn_ts_slice_ok(data, n) == 0 || d < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (d == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n <= d) { return PMN_ERR_INVALID_SAMPLE; }
+    if (out == 0 || cap < n - d) { return PMN_ERR_INVALID_PARAMETER; }
+    var s, slot = _pmn_scratch_take(n * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    _pmn_copy_words(s, data, n);
+    var len = _pmn_ts_diff_in_place(s, n, d);
+    _pmn_copy_words(out, s, len);
+    _pmn_scratch_give(s, slot);
+    return PMN_ERR_NONE;
+}
+
+# Rust's `integrate(differenced, original_prefix, d)`: the seeds are the first element of each k-th difference of
+# prefix[0, d), and each level is undone from the last seed to the first (acc from its seed, += each value), into
+# out[0, nd + d). PMN_ERR_INVALID_PARAMETER for d = 0, then PMN_ERR_INVALID_SAMPLE for a prefix shorter than d;
+# PMN_ERR_INVALID_PARAMETER first for a null buffer, an invalid slice, a negative d or cap < nd + d;
+# PMN_ERR_OUT_OF_MEMORY when the working copies can't be had.
+#must_use
+fn pmn_integrate(diff, nd, prefix, np, d, out, cap): i64 {
+    if (_pmn_ts_slice_ok(diff, nd) == 0 || _pmn_ts_slice_ok(prefix, np) == 0 || d < 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (d == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (np < d) { return PMN_ERR_INVALID_SAMPLE; }
+    var m = nd + d;
+    if (out == 0 || cap < m) { return PMN_ERR_INVALID_PARAMETER; }
+    var s, slot = _pmn_scratch_take((2 * d + 2 * m) * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var level = s;
+    var seeds = s + d * 8;
+    var cur = seeds + d * 8;
+    var nxt = cur + m * 8;
+    _pmn_copy_words(level, prefix, d);
+    var ll = d;
+    for (var k = 0; k < d; k = k + 1) {
+        var sd: f64 = 0.0;
+        if (ll > 0) { sd = load64(level); }
+        store64(seeds + k * 8, sd);
+        ll = _pmn_ts_diff_in_place(level, ll, 1);
+        if (ll < 0) { ll = 0; }
+    }
+    _pmn_copy_words(cur, diff, nd);
+    var len = nd;
+    var j = d - 1;
+    while (j >= 0) {
+        var acc: f64 = load64(seeds + j * 8);
+        store64(nxt, acc);
+        for (var i = 0; i < len; i = i + 1) {
+            var v: f64 = load64(cur + i * 8);
+            acc = acc + v;
+            store64(nxt + (i + 1) * 8, acc);
+        }
+        len = len + 1;
+        var t = cur;
+        cur = nxt;
+        nxt = t;
+        j = j - 1;
+    }
+    _pmn_copy_words(out, cur, len);
+    _pmn_scratch_give(s, slot);
+    return PMN_ERR_NONE;
+}
+
+# ── ARIMA ─────────────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `ArimaModel`: p AR coefficients φ₁ … φₚ in an owned block, the differencing order d (a usize), the intercept
+# and the residual variance.
+struct PmnArimaModel {
+    n;
+    ar;
+    d;
+    intercept: f64;
+    residual_variance: f64;
+}
+
+#must_use
+fn _pmn_arima_fill(out: *PmnArimaModel, src, n, d, icpt: f64, rv: f64): i64 {
+    var blk = fl_alloc(n * 8 + 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    _pmn_copy_words(blk, src, n);
+    out.n = n;
+    out.ar = blk;
+    out.d = d;
+    out.intercept = icpt;
+    out.residual_variance = rv;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `arima_fit(data, p, d)`: ARIMA(p, d, 0) by Yule–Walker, into out (caller storage, owning a new block of p
+# coefficients: drop it). The series is differenced d times; its autocovariances c(0) … c(p) over n from −0.0
+# (centered on the mean); the Toeplitz system R·φ = r of the autocorrelations c(|i − j|)/c(0) solved by hisab's
+# Cholesky pair; the intercept m·(1 − Σφ), Σφ from −0.0; the residual variance the mean square of the one-step
+# residuals from t = p on (accumulated from +0.0, as written). PMN_ERR_INVALID_PARAMETER for p = 0;
+# PMN_ERR_INVALID_SAMPLE for a non-finite value, a series too short to difference, p or fewer differenced values, or
+# c(0) < 1e-30; PMN_ERR_COMPUTATION_ERROR when the factor refuses (not positive-definite); in Rust's order.
+# PMN_ERR_INVALID_PARAMETER first for a null out, an invalid slice or a negative order; PMN_ERR_OUT_OF_MEMORY when the
+# block or the scratch can't be had.
+#must_use
+fn pmn_arima_fit(out: *PmnArimaModel, data, n, p, d): i64 {
+    if (out == 0 || _pmn_ts_slice_ok(data, n) == 0 || p < 0 || d < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (p == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_reg_finite(data, n) != PMN_ERR_NONE) { return PMN_ERR_INVALID_SAMPLE; }
+    if (d > 0 && n <= d) { return PMN_ERR_INVALID_SAMPLE; }
+    var zl = n;
+    if (d > 0) { zl = n - d; }
+    if (zl <= p) { return PMN_ERR_INVALID_SAMPLE; }
+    var s, slot = _pmn_scratch_take((n + zl + (p + 1) + 2 * p * p + 2 * p) * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var z = s;
+    var cen = z + n * 8;
+    var ac = cen + zl * 8;
+    var rm = ac + (p + 1) * 8;
+    var lf = rm + p * p * 8;
+    var rhs = lf + p * p * 8;
+    var phi = rhs + p * 8;
+    _pmn_copy_words(z, data, n);
+    if (d > 0) { _pmn_ts_diff_in_place(z, n, d); }
+    var nf: f64 = f64_from(zl);
+    var sz: f64 = pmn_sum(z, zl);
+    var mz: f64 = sz / nf;
+    for (var i = 0; i < zl; i = i + 1) {
+        var zi: f64 = load64(z + i * 8);
+        var c: f64 = zi - mz;
+        store64(cen + i * 8, c);
+    }
+    var s0: f64 = -0.0;
+    for (var i2 = 0; i2 < zl; i2 = i2 + 1) {
+        var ci: f64 = load64(cen + i2 * 8);
+        var q: f64 = ci * ci;
+        s0 = s0 + q;
+    }
+    var c0: f64 = s0 / nf;
+    if (c0 < 0.000000000000000000000000000001) {
+        _pmn_scratch_give(s, slot);
+        return PMN_ERR_INVALID_SAMPLE;
+    }
+    store64(ac, c0);
+    for (var lag = 1; lag <= p; lag = lag + 1) {
+        var acc: f64 = -0.0;
+        for (var t = 0; t + lag < zl; t = t + 1) {
+            var a: f64 = load64(cen + t * 8);
+            var b: f64 = load64(cen + (t + lag) * 8);
+            var pr: f64 = a * b;
+            acc = acc + pr;
+        }
+        var ck: f64 = acc / nf;
+        store64(ac + lag * 8, ck);
+    }
+    for (var r = 0; r < p; r = r + 1) {
+        for (var cc = 0; cc < p; cc = cc + 1) {
+            var dd = r - cc;
+            if (dd < 0) { dd = 0 - dd; }
+            var av: f64 = load64(ac + dd * 8);
+            var rv: f64 = av / c0;
+            store64(rm + (r * p + cc) * 8, rv);
+        }
+    }
+    for (var k = 1; k <= p; k = k + 1) {
+        var ak: f64 = load64(ac + k * 8);
+        var rk: f64 = ak / c0;
+        store64(rhs + (k - 1) * 8, rk);
+    }
+    if (_pmn_cholesky(rm, p, lf) != PMN_ERR_NONE || _pmn_cholesky_solve(lf, p, rhs, phi) != PMN_ERR_NONE) {
+        _pmn_scratch_give(s, slot);
+        return PMN_ERR_COMPUTATION_ERROR;
+    }
+    var ps: f64 = pmn_sum(phi, p);
+    var omp: f64 = 1.0 - ps;
+    var icpt: f64 = mz * omp;
+    var rss: f64 = 0.0;
+    var count: f64 = 0.0;
+    for (var t2 = p; t2 < zl; t2 = t2 + 1) {
+        var pred: f64 = icpt;
+        for (var k2 = 0; k2 < p; k2 = k2 + 1) {
+            var ph: f64 = load64(phi + k2 * 8);
+            var zv: f64 = load64(z + (t2 - 1 - k2) * 8);
+            var tm: f64 = ph * zv;
+            pred = pred + tm;
+        }
+        var zt: f64 = load64(z + t2 * 8);
+        var res: f64 = zt - pred;
+        var r2: f64 = res * res;
+        rss = rss + r2;
+        count = count + 1.0;
+    }
+    var rvar: f64 = 0.0;
+    if (count > 0.0) { rvar = rss / count; }
+    var e = _pmn_arima_fill(out, phi, p, d, icpt, rvar);
+    _pmn_scratch_give(s, slot);
+    return e;
+}
+
+# Rust's `arima_forecast(model, history, steps)`: steps one-step predictions in differenced space (pred from the
+# intercept, += φₖ·zₗₑₙ₋₁₋ₖ, each prediction appended), integrated back on the history's last d values when d > 0,
+# into out[0, steps). PMN_ERR_INVALID_PARAMETER for steps 0; PMN_ERR_INVALID_SAMPLE for a history too short to
+# difference or with fewer than p differenced values; PMN_ERR_INVALID_PARAMETER first for a null or dropped model, a
+# null buffer, an invalid slice, a negative steps or cap < steps (Rust's failed reservation); PMN_ERR_OUT_OF_MEMORY
+# when the scratch can't be had.
+#must_use
+fn pmn_arima_forecast(model: *PmnArimaModel, history, n, steps, out, cap): i64 {
+    if (model == 0 || model.ar == 0 || _pmn_ts_slice_ok(history, n) == 0 || steps < 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (steps == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var p = model.n;
+    var d = model.d;
+    if (d < 0) { return PMN_ERR_INVALID_SAMPLE; }        # a decoded usize at or past 2^63: past any history's length
+    if (d > 0 && n <= d) { return PMN_ERR_INVALID_SAMPLE; }
+    var zl = n;
+    if (d > 0) { zl = n - d; }
+    if (zl < p) { return PMN_ERR_INVALID_SAMPLE; }
+    if (out == 0 || cap < steps) { return PMN_ERR_INVALID_PARAMETER; }
+    var s, slot = _pmn_scratch_take((n + steps * 2) * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var z = s;
+    var fz = z + (n + steps) * 8;
+    _pmn_copy_words(z, history, n);
+    if (d > 0) { _pmn_ts_diff_in_place(z, n, d); }
+    var icpt: f64 = model.intercept;
+    var len = zl;
+    for (var st = 0; st < steps; st = st + 1) {
+        var pred: f64 = icpt;
+        for (var k = 0; k < p; k = k + 1) {
+            var ph: f64 = load64(model.ar + k * 8);
+            var zv: f64 = load64(z + (len - 1 - k) * 8);
+            var tm: f64 = ph * zv;
+            pred = pred + tm;
+        }
+        store64(fz + st * 8, pred);
+        store64(z + len * 8, pred);
+        len = len + 1;
+    }
+    var e = PMN_ERR_NONE;
+    if (d > 0) {
+        var t, tslot = _pmn_scratch_take((steps + d) * 8);
+        if (t == 0) {
+            _pmn_scratch_give(s, slot);
+            return PMN_ERR_OUT_OF_MEMORY;
+        }
+        e = pmn_integrate(fz, steps, history + (n - d) * 8, d, d, t, steps + d);
+        if (e == PMN_ERR_NONE) { _pmn_copy_words(out, t + d * 8, steps); }
+        _pmn_scratch_give(t, tslot);
+    } else {
+        _pmn_copy_words(out, fz, steps);
+    }
+    _pmn_scratch_give(s, slot);
+    return e;
+}
+
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src;
+# PMN_ERR_OUT_OF_MEMORY when the block can't be had. Drop each one.
+#must_use
+fn PmnArimaModel_clone(out: *PmnArimaModel, src: *PmnArimaModel): i64 {
+    if (out == 0 || src == 0 || src.ar == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 40, src, 40) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var ic: f64 = src.intercept;
+    var rv: f64 = src.residual_variance;
+    return _pmn_arima_fill(out, src.ar, src.n, src.d, ic, rv);
+}
+
+# Frees m's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null m.
+fn PmnArimaModel_drop(m: *PmnArimaModel): i64 {
+    if (m == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (m.ar != 0) { fl_free(m.ar); }
+    m.ar = 0;
+    m.n = 0;
+    return PMN_ERR_NONE;
+}
+
+impl PmnArimaModel {
+    # The AR coefficients (borrowed), or 0 for a dropped one.
+    #must_use
+    fn ar_coefficients(self): i64 {
+        if (self == 0) { return 0; }
+        return self.ar;
+    }
+
+    # The number of AR coefficients, or 0 for a dropped one.
+    #must_use
+    fn len(self): i64 {
+        if (self == 0 || self.ar == 0) { return 0; }
+        return self.n;
+    }
+
+    # Appends Rust's derived Debug (D12): `ArimaModel { ar_coefficients: [..], d: d, intercept: .., residual_variance:
+    # .. }`, or the pretty form.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.ar == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "ArimaModel", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "ar_coefficients", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.ar, self.n, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "d", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.d); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "intercept", 0, self.intercept, alternate); }
+        var rv: f64 = self.residual_variance;
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "residual_variance", 0, rv, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"ar_coefficients":[..],"d":d,"intercept":..,"residual_variance":..}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.ar == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_w_key(sb, "ar_coefficients", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.ar, self.n); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "d", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.d); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "intercept", 0, self.intercept); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "residual_variance", 0, self.residual_variance); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_arima_from_root(root, out: *PmnArimaModel): i64 {
+    var names[32];
+    store64(&names, "ar_coefficients");
+    store64(&names + 8, "d");
+    store64(&names + 16, "intercept");
+    store64(&names + 24, "residual_variance");
+    var sl[32];
+    var e = _pmn_json_struct(root, &names, 4, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var c, slot, n = _pmn_reg_vec_node(load64(&sl));
+    if (c == 0) { return n; }
+    var dd[8];
+    var v[16];
+    e = PMN_ERR_NONE;
+    if (_pmn_json_u64(load64(&sl + 8), &dd) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    if (e == PMN_ERR_NONE && _pmn_hyp_f64s(&sl, 2, 2, &v) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    var ic: f64 = load64(&v);
+    var rv: f64 = load64(&v + 8);
+    if (e == PMN_ERR_NONE) { e = _pmn_arima_fill(out, c, n, load64(&dd), ic, rv); }
+    _pmn_scratch_give(c, slot);
+    return e;
+}
+
+# Reads an ArimaModel document, buf[0, len), into out (caller storage, owning a new block: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY. The derive validates nothing.
+#must_use
+fn PmnArimaModel_from_json(out: *PmnArimaModel, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_arima_from_root, out);
+}

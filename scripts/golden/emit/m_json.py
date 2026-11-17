@@ -667,6 +667,7 @@ def emit():
     pca_result(m, Rng(0xA54FF53A5F1D36F1))
     test_results(m, Rng(0x13198A2E03707344))
     regression_models(m, Rng(0x299F31D0082EFA98))
+    arima_models(m, Rng(0xEC4E6C89452821E6))
     return m
 
 def kde_toks(data, h, k):
@@ -780,4 +781,17 @@ def regression_models(m, g):
         cs = [finite(g) for _ in range(k % 5)]
         write(m, "PolynomialModel", [v(len(cs))] + [f(c) for c in cs] + [i(g.int(0, 9)), f(g.unit())])
         write(m, "LogisticModel", [v(len(cs))] + [f(c) for c in cs] + [i(g.int(0, 100)), i(k % 2)])
+
+
+def arima_models(m, g):
+    """M5 part b: ArimaModel, a plain derive (no validation)."""
+    nums = B("1.5", "0", "-0.0", "1e309", "null", '"1"', "true")
+    vecs = B("[0.6,-0.2]", "[]", "[1,null]", "null", "[[1]]", "[1e309]", "1")
+    usz = B("1", "0", "-1", "1.0", "18446744073709551615", "18446744073709551616", "null")
+    for d in struct_docs([("ar_coefficients", b"[0.6,-0.2]"), ("d", b"1"), ("intercept", b"0.25"),
+                          ("residual_variance", b"1.5")], [vecs, usz, nums, nums]):
+        read(m, "json::ArimaModel", d)
+    for k in range(12):
+        cs = [finite(g) for _ in range(k % 4)]
+        write(m, "ArimaModel", [v(len(cs))] + [f(c) for c in cs] + [i(g.int(0, 3)), f(finite(g)), f(g.unit())])
 

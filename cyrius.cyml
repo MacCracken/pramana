@@ -72,4 +72,5 @@ modules = [
     "src/pca.cyr",
     "src/hypothesis.cyr",
     "src/regression.cyr",
+    "src/timeseries.cyr",
 ]

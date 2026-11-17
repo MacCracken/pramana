@@ -939,3 +939,12 @@ The linear fit is four passes over 1,000 points (the two means, the centered sum
 codegen's cost on plain loops, which Rust vectorizes. The logistic fit's exps and the polynomial fit's Gram–Schmidt
 come in at 5×.
 
+## M5 part b: time series (2026-11-17)
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `timeseries/moving_average_10000_w50` | 29.5 µs | 52.4–52.6 µs | 1.8× |
+
+`tests/timeseries.bcyr`, three pinned runs. One pass over 10⁴ points with a running sum: the loop Rust can't
+vectorize either (each sum depends on the last), so the ratio is the codegen's plain cost.
+

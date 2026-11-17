@@ -1,0 +1,215 @@
+# timeseries.tcyr — src/timeseries.cyr (M5 part b).
+#
+# tests/parity.tcyr replays 1.3.0's values (tests/golden/timeseries.tsv, json.tsv, debug.tsv). These carry 1.3.0's
+# own tests over (timeseries.rs) and pin what a replay doesn't: the buffer rules (cap, the moving average's refused
+# overlap, the smoothing in place), the model's drop and clone, and that nothing is left claimed.
+
+include "tests/lib.cyr"
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn near(x: f64, y: f64, tol: f64): i64 {
+    var d: f64 = x - y;
+    if (f64_abs(d) < tol) { return 1; }
+    return 0;
+}
+
+# Box–Muller noise as 1.3.0's ARIMA tests draw it: s·√(−2 ln u₁)·cos(2π u₂), u₁ kept from 0.
+fn noise(g: *PmnSimpleRng, s: f64): f64 {
+    var u1: f64 = g.next_f64();
+    var mp: f64 = _PMN_F64_MIN_POSITIVE;
+    var v1: f64 = _pmn_max(u1, mp);
+    var u2: f64 = g.next_f64();
+    var l: f64 = _pmn_ln(v1);
+    var m2: f64 = -2.0 * l;
+    var r: f64 = f64_sqrt(m2);
+    var tau: f64 = _PMN_F64_TAU;
+    var a: f64 = tau * u2;
+    var c: f64 = _pmn_cos(a);
+    var sr: f64 = s * r;
+    var e: f64 = sr * c;
+    return e;
+}
+
+fn main() {
+    alloc_init();
+    var x = alloc(512 * 8);
+    var o = alloc(512 * 8);
+    var o2 = alloc(512 * 8);
+
+    test_group("1.3.0's tests (moving average, smoothing, autocorrelation, refusals, differencing, integration)");
+    for (var i = 0; i < 5; i = i + 1) { put(x, i, f64_from(i + 1)); }
+    assert_eq(pmn_moving_average(x, 5, 3, o, 3), PMN_ERR_NONE, "window 3 of [1..5]");
+    var m0: f64 = load64(o);
+    var m1: f64 = load64(o + 8);
+    var m2: f64 = load64(o + 16);
+    assert(m0 == 2.0 && m1 == 3.0 && m2 == 4.0, "2, 3, 4");
+    assert_eq(pmn_moving_average(x, 3, 3, o, 1), PMN_ERR_NONE, "the full window");
+    var mf: f64 = load64(o);
+    assert(mf == 2.0, "2");
+    assert_eq(pmn_moving_average(x, 5, 3, x, 5), PMN_ERR_INVALID_PARAMETER, "in place is refused (the slide re-reads)");
+    assert_eq(pmn_moving_average(x, 2, 0, o, 2), PMN_ERR_INVALID_PARAMETER, "window 0");
+    assert_eq(pmn_moving_average(x, 2, 3, o, 2), PMN_ERR_INVALID_PARAMETER, "window 3 of 2");
+    put(x, 0, 10.0);
+    put(x, 1, 12.0);
+    put(x, 2, 13.0);
+    put(x, 3, 12.0);
+    put(x, 4, 10.0);
+    assert_eq(pmn_exponential_smoothing(x, 5, 0.5, o, 5), PMN_ERR_NONE, "α = ½");
+    var s0: f64 = load64(o);
+    var s1: f64 = load64(o + 8);
+    assert(s0 == 10.0 && s1 == 11.0, "10, 11");
+    assert_eq(pmn_exponential_smoothing(x, 5, 0.5, x, 5), PMN_ERR_NONE, "in place");
+    var same = 1;
+    for (var k = 0; k < 5; k = k + 1) {
+        if (load64(x + k * 8) != load64(o + k * 8)) { same = 0; }
+    }
+    assert(same == 1, "in place gives the same bits");
+    assert_eq(pmn_exponential_smoothing(x, 1, 0.0, o, 1), PMN_ERR_INVALID_PARAMETER, "α = 0");
+    assert_eq(pmn_exponential_smoothing(x, 1, 1.5, o, 1), PMN_ERR_INVALID_PARAMETER, "α = 1.5");
+    for (var i2 = 0; i2 < 5; i2 = i2 + 1) { put(x, i2, f64_from(i2 + 1)); }
+    var t, v = pmn_autocorrelation(x, 5, 0);
+    var a0: f64 = v;
+    assert(t != Err && a0 == 1.0, "r(0) = 1");
+    for (var i3 = 0; i3 < 5; i3 = i3 + 1) { put(x, i3, 5.0); }
+    t, v = pmn_autocorrelation(x, 5, 1);
+    var a1: f64 = v;
+    assert(t != Err && a1 == 0.0, "a constant series: r(1) = 0");
+    put(x, 0, 1.0);
+    put(x, 1, 3.0);
+    put(x, 2, 6.0);
+    put(x, 3, 10.0);
+    put(x, 4, 15.0);
+    assert_eq(pmn_difference(x, 4, 1, o, 3), PMN_ERR_NONE, "first differences");
+    var d0: f64 = load64(o);
+    var d1: f64 = load64(o + 8);
+    var d2: f64 = load64(o + 16);
+    assert(d0 == 2.0 && d1 == 3.0 && d2 == 4.0, "2, 3, 4");
+    assert_eq(pmn_difference(x, 5, 2, o, 3), PMN_ERR_NONE, "second differences");
+    var ones = 1;
+    for (var k2 = 0; k2 < 3; k2 = k2 + 1) {
+        var dv: f64 = load64(o + k2 * 8);
+        if (dv != 1.0) { ones = 0; }
+    }
+    assert(ones == 1, "all 1");
+    assert_eq(pmn_difference(x, 5, 1, o, 4), PMN_ERR_NONE, "Δ of [1, 3, 6, 10, 15]");
+    assert_eq(pmn_integrate(o, 4, x, 1, 1, o2, 5), PMN_ERR_NONE, "integrated on y₀");
+    var rt = 1;
+    for (var k3 = 0; k3 < 5; k3 = k3 + 1) {
+        if (load64(o2 + k3 * 8) != load64(x + k3 * 8)) { rt = 0; }
+    }
+    assert(rt == 1, "the round trip is exact");
+    for (var tt = 1; tt <= 8; tt = tt + 1) {
+        var tf: f64 = f64_from(tt);
+        var sq: f64 = tf * tf;
+        var sn: f64 = _pmn_sin(tf);
+        var h: f64 = 0.5 * sn;
+        var yv: f64 = sq + h;
+        put(x, tt - 1, yv);
+    }
+    var hi_ok = 1;
+    for (var d = 1; d <= 4; d = d + 1) {
+        if (pmn_difference(x, 8, d, o, 8 - d) != PMN_ERR_NONE) { hi_ok = 0; }
+        if (pmn_integrate(o, 8 - d, x, d, d, o2, 8) != PMN_ERR_NONE) { hi_ok = 0; }
+        for (var k4 = 0; k4 < 8; k4 = k4 + 1) {
+            var bk: f64 = load64(o2 + k4 * 8);
+            var yk: f64 = load64(x + k4 * 8);
+            if (near(bk, yk, 0.000000001) == 0) { hi_ok = 0; }
+        }
+    }
+    assert(hi_ok == 1, "difference then integrate, d = 1 … 4, to 1e-9");
+    assert_eq(pmn_difference(x, 8, 0, o, 8), PMN_ERR_INVALID_PARAMETER, "order 0");
+    assert_eq(pmn_difference(x, 3, 3, o, 8), PMN_ERR_INVALID_SAMPLE, "order 3 of 3 points");
+    assert_eq(pmn_integrate(o, 3, x, 1, 2, o2, 8), PMN_ERR_INVALID_SAMPLE, "a prefix shorter than d");
+
+    test_group("1.3.0's ARIMA tests (AR(1) recovery, the forecast's length, differencing, refusals, serde)");
+    var g: PmnSimpleRng;
+    var eg = PmnSimpleRng_new(&g, 42);
+    put(x, 0, 0.0);
+    for (var t1 = 1; t1 < 500; t1 = t1 + 1) {
+        var e1: f64 = noise(&g, 0.3);
+        var prev: f64 = load64(x + (t1 - 1) * 8);
+        var ar: f64 = 0.7 * prev;
+        var yt: f64 = ar + e1;
+        put(x, t1, yt);
+    }
+    var big = alloc(500 * 8);
+    _pmn_copy_words(big, x, 500);
+    var am: PmnArimaModel;
+    assert_eq(pmn_arima_fit(&am, big, 500, 1, 0), PMN_ERR_NONE, "AR(1) on 500 points");
+    var phi: f64 = load64(am.ar_coefficients());
+    assert(near(phi, 0.7, 0.15) == 1, "φ ≈ 0.7");
+    PmnArimaModel_drop(&am);
+    for (var t2 = 0; t2 < 50; t2 = t2 + 1) {
+        var tv: f64 = f64_from(t2);
+        var sv: f64 = _pmn_sin(tv);
+        put(x, t2, sv);
+    }
+    assert_eq(pmn_arima_fit(&am, x, 50, 2, 0), PMN_ERR_NONE, "AR(2) on sin t");
+    assert_eq(pmn_arima_forecast(&am, x, 50, 10, o, 10), PMN_ERR_NONE, "10 steps");
+    var fin = 1;
+    for (var k5 = 0; k5 < 10; k5 = k5 + 1) {
+        var fv: f64 = load64(o + k5 * 8);
+        if (_pmn_is_finite(fv) == 0) { fin = 0; }
+    }
+    assert(fin == 1, "every forecast finite");
+    assert_eq(pmn_arima_forecast(&am, x, 50, 10, o, 9), PMN_ERR_INVALID_PARAMETER, "cap < steps");
+    PmnArimaModel_drop(&am);
+    var g2: PmnSimpleRng;
+    var eg2 = PmnSimpleRng_new(&g2, 123);
+    var nz = alloc(200 * 8);
+    put(nz, 0, 0.0);
+    for (var t3 = 1; t3 < 200; t3 = t3 + 1) {
+        var e3: f64 = noise(&g2, 0.2);
+        var pv: f64 = load64(nz + (t3 - 1) * 8);
+        var hv: f64 = 0.5 * pv;
+        var nv: f64 = hv + e3;
+        put(nz, t3, nv);
+    }
+    for (var t4 = 0; t4 < 200; t4 = t4 + 1) {
+        var lin: f64 = f64_from(t4);
+        var nzv: f64 = load64(nz + t4 * 8);
+        var dv2: f64 = lin + nzv;
+        put(big, t4, dv2);
+    }
+    assert_eq(pmn_arima_fit(&am, big, 200, 1, 1), PMN_ERR_NONE, "ARIMA(1, 1, 0) on a trend");
+    assert_eq(pmn_arima_forecast(&am, big, 200, 5, o, 5), PMN_ERR_NONE, "5 steps");
+    var tr_ok = 1;
+    for (var k6 = 0; k6 < 5; k6 = k6 + 1) {
+        var fc: f64 = load64(o + k6 * 8);
+        var ex: f64 = f64_from(200 + k6);
+        if (near(fc, ex, 10.0) == 0) { tr_ok = 0; }
+    }
+    assert(tr_ok == 1 && eg == PMN_ERR_NONE && eg2 == PMN_ERR_NONE, "each within 10 of the trend");
+    var am2: PmnArimaModel;
+    assert_eq(PmnArimaModel_clone(&am2, &am), PMN_ERR_NONE, "clone");
+    assert(am2.ar_coefficients() != am.ar_coefficients() && am2.d == 1, "the clone owns its block");
+    var sb = str_builder_new();
+    assert_eq(am.to_json(sb), PMN_ERR_NONE, "to_json");
+    var am3: PmnArimaModel;
+    assert_eq(PmnArimaModel_from_json(&am3, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "from_json");
+    var i1: f64 = am.intercept;
+    var i3: f64 = am3.intercept;
+    assert(am3.d == 1 && am3.len() == 1 && i1 == i3, "the model round-trips");
+    PmnArimaModel_drop(&am3);
+    PmnArimaModel_drop(&am2);
+    PmnArimaModel_drop(&am);
+    for (var i5 = 0; i5 < 5; i5 = i5 + 1) { put(x, i5, f64_from(i5 + 1)); }
+    assert_eq(pmn_arima_fit(&am, x, 5, 0, 0), PMN_ERR_INVALID_PARAMETER, "p = 0");
+    assert_eq(pmn_arima_fit(&am, x, 5, 10, 0), PMN_ERR_INVALID_SAMPLE, "p > n");
+    var phv[8];
+    put(&phv, 0, 0.5);
+    assert_eq(_pmn_arima_fill(&am, &phv, 1, 0, 0.0, 1.0), PMN_ERR_NONE, "a hand-built AR(1)");
+    assert_eq(pmn_arima_forecast(&am, x, 5, 0, o, 8), PMN_ERR_INVALID_PARAMETER, "steps = 0");
+    PmnArimaModel_drop(&am);
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

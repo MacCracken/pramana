@@ -547,6 +547,14 @@ fn _par_json_write(fp, fl): i64 {
         _par_json_k = wpk;
         e = wpm.to_json(sb);
         var wpd = PmnPolynomialModel_drop(&wpm);
+    } elif (_par_eq(fp, fl, "json::write::ArimaModel") == 1) {
+        if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+        var wam: PmnArimaModel;
+        var wak = _par_arima_from_toks(0, &wam);
+        if (wak < 0) { return 0 - 1; }
+        _par_json_k = wak;
+        e = wam.to_json(sb);
+        var wad = PmnArimaModel_drop(&wam);
     } elif (_par_eq(fp, fl, "json::write::LogisticModel") == 1) {
         if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
         var wgm: PmnLogisticModel;
@@ -870,6 +878,14 @@ fn _par_json_models(which): i64 {
             PmnPolynomialModel_drop(&pm);
             return 1;
         }
+    } elif (which == 3) {
+        var ar: PmnArimaModel;
+        e = PmnArimaModel_from_json(&ar, doc, n);
+        if (e == PMN_ERR_NONE) {
+            _par_got_arima(&ar);
+            PmnArimaModel_drop(&ar);
+            return 1;
+        }
     } else {
         var gm: PmnLogisticModel;
         e = PmnLogisticModel_from_json(&gm, doc, n);
@@ -954,6 +970,7 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::LinearModel") == 1) { return _par_json_models(0); }
     if (_par_eq(fp, fl, "json::PolynomialModel") == 1) { return _par_json_models(1); }
     if (_par_eq(fp, fl, "json::LogisticModel") == 1) { return _par_json_models(2); }
+    if (_par_eq(fp, fl, "json::ArimaModel") == 1) { return _par_json_models(3); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -1150,6 +1167,17 @@ fn _par_debug(fp, fl): i64 {
         var dak = _par_anova_from_toks(0, &dar);
         if (dak + 1 != _par_in_n) { return 0 - 1; }
         e = dar.debug(sb, _par_in(dak));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::ArimaModel") == 1) {
+        if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+        var dam: PmnArimaModel;
+        var dak = _par_arima_from_toks(0, &dam);
+        if (dak < 0 || dak + 1 != _par_in_n) { return 0 - 1; }
+        e = dam.debug(sb, _par_in(dak));
+        var dad = PmnArimaModel_drop(&dam);
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -2580,6 +2608,112 @@ fn _par_regression(fp, fl): i64 {
     return 1;
 }
 
+# ── `timeseries` rows (M5 part b): src/timeseries.cyr. Slices and scalars in order, as validate.py's TS reads them.
+
+fn _par_got_arima(r: *PmnArimaModel): i64 {
+    var n = r.len();
+    _par_got_seq(n);
+    for (var k = 0; k < n; k = k + 1) { _par_got_f(load64(r.ar_coefficients() + k * 8)); }
+    _par_got_i(r.d);
+    var a: f64 = r.intercept;
+    var b: f64 = r.residual_variance;
+    _par_got_f(a);
+    _par_got_f(b);
+    return 1;
+}
+
+# An ArimaModel built from golden tokens at k (the coefficients' slice, d, the intercept, the residual variance): the
+# next token, or -1.
+fn _par_arima_from_toks(k, r: *PmnArimaModel): i64 {
+    var n = _par_in(k);
+    if (n < 0 || n > _PAR_DS_CAP || k + n + 4 > _par_in_n) { return 0 - 1; }
+    _par_in_f64s(k, _par_ds_b);
+    var ic: f64 = _par_in(k + n + 2);
+    var rv: f64 = _par_in(k + n + 3);
+    if (_pmn_arima_fill(r, _par_ds_b, n, _par_in(k + n + 1), ic, rv) != PMN_ERR_NONE) { return 0 - 1; }
+    return k + n + 4;
+}
+
+fn _par_got_series(e, n): i64 {
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_seq(n);
+    for (var j = 0; j < n; j = j + 1) { _par_got_f(load64(_par_ds_o + j * 8)); }
+    return 1;
+}
+
+fn _par_timeseries(fp, fl): i64 {
+    if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_o == 0) { _par_ds_o = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_a == 0 || _par_ds_b == 0 || _par_ds_o == 0) { return 0 - 1; }
+    var x = _par_ds_a;
+    var n = _par_in(0);
+    if (n < 0 || n > _PAR_DS_CAP / 2) { return 0 - 1; }
+    _par_in_f64s(0, x);
+    var k = n + 1;
+    var cap = _PAR_DS_CAP;
+    if (_par_eq(fp, fl, "timeseries::moving_average") == 1) {
+        var w = _par_in(k);
+        var e0 = pmn_moving_average(x, n, w, _par_ds_o, cap);
+        return _par_got_series(e0, n - w + 1);
+    }
+    if (_par_eq(fp, fl, "timeseries::exponential_smoothing") == 1) {
+        var a: f64 = _par_in(k);
+        var e1 = pmn_exponential_smoothing(x, n, a, _par_ds_o, cap);
+        return _par_got_series(e1, n);
+    }
+    if (_par_eq(fp, fl, "timeseries::autocorrelation") == 1) {
+        var t, v = pmn_autocorrelation(x, n, _par_in(k));
+        if (t == Err) {
+            _par_got_err(v);
+        } else {
+            _par_got_f(v);
+        }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "timeseries::difference") == 1) {
+        var d = _par_in(k);
+        var e2 = pmn_difference(x, n, d, _par_ds_o, cap);
+        return _par_got_series(e2, n - d);
+    }
+    if (_par_eq(fp, fl, "timeseries::integrate") == 1) {
+        var np = _par_in(k);
+        if (np < 0 || n + np > _PAR_DS_CAP / 2) { return 0 - 1; }
+        var pre = x + n * 8;
+        _par_in_f64s(k, pre);
+        var d2 = _par_in(k + np + 1);
+        var e3 = pmn_integrate(x, n, pre, np, d2, _par_ds_o, cap);
+        return _par_got_series(e3, n + d2);
+    }
+    if (_par_eq(fp, fl, "timeseries::arima_fit") == 1) {
+        var am: PmnArimaModel;
+        var e4 = pmn_arima_fit(&am, x, n, _par_in(k), _par_in(k + 1));
+        if (e4 != PMN_ERR_NONE) {
+            _par_got_err(e4);
+            return 1;
+        }
+        _par_got_arima(&am);
+        PmnArimaModel_drop(&am);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "timeseries::arima_forecast") == 1) {
+        var fm: PmnArimaModel;
+        var hk = _par_arima_from_toks(0, &fm);
+        if (hk < 0) { return 0 - 1; }
+        var hn = _par_in(hk);
+        if (hn < 0 || hn > _PAR_DS_CAP / 2) { return 0 - 1; }
+        _par_in_f64s(hk, x);
+        var steps = _par_in(hk + hn + 1);
+        var e5 = pmn_arima_forecast(&fm, x, hn, steps, _par_ds_o, cap);
+        PmnArimaModel_drop(&fm);
+        return _par_got_series(e5, steps);
+    }
+    return 0;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
@@ -2596,6 +2730,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "regression") == 1) { return _par_regression(fp, fl); }
     if (_par_eq(mp, ml, "rng") == 1) { return _par_rng(fp, fl); }
     if (_par_eq(mp, ml, "special") == 1) { return _par_special(fp, fl); }
+    if (_par_eq(mp, ml, "timeseries") == 1) { return _par_timeseries(fp, fl); }
     return 0;
 }
 

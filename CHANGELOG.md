@@ -968,6 +968,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   48 Debug rows. Every row passes at 0 ulp on x86_64 ELF, PE and aarch64; `regression.cr.tsv` holds the one logistic
   fit where glibc's exp misrounds. Five mutants fail 2 to 47 rows each (a sixth, the sums of squares from +0.0, is
   equivalent). `tests/regression.tcyr` (46 checks) carries 1.3.0's tests over.
+- **M5 part b: time series** (port plan §7; `src/timeseries.cyr`). 1.3.0's `moving_average`,
+  `exponential_smoothing`, `autocorrelation`, `difference`, `integrate`, `arima_fit` (Yule–Walker on hisab's Cholesky
+  pair) and `arima_forecast`, the series into caller buffers (D11), and `ArimaModel` (owned, `_drop`, Clone) with its
+  codec and Debug. A new golden module, `timeseries`, 1,322 rows (seeded, constant, trending, overflowing and
+  non-finite series over the window, α, lag and order grids; AR(1)–AR(3) fits with drift and d = 0 … 3, their
+  forecasts, c(0)'s 1e-30 floor), 97 codec and 16 Debug rows. Every row passes on the first replay, at 0 ulp, on
+  x86_64 ELF, PE and aarch64. Five mutants fail 3 to 97 rows each. `tests/timeseries.tcyr` (45 checks) carries 1.3.0's
+  tests over. `moving_average` refuses an output overlapping its input (its slide re-reads the window's first value).
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one
