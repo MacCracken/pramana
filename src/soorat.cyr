@@ -1,0 +1,954 @@
+# soorat.cyr — Rust 1.3.0's soorat data shapes (src/integration/soorat.rs; port plan §4.1, D5, D9, D11, D12; M7 part
+# a): `DistributionCurve`, `McmcTrace`, `RegressionFit`, `HistogramData` (with `from_data`) and `CorrelationMatrix`,
+# their serde_json codecs, their derived Debug, Clone and PartialEq.
+#
+# In the core bundle, without a feature flag (D9): dead-code elimination drops what a consumer doesn't call, and a Rust
+# soorat reads the JSON. Each shape is owned (D11): the struct in caller storage, its vectors and strings in one
+# freelist block, freed by `_drop`. Rust builds them as struct literals (public fields, no checks); `PmnX_new` copies
+# the caller's fields in, and the codecs take any document the derive does, ragged lengths included. PartialEq is the
+# derive's: vectors equal in length and element by element under IEEE `==` (so a NaN is unequal to itself, and −0 equals
+# +0), strings byte for byte.
+
+# ── the owned block ────────────────────────────────────────────────────────────────────────────────
+
+# One freelist block holding k parts back to back, each 8-byte aligned: parts[i] is a 24-byte record (the source, its
+# count, its bytes per element), copied in; dsts[i] gets part i's address. The block, or 0 when it can't be had or a
+# count is negative or too large.
+#must_use
+fn _pmn_so_pack(parts, k, dsts): i64 {
+    var total = 8;
+    for (var i = 0; i < k; i = i + 1) {
+        var n = load64(parts + i * 24 + 8);
+        var w = load64(parts + i * 24 + 16);
+        if (n < 0 || n > 144115188075855871 / w) { return 0; }
+        var bytes = (n * w + 7) & (0 - 8);
+        if (total > 1152921504606846975 - bytes) { return 0; }
+        total = total + bytes;
+    }
+    var blk = fl_alloc(total);
+    if (blk == 0) { return 0; }
+    var at = blk;
+    for (var j = 0; j < k; j = j + 1) {
+        var src = load64(parts + j * 24);
+        var n2 = load64(parts + j * 24 + 8);
+        var w2 = load64(parts + j * 24 + 16);
+        store64(dsts + j * 8, at);
+        if (n2 > 0 && src != 0) {
+            if (w2 == 8) {
+                _pmn_copy_words(at, src, n2);
+            } else {
+                memcpy(at, src, n2 * w2);
+            }
+        }
+        at = at + ((n2 * w2 + 7) & (0 - 8));
+    }
+    return blk;
+}
+
+# Writes a part record: src, n, bytes per element.
+fn _pmn_so_part(parts, i, src, n, w): i64 {
+    store64(parts + i * 24, src);
+    store64(parts + i * 24 + 8, n);
+    store64(parts + i * 24 + 16, w);
+    return 0;
+}
+
+# 1 when the slice (p, n) is a valid input: n ≥ 0 and p non-null when n > 0.
+#must_use
+fn _pmn_so_ok(p, n): i64 {
+    if (n < 0 || (p == 0 && n > 0)) { return 0; }
+    return 1;
+}
+
+# The derive's Vec<f64> equality: the same length and every element `==`.
+#must_use
+fn _pmn_so_eq_f64s(a, na, b, nb): i64 {
+    if (na != nb) { return 0; }
+    for (var i = 0; i < na; i = i + 1) {
+        var x: f64 = load64(a + i * 8);
+        var y: f64 = load64(b + i * 8);
+        if (x != y) { return 0; }
+    }
+    return 1;
+}
+
+# Byte (or word) equality of two runs of n·w bytes.
+#must_use
+fn _pmn_so_eq_bytes(a, na, b, nb): i64 {
+    if (na != nb) { return 0; }
+    if (na == 0) { return 1; }
+    return memeq(a, b, na);
+}
+
+# Appends a Vec<u64> as Rust's Debug: `[1, 2]`, or one entry a line in the alternate form (as `_pmn_dbg_vec_f64`).
+#must_use
+fn _pmn_so_dbg_vec_u64(sb, p, n, alternate, depth): i64 {
+    var e = _pmn_json_w_lit(sb, "[");
+    if (n == 0) {
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+        return e;
+    }
+    if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_json_w_lit(sb, "\n"); }
+    var k = 0;
+    while (e == PMN_ERR_NONE && k < n) {
+        if (alternate == 1) {
+            e = _pmn_dbg_indent(sb, depth + 1);
+        } elif (k > 0) {
+            e = _pmn_json_w_lit(sb, ", ");
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, load64(p + k * 8)); }
+        if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_json_w_lit(sb, ",\n"); }
+        k = k + 1;
+    }
+    if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_dbg_indent(sb, depth); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+    return e;
+}
+
+# Appends a Vec<String> (n 16-byte records: a pointer, then a length) as Rust's Debug: `["x", "y"]`.
+#must_use
+fn _pmn_so_dbg_vec_str(sb, recs, n, alternate, depth): i64 {
+    var e = _pmn_json_w_lit(sb, "[");
+    if (n == 0) {
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+        return e;
+    }
+    if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_json_w_lit(sb, "\n"); }
+    var k = 0;
+    while (e == PMN_ERR_NONE && k < n) {
+        if (alternate == 1) {
+            e = _pmn_dbg_indent(sb, depth + 1);
+        } elif (k > 0) {
+            e = _pmn_json_w_lit(sb, ", ");
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_str(sb, load64(recs + k * 16), load64(recs + k * 16 + 8)); }
+        if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_json_w_lit(sb, ",\n"); }
+        k = k + 1;
+    }
+    if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_dbg_indent(sb, depth); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+    return e;
+}
+
+# A Debug field: `name: ` (first or not), then the caller writes the value, then `_pmn_dbg_item_end`.
+#must_use
+fn _pmn_so_dbg_vec_field(sb, name, first, p, n, alternate): i64 {
+    var e = _pmn_dbg_item(sb, name, first, alternate);
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, p, n, alternate, 1); }
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+    return e;
+}
+
+#must_use
+fn _pmn_so_dbg_str_field(sb, name, first, p, n, alternate): i64 {
+    var e = _pmn_dbg_item(sb, name, first, alternate);
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_str(sb, p, n); }
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+    return e;
+}
+
+#must_use
+fn _pmn_so_json_vec_field(sb, name, first, p, n): i64 {
+    var e = _pmn_json_w_key(sb, name, first);
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, p, n); }
+    return e;
+}
+
+#must_use
+fn _pmn_so_json_str_field(sb, name, first, p, n): i64 {
+    var e = _pmn_json_w_key(sb, name, first);
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_str(sb, p, n); }
+    return e;
+}
+
+# A Vec<u64> field node read whole into pool scratch: (copy, slot, n), copy 0 with n the error code on a refusal.
+fn _pmn_so_u64_node(v): (i64, i64, i64) {
+    var n = _pmn_json_arr_len(v);
+    if (n < 0) { return (0, 0 - 1, PMN_ERR_DESERIALIZE); }
+    var s, slot = _pmn_scratch_take(n * 8 + 8);
+    if (s == 0) { return (0, 0 - 1, PMN_ERR_OUT_OF_MEMORY); }
+    if (_pmn_json_vec_u64(v, s, n) != PMN_ERR_NONE) {
+        _pmn_scratch_give(s, slot);
+        return (0, 0 - 1, PMN_ERR_DESERIALIZE);
+    }
+    return (s, slot, n);
+}
+
+# ── DistributionCurve ─────────────────────────────────────────────────────────────────────────────
+
+# Rust's `DistributionCurve`: the x values, the pdf and the cdf at them, and a name.
+struct PmnDistributionCurve {
+    buf;
+    x;
+    nx;
+    pdf;
+    npdf;
+    cdf;
+    ncdf;
+    name;
+    nname;
+}
+
+# The struct literal: copies of x[0, nx), pdf[0, np), cdf[0, nc) and the name's bytes (UTF-8, the caller's) into out's
+# own block (caller storage, D11). PMN_ERR_INVALID_PARAMETER for a null out or an invalid slice; PMN_ERR_OUT_OF_MEMORY
+# when the block can't be had. On a refusal out is untouched.
+#must_use
+fn PmnDistributionCurve_new(out: *PmnDistributionCurve, x, nx, pdf, np, cdf, nc, name, nname): i64 {
+    if (out == 0 || _pmn_so_ok(x, nx) == 0 || _pmn_so_ok(pdf, np) == 0 || _pmn_so_ok(cdf, nc) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (_pmn_so_ok(name, nname) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var parts[96];
+    _pmn_so_part(&parts, 0, x, nx, 8);
+    _pmn_so_part(&parts, 1, pdf, np, 8);
+    _pmn_so_part(&parts, 2, cdf, nc, 8);
+    _pmn_so_part(&parts, 3, name, nname, 1);
+    var d[32];
+    var blk = _pmn_so_pack(&parts, 4, &d);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    out.buf = blk;
+    out.x = load64(&d);
+    out.nx = nx;
+    out.pdf = load64(&d + 8);
+    out.npdf = np;
+    out.cdf = load64(&d + 16);
+    out.ncdf = nc;
+    out.name = load64(&d + 24);
+    out.nname = nname;
+    return PMN_ERR_NONE;
+}
+
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src.
+#must_use
+fn PmnDistributionCurve_clone(out: *PmnDistributionCurve, src: *PmnDistributionCurve): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 72, src, 72) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    return PmnDistributionCurve_new(out, src.x, src.nx, src.pdf, src.npdf, src.cdf, src.ncdf, src.name, src.nname);
+}
+
+# Frees c's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null c.
+fn PmnDistributionCurve_drop(c: *PmnDistributionCurve): i64 {
+    if (c == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (c.buf != 0) { fl_free(c.buf); }
+    c.buf = 0;
+    c.nx = 0;
+    c.npdf = 0;
+    c.ncdf = 0;
+    c.nname = 0;
+    return PMN_ERR_NONE;
+}
+
+# Rust's derived PartialEq: 1 when every field is equal, else 0 (a dropped or null one equals nothing).
+#must_use
+fn PmnDistributionCurve_eq(a: *PmnDistributionCurve, b: *PmnDistributionCurve): i64 {
+    if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
+    if (_pmn_so_eq_f64s(a.x, a.nx, b.x, b.nx) == 0) { return 0; }
+    if (_pmn_so_eq_f64s(a.pdf, a.npdf, b.pdf, b.npdf) == 0) { return 0; }
+    if (_pmn_so_eq_f64s(a.cdf, a.ncdf, b.cdf, b.ncdf) == 0) { return 0; }
+    return _pmn_so_eq_bytes(a.name, a.nname, b.name, b.nname);
+}
+
+impl PmnDistributionCurve {
+    # Appends Rust's derived Debug (D12): `DistributionCurve { x_values: [..], pdf: [..], cdf: [..], name: ".." }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "DistributionCurve", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_field(sb, "x_values", 1, self.x, self.nx, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_field(sb, "pdf", 0, self.pdf, self.npdf, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_field(sb, "cdf", 0, self.cdf, self.ncdf, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_str_field(sb, "name", 0, self.name, self.nname, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"x_values":[..],"pdf":[..],"cdf":[..],"name":".."}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_so_json_vec_field(sb, "x_values", 1, self.x, self.nx);
+        if (e == PMN_ERR_NONE) { e = _pmn_so_json_vec_field(sb, "pdf", 0, self.pdf, self.npdf); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_json_vec_field(sb, "cdf", 0, self.cdf, self.ncdf); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_json_str_field(sb, "name", 0, self.name, self.nname); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_curve_from_root(root, out: *PmnDistributionCurve): i64 {
+    var names[32];
+    store64(&names, "x_values");
+    store64(&names + 8, "pdf");
+    store64(&names + 16, "cdf");
+    store64(&names + 24, "name");
+    var sl[32];
+    var e = _pmn_json_struct(root, &names, 4, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var nm[16];
+    if (_pmn_json_str(load64(&sl + 24), &nm) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var xa, xs, xn = _pmn_reg_vec_node(load64(&sl));
+    if (xa == 0) { return xn; }
+    var pa, ps, pn = _pmn_reg_vec_node(load64(&sl + 8));
+    if (pa == 0) {
+        _pmn_scratch_give(xa, xs);
+        return pn;
+    }
+    var ca, cs, cn = _pmn_reg_vec_node(load64(&sl + 16));
+    if (ca == 0) {
+        _pmn_scratch_give(pa, ps);
+        _pmn_scratch_give(xa, xs);
+        return cn;
+    }
+    e = PmnDistributionCurve_new(out, xa, xn, pa, pn, ca, cn, load64(&nm), load64(&nm + 8));
+    _pmn_scratch_give(ca, cs);
+    _pmn_scratch_give(pa, ps);
+    _pmn_scratch_give(xa, xs);
+    return e;
+}
+
+# Reads a DistributionCurve document, buf[0, len), into out (caller storage, owning a new block: drop it):
+# PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnDistributionCurve_from_json(out: *PmnDistributionCurve, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_curve_from_root, out);
+}
+
+# ── McmcTrace ─────────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `McmcTrace`: the samples, their log-likelihoods and the parameter's name.
+struct PmnMcmcTrace {
+    buf;
+    samples;
+    ns;
+    lls;
+    nll;
+    parameter;
+    nparameter;
+}
+
+# The struct literal: copies of samples[0, ns), lls[0, nl) and the name's bytes into out's own block.
+# PMN_ERR_INVALID_PARAMETER for a null out or an invalid slice; PMN_ERR_OUT_OF_MEMORY when the block can't be had.
+#must_use
+fn PmnMcmcTrace_new(out: *PmnMcmcTrace, samples, ns, lls, nl, parameter, nparameter): i64 {
+    if (out == 0 || _pmn_so_ok(samples, ns) == 0 || _pmn_so_ok(lls, nl) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_so_ok(parameter, nparameter) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var parts[72];
+    _pmn_so_part(&parts, 0, samples, ns, 8);
+    _pmn_so_part(&parts, 1, lls, nl, 8);
+    _pmn_so_part(&parts, 2, parameter, nparameter, 1);
+    var d[24];
+    var blk = _pmn_so_pack(&parts, 3, &d);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    out.buf = blk;
+    out.samples = load64(&d);
+    out.ns = ns;
+    out.lls = load64(&d + 8);
+    out.nll = nl;
+    out.parameter = load64(&d + 16);
+    out.nparameter = nparameter;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnMcmcTrace_clone(out: *PmnMcmcTrace, src: *PmnMcmcTrace): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 56, src, 56) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    return PmnMcmcTrace_new(out, src.samples, src.ns, src.lls, src.nll, src.parameter, src.nparameter);
+}
+
+fn PmnMcmcTrace_drop(t: *PmnMcmcTrace): i64 {
+    if (t == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (t.buf != 0) { fl_free(t.buf); }
+    t.buf = 0;
+    t.ns = 0;
+    t.nll = 0;
+    t.nparameter = 0;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnMcmcTrace_eq(a: *PmnMcmcTrace, b: *PmnMcmcTrace): i64 {
+    if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
+    if (_pmn_so_eq_f64s(a.samples, a.ns, b.samples, b.ns) == 0) { return 0; }
+    if (_pmn_so_eq_f64s(a.lls, a.nll, b.lls, b.nll) == 0) { return 0; }
+    return _pmn_so_eq_bytes(a.parameter, a.nparameter, b.parameter, b.nparameter);
+}
+
+impl PmnMcmcTrace {
+    # Appends Rust's derived Debug: `McmcTrace { samples: [..], log_likelihoods: [..], parameter: ".." }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "McmcTrace", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_field(sb, "samples", 1, self.samples, self.ns, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_field(sb, "log_likelihoods", 0, self.lls, self.nll, alternate); }
+        if (e == PMN_ERR_NONE) {
+            e = _pmn_so_dbg_str_field(sb, "parameter", 0, self.parameter, self.nparameter, alternate);
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"samples":[..],"log_likelihoods":[..],"parameter":".."}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_so_json_vec_field(sb, "samples", 1, self.samples, self.ns);
+        if (e == PMN_ERR_NONE) { e = _pmn_so_json_vec_field(sb, "log_likelihoods", 0, self.lls, self.nll); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_json_str_field(sb, "parameter", 0, self.parameter, self.nparameter); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_trace_from_root(root, out: *PmnMcmcTrace): i64 {
+    var names[24];
+    store64(&names, "samples");
+    store64(&names + 8, "log_likelihoods");
+    store64(&names + 16, "parameter");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var nm[16];
+    if (_pmn_json_str(load64(&sl + 16), &nm) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var sa, ss, sn = _pmn_reg_vec_node(load64(&sl));
+    if (sa == 0) { return sn; }
+    var la, ls, ln = _pmn_reg_vec_node(load64(&sl + 8));
+    if (la == 0) {
+        _pmn_scratch_give(sa, ss);
+        return ln;
+    }
+    e = PmnMcmcTrace_new(out, sa, sn, la, ln, load64(&nm), load64(&nm + 8));
+    _pmn_scratch_give(la, ls);
+    _pmn_scratch_give(sa, ss);
+    return e;
+}
+
+#must_use
+fn PmnMcmcTrace_from_json(out: *PmnMcmcTrace, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_trace_from_root, out);
+}
+
+# ── RegressionFit ─────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `RegressionFit`: five f64 vectors (x and y observed, y predicted, the band's upper and lower edges, each its
+# own length) and R². vec is 5 records of (pointer, length) into the block.
+struct PmnRegressionFit {
+    buf;
+    vec;
+    r_squared: f64;
+}
+
+# The struct literal: recs holds the five vectors as 16-byte (pointer, length) records, in Rust's field order
+# (x_observed, y_observed, y_predicted, y_upper, y_lower), copied into out's own block with R². out.vec points at the
+# block's own five records. PMN_ERR_INVALID_PARAMETER for a null out or recs or an invalid slice;
+# PMN_ERR_OUT_OF_MEMORY when the block can't be had.
+#must_use
+fn PmnRegressionFit_new(out: *PmnRegressionFit, recs, r_squared: f64): i64 {
+    if (out == 0 || recs == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var parts[144];
+    _pmn_so_part(&parts, 0, 0, 10, 8);
+    for (var i = 0; i < 5; i = i + 1) {
+        var p = load64(recs + i * 16);
+        var n = load64(recs + i * 16 + 8);
+        if (_pmn_so_ok(p, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        _pmn_so_part(&parts, i + 1, p, n, 8);
+    }
+    var d[48];
+    var blk = _pmn_so_pack(&parts, 6, &d);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var v = load64(&d);
+    for (var j = 0; j < 5; j = j + 1) {
+        store64(v + j * 16, load64(&d + (j + 1) * 8));
+        store64(v + j * 16 + 8, load64(recs + j * 16 + 8));
+    }
+    out.buf = blk;
+    out.vec = v;
+    out.r_squared = r_squared;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnRegressionFit_clone(out: *PmnRegressionFit, src: *PmnRegressionFit): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 24, src, 24) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var r: f64 = src.r_squared;
+    return PmnRegressionFit_new(out, src.vec, r);
+}
+
+fn PmnRegressionFit_drop(f: *PmnRegressionFit): i64 {
+    if (f == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (f.buf != 0) { fl_free(f.buf); }
+    f.buf = 0;
+    f.vec = 0;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnRegressionFit_eq(a: *PmnRegressionFit, b: *PmnRegressionFit): i64 {
+    if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
+    for (var i = 0; i < 5; i = i + 1) {
+        var ap = load64(a.vec + i * 16);
+        var an = load64(a.vec + i * 16 + 8);
+        var bp = load64(b.vec + i * 16);
+        var bn = load64(b.vec + i * 16 + 8);
+        if (_pmn_so_eq_f64s(ap, an, bp, bn) == 0) { return 0; }
+    }
+    var x: f64 = a.r_squared;
+    var y: f64 = b.r_squared;
+    if (x != y) { return 0; }
+    return 1;
+}
+
+# Rust's field names, in order.
+fn _pmn_fit_name(i): i64 {
+    if (i == 0) { return "x_observed"; }
+    if (i == 1) { return "y_observed"; }
+    if (i == 2) { return "y_predicted"; }
+    if (i == 3) { return "y_upper"; }
+    return "y_lower";
+}
+
+impl PmnRegressionFit {
+    # Vector i (0 … 4, Rust's field order): its entries (borrowed) and length; 0 and −1 out of range or dropped.
+    #must_use
+    fn field(self, i): i64 {
+        if (self == 0 || self.buf == 0 || i < 0 || i > 4) { return 0; }
+        return load64(self.vec + i * 16);
+    }
+
+    #must_use
+    fn field_len(self, i): i64 {
+        if (self == 0 || self.buf == 0 || i < 0 || i > 4) { return 0 - 1; }
+        return load64(self.vec + i * 16 + 8);
+    }
+
+    # Appends Rust's derived Debug: `RegressionFit { x_observed: [..], .., y_lower: [..], r_squared: .. }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "RegressionFit", 1, alternate);
+        for (var i = 0; i < 5; i = i + 1) {
+            if (e == PMN_ERR_NONE) {
+                e = _pmn_so_dbg_vec_field(sb, _pmn_fit_name(i), i == 0, self.field(i), self.field_len(i), alternate);
+            }
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "r_squared", 0, self.r_squared, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: the five vectors, then `"r_squared":..`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = PMN_ERR_NONE;
+        for (var i = 0; i < 5; i = i + 1) {
+            if (e == PMN_ERR_NONE) {
+                e = _pmn_so_json_vec_field(sb, _pmn_fit_name(i), i == 0, self.field(i), self.field_len(i));
+            }
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "r_squared", 0, self.r_squared); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_fit_from_root(root, out: *PmnRegressionFit): i64 {
+    var names[48];
+    for (var i = 0; i < 5; i = i + 1) { store64(&names + i * 8, _pmn_fit_name(i)); }
+    store64(&names + 40, "r_squared");
+    var sl[48];
+    var e = _pmn_json_struct(root, &names, 6, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var r2[8];
+    if (_pmn_json_f64(load64(&sl + 40), &r2) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var recs[80];
+    var slots[40];
+    var got = 0;
+    e = PMN_ERR_NONE;
+    while (got < 5 && e == PMN_ERR_NONE) {
+        var a, s, n = _pmn_reg_vec_node(load64(&sl + got * 8));
+        if (a == 0) {
+            e = n;
+        } else {
+            store64(&recs + got * 16, a);
+            store64(&recs + got * 16 + 8, n);
+            store64(&slots + got * 8, s);
+            got = got + 1;
+        }
+    }
+    if (e == PMN_ERR_NONE) {
+        var r: f64 = load64(&r2);
+        e = PmnRegressionFit_new(out, &recs, r);
+    }
+    var k = got - 1;
+    while (k >= 0) {
+        _pmn_scratch_give(load64(&recs + k * 16), load64(&slots + k * 8));
+        k = k - 1;
+    }
+    return e;
+}
+
+#must_use
+fn PmnRegressionFit_from_json(out: *PmnRegressionFit, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_fit_from_root, out);
+}
+
+# ── HistogramData ─────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `HistogramData`: the bin edges, the counts (u64s) and the total.
+struct PmnHistogramData {
+    buf;
+    edges;
+    nedges;
+    counts;
+    ncounts;
+    total;
+}
+
+# The struct literal: copies of edges[0, ne) and counts[0, nc) (u64 words) and total into out's own block.
+#must_use
+fn PmnHistogramData_new(out: *PmnHistogramData, edges, ne, counts, nc, total): i64 {
+    if (out == 0 || _pmn_so_ok(edges, ne) == 0 || _pmn_so_ok(counts, nc) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var parts[48];
+    _pmn_so_part(&parts, 0, edges, ne, 8);
+    _pmn_so_part(&parts, 1, counts, nc, 8);
+    var d[16];
+    var blk = _pmn_so_pack(&parts, 2, &d);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    out.buf = blk;
+    out.edges = load64(&d);
+    out.nedges = ne;
+    out.counts = load64(&d + 8);
+    out.ncounts = nc;
+    out.total = total;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `HistogramData::from_data(data, n_bins)`, into out (caller storage, owning a new block: drop it). The finite
+# values alone: their min (Rust's f64::min, folded from the first) and max; the range max − min, floored at
+# max(|min|, |max|, 1)·ε·2·n_bins so each bin is at least two ulps wide; n_bins + 1 edges min + i·width; each value in
+# bin ⌊(v − min)/width⌋ (Rust's saturating `as usize`), at most the last. Empty (no edges, no counts, total 0) when no
+# value is finite or n_bins is 0. PMN_ERR_INVALID_PARAMETER for a null out, an invalid slice or a negative n_bins (ADR
+# 007 row 18); PMN_ERR_OUT_OF_MEMORY when the block can't be had (Rust aborts there). On a refusal out is untouched.
+#must_use
+fn PmnHistogramData_from_data(out: *PmnHistogramData, data, n, n_bins): i64 {
+    if (out == 0 || _pmn_so_ok(data, n) == 0 || n_bins < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var have = 0;
+    var mn: f64 = 0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        if (_pmn_is_finite(x) == 1) {
+            if (have == 0) {
+                mn = x;
+                have = 1;
+            } else {
+                mn = _pmn_min(mn, x);
+            }
+        }
+    }
+    if (have == 0 || n_bins == 0) { return PmnHistogramData_new(out, 0, 0, 0, 0, 0); }
+    if (n_bins > 72057594037927935) { return PMN_ERR_OUT_OF_MEMORY; }
+    var mx: f64 = mn;
+    for (var j = 0; j < n; j = j + 1) {
+        var y: f64 = load64(data + j * 8);
+        if (_pmn_is_finite(y) == 1) { mx = _pmn_max(mx, y); }
+    }
+    var amn: f64 = f64_abs(mn);
+    var amx: f64 = f64_abs(mx);
+    var m1: f64 = _pmn_max(amn, amx);
+    var mag: f64 = _pmn_max(m1, 1.0);
+    var nb: f64 = f64_from(n_bins);
+    var eps: f64 = _PMN_F64_EPSILON;
+    var t1: f64 = mag * eps;
+    var t2: f64 = t1 * 2.0;
+    var floor: f64 = t2 * nb;
+    var d: f64 = mx - mn;
+    var range: f64 = _pmn_max(d, floor);
+    var w: f64 = range / nb;
+    var parts[48];
+    _pmn_so_part(&parts, 0, 0, n_bins + 1, 8);
+    _pmn_so_part(&parts, 1, 0, n_bins, 8);
+    var dd[16];
+    var blk = _pmn_so_pack(&parts, 2, &dd);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var ed = load64(&dd);
+    var ct = load64(&dd + 8);
+    for (var k = 0; k <= n_bins; k = k + 1) {
+        var fk: f64 = f64_from(k);
+        var p: f64 = fk * w;
+        var edge: f64 = mn + p;
+        store64(ed + k * 8, edge);
+    }
+    for (var z = 0; z < n_bins; z = z + 1) { store64(ct + z * 8, 0); }
+    var total = 0;
+    for (var q = 0; q < n; q = q + 1) {
+        var v: f64 = load64(data + q * 8);
+        if (_pmn_is_finite(v) == 1) {
+            var o: f64 = v - mn;
+            var r: f64 = o / w;
+            var idx = _pmn_sat_usize(r);
+            if (idx < 0 || idx > n_bins - 1) { idx = n_bins - 1; }
+            store64(ct + idx * 8, load64(ct + idx * 8) + 1);
+            total = total + 1;
+        }
+    }
+    out.buf = blk;
+    out.edges = ed;
+    out.nedges = n_bins + 1;
+    out.counts = ct;
+    out.ncounts = n_bins;
+    out.total = total;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnHistogramData_clone(out: *PmnHistogramData, src: *PmnHistogramData): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 48, src, 48) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    return PmnHistogramData_new(out, src.edges, src.nedges, src.counts, src.ncounts, src.total);
+}
+
+fn PmnHistogramData_drop(h: *PmnHistogramData): i64 {
+    if (h == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (h.buf != 0) { fl_free(h.buf); }
+    h.buf = 0;
+    h.nedges = 0;
+    h.ncounts = 0;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnHistogramData_eq(a: *PmnHistogramData, b: *PmnHistogramData): i64 {
+    if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
+    if (_pmn_so_eq_f64s(a.edges, a.nedges, b.edges, b.nedges) == 0) { return 0; }
+    if (_pmn_so_eq_bytes(a.counts, a.ncounts * 8, b.counts, b.ncounts * 8) == 0) { return 0; }
+    if (a.total != b.total) { return 0; }
+    return 1;
+}
+
+impl PmnHistogramData {
+    # Appends Rust's derived Debug: `HistogramData { bin_edges: [..], counts: [..], total: n }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "HistogramData", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_field(sb, "bin_edges", 1, self.edges, self.nedges, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "counts", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_u64(sb, self.counts, self.ncounts, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "total", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.total); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"bin_edges":[..],"counts":[..],"total":n}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_so_json_vec_field(sb, "bin_edges", 1, self.edges, self.nedges);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "counts", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_u64(sb, self.counts, self.ncounts); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "total", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.total); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_hist_from_root(root, out: *PmnHistogramData): i64 {
+    var names[24];
+    store64(&names, "bin_edges");
+    store64(&names + 8, "counts");
+    store64(&names + 16, "total");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var tot[8];
+    if (_pmn_json_u64(load64(&sl + 16), &tot) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var ea, es, en = _pmn_reg_vec_node(load64(&sl));
+    if (ea == 0) { return en; }
+    var ca, cs, cn = _pmn_so_u64_node(load64(&sl + 8));
+    if (ca == 0) {
+        _pmn_scratch_give(ea, es);
+        return cn;
+    }
+    e = PmnHistogramData_new(out, ea, en, ca, cn, load64(&tot));
+    _pmn_scratch_give(ca, cs);
+    _pmn_scratch_give(ea, es);
+    return e;
+}
+
+#must_use
+fn PmnHistogramData_from_json(out: *PmnHistogramData, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_hist_from_root, out);
+}
+
+# ── CorrelationMatrix ─────────────────────────────────────────────────────────────────────────────
+
+# Rust's `CorrelationMatrix`: the values (flattened, any length), the size and the labels. labels is nlabels 16-byte
+# records (a pointer, then a length) into the block, the bytes after them.
+struct PmnCorrelationMatrix {
+    buf;
+    values;
+    nvalues;
+    size;
+    labels;
+    nlabels;
+}
+
+# The struct literal: copies of values[0, nv), size, and the nl labels (16-byte records, a pointer then a length, each
+# UTF-8) into out's own block. PMN_ERR_INVALID_PARAMETER for a null out or an invalid slice or label;
+# PMN_ERR_OUT_OF_MEMORY when the block can't be had.
+#must_use
+fn PmnCorrelationMatrix_new(out: *PmnCorrelationMatrix, values, nv, size, labels, nl): i64 {
+    if (out == 0 || _pmn_so_ok(values, nv) == 0 || _pmn_so_ok(labels, nl) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (nl > 72057594037927935) { return PMN_ERR_INVALID_PARAMETER; }
+    var bytes = 0;
+    for (var i = 0; i < nl; i = i + 1) {
+        var p = load64(labels + i * 16);
+        var n = load64(labels + i * 16 + 8);
+        if (_pmn_so_ok(p, n) == 0 || n > 1152921504606846975 - bytes) { return PMN_ERR_INVALID_PARAMETER; }
+        bytes = bytes + n;
+    }
+    var parts[72];
+    _pmn_so_part(&parts, 0, values, nv, 8);
+    _pmn_so_part(&parts, 1, 0, nl * 2, 8);
+    _pmn_so_part(&parts, 2, 0, bytes, 1);
+    var d[24];
+    var blk = _pmn_so_pack(&parts, 3, &d);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var recs = load64(&d + 8);
+    var at = load64(&d + 16);
+    for (var j = 0; j < nl; j = j + 1) {
+        var p2 = load64(labels + j * 16);
+        var n2 = load64(labels + j * 16 + 8);
+        if (n2 > 0) { memcpy(at, p2, n2); }
+        store64(recs + j * 16, at);
+        store64(recs + j * 16 + 8, n2);
+        at = at + n2;
+    }
+    out.buf = blk;
+    out.values = load64(&d);
+    out.nvalues = nv;
+    out.size = size;
+    out.labels = recs;
+    out.nlabels = nl;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnCorrelationMatrix_clone(out: *PmnCorrelationMatrix, src: *PmnCorrelationMatrix): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 48, src, 48) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    return PmnCorrelationMatrix_new(out, src.values, src.nvalues, src.size, src.labels, src.nlabels);
+}
+
+fn PmnCorrelationMatrix_drop(c: *PmnCorrelationMatrix): i64 {
+    if (c == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (c.buf != 0) { fl_free(c.buf); }
+    c.buf = 0;
+    c.nvalues = 0;
+    c.nlabels = 0;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnCorrelationMatrix_eq(a: *PmnCorrelationMatrix, b: *PmnCorrelationMatrix): i64 {
+    if (a == 0 || b == 0 || a.buf == 0 || b.buf == 0) { return 0; }
+    if (_pmn_so_eq_f64s(a.values, a.nvalues, b.values, b.nvalues) == 0) { return 0; }
+    if (a.size != b.size || a.nlabels != b.nlabels) { return 0; }
+    for (var i = 0; i < a.nlabels; i = i + 1) {
+        var ap = load64(a.labels + i * 16);
+        var an = load64(a.labels + i * 16 + 8);
+        var bp = load64(b.labels + i * 16);
+        var bn = load64(b.labels + i * 16 + 8);
+        if (_pmn_so_eq_bytes(ap, an, bp, bn) == 0) { return 0; }
+    }
+    return 1;
+}
+
+impl PmnCorrelationMatrix {
+    # Appends Rust's derived Debug: `CorrelationMatrix { values: [..], size: n, labels: [".."] }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "CorrelationMatrix", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_field(sb, "values", 1, self.values, self.nvalues, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "size", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.size); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "labels", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_vec_str(sb, self.labels, self.nlabels, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"values":[..],"size":n,"labels":[".."]}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_so_json_vec_field(sb, "values", 1, self.values, self.nvalues);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "size", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.size); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "labels", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "["); }
+        var i = 0;
+        while (e == PMN_ERR_NONE && i < self.nlabels) {
+            if (i > 0) { e = _pmn_json_w_lit(sb, ","); }
+            if (e == PMN_ERR_NONE) {
+                e = _pmn_json_w_str(sb, load64(self.labels + i * 16), load64(self.labels + i * 16 + 8));
+            }
+            i = i + 1;
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]}"); }
+        return e;
+    }
+}
+
+fn _pmn_corr_from_root(root, out: *PmnCorrelationMatrix): i64 {
+    var names[24];
+    store64(&names, "values");
+    store64(&names + 8, "size");
+    store64(&names + 16, "labels");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var va, vs, vn = _pmn_reg_vec_node(load64(&sl));
+    if (va == 0) { return vn; }
+    var sz[8];
+    e = PMN_ERR_NONE;
+    if (_pmn_json_u64(load64(&sl + 8), &sz) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    var lv = load64(&sl + 16);
+    var nl = _pmn_json_arr_len(lv);
+    if (e == PMN_ERR_NONE && nl < 0) { e = PMN_ERR_DESERIALIZE; }
+    var ls = 0;
+    var lslot = 0 - 1;
+    if (e == PMN_ERR_NONE) {
+        var la, lsl = _pmn_scratch_take(nl * 16 + 8);
+        ls = la;
+        lslot = lsl;
+        if (ls == 0) { e = PMN_ERR_OUT_OF_MEMORY; }
+    }
+    for (var i = 0; e == PMN_ERR_NONE && i < nl; i = i + 1) {
+        if (_pmn_json_str(_pmn_json_arr_get(lv, i), ls + i * 16) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    }
+    if (e == PMN_ERR_NONE) { e = PmnCorrelationMatrix_new(out, va, vn, load64(&sz), ls, nl); }
+    if (ls != 0) { _pmn_scratch_give(ls, lslot); }
+    _pmn_scratch_give(va, vs);
+    return e;
+}
+
+#must_use
+fn PmnCorrelationMatrix_from_json(out: *PmnCorrelationMatrix, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_corr_from_root, out);
+}

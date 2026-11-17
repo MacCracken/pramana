@@ -810,6 +810,12 @@ JSON_STRUCTS = {
     "ArimaModel": [("ar_coefficients", "Vec<f64>"), ("d", "usize"), ("intercept", "f64"), ("residual_variance", "f64")],
     "PcaResult": [("components", "Vec<Vec<f64>>"), ("eigenvalues", "Vec<f64>"), ("explained_variance_ratio", "Vec<f64>")],
     "EstimateResult": [("value", "f64"), ("std_error", "f64")],
+    "DistributionCurve": [("x_values", "Vec<f64>"), ("pdf", "Vec<f64>"), ("cdf", "Vec<f64>"), ("name", "String")],
+    "McmcTrace": [("samples", "Vec<f64>"), ("log_likelihoods", "Vec<f64>"), ("parameter", "String")],
+    "RegressionFit": [("x_observed", "Vec<f64>"), ("y_observed", "Vec<f64>"), ("y_predicted", "Vec<f64>"),
+                      ("y_upper", "Vec<f64>"), ("y_lower", "Vec<f64>"), ("r_squared", "f64")],
+    "HistogramData": [("bin_edges", "Vec<f64>"), ("counts", "Vec<u64>"), ("total", "u64")],
+    "CorrelationMatrix": [("values", "Vec<f64>"), ("size", "usize"), ("labels", "Vec<String>")],
     "McmcResult": [("samples", "Vec<Vec<f64>>"), ("acceptance_rate", "f64")],
     "Pair": [("mean", "f64"), ("std_dev", "f64")],
     "Shapes": [("x", "f64"), ("n", "u64"), ("k", "usize"), ("flag", "bool"), ("name", "String"), ("xs", "Vec<f64>"),
@@ -3713,7 +3719,8 @@ def debug_text(fn, ins):
                                               ("bandwidth", rust_debug_f64(h)), ("kernel", k)], alt)
     if fn in ("debug::TestResult", "debug::AnovaResult", "debug::KsResult", "debug::ConfidenceInterval",
               "debug::LinearModel", "debug::PolynomialModel", "debug::LogisticModel", "debug::ArimaModel",
-              "debug::EstimateResult"):
+              "debug::EstimateResult", "debug::DistributionCurve", "debug::McmcTrace", "debug::RegressionFit",
+              "debug::HistogramData", "debug::CorrelationMatrix"):
         ty = fn[len("debug::"):]
         alt = ins[-1] == 1
         vals = iter(ins[:-1])
@@ -3722,11 +3729,16 @@ def debug_text(fn, ins):
             x = next(vals)
             if kind == "Vec<f64>":
                 text = rust_debug_list([rust_debug_f64(next(vals)) for _ in range(int(x[len("v:"):]))], alt, 1)
+            elif kind == "Vec<u64>":
+                text = rust_debug_list([str(next(vals) % (1 << 64)) for _ in range(int(x[len("v:"):]))], alt, 1)
+            elif kind == "Vec<String>":
+                text = rust_debug_list([rust_debug_str(urllib.parse.unquote_to_bytes(next(vals)[len("s:"):]))
+                                        for _ in range(int(x[len("v:"):]))], alt, 1)
             elif kind == "String":
                 text = rust_debug_str(urllib.parse.unquote_to_bytes(x[len("s:"):]))
             elif kind == "bool":
                 text = "true" if x == 1 else "false"
-            elif kind == "usize":
+            elif kind in ("usize", "u64"):
                 text = str(x % (1 << 64))
             else:
                 text = rust_debug_f64(x)
@@ -5420,6 +5432,78 @@ MC = {
 }
 
 
+# ── soorat (M7 part a): 1.3.0's integration/soorat.rs ──
+
+def so_min(x, y):
+    """The port's `f64::min` (src/mathx.cyr's `_pmn_min`): a NaN operand yields the other; equal operands give y."""
+    if x != x:
+        return y
+    if y != y:
+        return x
+    return x if x < y else y
+
+
+def so_max(x, y):
+    if x != x:
+        return y
+    if y != y:
+        return x
+    return x if x > y else y
+
+
+def so_sat_usize(x):
+    """`x as usize`: toward zero, saturating at 0 and u64::MAX, NaN → 0."""
+    if x != x or x <= 0.0:
+        return 0
+    if x >= 18446744073709551616.0:
+        return (1 << 64) - 1
+    return int(x)
+
+
+def so_hist(L, sl, sc):
+    """`HistogramData::from_data(data, n_bins)`: the edges, the counts and the total."""
+    data, nb = sl[0], sc[0]
+    fin = [x for x in data if math.isfinite(x)]
+    if not fin or nb == 0:
+        return ["v:0", "v:0", 0]
+    mn = fin[0]
+    for x in fin[1:]:
+        mn = so_min(mn, x)
+    mx = mn
+    for x in fin:
+        mx = so_max(mx, x)
+    mag = so_max(so_max(abs(mn), abs(mx)), 1.0)
+    floor = mag * 2.220446049250313e-16 * 2.0 * float(nb)
+    w = so_max(mx - mn, floor) / float(nb)
+    edges = [mn + float(i) * w for i in range(nb + 1)]
+    counts = [0] * nb
+    for x in fin:
+        counts[min(so_sat_usize(fdiv(x - mn, w)), nb - 1)] += 1
+    return [f"v:{nb + 1}"] + edges + [f"v:{nb}"] + counts + [len(fin)]
+
+
+def so_feq(a, b):
+    return len(a) == len(b) and all(x == y for x, y in zip(a, b))
+
+
+def so_eq(L, sl, sc, kind):
+    """The derived PartialEq of two values, given as their codec tokens one after the other."""
+    if kind == "DistributionCurve":
+        return [int(all(so_feq(sl[k], sl[k + 3]) for k in range(3)) and sc[0] == sc[1])]
+    if kind == "McmcTrace":
+        return [int(so_feq(sl[0], sl[2]) and so_feq(sl[1], sl[3]) and sc[0] == sc[1])]
+    if kind == "RegressionFit":
+        return [int(all(so_feq(sl[k], sl[k + 5]) for k in range(5)) and sc[0] == sc[1])]
+    if kind == "HistogramData":
+        return [int(so_feq(sl[0], sl[2]) and sl[1] == sl[3] and sc[0] == sc[1])]
+    return [int(so_feq(sl[0], sl[2]) and sc[0] == sc[1] and sl[1] == sl[3])]   # CorrelationMatrix
+
+
+SOORAT = {"HistogramData::from_data": so_hist}
+for _k in ("DistributionCurve", "McmcTrace", "RegressionFit", "HistogramData", "CorrelationMatrix"):
+    SOORAT[f"{_k}::eq"] = (lambda kind: lambda L, sl, sc: so_eq(L, sl, sc, kind))(_k)
+
+
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
 STATS_T1 = {"hypothesis::t_test_one_sample": "incomplete beta", "hypothesis::t_test_two_sample": "incomplete beta",
             "hypothesis::chi_squared_test": "incomplete gamma", "hypothesis::one_way_anova": "incomplete beta",
@@ -5479,7 +5563,7 @@ def check_stats(root, module, table, rows):
 
 
 STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG, "timeseries": TS,
-                 "bayesian": BAYES, "markov": MARKOV, "monte_carlo": MC}
+                 "bayesian": BAYES, "markov": MARKOV, "monte_carlo": MC, "soorat": SOORAT}
 
 
 def main(argv):

@@ -4567,3 +4567,23 @@ exactly, MH's strict `r < exp(la)` against exp(−∞) = 0, and a run length pas
 - **The audit.** Neither source uses `+?`, `-?`, `*?`, `assert_fatal`, `panic`, `result_unwrap`, an unchecked
   `vec_get` or `alloc_reset`. Every buffer is checked for null and for aliasing. `#pure` is on `_pmn_safe_ln`, the
   one value-only helper.
+
+## 13. M7: the soorat shapes and the AI client
+
+M7 ports 1.3.0's `integration/soorat.rs` and `ai.rs` under ADR 010, in three parts (the plan's §7).
+
+### 13.1 Part a: the soorat shapes (2026-11-17)
+
+`src/soorat.cyr`, golden `soorat` (363 rows: `HistogramData::from_data` 297, each shape's `::eq` 12–18), 465 codec and
+20 Debug rows. Every `from_data` and `eq` row passes on its first replay, at 0 ulp. The first replay of the codec
+rows failed six on non-ASCII names. That was the harness writing their decoded strings unencoded, not the port: the
+names now go through the harness's percent-encoding.
+
+Some `from_data` edge cases, all matching 1.3.0:
+- ±f64::MAX gives an infinite range, so the first edge is `min + 0·∞`, NaN, and every value lands in bin 0 or the
+  last;
+- three 1e12s get distinct edges from the two-ulp floor;
+- −0 and +0 together give a zero-width range, which the floor widens.
+
+**Mutants.** All eight fail rows (2 to 192 each): the floor's factor 2 and its magnitude floor of 1, the overflow
+bin, counting infinities, the min fold, equality by bits, and equality skipping a name or a size.

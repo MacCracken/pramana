@@ -76,4 +76,5 @@ modules = [
     "src/bayesian.cyr",
     "src/markov.cyr",
     "src/monte_carlo.cyr",
+    "src/soorat.cyr",
 ]

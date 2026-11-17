@@ -27,7 +27,7 @@ PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptiv
           "timeseries", "bayesian", "markov", "monte_carlo"]   # M6's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {}
+PARTIAL = {"integration/soorat": "M7"}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
@@ -102,6 +102,38 @@ SURFACE = {
     "monte_carlo::McmcResult#Deserialize": ["fn PmnMcmcResult_from_json"],
     "monte_carlo::metropolis_hastings": ["fn pmn_metropolis_hastings"],
     "monte_carlo::gibbs_sampling": ["fn pmn_gibbs_sampling", "struct PmnRngRef"],
+    # integration/soorat.rs (M7 part a; D9)
+    "integration/soorat::DistributionCurve": ["struct PmnDistributionCurve", "fn PmnDistributionCurve_new", "fn PmnDistributionCurve_drop"],
+    "integration/soorat::DistributionCurve#Clone": ["fn PmnDistributionCurve_clone"],
+    "integration/soorat::DistributionCurve#PartialEq": ["fn PmnDistributionCurve_eq"],
+    "integration/soorat::DistributionCurve#Debug": ["method PmnDistributionCurve.debug"],
+    "integration/soorat::DistributionCurve#Serialize": ["method PmnDistributionCurve.to_json"],
+    "integration/soorat::DistributionCurve#Deserialize": ["fn PmnDistributionCurve_from_json"],
+    "integration/soorat::McmcTrace": ["struct PmnMcmcTrace", "fn PmnMcmcTrace_new", "fn PmnMcmcTrace_drop"],
+    "integration/soorat::McmcTrace#Clone": ["fn PmnMcmcTrace_clone"],
+    "integration/soorat::McmcTrace#PartialEq": ["fn PmnMcmcTrace_eq"],
+    "integration/soorat::McmcTrace#Debug": ["method PmnMcmcTrace.debug"],
+    "integration/soorat::McmcTrace#Serialize": ["method PmnMcmcTrace.to_json"],
+    "integration/soorat::McmcTrace#Deserialize": ["fn PmnMcmcTrace_from_json"],
+    "integration/soorat::RegressionFit": ["struct PmnRegressionFit", "fn PmnRegressionFit_new", "fn PmnRegressionFit_drop"],
+    "integration/soorat::RegressionFit#Clone": ["fn PmnRegressionFit_clone"],
+    "integration/soorat::RegressionFit#PartialEq": ["fn PmnRegressionFit_eq"],
+    "integration/soorat::RegressionFit#Debug": ["method PmnRegressionFit.debug"],
+    "integration/soorat::RegressionFit#Serialize": ["method PmnRegressionFit.to_json"],
+    "integration/soorat::RegressionFit#Deserialize": ["fn PmnRegressionFit_from_json"],
+    "integration/soorat::HistogramData": ["struct PmnHistogramData", "fn PmnHistogramData_new", "fn PmnHistogramData_drop"],
+    "integration/soorat::HistogramData#Clone": ["fn PmnHistogramData_clone"],
+    "integration/soorat::HistogramData#PartialEq": ["fn PmnHistogramData_eq"],
+    "integration/soorat::HistogramData#Debug": ["method PmnHistogramData.debug"],
+    "integration/soorat::HistogramData#Serialize": ["method PmnHistogramData.to_json"],
+    "integration/soorat::HistogramData#Deserialize": ["fn PmnHistogramData_from_json"],
+    "integration/soorat::CorrelationMatrix": ["struct PmnCorrelationMatrix", "fn PmnCorrelationMatrix_new", "fn PmnCorrelationMatrix_drop"],
+    "integration/soorat::CorrelationMatrix#Clone": ["fn PmnCorrelationMatrix_clone"],
+    "integration/soorat::CorrelationMatrix#PartialEq": ["fn PmnCorrelationMatrix_eq"],
+    "integration/soorat::CorrelationMatrix#Debug": ["method PmnCorrelationMatrix.debug"],
+    "integration/soorat::CorrelationMatrix#Serialize": ["method PmnCorrelationMatrix.to_json"],
+    "integration/soorat::CorrelationMatrix#Deserialize": ["fn PmnCorrelationMatrix_from_json"],
+    "integration/soorat::HistogramData.from_data": ["fn PmnHistogramData_from_data"],
     # bayesian.rs (M5 part c)
     "bayesian::BayesianUpdate": ["struct PmnBayesianUpdate"],
     "bayesian::BayesianUpdate#Clone": "a plain struct: copying it clones it",
@@ -396,7 +428,7 @@ SURFACE = {
     "distribution::MultivariateNormal#Deserialize": ["fn PmnMultivariateNormal_from_json"],
 }
 
-DERIVES = {"Debug", "Clone", "Serialize", "Deserialize", "Error"}
+DERIVES = {"Debug", "Clone", "PartialEq", "Serialize", "Deserialize", "Error"}
 
 
 def library_part(text):

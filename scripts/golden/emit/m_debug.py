@@ -151,4 +151,9 @@ def emit():
     for rows, rate in (([[0.1, 0.2], [0.3, 0.4]], 0.25), ([], 1.0), ([[]], 0.0), ([[1.0], [2.0, 3.0], []], 0.5),
                        ([[g8.signed_log_uniform(-10.0, 10.0) for _ in range(2)] for _ in range(3)], g8.unit())):
         both("debug::McmcResult", mc_toks(rows, rate))
+    # M7 part a: the five soorat shapes
+    from .m_soorat import bases, TOKS
+    for kind, bs in bases(Rng(0x510E527F9B05688C)).items():
+        for base in bs:
+            both(f"debug::{kind}", TOKS[kind](base))
     return m

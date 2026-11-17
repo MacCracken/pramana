@@ -24,7 +24,8 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 | M4 Descriptive and hypothesis | ✅ **every part done; the gate passes** (port plan §7's parts a1–c; port-parity §10). **Part a1**: `src/sort.cyr` (the stable sort and O(n) stable selection, ledger L3) and `src/descriptive.cyr` (the fourteen statistics); golden `descriptive`, 23,180 rows at 0 ulp on three targets; `_pmn_copy_words` for the byte-wise `memcpy` (ledger L15). **Part a2**: `src/kde.cyr` (Kernel, KernelDensity, correlation_matrix); 1,212 more rows, 145 codec and 40 Debug rows, at 0 ulp on three targets. **Part a3**: hisab's Jacobi (`src/linalg.cyr`, ledger L6) and `src/pca.cyr`; 201 more rows, 136 codec and Debug rows; ADR 007 row 17. **Part b1**: `src/hypothesis.cyr` (the six tests, three result types); golden `hypothesis`, 1,202 rows (391 on T1's p-values), 382 codec and 60 Debug rows, at 0 ulp on three targets. **Part b2**: the CIs and the quantiles; 395 more rows, 117 codec and Debug rows; the quantiles measured against MPFR (roadmap). **Part c**, the gate: NIST StRD fetched, replayed and measured (`scripts/golden/strd.py`; ANOVA's higher-difficulty shortfalls on the roadmap), the soak's M4 group, surface parity |
 | M5 Regression, time series, Bayesian | ✅ **every part done; the gate passes** (port plan §7's parts a–d; port-parity §11). **Part a**: `src/regression.cyr` (linear, polynomial on hisab's MGS, ledger L5, logistic); golden `regression`, 562 rows, 264 codec and 48 Debug rows, at 0 ulp on three targets. **Part b**: `src/timeseries.cyr`; golden `timeseries`, 1,322 rows, 97 codec and 16 Debug rows, at 0 ulp on three targets. **Part c**: `src/bayesian.cyr`; golden `bayesian`, 2,005 rows, 97 codec and 10 Debug rows, at 0 ulp on three targets. **Part d**, the gate: NIST StRD's regression sets and r(1) replayed and measured, the soak's M5 group, surface parity |
 | M6 Markov chains, Monte Carlo | ✅ **every part done; the gate passes** (port plan §7's parts a–c; port-parity §12). **Part a** ✅: `src/markov.cyr` (MarkovChain, HiddenMarkovModel); golden `markov`, 2,884 rows, 226 codec and 20 Debug rows, at 0 ulp on three targets. **Part b** ✅: `src/monte_carlo.cyr` (integration, π, Metropolis–Hastings, Gibbs; ADR 007 row 18); golden `monte_carlo`, 1,608 rows (`monte_carlo.cr.tsv` 19), 174 codec and 18 Debug rows, at 0 ulp on three targets. **Part c**, the gate: the soak's M6 group, surface parity, every row at 0 ulp on three targets |
-| M7–M8 | not started |
+| M7 soorat, ai | in progress (port plan §7's parts a–c; port-parity §13). **Part a** ✅: `src/soorat.cyr` (the five shapes, `HistogramData::from_data`); golden `soorat`, 363 rows, 465 codec and 20 Debug rows, at 0 ulp. Next: part b, `src/ai.cyr` |
+| M8 | not started |
 
 ## Toolchain
 
@@ -75,22 +76,23 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
   - `src/hypothesis.cyr` (the tests, the intervals and the quantiles, from M4 parts b1–b2);
   - `src/regression.cyr`, `src/timeseries.cyr` and `src/bayesian.cyr` (M5 parts a–c);
   - `src/markov.cyr` (MarkovChain and HiddenMarkovModel, from M6 part a) and `src/monte_carlo.cyr` (integration, π,
-    Metropolis–Hastings and Gibbs, from b).
+    Metropolis–Hastings and Gibbs, from b);
+  - `src/soorat.cyr` (the five soorat shapes and `HistogramData::from_data`, from M7 part a).
 
   They are bundled as `dist/pramana.cyr`. `src/main.cyr` is the scaffold's build entry.
 
 ## Tests
 
-- **Golden corpus** (`tests/golden/`, generated and never committed; ADR 010), 18 modules: `constants` 112 rows,
-  `math` 35,597 (and `math.cr.tsv` 76), `fmt` 25,200 (serde_json's f64 text), `json` 10,805 (serde_json's reading and
-  writing of every type; `json.map.tsv` 300, ADR 007 row 16), `rng` 46, `combinatorics` 2,405, `bridge` 5,553, `debug`
-  25,966 (every type's `{:?}` and `{:#?}`, and Rust's `{:?}` of 25,200 doubles), `special` 58,101 (`special.cr.tsv`
+- **Golden corpus** (`tests/golden/`, generated and never committed; ADR 010), 19 modules: `constants` 112 rows,
+  `math` 35,597 (and `math.cr.tsv` 76), `fmt` 25,200 (serde_json's f64 text), `json` 11,444 (serde_json's reading and
+  writing of every type; `json.map.tsv` 370, ADR 007 row 16), `rng` 46, `combinatorics` 2,405, `bridge` 5,553, `debug`
+  25,986 (every type's `{:?}` and `{:#?}`, and Rust's `{:?}` of 25,200 doubles), `special` 58,101 (`special.cr.tsv`
   91, `special.ref.tsv` 20,621), `dist` 166,631 (`dist.cr.tsv` 1,283, `dist.ref.tsv` 31,437), `linalg` 805
   (`linalg.cr.tsv` 9), `descriptive` 24,497 (`descriptive.cr.tsv` 6), `hypothesis` 1,608 (`hypothesis.cr.tsv` 2,
   `hypothesis.ref.tsv` 414), `regression` 571 (`regression.cr.tsv` 1), `timeseries` 1,331, `bayesian` 2,005,
-  `markov` 2,884 and `monte_carlo` 1,608 (`monte_carlo.cr.tsv` 19); NIST StRD's sets among the descriptive, hypothesis, regression and time-series rows. `gen.py` writes
+  `markov` 2,884, `monte_carlo` 1,608 (`monte_carlo.cr.tsv` 19) and `soorat` 363; NIST StRD's sets among the descriptive, hypothesis, regression and time-series rows. `gen.py` writes
   them and `validate.py` checks them; `scripts/golden/digests.txt` holds their sha256.
-- **Cyrius**: `tests/parity.tcyr` replays the whole corpus (18 modules, nothing failed, measured or pending, on
+- **Cyrius**: `tests/parity.tcyr` replays the whole corpus (19 modules, nothing failed, measured or pending, on
   x86_64 ELF, PE and aarch64), and fails a module that leaves a pool slot claimed. The unit tests:
   - M1: `tests/error.tcyr` and `tests/mathx.tcyr` (30 checks each), `tests/pool.tcyr` (26), `tests/pool_threads.tcyr`
     (6, four racing threads), `tests/json.tcyr` (140), `tests/rng.tcyr` (26), `tests/combinatorics.tcyr` (40),
@@ -100,12 +102,13 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
   - M4: `tests/descriptive.tcyr` (42), `tests/kde.tcyr` (43), `tests/pca.tcyr` (37), `tests/hypothesis.tcyr` (113);
   - M5: `tests/regression.tcyr` (46), `tests/timeseries.tcyr` (45), `tests/bayesian.tcyr` (19);
   - M6: `tests/markov.tcyr` (110), `tests/monte_carlo.tcyr` (69);
+  - M7: `tests/soorat.tcyr` (47);
   - `tests/soak.tcyr` (43: every allocating path through M6, nothing taken), and the scaffold's
     `tests/pramana.{tcyr,bcyr,fcyr}` stubs.
 
   The benches, on 1.3.0's criterion bodies (the Rust numbers are kept in `docs/benchmarks-rust-v-cyrius.md`; the
   twins were removed by ADR 010): `tests/{crmath,mathx,fmtf,pool,json,rng,combinatorics,bridge,special,dist,linalg,
-  descriptive,hypothesis,regression,timeseries,bayesian,markov,monte_carlo}.bcyr`.
+  descriptive,hypothesis,regression,timeseries,bayesian,markov,monte_carlo,soorat}.bcyr`.
 - **Correct rounding**: `bash scripts/crverify/run.sh` checks 11.6M seeded rows of the primitives (`primitives`) and
   2,768,534 of erf and erfc (`erf`, CORE-MATH's worst cases among them, also compared with CORE-MATH's own build)
   and 1,146,809 of Φ (`ncdf`, against ADR 009's ≤ 1 ulp), 1,000,000 of lnΓ (`lgamma`, against ≤ 2 ulp, mixed for

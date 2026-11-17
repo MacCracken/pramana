@@ -984,3 +984,16 @@ iterations of a 10 × 10 product, the dense inner loop that Rust vectorizes.
 π is 2 × 10⁵ draws through the bounded generic, M1's 10 ns against Rust's inlined 1.7 ns: almost all of the row.
 Metropolis–Hastings spends its time in Box–Muller's correctly rounded ln and cos and the acceptance's exp, which are
 8–10× glibc's.
+
+## M7 part a: the soorat shapes (2026-11-17)
+
+1.3.0 has no criterion body for `integration/soorat.rs`, so these rows have no Rust column (`tests/soorat.bcyr`, three
+pinned runs):
+
+| Row | Cyrius |
+|---|---|
+| `soorat/from_data_10000_100bins` | 277–278 µs |
+| `soorat/curve_json_200` (a 600-value curve written and read back) | 2.15 ms |
+
+The histogram is two passes over 10⁴ values and a division each. The curve's codec is almost all the serde_json float
+printer's 2.8–13.9 µs a value, M1 part d1's finding, which ledger L10 asks impetus for.

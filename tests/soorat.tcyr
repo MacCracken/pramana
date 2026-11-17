@@ -1,0 +1,189 @@
+# soorat.tcyr — src/soorat.cyr (M7 part a).
+#
+# tests/parity.tcyr replays 1.3.0's values (tests/golden/soorat.tsv, json.tsv, debug.tsv). These carry 1.3.0's own
+# tests over (integration/soorat.rs) and pin what the port adds: the owned blocks, the derived equality, the refusals
+# and drop.
+
+include "tests/lib.cyr"
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn sum_counts(h: *PmnHistogramData): i64 {
+    var s = 0;
+    for (var i = 0; i < h.ncounts; i = i + 1) { s = s + load64(h.counts + i * 8); }
+    return s;
+}
+
+fn text_is(sb, want): i64 {
+    if (load64(sb + 8) == strlen(want) && memeq(load64(sb), want, strlen(want)) == 1) { return 1; }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var d = alloc(64 * 8);
+    var h: PmnHistogramData;
+
+    test_group("1.3.0's tests (histograms basic, empty, single-valued, non-finite, constant at 1e12; the shapes)");
+    put(d, 0, 1.0);
+    put(d, 1, 2.0);
+    put(d, 2, 3.0);
+    put(d, 3, 4.0);
+    put(d, 4, 5.0);
+    put(d, 5, 2.5);
+    put(d, 6, 3.5);
+    assert_eq(PmnHistogramData_from_data(&h, d, 7, 4), PMN_ERR_NONE, "seven values in 4 bins");
+    assert(h.nedges == 5 && h.ncounts == 4 && h.total == 7 && sum_counts(&h) == 7, "5 edges, 4 counts, all 7 counted");
+    PmnHistogramData_drop(&h);
+    assert_eq(PmnHistogramData_from_data(&h, d, 0, 10), PMN_ERR_NONE, "no data");
+    assert(h.ncounts == 0 && h.nedges == 0 && h.total == 0, "an empty histogram");
+    PmnHistogramData_drop(&h);
+    put(d, 0, 5.0);
+    put(d, 1, 5.0);
+    put(d, 2, 5.0);
+    assert_eq(PmnHistogramData_from_data(&h, d, 3, 3), PMN_ERR_NONE, "three 5s");
+    assert_eq(h.total, 3, "all three counted");
+    PmnHistogramData_drop(&h);
+    put(d, 0, _PMN_F64_NAN);
+    put(d, 1, 1.0);
+    put(d, 2, 2.0);
+    put(d, 3, _PMN_F64_INFINITY);
+    put(d, 4, 3.0);
+    assert_eq(PmnHistogramData_from_data(&h, d, 5, 2), PMN_ERR_NONE, "NaN, 1, 2, ∞, 3 in 2 bins");
+    var e0: f64 = load64(h.edges);
+    var e2: f64 = load64(h.edges + 16);
+    assert(h.total == 3 && sum_counts(&h) == 3 && e0 == 1.0 && e2 == 3.0, "the finite three, edges from 1 to 3");
+    PmnHistogramData_drop(&h);
+    put(d, 0, _PMN_F64_NAN);
+    put(d, 1, _PMN_F64_NAN);
+    assert_eq(PmnHistogramData_from_data(&h, d, 2, 4), PMN_ERR_NONE, "two NaNs");
+    assert(h.ncounts == 0 && h.total == 0, "empty");
+    PmnHistogramData_drop(&h);
+    put(d, 0, 1000000000000.0);
+    put(d, 1, 1000000000000.0);
+    put(d, 2, 1000000000000.0);
+    assert_eq(PmnHistogramData_from_data(&h, d, 3, 4), PMN_ERR_NONE, "three 1e12s in 4 bins");
+    var inc = 1;
+    for (var k = 0; k < 4; k = k + 1) {
+        var a: f64 = load64(h.edges + k * 8);
+        var b: f64 = load64(h.edges + (k + 1) * 8);
+        if (b <= a) { inc = 0; }
+    }
+    assert(h.total == 3 && inc == 1, "strictly increasing edges: the two-ulp floor");
+    PmnHistogramData_drop(&h);
+    var xs = alloc(3 * 8);
+    var pdf = alloc(3 * 8);
+    var cdf = alloc(3 * 8);
+    put(xs, 0, 0.0);
+    put(xs, 1, 1.0);
+    put(xs, 2, 2.0);
+    put(pdf, 0, 0.0);
+    put(pdf, 1, 0.5);
+    put(pdf, 2, 0.0);
+    put(cdf, 0, 0.0);
+    put(cdf, 1, 0.5);
+    put(cdf, 2, 1.0);
+    var c: PmnDistributionCurve;
+    assert_eq(PmnDistributionCurve_new(&c, xs, 3, pdf, 3, cdf, 3, "Normal(0,1)", 11), PMN_ERR_NONE, "a curve");
+    var sb = str_builder_new();
+    assert_eq(c.to_json(sb), PMN_ERR_NONE, "serializes");
+    var cw = "{\"x_values\":[0.0,1.0,2.0],\"pdf\":[0.0,0.5,0.0],\"cdf\":[0.0,0.5,1.0],\"name\":\"Normal(0,1)\"}";
+    assert(text_is(sb, cw) == 1, "serde_json's text");
+    var t: PmnMcmcTrace;
+    var ll = alloc(4 * 8);
+    put(d, 0, 1.0);
+    put(d, 1, 1.1);
+    put(d, 2, 0.9);
+    put(d, 3, 1.05);
+    put(ll, 0, -10.0);
+    put(ll, 1, -9.5);
+    put(ll, 2, -9.8);
+    put(ll, 3, -9.3);
+    assert_eq(PmnMcmcTrace_new(&t, d, 4, ll, 4, "mu", 2), PMN_ERR_NONE, "a trace");
+    var sb2 = str_builder_new();
+    assert_eq(t.to_json(sb2), PMN_ERR_NONE, "serializes");
+    var lab[32];
+    store64(&lab, "x");
+    store64(&lab + 8, 1);
+    store64(&lab + 16, "y");
+    store64(&lab + 24, 1);
+    var vals = alloc(4 * 8);
+    put(vals, 0, 1.0);
+    put(vals, 1, 0.8);
+    put(vals, 2, 0.8);
+    put(vals, 3, 1.0);
+    var cm: PmnCorrelationMatrix;
+    assert_eq(PmnCorrelationMatrix_new(&cm, vals, 4, 2, &lab, 2), PMN_ERR_NONE, "a 2 × 2 matrix");
+    assert(cm.nvalues == 4 && cm.size == 2 && cm.nlabels == 2, "four values, size 2, two labels");
+    var recs[80];
+    for (var r = 0; r < 5; r = r + 1) {
+        store64(&recs + r * 16, xs);
+        store64(&recs + r * 16 + 8, 3);
+    }
+    var f: PmnRegressionFit;
+    assert_eq(PmnRegressionFit_new(&f, &recs, 0.998), PMN_ERR_NONE, "a fit");
+    var r2: f64 = f.r_squared;
+    assert(r2 > 0.99 && f.field_len(4) == 3, "R² 0.998, five vectors of 3");
+
+    test_group("the derive's PartialEq, Clone, Debug and the codecs both ways");
+    var c2: PmnDistributionCurve;
+    assert_eq(PmnDistributionCurve_clone(&c2, &c), PMN_ERR_NONE, "a clone");
+    assert(c2.x != c.x && PmnDistributionCurve_eq(&c, &c2) == 1, "its own block, equal");
+    put(c2.pdf, 1, -0.0);
+    assert_eq(PmnDistributionCurve_eq(&c, &c2), 0, "0.5 against −0.0: unequal");
+    put(c2.pdf, 1, 0.5);
+    put(c2.x, 0, -0.0);
+    assert_eq(PmnDistributionCurve_eq(&c, &c2), 1, "−0 equals +0");
+    put(c2.x, 0, _PMN_F64_NAN);
+    assert_eq(PmnDistributionCurve_eq(&c2, &c2), 0, "a NaN is unequal to itself");
+    PmnDistributionCurve_drop(&c2);
+    var c3: PmnDistributionCurve;
+    assert_eq(PmnDistributionCurve_from_json(&c3, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    assert_eq(PmnDistributionCurve_eq(&c, &c3), 1, "equal");
+    PmnDistributionCurve_drop(&c3);
+    var sb3 = str_builder_new();
+    assert_eq(cm.debug(sb3, 0), PMN_ERR_NONE, "Debug");
+    assert(text_is(sb3, "CorrelationMatrix { values: [1.0, 0.8, 0.8, 1.0], size: 2, labels: [\"x\", \"y\"] }") == 1,
+        "the derive's text");
+    var sb4 = str_builder_new();
+    assert_eq(cm.to_json(sb4), PMN_ERR_NONE, "JSON");
+    assert(text_is(sb4, "{\"values\":[1.0,0.8,0.8,1.0],\"size\":2,\"labels\":[\"x\",\"y\"]}") == 1,
+        "serde_json's text");
+    var cm2: PmnCorrelationMatrix;
+    assert_eq(PmnCorrelationMatrix_from_json(&cm2, load64(sb4), load64(sb4 + 8)), PMN_ERR_NONE, "read back");
+    assert_eq(PmnCorrelationMatrix_eq(&cm, &cm2), 1, "equal");
+    PmnCorrelationMatrix_drop(&cm2);
+    var rag = "[[1],[],[1,2,3],[0],[5,6],-1]";
+    var f2: PmnRegressionFit;
+    assert_eq(PmnRegressionFit_from_json(&f2, rag, strlen(rag)), PMN_ERR_NONE, "lengths of their own, as the derive");
+    assert(f2.field_len(0) == 1 && f2.field_len(1) == 0 && f2.field_len(2) == 3 && f2.field_len(4) == 2,
+        "1, 0, 3, _, 2");
+    PmnRegressionFit_drop(&f2);
+    var hb = "{\"bin_edges\":[1],\"counts\":[1,-1],\"total\":0}";
+    assert_eq(PmnHistogramData_from_json(&h, hb, strlen(hb)), PMN_ERR_DESERIALIZE, "a negative count refused");
+
+    test_group("the port's refusals and drop");
+    assert_eq(PmnHistogramData_from_data(0, d, 3, 2), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnHistogramData_from_data(&h, 0, 3, 2), PMN_ERR_INVALID_PARAMETER, "null data");
+    assert_eq(PmnHistogramData_from_data(&h, d, 3, 0 - 1), PMN_ERR_INVALID_PARAMETER, "n_bins 2^64 − 1 (row 18)");
+    assert_eq(PmnHistogramData_from_data(&h, d, 3, 0), PMN_ERR_NONE, "n_bins 0");
+    assert(h.ncounts == 0 && h.total == 0, "empty");
+    PmnHistogramData_drop(&h);
+    assert_eq(PmnMcmcTrace_new(&t, 0, 2, ll, 4, "mu", 2), PMN_ERR_INVALID_PARAMETER, "a null slice");
+    assert_eq(PmnCorrelationMatrix_clone(&cm, &cm), PMN_ERR_INVALID_PARAMETER, "a clone over itself");
+    PmnDistributionCurve_drop(&c);
+    PmnMcmcTrace_drop(&t);
+    PmnCorrelationMatrix_drop(&cm);
+    PmnRegressionFit_drop(&f);
+    assert_eq(PmnDistributionCurve_eq(&c, &c), 0, "a dropped value equals nothing");
+    assert_eq(c.to_json(sb), PMN_ERR_INVALID_PARAMETER, "and refuses");
+    assert_eq(PmnCorrelationMatrix_drop(&cm), PMN_ERR_NONE, "a second drop");
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

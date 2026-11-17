@@ -16,7 +16,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-MODULES = ["bayesian", "bridge", "combinatorics", "constants", "debug", "descriptive", "dist", "fmt", "hypothesis", "json", "linalg", "markov", "math", "monte_carlo", "regression", "rng", "special", "timeseries"]
+MODULES = ["bayesian", "bridge", "combinatorics", "constants", "debug", "descriptive", "dist", "fmt", "hypothesis", "json", "linalg", "markov", "math", "monte_carlo", "regression", "rng", "soorat", "special", "timeseries"]
 
 
 def emit(name):

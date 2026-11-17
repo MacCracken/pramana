@@ -1031,6 +1031,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **surface parity:** `markov` and `monte_carlo` are ported (335 items in twelve modules, none pending);
   - **the audit:** neither source has an aborting construct, and `#pure` is on the value-only helper;
   - **the benchmark rows:** M6's six rows run at 3.2–11.7× Rust (`docs/benchmarks-rust-v-cyrius.md`).
+- **M7 part a: the soorat data shapes** (port plan §7, D9; `src/soorat.cyr`, in the core bundle with no feature flag).
+  - **What's ported:** 1.3.0's `DistributionCurve`, `McmcTrace`, `RegressionFit`, `HistogramData` and
+    `CorrelationMatrix`. Each is owned, its vectors and strings in one block, with Clone, the derived PartialEq,
+    Debug and a codec that takes any document the derive does (ragged lengths included). `HistogramData::from_data`
+    skips non-finite values and keeps the two-ulp floor on the bin width.
+  - **The rows:** a new golden module, `soorat`, 363 rows: `from_data` on constant, 1e12, signed-zero, subnormal,
+    ±f64::MAX and non-finite data over the bin grid, and each shape's equality on pairs one field apart (a NaN
+    unequal to itself, −0 equal to +0). It also has 465 codec rows and 20 Debug rows. Every row passes at 0 ulp.
+  - **Mutants:** all eight fail 2 to 192 rows each. `tests/soorat.tcyr` (47 checks) carries 1.3.0's nine tests over.
+  - **Surface parity** now counts the PartialEq derive.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

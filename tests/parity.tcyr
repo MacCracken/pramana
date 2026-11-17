@@ -390,7 +390,15 @@ fn _par_json_write(fp, fl): i64 {
     store64(sb + 8, 0);
     _par_json_k = 0;
     var e = 0 - 2;
-    if (_par_eq(fp, fl, "json::write::Pair") == 1) {
+    var sok = _par_so_kind(fp, fl, 13);
+    if (sok >= 0) {
+        var sv[80];
+        var sk = _par_so_from_toks(sok, 0, &sv);
+        if (sk < 0) { return 0 - 1; }
+        _par_json_k = sk;
+        e = _par_so_to_json(sok, &sv, sb);
+        var sd = _par_so_drop(sok, &sv);
+    } elif (_par_eq(fp, fl, "json::write::Pair") == 1) {
         e = _pmn_json_w_key(sb, "mean", 1);
         if (e == PMN_ERR_NONE) { e = _par_jw(0); }
         if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "std_dev", 0); }
@@ -1070,6 +1078,8 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::MarkovChain") == 1) { return _par_json_chain(); }
     if (_par_eq(fp, fl, "json::HiddenMarkovModel") == 1) { return _par_json_hmm(); }
     if (_par_eq(fp, fl, "json::EstimateResult") == 1) { return _par_json_estimate(); }
+    var jsk = _par_so_kind(fp, fl, 6);
+    if (jsk >= 0) { return _par_json_shape(jsk); }
     if (_par_eq(fp, fl, "json::McmcResult") == 1) { return _par_json_mcmc(); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
@@ -1137,6 +1147,17 @@ fn _par_debug(fp, fl): i64 {
     var sb = _par_dbg_sb;
     store64(sb + 8, 0);
     var e = 0 - 1;
+    var dsk = _par_so_kind(fp, fl, 7);
+    if (dsk >= 0) {
+        var dsv[80];
+        var dk = _par_so_from_toks(dsk, 0, &dsv);
+        if (dk < 0 || dk + 1 != _par_in_n) { return 0 - 1; }
+        e = _par_so_debug(dsk, &dsv, sb, _par_in(dk));
+        var dd = _par_so_drop(dsk, &dsv);
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
     if (_par_eq(fp, fl, "debug::f64") == 1) {
         if (_par_in_n != 1) { return 0 - 1; }
         var x: f64 = _par_in(0);
@@ -3466,6 +3487,287 @@ fn _par_json_mcmc(): i64 {
     return 1;
 }
 
+# ── `soorat` rows (M7 part a): src/soorat.cyr. A value is its codec tokens, in Rust's field order.
+
+# Input token k, an `s:` token, as a fresh copy of its bytes (escapes decoded): the pointer, its length at lenp; 0 when
+# the token is no `s:` token.
+fn _par_in_bytes_copy(k, lenp): i64 {
+    var n = 0;
+    var p = _par_in_bytes(k, &n);
+    if (p == 0) { return 0; }
+    var c = alloc(n + 8);
+    if (c == 0) { return 0; }
+    if (n > 0) { memcpy(c, p, n); }
+    store64(lenp, n);
+    return c;
+}
+
+# A `v:n` slice of f64 or u64 words at token k into a fresh buffer: the buffer, its count at np, the next token at kp;
+# 0 when the token is no slice.
+fn _par_so_vec(k, np, kp): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + k * 8) != 118) { return 0; }
+    var n = _par_in(k);
+    if (n < 0 || k + n >= _par_in_n) { return 0; }
+    var b = alloc(n * 8 + 8);
+    if (b == 0) { return 0; }
+    _par_in_f64s(k, b);
+    store64(np, n);
+    store64(kp, k + 1 + n);
+    return b;
+}
+
+# A shape of the given kind (0 DistributionCurve, 1 McmcTrace, 2 RegressionFit, 3 HistogramData, 4 CorrelationMatrix)
+# from its codec tokens at k0 into out (a shape's struct): the next token, or -1. The caller drops out.
+fn _par_so_from_toks(kind, k0, out): i64 {
+    var k = k0;
+    var nv = 3;
+    if (kind == 1) { nv = 2; }
+    if (kind == 2) { nv = 5; }
+    if (kind == 3) { nv = 2; }
+    if (kind == 4) { nv = 1; }
+    var ps[48];
+    var ns[48];
+    for (var i = 0; i < nv; i = i + 1) {
+        var nn = 0;
+        var nk = 0;
+        var b = _par_so_vec(k, &nn, &nk);
+        if (b == 0) { return 0 - 1; }
+        store64(&ps + i * 8, b);
+        store64(&ns + i * 8, nn);
+        k = nk;
+    }
+    if (kind == 0 || kind == 1) {
+        var sn = 0;
+        var sp = _par_in_bytes_copy(k, &sn);
+        if (sp == 0) { return 0 - 1; }
+        var e0 = 0;
+        if (kind == 0) {
+            e0 = PmnDistributionCurve_new(out, load64(&ps), load64(&ns), load64(&ps + 8), load64(&ns + 8),
+                load64(&ps + 16), load64(&ns + 16), sp, sn);
+        } else {
+            e0 = PmnMcmcTrace_new(out, load64(&ps), load64(&ns), load64(&ps + 8), load64(&ns + 8), sp, sn);
+        }
+        if (e0 != PMN_ERR_NONE) { return 0 - 1; }
+        return k + 1;
+    }
+    if (kind == 2) {
+        if (k >= _par_in_n) { return 0 - 1; }
+        var recs[80];
+        for (var j = 0; j < 5; j = j + 1) {
+            store64(&recs + j * 16, load64(&ps + j * 8));
+            store64(&recs + j * 16 + 8, load64(&ns + j * 8));
+        }
+        var r2: f64 = _par_in(k);
+        if (PmnRegressionFit_new(out, &recs, r2) != PMN_ERR_NONE) { return 0 - 1; }
+        return k + 1;
+    }
+    if (kind == 3) {
+        if (k >= _par_in_n) { return 0 - 1; }
+        if (PmnHistogramData_new(out, load64(&ps), load64(&ns), load64(&ps + 8), load64(&ns + 8), _par_in(k))
+            != PMN_ERR_NONE) {
+            return 0 - 1;
+        }
+        return k + 1;
+    }
+    if (k + 1 >= _par_in_n) { return 0 - 1; }
+    var size = _par_in(k);
+    k = k + 1;
+    if (load64(_par_in_k + k * 8) != 118) { return 0 - 1; }
+    var nl = _par_in(k);
+    if (nl < 0 || k + nl >= _par_in_n) { return 0 - 1; }
+    var lr = alloc(nl * 16 + 8);
+    for (var q = 0; q < nl; q = q + 1) {
+        var ln = 0;
+        var lp = _par_in_bytes_copy(k + 1 + q, &ln);
+        if (lp == 0) { return 0 - 1; }
+        store64(lr + q * 16, lp);
+        store64(lr + q * 16 + 8, ln);
+    }
+    if (PmnCorrelationMatrix_new(out, load64(&ps), load64(&ns), size, lr, nl) != PMN_ERR_NONE) { return 0 - 1; }
+    return k + 1 + nl;
+}
+
+# Appends n f64 words (or u64 words, ints = 1) at p as a `v:n` slice.
+fn _par_got_words(p, n, ints): i64 {
+    _par_got_seq(n);
+    for (var i = 0; i < n; i = i + 1) {
+        if (ints == 1) {
+            _par_got_i(load64(p + i * 8));
+        } else {
+            _par_got_f(load64(p + i * 8));
+        }
+    }
+    return 0;
+}
+
+# Appends a shape's codec tokens.
+fn _par_got_shape(kind, v): i64 {
+    if (kind == 0) {
+        var c: PmnDistributionCurve = v;
+        _par_got_words(c.x, c.nx, 0);
+        _par_got_words(c.pdf, c.npdf, 0);
+        _par_got_words(c.cdf, c.ncdf, 0);
+        _par_got_text(c.name, c.nname);
+        return 0;
+    }
+    if (kind == 1) {
+        var t: PmnMcmcTrace = v;
+        _par_got_words(t.samples, t.ns, 0);
+        _par_got_words(t.lls, t.nll, 0);
+        _par_got_text(t.parameter, t.nparameter);
+        return 0;
+    }
+    if (kind == 2) {
+        var ft: PmnRegressionFit = v;
+        for (var i = 0; i < 5; i = i + 1) { _par_got_words(ft.field(i), ft.field_len(i), 0); }
+        var r2: f64 = ft.r_squared;
+        _par_got_f(r2);
+        return 0;
+    }
+    if (kind == 3) {
+        var h: PmnHistogramData = v;
+        _par_got_words(h.edges, h.nedges, 0);
+        _par_got_words(h.counts, h.ncounts, 1);
+        _par_got_i(h.total);
+        return 0;
+    }
+    var cm: PmnCorrelationMatrix = v;
+    _par_got_words(cm.values, cm.nvalues, 0);
+    _par_got_i(cm.size);
+    _par_got_seq(cm.nlabels);
+    for (var j = 0; j < cm.nlabels; j = j + 1) {
+        _par_got_text(load64(cm.labels + j * 16), load64(cm.labels + j * 16 + 8));
+    }
+    return 0;
+}
+
+# The kind of a shape name at fp[0, fl) after a prefix of pre bytes, or -1.
+fn _par_so_kind(fp, fl, pre): i64 {
+    var p = fp + pre;
+    var n = fl - pre;
+    if (n == 17 && memeq(p, "DistributionCurve", 17) == 1) { return 0; }
+    if (n == 9 && memeq(p, "McmcTrace", 9) == 1) { return 1; }
+    if (n == 13 && memeq(p, "RegressionFit", 13) == 1) { return 2; }
+    if (n == 13 && memeq(p, "HistogramData", 13) == 1) { return 3; }
+    if (n == 17 && memeq(p, "CorrelationMatrix", 17) == 1) { return 4; }
+    return 0 - 1;
+}
+
+fn _par_so_drop(kind, v): i64 {
+    if (kind == 0) { return PmnDistributionCurve_drop(v); }
+    if (kind == 1) { return PmnMcmcTrace_drop(v); }
+    if (kind == 2) { return PmnRegressionFit_drop(v); }
+    if (kind == 3) { return PmnHistogramData_drop(v); }
+    return PmnCorrelationMatrix_drop(v);
+}
+
+# The codec, Debug and PartialEq calls by kind.
+fn _par_so_to_json(kind, v, sb): i64 {
+    if (kind == 0) {
+        var a: PmnDistributionCurve = v;
+        return a.to_json(sb);
+    }
+    if (kind == 1) {
+        var b: PmnMcmcTrace = v;
+        return b.to_json(sb);
+    }
+    if (kind == 2) {
+        var c: PmnRegressionFit = v;
+        return c.to_json(sb);
+    }
+    if (kind == 3) {
+        var d: PmnHistogramData = v;
+        return d.to_json(sb);
+    }
+    var e: PmnCorrelationMatrix = v;
+    return e.to_json(sb);
+}
+
+fn _par_so_debug(kind, v, sb, alt): i64 {
+    if (kind == 0) {
+        var a: PmnDistributionCurve = v;
+        return a.debug(sb, alt);
+    }
+    if (kind == 1) {
+        var b: PmnMcmcTrace = v;
+        return b.debug(sb, alt);
+    }
+    if (kind == 2) {
+        var c: PmnRegressionFit = v;
+        return c.debug(sb, alt);
+    }
+    if (kind == 3) {
+        var d: PmnHistogramData = v;
+        return d.debug(sb, alt);
+    }
+    var e: PmnCorrelationMatrix = v;
+    return e.debug(sb, alt);
+}
+
+fn _par_so_from_json(kind, v, doc, n): i64 {
+    if (kind == 0) { return PmnDistributionCurve_from_json(v, doc, n); }
+    if (kind == 1) { return PmnMcmcTrace_from_json(v, doc, n); }
+    if (kind == 2) { return PmnRegressionFit_from_json(v, doc, n); }
+    if (kind == 3) { return PmnHistogramData_from_json(v, doc, n); }
+    return PmnCorrelationMatrix_from_json(v, doc, n);
+}
+
+fn _par_so_eq(kind, a, b): i64 {
+    if (kind == 0) { return PmnDistributionCurve_eq(a, b); }
+    if (kind == 1) { return PmnMcmcTrace_eq(a, b); }
+    if (kind == 2) { return PmnRegressionFit_eq(a, b); }
+    if (kind == 3) { return PmnHistogramData_eq(a, b); }
+    return PmnCorrelationMatrix_eq(a, b);
+}
+
+# soorat rows: from_data (the data, n_bins) and each shape's ::eq (two values' tokens).
+fn _par_soorat(fp, fl): i64 {
+    var sa[80];
+    var sb2[80];
+    if (_par_eq(fp, fl, "HistogramData::from_data") == 1) {
+        var nn = 0;
+        var nk = 0;
+        var d = _par_so_vec(0, &nn, &nk);
+        if (d == 0 || nk + 1 != _par_in_n) { return 0 - 1; }
+        var h: PmnHistogramData;
+        var e = PmnHistogramData_from_data(&h, d, nn, _par_in(nk));
+        if (e != PMN_ERR_NONE) {
+            _par_got_err(e);
+            return 1;
+        }
+        _par_got_shape(3, &h);
+        var hd = PmnHistogramData_drop(&h);
+        return 1;
+    }
+    var kind = 0 - 1;
+    if (fl > 4 && memeq(fp + fl - 4, "::eq", 4) == 1) { kind = _par_so_kind(fp, fl - 4, 0); }
+    if (kind < 0) { return 0; }
+    var k = _par_so_from_toks(kind, 0, &sa);
+    if (k < 0) { return 0 - 1; }
+    var k2 = _par_so_from_toks(kind, k, &sb2);
+    if (k2 != _par_in_n) { return 0 - 1; }
+    _par_got_i(_par_so_eq(kind, &sa, &sb2));
+    var d1 = _par_so_drop(kind, &sa);
+    var d2 = _par_so_drop(kind, &sb2);
+    return 1;
+}
+
+# json::<shape> rows (M7 part a): the decoded value's codec tokens, or the error.
+fn _par_json_shape(kind): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var v[80];
+    var e = _par_so_from_json(kind, &v, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_shape(kind, &v);
+    var d = _par_so_drop(kind, &v);
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "bayesian") == 1) { return _par_bayesian(fp, fl); }
@@ -3484,6 +3786,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
     if (_par_eq(mp, ml, "regression") == 1) { return _par_regression(fp, fl); }
     if (_par_eq(mp, ml, "rng") == 1) { return _par_rng(fp, fl); }
+    if (_par_eq(mp, ml, "soorat") == 1) { return _par_soorat(fp, fl); }
     if (_par_eq(mp, ml, "special") == 1) { return _par_special(fp, fl); }
     if (_par_eq(mp, ml, "timeseries") == 1) { return _par_timeseries(fp, fl); }
     return 0;

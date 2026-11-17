@@ -671,6 +671,7 @@ def emit():
     bayesian_update(m, Rng(0x5F6F7E8D9CABBACD))
     markov_models(m, Rng(0x3F84D5B5B5470917))
     mc_results(m, Rng(0x8E79DCB0603A180E))
+    soorat_shapes(m, Rng(0x3C6EF372A54FF53A))
     return m
 
 def kde_toks(data, h, k):
@@ -894,3 +895,34 @@ def mc_results(m, g):
         toks = mc_toks(rows, rate)
         write(m, "McmcResult", toks)
         read(m, "json::McmcResult", V.serde_write("McmcResult", iter(parsed(toks))))
+
+
+def soorat_shapes(m, g):
+    """M7 part a: the five soorat shapes, derived codecs (no validation; every length its own)."""
+    from .m_soorat import bases, TOKS
+    vecs = B("[0.0,1.0]", "[]", "[1,null]", "null", "[[1]]", "[1e309]", "1", '["1"]', "[-0.0,5e-324]")
+    strs = B('"Normal(0,1)"', '""', '"a\\"b"', "null", "1", '"\\ud800"', '"\\u00e9"', '["x"]')
+    u64s = B("3", "0", "-1", "1.5", "18446744073709551615", "18446744073709551616", "null", '"3"')
+    for d in struct_docs([("x_values", b"[0.0,1.0,2.0]"), ("pdf", b"[0.0,0.5,0.0]"), ("cdf", b"[0.0,0.5,1.0]"),
+                          ("name", b'"Normal(0,1)"')], [vecs, vecs, vecs, strs]):
+        read(m, "json::DistributionCurve", d)
+    for d in struct_docs([("samples", b"[1.0,1.1]"), ("log_likelihoods", b"[-10.0]"), ("parameter", b'"mu"')],
+                         [vecs, vecs, strs]):
+        read(m, "json::McmcTrace", d)
+    fit = [("x_observed", b"[1,2,3]"), ("y_observed", b"[2.1,3.9,6.1]"), ("y_predicted", b"[2,4,6]"),
+           ("y_upper", b"[2.5]"), ("y_lower", b"[]"), ("r_squared", b"0.998")]
+    nums = B("0.998", "0", "-0.0", "1e309", "null", '"1"', "true", "5e-324")
+    for d in struct_docs(fit, [vecs, vecs, vecs, vecs, vecs, nums]):
+        read(m, "json::RegressionFit", d)
+    for d in struct_docs([("bin_edges", b"[1.0,2.0,3.0]"), ("counts", b"[2,1]"), ("total", b"3")],
+                         [vecs, B("[2,1]", "[]", "[-1]", "[1.5]", "[18446744073709551615]", "[null]", "3"), u64s]):
+        read(m, "json::HistogramData", d)
+    labels = B('["x","y"]', "[]", '[""]', '["x",1]', '"x"', "null", '["\\u00e9","\\ud83d\\ude00"]', '["a","a"]')
+    for d in struct_docs([("values", b"[1.0,0.8,0.8,1.0]"), ("size", b"2"), ("labels", b'["x","y"]')],
+                         [vecs, u64s, labels]):
+        read(m, "json::CorrelationMatrix", d)
+    for kind, bs in bases(g).items():
+        for base in bs:
+            toks = TOKS[kind](base)
+            write(m, kind, toks)
+            read(m, f"json::{kind}", V.serde_write(kind, iter(parsed(toks))))

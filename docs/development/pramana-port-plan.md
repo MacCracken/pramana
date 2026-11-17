@@ -57,7 +57,7 @@
 > parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
 > begun:** parts a–d are done: **M5 is complete.** **M6 has begun:** parts a (the Markov chains and HMMs), b (Monte Carlo) and c, the gate, are done: **M6 is
-> complete.** M7 is next.
+> complete.** **M7 has begun:** part a (the soorat shapes) is done.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1295,6 +1295,20 @@ Rust's operation order with its refusals, each type with its codec and Debug; go
   row 18 (a count at or past 2⁶³ refused) ✅;
 - **c:** M6's gate: the soak, surface parity, the benchmark rows, three targets. The soak's M6 group takes nothing;
   `markov` and `monte_carlo` ported in surface parity; every row at 0 ulp on three targets ✅. **M6 is complete.**
+
+**M7's parts** (set at its start, 2026-11-17, under ADR 010). 1.3.0's `integration/soorat.rs` (D9) and `ai.rs`
+(D8), each in Rust's operation order, each type with its codec and Debug:
+- **a:** `src/soorat.cyr`, in the core bundle: the five data shapes (`DistributionCurve`, `McmcTrace`,
+  `RegressionFit`, `HistogramData`, `CorrelationMatrix`; owned, with Clone and the derived PartialEq) and
+  `HistogramData::from_data` (non-finite values skipped, the two-ulp floor). A new golden module, `soorat` (363
+  rows), 465 codec and 20 Debug rows, every row at 0 ulp; all eight mutants caught ✅;
+- **b:** `src/ai.cyr`, in `[lib.ai]`: `QueryResult` (its values in sorted key order, ADR 007 row 9) and `StatQuery`
+  over a transport (sandhi's POST, or a recorded-response one for the tests), the data summary, and the five tools
+  with their bounded arguments. Rust's `{:.4}`, `{:.1}` and `{}` float text, which the prompts and tool texts use,
+  are proven against Python's own formatter (exact, ties to even). **A finding:** hoosh 1.3.0's client sends no
+  tools and returns no tool calls, so 1.3.0's `query` always answers directly. The port keeps that wire behavior,
+  with the tools ported and proven on golden rows; turning them on is a 2.1 candidate. A new golden module, `ai`;
+- **c:** M7's gate: the soak, surface parity, the `[lib.ai]` bundle, three targets.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

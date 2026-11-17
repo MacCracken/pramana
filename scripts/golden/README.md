@@ -227,16 +227,17 @@ the same result. The models are that proof's record: change one and its rows mov
 | `constants` | M0 | 112 | `emit/m_constants.py` | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` |
 | `math` | M0 | 35,597 | `emit/m_math.py` | `math.cr.tsv`, 76 rows |
 | `fmt` | M1 d1 | 25,200 | `emit/m_fmt.py` | — |
-| `json` | M1 d3a–d4, e1, M3 a1–d2, M4 a2–b2, M5 a–c, M6 a–b | 10,979 | `emit/m_json.py` | `json.map.tsv`, 320 rows (ADR 007 row 16) |
+| `json` | M1 d3a–d4, e1, M3 a1–d2, M4 a2–b2, M5 a–c, M6 a–b, M7 a | 11,444 | `emit/m_json.py` | `json.map.tsv`, 370 rows (ADR 007 row 16) |
 | `rng` | M1 e1 | 46 | `emit/m_rng.py` | — |
 | `bridge` | M1 e3 | 5,553 | `emit/m_bridge.py` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
-| `debug` | M1 f, M3 a1–d2, M4 a2–b2, M5 a–c, M6 a–b | 25,966 | `emit/m_debug.py` | — |
+| `debug` | M1 f, M3 a1–d2, M4 a2–b2, M5 a–c, M6 a–b, M7 a | 25,986 | `emit/m_debug.py` | — |
 | `dist` | M3 a1–e | 166,631 | `emit/m_dist.py`, `emit/m_mvn.py` | `dist.cr.tsv`, 1,283 rows (glibc's exp, expm1, ln, ln_1p, cos, tan or pow misrounded in a pdf or cdf value, a moment or a draw); `dist.ref.tsv`, 31,437 rows (Normal's cdf on the T1 Φ, 2,699; Weibull's moments on the T1 lnΓ, 1,100; the gamma family's and the discrete distributions' pdfs on the T1 lnΓ or ln B, 9,947; their cdfs and the Student-t and F tails on the T1 incomplete gamma or beta, 17,691) |
 | `linalg` | M3 d1, M4 a3 | 805 | `emit/m_linalg.py` | `linalg.cr.tsv`, 9 rows (a glibc misround of atan, cos or sin moving the Jacobi) |
 | `descriptive` | M4 a1–a3, c | 24,497 | `emit/m_descriptive.py` | `descriptive.cr.tsv`, 6 rows (the KDE's exp, the PCA's Jacobi) |
 | `regression` | M5 a, d | 571 | `emit/m_regression.py` | `regression.cr.tsv`, 1 row (a logistic fit's exp) |
 | `timeseries` | M5 b, d | 1,331 | `emit/m_timeseries.py` | — |
 | `bayesian` | M5 c | 2,005 | `emit/m_bayesian.py` | — |
+| `soorat` | M7 a | 363 | `emit/m_soorat.py` | `soorat.cr.tsv`, 0 rows (arithmetic only) |
 | `monte_carlo` | M6 b | 1,608 | `emit/m_monte_carlo.py` | `monte_carlo.cr.tsv`, 19 rows (a glibc misround of ln, cos or exp moving a chain) |
 | `markov` | M6 a | 2,884 | `emit/m_markov.py` | `markov.cr.tsv`, 0 rows (glibc's ln is correctly rounded on every log-likelihood and Viterbi input) |
 | `hypothesis` | M4 b1–b2, c | 1,608 | `emit/m_hypothesis.py` | `hypothesis.ref.tsv`, 414 rows (the p-values and intervals on the T1 incomplete beta and gamma and Φ); `hypothesis.cr.tsv`, 2 rows |
