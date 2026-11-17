@@ -3706,6 +3706,212 @@ def render_cr(module, provenance, rows):
     return "\n".join(head + rows) + "\n"
 
 
+# ── descriptive (M4 part a1): 1.3.0's descriptive.rs in its operation order ──
+# Sums run from −0.0 in order (Rust's `Iterator::sum`); `len() as f64` is exact. The order statistics take the k-th
+# element of a stable sort (ADR 007 row 14, Python's `sorted`: −0 and +0 compare equal and keep their input order), so
+# a zero's sign follows the input where Rust's unstable selection may differ; every value is Rust's.
+
+def rsum(xs):
+    s = -0.0
+    for x in xs:
+        s += x
+    return s
+
+
+def take_slices(ins):
+    """A row's inputs as its `v:n` slices (lists) and the scalars after them."""
+    out, rest, k = [], [], 0
+    while k < len(ins):
+        t = ins[k]
+        if isinstance(t, str) and t.startswith("v:"):
+            n = int(t[2:])
+            out.append(list(ins[k + 1:k + 1 + n]))
+            k += 1 + n
+        else:
+            rest.append(t)
+            k += 1
+    return out, rest
+
+
+def ds_no_nan(xs):
+    if not xs:
+        return "E:InvalidSample"
+    return "E:InvalidSample" if any(math.isnan(x) for x in xs) else None
+
+
+def ds_mean(xs):
+    return rsum(xs) / float(len(xs))
+
+
+def ds_select_pair(xs, k):
+    s = sorted(xs)
+    return s[k], (s[k + 1] if k + 1 < len(s) else None)
+
+
+def ds_median(xs):
+    e = ds_no_nan(xs)
+    if e:
+        return [e]
+    n = len(xs)
+    if n % 2 == 0:
+        lo, hi = ds_select_pair(xs, n // 2 - 1)
+        return [(lo + (lo if hi is None else hi)) / 2.0]
+    return [ds_select_pair(xs, n // 2)[0]]
+
+
+def ds_mode(xs):
+    if not xs:
+        return ["E:InvalidSample"]
+    order = sorted(range(len(xs)), key=lambda j: (total_key(xs[j]), j))
+    best, best_count, best_first, k = xs[0], 0, len(xs), 0
+    while k < len(order):
+        b = bits(xs[order[k]])
+        j = k
+        while j < len(order) and bits(xs[order[j]]) == b:
+            j += 1
+        first = order[k]
+        if j - k > best_count or (j - k == best_count and first < best_first):
+            best, best_count, best_first = xs[first], j - k, first
+        k = j
+    return [best]
+
+
+def ds_variance(xs):
+    m = ds_mean(xs)
+    return rsum([(x - m) * (x - m) for x in xs]) / float(len(xs))
+
+
+def ds_shape(xs, p):
+    if not xs:
+        return ["E:InvalidSample"]
+    m = ds_mean(xs)
+    s = r_sqrt(ds_variance(xs))
+    if s == 0.0:
+        return ["E:InvalidSample"]
+    r = rsum([powi(fdiv(x - m, s), p) for x in xs]) / float(len(xs))
+    return [r - 3.0 if p == 4 else r]
+
+
+def ds_percentile(xs, p):
+    e = ds_no_nan(xs)
+    if e:
+        return [e]
+    if not (0.0 <= p <= 100.0):
+        return ["E:InvalidParameter"]
+    n = len(xs)
+    if n == 1:
+        return [xs[0]]
+    rank = (p / 100.0) * float(n - 1)
+    lower = min(r_as_usize(r_floor(rank)), n - 1)
+    frac = rank - float(lower)
+    lo, hi = ds_select_pair(xs, lower)
+    if frac == 0.0:
+        return [lo]
+    hi = lo if hi is None else hi
+    return [lo * (1.0 - frac) + hi * frac]
+
+
+def ds_quartiles(xs):
+    out = []
+    for p in (25.0, 50.0, 75.0):
+        r = ds_percentile(xs, p)
+        if isinstance(r[0], str):
+            return r
+        out.append(r[0])
+    return out
+
+
+def ds_reduce(xs, fn):
+    if not xs:
+        return ["E:InvalidSample"]
+    acc = xs[0]
+    for x in xs[1:]:
+        acc = fn(acc, x)
+    return [acc]
+
+
+def ds_range(xs):
+    hi, lo = ds_reduce(xs, sp_max), ds_reduce(xs, sp_min)
+    return hi if isinstance(hi[0], str) else [hi[0] - lo[0]]
+
+
+def ds_iqr(xs):
+    q = ds_quartiles(xs)
+    return q if isinstance(q[0], str) else [q[2] - q[0]]
+
+
+DESC = {  # name: model(L, slices, scalars) -> outputs
+    "descriptive::sum": lambda L, s, r: [rsum(s[0])],
+    "descriptive::mean": lambda L, s, r: [ds_mean(s[0])] if s[0] else ["E:InvalidSample"],
+    "descriptive::median": lambda L, s, r: ds_median(s[0]),
+    "descriptive::mode": lambda L, s, r: ds_mode(s[0]),
+    "descriptive::variance": lambda L, s, r: [ds_variance(s[0])] if s[0] else ["E:InvalidSample"],
+    "descriptive::std_dev": lambda L, s, r: [r_sqrt(ds_variance(s[0]))] if s[0] else ["E:InvalidSample"],
+    "descriptive::skewness": lambda L, s, r: ds_shape(s[0], 3),
+    "descriptive::kurtosis": lambda L, s, r: ds_shape(s[0], 4),
+    "descriptive::percentile": lambda L, s, r: ds_percentile(s[0], r[0]),
+    "descriptive::quartiles": lambda L, s, r: ds_quartiles(s[0]),
+    "descriptive::iqr": lambda L, s, r: ds_iqr(s[0]),
+    "descriptive::min": lambda L, s, r: ds_reduce(s[0], sp_min),
+    "descriptive::max": lambda L, s, r: ds_reduce(s[0], sp_max),
+    "descriptive::range": lambda L, s, r: ds_range(s[0]),
+}
+
+# Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
+STATS_T1 = {}
+
+
+def stats_model(table, fn):
+    """The model of a stats row (M4 on), or None."""
+    return table.get(fn)
+
+
+def check_stats(root, module, table, rows):
+    """As check_dist, for the modules from M4 on: every row re-derived through glibc (1.3.0's bits), and for class C on
+    correctly rounded primitives (`.cr.tsv`) and on the T1 functions as the port computes them (`.ref.tsv`)."""
+    glibc, cr, ref = dist_prims(root)
+    failures, by_fn, crs, refs = [], {}, [], []
+
+    def same_all(a, b):
+        return len(a) == len(b) and all(same(x, y) if isinstance(y, float) else x == y for x, y in zip(a, b))
+
+    def toks(v):
+        return " ".join(f"f:{bits(w):016x}" if isinstance(w, float) else str(w) for w in v)
+
+    for fn, cls, ins, outs, raw in rows:
+        model = table.get(fn)
+        if model is None:
+            failures.append(f"{module}: no model for {fn}")
+            continue
+        sl, sc = take_slices(ins)
+        stat = by_fn.setdefault(fn, [0, 0])
+        want = model(glibc, sl, sc)
+        ok = same_all(outs, want)
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"{module}: {fn}{tuple(ins[:6])} recorded {outs[:4]!r}, modelled {want[:4]!r}")
+            continue
+        if cls != "C":
+            continue
+        crv, refv = model(cr, sl, sc), model(ref, sl, sc)
+        if same_all(outs, refv):
+            continue
+        fl = [(g, w) for g, w in zip(outs, refv) if isinstance(w, float)]
+        moved = [abs(ordered(bits(g)) - ordered(bits(w))) for g, w in fl if not same(g, w)]
+        ulps = max(moved) if moved else 0
+        what = f"{len(moved)} of {len(fl)} values" if len(fl) > 1 else "the value"
+        if same_all(crv, refv):
+            crs.append(f"{fn}\t{raw}\t{toks(refv)}\t1.3.0 through glibc; with every primitive correctly rounded, "
+                       f"{what} moved, up to {ulps} ulp")
+        else:
+            refs.append(f"{fn}\t{raw}\t{toks(refv)}\t1.3.0 through glibc; Rust's formula on the T1 "
+                        f"{STATS_T1.get(fn, 'functions')} as the port computes it and correctly rounded primitives, "
+                        f"{what} moved, up to {ulps} ulp")
+    return failures, by_fn, crs, refs
+
+
+STATS_MODULES = {"descriptive": DESC}
+
 
 def main(argv):
     root = Path(argv[1] if len(argv) > 1 else ".").resolve()
@@ -3788,6 +3994,14 @@ def main(argv):
             for fn in sorted(by_fn):
                 ok, bad = by_fn[fn]
                 print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
+            cr_file(gdir, module, provenance, crs, write_cr, failures)
+            ref_file(gdir, module, provenance, refs, write_cr, failures)
+        if module in STATS_MODULES:
+            f, by_fn, crs, refs = check_stats(root, module, STATS_MODULES[module], rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:36s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
             cr_file(gdir, module, provenance, crs, write_cr, failures)
             ref_file(gdir, module, provenance, refs, write_cr, failures)
         if module == "linalg":

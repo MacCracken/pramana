@@ -1,0 +1,317 @@
+# descriptive.cyr — Rust 1.3.0's descriptive statistics (src/descriptive.rs; port plan §4.1; M4 part a1): `mean`,
+# `median`, `mode`, `variance`, `std_dev`, `skewness`, `kurtosis`, `percentile`, `quartiles`, `iqr`, `min`, `max`,
+# `range` and `sum`.
+#
+# Each in 1.3.0's operation order, so every value is Rust's bit for bit:
+# - a slice `&[f64]` is a pointer and a count (port plan §8.3); a sum starts at −0.0 and adds in order, as Rust's
+#   `Iterator::sum` (port-parity §1); `len() as f64` is exact below 2^53;
+# - the functions that return `Result<f64>` return a value-form Result: Ok holding the f64's bits, or Err with
+#   1.3.0's variant (PMN_ERR_INVALID_SAMPLE for an empty or NaN-bearing slice, PMN_ERR_INVALID_PARAMETER for a
+#   percentile outside [0, 100]), and PMN_ERR_INVALID_PARAMETER for a null slice with n > 0 or a negative n, which
+#   Rust can't be given. `quartiles` fills a caller's three f64s and returns the code;
+# - the order statistics take the k-th element of a stable order (ADR 007 row 14, src/sort.cyr): the same values as
+#   Rust's selection, a zero's sign by input order where −0 and +0 mix;
+# - the mode groups values by their bits (so −0 and +0, and NaNs of different payloads, are distinct), the first
+#   occurrence winning a tie, as 1.3.0 does;
+# - nothing allocates: the order statistics and the mode take their scratch from the work-table pool, and return
+#   PMN_ERR_OUT_OF_MEMORY when it can't be had (D11).
+# Only `std_dev` and the moments built on it take a √, correctly rounded: every row is class A.
+
+# PMN_ERR_NONE for a valid non-empty slice; PMN_ERR_INVALID_SAMPLE for an empty one (Rust's "empty data");
+# PMN_ERR_INVALID_PARAMETER for a negative n or a null data with n > 0.
+#must_use
+#pure
+fn _pmn_desc_check(data, n): i64 {
+    if (n < 0 || (data == 0 && n > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    return PMN_ERR_NONE;
+}
+
+# As `_pmn_desc_check`, then PMN_ERR_INVALID_SAMPLE when data holds a NaN: Rust's `require_non_empty_no_nan`.
+#must_use
+fn _pmn_desc_check_no_nan(data, n): i64 {
+    var e = _pmn_desc_check(data, n);
+    if (e != PMN_ERR_NONE) { return e; }
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        if (x != x) { return PMN_ERR_INVALID_SAMPLE; }
+    }
+    return PMN_ERR_NONE;
+}
+
+# Rust's `sum(data)`: the elements of data[0, n) added in order from −0.0 (so the empty sum is −0.0). Rust can't fail
+# here; a negative n or a null data with n > 0, which Rust can't be given, gives NaN.
+#must_use
+fn pmn_sum(data, n): f64 {
+    if (n < 0 || (data == 0 && n > 0)) {
+        var bad: f64 = _PMN_F64_NAN;
+        return bad;
+    }
+    var s: f64 = -0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        s = s + x;
+    }
+    return s;
+}
+
+# Rust's `mean(data)`: Ok(sum / n).
+#must_use
+fn pmn_mean(data, n): Result {
+    var e = _pmn_desc_check(data, n);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var s: f64 = pmn_sum(data, n);
+    var nf: f64 = f64_from(n);
+    var r: f64 = s / nf;
+    return Ok(r);
+}
+
+# Rust's `median(data)`: the middle element of the stable order, or the mean of the two middle ones, (lo + hi) / 2.
+#must_use
+fn pmn_median(data, n): Result {
+    var e = _pmn_desc_check_no_nan(data, n);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var o[24];
+    if (n % 2 == 0) {
+        e = _pmn_select_pair(data, n, n / 2 - 1, &o);
+        if (e != PMN_ERR_NONE) { return Err(e); }
+        var lo: f64 = load64(&o);
+        var hi: f64 = lo;
+        if (load64(&o + 16) == 1) { hi = load64(&o + 8); }
+        var s: f64 = lo + hi;
+        var r: f64 = s / 2.0;
+        return Ok(r);
+    }
+    e = _pmn_select_pair(data, n, n / 2, &o);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var m: f64 = load64(&o);
+    return Ok(m);
+}
+
+# Rust's `mode(data)`: the value whose bit pattern occurs most often (0.0 and −0.0 distinct), the first occurrence
+# winning a tie. Rust sorts (value, index) pairs by total order and walks the runs; so does this, on a pool copy of
+# (total key, index) records.
+#must_use
+fn pmn_mode(data, n): Result {
+    var e = _pmn_desc_check(data, n);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var s, slot = _pmn_scratch_take(n * 32);
+    if (s == 0) { return Err(PMN_ERR_OUT_OF_MEMORY); }
+    for (var i = 0; i < n; i = i + 1) {
+        var w = load64(data + i * 8);
+        store64(s + i * 16, w ^ ((w >>> 63) >> 1));
+        store64(s + i * 16 + 8, i);
+    }
+    _pmn_sort_keyed(s, n, s + n * 16);
+    var best = load64(data);
+    var best_count = 0;
+    var best_first = n;
+    var k = 0;
+    while (k < n) {
+        var key = load64(s + k * 16);
+        var first = load64(s + k * 16 + 8);
+        var j = k + 1;
+        while (j < n && load64(s + j * 16) == key) { j = j + 1; }
+        var count = j - k;
+        if (count > best_count || (count == best_count && first < best_first)) {
+            best_count = count;
+            best_first = first;
+            best = load64(data + first * 8);
+        }
+        k = j;
+    }
+    _pmn_scratch_give(s, slot);
+    var r: f64 = load64(&best);
+    return Ok(r);
+}
+
+# Σ (x − m)² over data[0, n), from −0.0, in order: the population variance's numerator, as 1.3.0 writes it.
+#must_use
+fn _pmn_desc_ss(data, n, m: f64): f64 {
+    var s: f64 = -0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        var d: f64 = x - m;
+        var q: f64 = d * d;
+        s = s + q;
+    }
+    return s;
+}
+
+# Rust's `variance(data)`: the population variance, Σ (x − mean)² / n.
+#must_use
+fn pmn_variance(data, n): Result {
+    var e = _pmn_desc_check(data, n);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var s: f64 = pmn_sum(data, n);
+    var nf: f64 = f64_from(n);
+    var m: f64 = s / nf;
+    var ss: f64 = _pmn_desc_ss(data, n, m);
+    var r: f64 = ss / nf;
+    return Ok(r);
+}
+
+# Rust's `std_dev(data)`: √variance.
+#must_use
+fn pmn_std_dev(data, n): Result {
+    var t, v = pmn_variance(data, n);
+    if (t == Err) { return Err(v); }
+    var x: f64 = v;
+    var r: f64 = f64_sqrt(x);
+    return Ok(r);
+}
+
+# Σ ((x − m) / s)^p / n over data[0, n), p = 3 or 4, the power by `powi`'s square-and-multiply: the standardized
+# moment of skewness and kurtosis.
+#must_use
+fn _pmn_desc_moment(data, n, m: f64, sd: f64, p): f64 {
+    var acc: f64 = -0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        var d: f64 = x - m;
+        var z: f64 = d / sd;
+        var q: f64 = _pmn_powi(z, p);
+        acc = acc + q;
+    }
+    var nf: f64 = f64_from(n);
+    var r: f64 = acc / nf;
+    return r;
+}
+
+# Skewness (p = 3) or kurtosis (p = 4) as 1.3.0 computes them: the mean, then the standard deviation (each from its
+# own pass, as Rust calls `mean` and `std_dev`), PMN_ERR_INVALID_SAMPLE when it is 0, then the moment.
+#must_use
+fn _pmn_desc_shape(data, n, p): Result {
+    var e = _pmn_desc_check(data, n);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var t, mv = pmn_mean(data, n);
+    if (t == Err) { return Err(mv); }
+    var t2, sv = pmn_std_dev(data, n);
+    if (t2 == Err) { return Err(sv); }
+    var m: f64 = mv;
+    var sd: f64 = sv;
+    if (sd == 0.0) { return Err(PMN_ERR_INVALID_SAMPLE); }
+    var r: f64 = _pmn_desc_moment(data, n, m, sd, p);
+    return Ok(r);
+}
+
+# Rust's `skewness(data)`: Fisher's, population: Σ ((x − mean) / σ)³ / n. PMN_ERR_INVALID_SAMPLE for σ = 0.
+#must_use
+fn pmn_skewness(data, n): Result {
+    return _pmn_desc_shape(data, n, 3);
+}
+
+# Rust's `kurtosis(data)`: the excess kurtosis, Σ ((x − mean) / σ)⁴ / n − 3. PMN_ERR_INVALID_SAMPLE for σ = 0.
+#must_use
+fn pmn_kurtosis(data, n): Result {
+    var t, v = _pmn_desc_shape(data, n, 4);
+    if (t == Err) { return Err(v); }
+    var k: f64 = v;
+    var r: f64 = k - 3.0;
+    return Ok(r);
+}
+
+# Rust's `percentile(data, p)`: linear interpolation between the elements at rank (p / 100)·(n − 1) of the stable
+# order, lo·(1 − frac) + hi·frac, or lo itself when frac is 0. PMN_ERR_INVALID_PARAMETER for p outside [0, 100] or
+# NaN, after the slice's checks; one element is returned as it is.
+#must_use
+fn pmn_percentile(data, n, p: f64): Result {
+    var e = _pmn_desc_check_no_nan(data, n);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var inside = 0;
+    if (p >= 0.0 && p <= 100.0) { inside = 1; }    # Rust's `(0.0..=100.0).contains(&p)`: NaN is outside
+    if (inside == 0) { return Err(PMN_ERR_INVALID_PARAMETER); }
+    if (n == 1) {
+        var one: f64 = load64(data);
+        return Ok(one);
+    }
+    var q: f64 = p / 100.0;
+    var nm1: f64 = f64_from(n - 1);
+    var rank: f64 = q * nm1;
+    var fl: f64 = f64_floor(rank);
+    var lower = _pmn_sat_usize(fl);
+    if (lower > n - 1 || lower < 0) { lower = n - 1; }
+    var lf: f64 = f64_from(lower);
+    var frac: f64 = rank - lf;
+    var o[24];
+    e = _pmn_select_pair(data, n, lower, &o);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var lo: f64 = load64(&o);
+    if (frac == 0.0) { return Ok(lo); }
+    var hi: f64 = lo;
+    if (load64(&o + 16) == 1) { hi = load64(&o + 8); }
+    var w: f64 = 1.0 - frac;
+    var a: f64 = lo * w;
+    var b: f64 = hi * frac;
+    var r: f64 = a + b;
+    return Ok(r);
+}
+
+# Rust's `quartiles(data)`: (Q1, Q2, Q3), the 25th, 50th and 75th percentiles, into out (three f64s). PMN_ERR_NONE,
+# or the first percentile's error; PMN_ERR_INVALID_PARAMETER for a null out. out is written last, so it may alias data.
+#must_use
+fn pmn_quartiles(data, n, out): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var t1, q1 = pmn_percentile(data, n, 25.0);
+    if (t1 == Err) { return q1; }
+    var t2, q2 = pmn_percentile(data, n, 50.0);
+    if (t2 == Err) { return q2; }
+    var t3, q3 = pmn_percentile(data, n, 75.0);
+    if (t3 == Err) { return q3; }
+    store64(out, q1);
+    store64(out + 8, q2);
+    store64(out + 16, q3);
+    return PMN_ERR_NONE;
+}
+
+# Rust's `iqr(data)`: Q3 − Q1.
+#must_use
+fn pmn_iqr(data, n): Result {
+    var o[24];
+    var e = pmn_quartiles(data, n, &o);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var q1: f64 = load64(&o);
+    var q3: f64 = load64(&o + 16);
+    var r: f64 = q3 - q1;
+    return Ok(r);
+}
+
+# Rust's `min(data)`: `reduce(f64::min)`, a NaN element ignored (NaN only when all are), equal elements giving the
+# later one (so the last of a ±0 run).
+#must_use
+fn pmn_min(data, n): Result {
+    var e = _pmn_desc_check(data, n);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var acc: f64 = load64(data);
+    for (var i = 1; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        acc = _pmn_min(acc, x);
+    }
+    return Ok(acc);
+}
+
+# Rust's `max(data)`: `reduce(f64::max)`, as `min`.
+#must_use
+fn pmn_max(data, n): Result {
+    var e = _pmn_desc_check(data, n);
+    if (e != PMN_ERR_NONE) { return Err(e); }
+    var acc: f64 = load64(data);
+    for (var i = 1; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        acc = _pmn_max(acc, x);
+    }
+    return Ok(acc);
+}
+
+# Rust's `range(data)`: max − min.
+#must_use
+fn pmn_range(data, n): Result {
+    var t, hi = pmn_max(data, n);
+    if (t == Err) { return Err(hi); }
+    var t2, lo = pmn_min(data, n);
+    if (t2 == Err) { return Err(lo); }
+    var h: f64 = hi;
+    var l: f64 = lo;
+    var r: f64 = h - l;
+    return Ok(r);
+}

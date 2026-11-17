@@ -1,0 +1,268 @@
+# sort.cyr — the order statistics' sorting and selection on raw f64 arrays (port plan §8.1, ADR 007 row 14; M4 part
+# a1).
+#
+# 1.3.0 orders data with Rust's unstable sorts: `select_nth_unstable_by` for the median and the percentiles,
+# `sort_unstable_by` for the KS tests and hisab's eigenvalues, and `sort_unstable_by` on a total key for the mode. An
+# unstable sort leaves equal elements in an order its algorithm picks, so −0 and +0, which compare equal, can come out
+# either way (probe P6: 9,393 of 180,000 zero-heavy results differ from a stable rule). The port is stable instead
+# (ADR 007 row 14, decided 2026-11-15): equal elements keep their input order. The values always equal Rust's; only
+# the sign of a zero can differ, and only where the input mixes −0 and +0.
+# - `_pmn_sort_f64`: a stable merge sort, ascending by `<` (so −0 and +0 are equal), on a NaN-free array;
+# - `_pmn_sort_keyed`: the same on 16-byte records (a signed key word, then a payload word), by the key;
+# - `_pmn_select_pair`: the k-th element of the stable order and its successor in O(n): a quickselect finds the k-th
+#   value, and one pass over the input picks which of the equal elements the stable order puts there.
+# Every function works on a caller's (ptr, n) and takes its scratch from the work-table pool, so nothing allocates
+# (D11); the stdlib's `vec_sort_by` is unstable, and `vec_select_nth`, `vec_get` and `vec_set` abort out of range.
+# UPSTREAM(L3): cyrius:docs/development/issues/2026-11-11-no-stable-sort.md
+#   replace `_pmn_sort_f64` and `_pmn_sort_keyed` with the stdlib's stable sort over raw words once it has one; parity:
+#   the order statistics' rows of tests/golden/descriptive.tsv (class A on the stable rule)
+
+# Runs of this length are insertion-sorted before the merges.
+var _PMN_SORT_RUN = 24;
+
+# Merges the sorted runs src[lo, mid) and src[mid, hi) into dst[lo, hi), stably: the right run's element goes first only
+# when it is strictly smaller.
+fn _pmn_sort_merge(src, dst, lo, mid, hi): i64 {
+    var i = lo;
+    var j = mid;
+    var k = lo;
+    while (i < mid && j < hi) {
+        var a: f64 = load64(src + i * 8);
+        var b: f64 = load64(src + j * 8);
+        if (b < a) {
+            store64(dst + k * 8, load64(src + j * 8));
+            j = j + 1;
+        } else {
+            store64(dst + k * 8, load64(src + i * 8));
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+    while (i < mid) {
+        store64(dst + k * 8, load64(src + i * 8));
+        i = i + 1;
+        k = k + 1;
+    }
+    while (j < hi) {
+        store64(dst + k * 8, load64(src + j * 8));
+        j = j + 1;
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Sorts a[0, n) ascending by `<`, stably, with tmp (n f64s, not overlapping a) as the merge buffer. a must be NaN-free:
+# every caller checks first, so `<` is a total preorder. −0 and +0 compare equal and keep their input order.
+fn _pmn_sort_f64(a, n, tmp): i64 {
+    if (n < 2) { return 0; }
+    var run = _PMN_SORT_RUN;
+    for (var s = 0; s < n; s = s + run) {
+        var e = s + run;
+        if (e > n) { e = n; }
+        for (var i = s + 1; i < e; i = i + 1) {
+            var x: f64 = load64(a + i * 8);
+            var w = load64(a + i * 8);
+            var j = i - 1;
+            var go = 1;
+            while (go == 1 && j >= s) {
+                var y: f64 = load64(a + j * 8);
+                if (x < y) {
+                    store64(a + (j + 1) * 8, load64(a + j * 8));
+                    j = j - 1;
+                } else {
+                    go = 0;
+                }
+            }
+            store64(a + (j + 1) * 8, w);
+        }
+    }
+    var src = a;
+    var dst = tmp;
+    var width = run;
+    while (width < n) {
+        for (var lo = 0; lo < n; lo = lo + 2 * width) {
+            var mid = lo + width;
+            if (mid > n) { mid = n; }
+            var hi = lo + 2 * width;
+            if (hi > n) { hi = n; }
+            _pmn_sort_merge(src, dst, lo, mid, hi);
+        }
+        var t = src;
+        src = dst;
+        dst = t;
+        width = width * 2;
+    }
+    if (src != a) { _pmn_copy_words(a, src, n); }
+    return 0;
+}
+
+# Merges 16-byte records src[lo, mid) and src[mid, hi) into dst by their signed key words, stably.
+fn _pmn_sort_keyed_merge(src, dst, lo, mid, hi): i64 {
+    var i = lo;
+    var j = mid;
+    var k = lo;
+    while (i < mid && j < hi) {
+        if (load64(src + j * 16) < load64(src + i * 16)) {
+            store64(dst + k * 16, load64(src + j * 16));
+            store64(dst + k * 16 + 8, load64(src + j * 16 + 8));
+            j = j + 1;
+        } else {
+            store64(dst + k * 16, load64(src + i * 16));
+            store64(dst + k * 16 + 8, load64(src + i * 16 + 8));
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+    while (i < mid) {
+        store64(dst + k * 16, load64(src + i * 16));
+        store64(dst + k * 16 + 8, load64(src + i * 16 + 8));
+        i = i + 1;
+        k = k + 1;
+    }
+    while (j < hi) {
+        store64(dst + k * 16, load64(src + j * 16));
+        store64(dst + k * 16 + 8, load64(src + j * 16 + 8));
+        j = j + 1;
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Sorts n 16-byte records at a (a signed key word, then a payload word) by the key, stably, with tmp (16n bytes, not
+# overlapping a) as the merge buffer: equal keys keep their input order.
+fn _pmn_sort_keyed(a, n, tmp): i64 {
+    if (n < 2) { return 0; }
+    var src = a;
+    var dst = tmp;
+    var width = 1;
+    while (width < n) {
+        for (var lo = 0; lo < n; lo = lo + 2 * width) {
+            var mid = lo + width;
+            if (mid > n) { mid = n; }
+            var hi = lo + 2 * width;
+            if (hi > n) { hi = n; }
+            _pmn_sort_keyed_merge(src, dst, lo, mid, hi);
+        }
+        var t = src;
+        src = dst;
+        dst = t;
+        width = width * 2;
+    }
+    if (src != a) { _pmn_copy_words(a, src, n * 2); }
+    return 0;
+}
+
+# The k-th smallest value of b[0, n) (0 ≤ k < n), b NaN-free and reordered: Wirth's selection (Hoare's partition, the
+# scans stopping on elements equal to the pivot, so equal-heavy input still splits evenly) with a median-of-three
+# pivot. Past a budget of partitions (a run of bad pivots), the rest is merge-sorted with tmp (n f64s) instead, so the
+# worst case stays O(n log n). The value is the k-th of the stable order's, but a zero's sign is whichever zero landed
+# there: `_pmn_select_pair` settles that from the input.
+fn _pmn_select_value(b, n, k, tmp): f64 {
+    var lo = 0;
+    var hi = n - 1;
+    var budget = 64;
+    var m = n;
+    while (m > 1) {
+        budget = budget + 2;
+        m = m / 2;
+    }
+    while (lo < hi) {
+        budget = budget - 1;
+        if (budget < 0) {
+            _pmn_sort_f64(b + lo * 8, hi - lo + 1, tmp);
+            var r: f64 = load64(b + k * 8);
+            return r;
+        }
+        var mid = lo + (hi - lo) / 2;
+        var x0: f64 = load64(b + lo * 8);
+        var x1: f64 = load64(b + mid * 8);
+        var x2: f64 = load64(b + hi * 8);
+        var pv: f64 = x1;
+        if (x0 < x1) {
+            if (x2 < x0) { pv = x0; } elif (x2 < x1) { pv = x2; }
+        } else {
+            if (x2 < x1) { pv = x1; } elif (x2 < x0) { pv = x2; } else { pv = x0; }
+        }
+        var i = lo;
+        var j = hi;
+        while (i <= j) {
+            var bi: f64 = load64(b + i * 8);
+            while (bi < pv) {
+                i = i + 1;
+                bi = load64(b + i * 8);
+            }
+            var bj: f64 = load64(b + j * 8);
+            while (pv < bj) {
+                j = j - 1;
+                bj = load64(b + j * 8);
+            }
+            if (i <= j) {
+                var wi = load64(b + i * 8);
+                store64(b + i * 8, load64(b + j * 8));
+                store64(b + j * 8, wi);
+                i = i + 1;
+                j = j - 1;
+            }
+        }
+        if (j < k) { lo = i; }
+        if (k < i) { hi = j; }
+    }
+    var v: f64 = load64(b + k * 8);
+    return v;
+}
+
+# The k-th element of data[0, n)'s stable ascending order and its successor (0 ≤ k < n, data NaN-free and untouched),
+# into out: out[0] the k-th, out[1] the successor, out[2] 1 when there is one (k + 1 < n), else 0. This is Rust's
+# `select_pair` with ADR 007 row 14's stable rule: equal elements, −0 and +0 among them, keep their input order. O(n):
+# the k-th value comes from `_pmn_select_value` on a pool copy; then, of the c elements below it, the k-th is the
+# (k − c)-th element equal to it in input order, and its successor the next equal one, else the first of the smallest
+# elements above it. PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when the scratch (2n f64s) can't be had.
+fn _pmn_select_pair(data, n, k, out): i64 {
+    var s, slot = _pmn_scratch_take(n * 16);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    _pmn_copy_words(s, data, n);
+    var v: f64 = _pmn_select_value(s, n, k, s + n * 8);
+    _pmn_scratch_give(s, slot);
+    var below = 0;
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        if (x < v) { below = below + 1; }
+    }
+    var want = k - below;
+    var seen = 0;
+    var found = 0;
+    var kth = 0;
+    var nxt = 0;
+    var has = 0;
+    for (var j = 0; j < n; j = j + 1) {
+        var y: f64 = load64(data + j * 8);
+        if (y == v) {
+            if (seen == want) {
+                kth = load64(data + j * 8);
+                found = 1;
+            } elif (seen == want + 1) {
+                nxt = load64(data + j * 8);
+                has = 1;
+            }
+            seen = seen + 1;
+        }
+    }
+    if (found == 0) { kth = load64(&v); }    # unreachable: the k-th value occurs at least k − c + 1 times
+    if (has == 0 && k + 1 < n) {
+        var best: f64 = 0.0;
+        for (var q = 0; q < n; q = q + 1) {
+            var z: f64 = load64(data + q * 8);
+            if (v < z) {
+                if (has == 0 || z < best) {
+                    best = z;
+                    nxt = load64(data + q * 8);
+                    has = 1;
+                }
+            }
+        }
+    }
+    store64(out, kth);
+    store64(out + 8, nxt);
+    store64(out + 16, has);
+    return PMN_ERR_NONE;
+}

@@ -1611,12 +1611,85 @@ fn _par_linalg(fp, fl): i64 {
     return 0;
 }
 
+# `descriptive` rows (M4): src/descriptive.cyr. A slice is `v:n` and its values; a Result is its value or `E:`.
+var _par_ds_a = 0;
+var _PAR_DS_CAP = 4096;
+
+fn _par_ds_result(t, v): i64 {
+    if (t == Err) {
+        _par_got_err(v);
+    } else {
+        _par_got_f(v);
+    }
+    return 1;
+}
+
+fn _par_descriptive(fp, fl): i64 {
+    if (_par_ds_a == 0) {
+        _par_ds_a = alloc(_PAR_DS_CAP * 8);
+        if (_par_ds_a == 0) { return 0 - 1; }
+    }
+    var n = _par_in(0);
+    if (n < 0 || n > _PAR_DS_CAP) { return 0 - 1; }
+    _par_in_f64s(0, _par_ds_a);
+    var a = _par_ds_a;
+    if (_par_eq(fp, fl, "descriptive::sum") == 1) {
+        var s: f64 = pmn_sum(a, n);
+        _par_got_f(s);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "descriptive::quartiles") == 1) {
+        var q[24];
+        var e = pmn_quartiles(a, n, &q);
+        if (e != PMN_ERR_NONE) {
+            _par_got_err(e);
+            return 1;
+        }
+        for (var k = 0; k < 3; k = k + 1) { _par_got_f(load64(&q + k * 8)); }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "descriptive::percentile") == 1) {
+        var p: f64 = _par_in(n + 1);
+        var t0, v0 = pmn_percentile(a, n, p);
+        return _par_ds_result(t0, v0);
+    }
+    var t = Err;
+    var v = 0;
+    if (_par_eq(fp, fl, "descriptive::mean") == 1) {
+        t, v = pmn_mean(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::median") == 1) {
+        t, v = pmn_median(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::mode") == 1) {
+        t, v = pmn_mode(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::variance") == 1) {
+        t, v = pmn_variance(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::std_dev") == 1) {
+        t, v = pmn_std_dev(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::skewness") == 1) {
+        t, v = pmn_skewness(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::kurtosis") == 1) {
+        t, v = pmn_kurtosis(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::iqr") == 1) {
+        t, v = pmn_iqr(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::min") == 1) {
+        t, v = pmn_min(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::max") == 1) {
+        t, v = pmn_max(a, n);
+    } elif (_par_eq(fp, fl, "descriptive::range") == 1) {
+        t, v = pmn_range(a, n);
+    } else {
+        return 0;
+    }
+    return _par_ds_result(t, v);
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
     if (_par_eq(mp, ml, "combinatorics") == 1) { return _par_combinatorics(fp, fl); }
     if (_par_eq(mp, ml, "constants") == 1) { return _par_constants(fp, fl); }
     if (_par_eq(mp, ml, "debug") == 1) { return _par_debug(fp, fl); }
+    if (_par_eq(mp, ml, "descriptive") == 1) { return _par_descriptive(fp, fl); }
     if (_par_eq(mp, ml, "dist") == 1) { return _par_dist(fp, fl); }
     if (_par_eq(mp, ml, "fmt") == 1) { return _par_fmt(fp, fl); }
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }

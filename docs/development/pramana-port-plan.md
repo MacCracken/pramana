@@ -53,7 +53,8 @@
 > baseline. `rust-old/` is read as text and never built. The corpus is generated and never committed;
 > `scripts/golden/digests.txt` holds its sha256. Where this plan says "the oracle" for M4 onward, read "Python's model
 > of 1.3.0, from `rust-old/src`", and where it says "Rust twin", read "the twin's recorded numbers"; new proofs are
-> Python models with MPFR, exact arithmetic or NIST StRD as the reference. M4 is next.
+> Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
+> part a1, the descriptive statistics, is done.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1229,6 +1230,27 @@ T1 function is recorded against T1 from the start (ADR 009 as amended):
   soak of the thirteen caller-storage distributions, `distribution` in surface parity's ported modules, and the
   ledger re-read; every row passing at 0 ulp on three targets ✅. **M3 is complete.**
 
+**M4's parts** (set at its start, 2026-11-16, under ADR 010: the golden rows come from Python's models of 1.3.0 and
+are never committed). 1.3.0's `descriptive.rs` and `hypothesis.rs`, each function with its refusals in Rust's order,
+each type with its JSON codec (D5) and `Debug` (D12). Golden rows in two new modules, `descriptive` and `hypothesis`
+(named by Rust's path, `descriptive::median`), with the codecs in `json` and Debug in `debug`. Every row downstream of
+a T1 function is recorded against T1:
+- **a1:** `src/sort.cyr` (ledger L3): the stable merge sort and the O(n) stable selection (ADR 007 row 14), and the
+  fourteen statistics in `src/descriptive.cyr`: `mean`, `median`, `mode`, `variance`, `std_dev`, `skewness`,
+  `kurtosis`, `percentile`, `quartiles`, `iqr`, `min`, `max`, `range`, `sum`. A new golden module, `descriptive`
+  (23,180 rows); every row passing on the first replay, at 0 ulp, on three targets; `_pmn_copy_words` for the
+  stdlib's byte-wise `memcpy` (ledger L15) ✅;
+- **a2:** `Kernel` and `KernelDensity` (owned, freelist-allocated, Silverman's bandwidth) in `src/kde.cyr`, and
+  `correlation_matrix`;
+- **a3:** hisab 1.4.0's cyclic Jacobi `eigen_symmetric(tol, max_iter)` in `src/linalg.cyr` (ledger L6) and `pca`
+  with `PcaResult` (owned) in `src/pca.cyr`;
+- **b1:** `src/hypothesis.cyr`: `TestResult`, `AnovaResult` and `KsResult`; the one- and two-sample t-tests, the χ²
+  test (exact p), the one-way ANOVA, and the two KS tests (ties, the one-sample CDF a callback, D7);
+- **b2:** `ConfidenceInterval`, `ci_mean`, `ci_two_means`, `ci_proportion`, and the quantiles they use, `t_quantile`
+  (bisection) and `z_quantile` (Acklam and a Halley step), measured against MPFR (port plan §3.4's row);
+- **c:** M4's gate: NIST StRD's univariate and ANOVA sets (class R), the soak, surface parity, the benchmark rows
+  against 1.3.0's criterion record, three targets.
+
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream
   row is generated against it (D3).
@@ -1398,6 +1420,7 @@ shape:
 | L12 | open | `src/crmath.cyr`'s exact fma (Dekker's product, a round-to-odd sum) and `src/crerf.cyr`'s use of it, `_pmn_cm_fma`, with the tiny-path rounding (§5 step 9e; M2 part b1) | no scalar fma (§1.3). The vector `f64v_fmadd` rounds twice on x86_64 and once on aarch64. The emulation costs 6.5–20× CORE-MATH's own in C | `cyrius:docs/development/issues/2026-11-15-no-scalar-fma.md` (with a repro) | `f64_fma`: hardware where the target has it, exact software elsewhere, the same bits everywhere | the erf, erfc and `normal_cdf` rows; their bits must not change |
 | L13 | open | `src/json.cyr`'s document-size guard: `_pmn_json_open` refuses a document longer than 2·`VEC_CAP_MAX` − 1 bytes as `OUT_OF_MEMORY`, unread (M1 part d3a) | `vec_push_a` ends the process ("vec: capacity overflow") one element past `VEC_CAP_MAX` (2^28), though it returns −1 when the allocator refuses; bayan pushes every array element through it, so a document with an array of 2^28 + 1 elements (512 MiB of text) would end the consumer's process. Shown at a lowered cap: 65 elements against 64 | `cyrius:docs/development/issues/2026-11-11-vec-keeps-outgrown-buffer-and-aborts.md` (pramana's second section, 2026-11-15) | `vec_push_a` returning −1 past `VEC_CAP_MAX` | the `json` rows, and `tests/json.tcyr`'s guard group |
 | L14 | open | `src/json.cyr`'s reservations: `_pmn_json_w_reserve` makes room before each f64 (32 bytes) and the exact escaped length before each string, so `fmtf.cyr`'s printer and `str_builder_add_json_str` never grow the builder (M1 part d4) | `str_builder_putc`, `_add`, `_add_cstr`, `_add_int` and `_add_json_str` end the process when a grow fails; `putc` and `add_json_str` have no `_a` form that returns −1, and the vendored printer writes through `putc` | `cyrius:docs/development/issues/2026-11-13-str-builder-grow-never-frees-the-outgrown-buffer.md` (pramana's section, 2026-11-15) | `str_builder_putc_a` and `str_builder_add_json_str_a` | the `json::write` rows, and `tests/json.tcyr`'s reservation check |
+| L15 | open | `src/pool.cyr`'s `_pmn_copy_words`: f64 arrays copied a word at a time (M4 part a1) | the stdlib's `memcpy` moves one byte per iteration: 80 KB in 134 µs against 17 µs a word at a time, two thirds of a 10⁴-element median | `cyrius:docs/development/issues/2026-11-02-memcpy-memset-byte-loops-dominate-frame-copies.md` (pramana's section, 2026-11-16) | a word-wise `memcpy` | none (a copy moves bits); the benches of `tests/descriptive.bcyr` |
 
 **Also filed at step 10, with no stand-in** (a rule in §8.3 covers each meanwhile):
 - **cyrius:** a closure's captured f64 is an untyped word in arithmetic, though it binds `T = f64` as a generic

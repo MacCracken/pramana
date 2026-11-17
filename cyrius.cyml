@@ -66,4 +66,6 @@ modules = [
     "src/dist_gamma.cyr",
     "src/dist_disc.cyr",
     "src/dist_mvn.cyr",
+    "src/sort.cyr",
+    "src/descriptive.cyr",
 ]

@@ -22,6 +22,17 @@
 # claimed.
 
 const _PMN_POOL_SLOTS = 8;
+
+# Copies n 8-byte words from src to dst, forward (dst may equal src, or sit below it in an overlap). Every f64 array
+# the library copies goes through here.
+# UPSTREAM(L15): cyrius:docs/development/issues/2026-11-02-memcpy-memset-byte-loops-dominate-frame-copies.md
+#   the stdlib's `memcpy` moves one byte per iteration: 80 KB took 134 µs against 17 µs here (M4 part a1, pinned),
+#   the most of a 10⁴-element median's time. Replace with `memcpy` once it moves words; parity: none (a copy moves
+#   bits), the benches of tests/descriptive.bcyr re-run.
+fn _pmn_copy_words(dst, src, n): i64 {
+    for (var i = 0; i < n; i = i + 1) { store64(dst + i * 8, load64(src + i * 8)); }
+    return dst;
+}
 const _PMN_POOL_OVERFLOW = -2;
 const _PMN_POOL_SLOT_MAX = 1048576;
 const _PMN_BUMP_ALLOCATOR_SIZE = 40;

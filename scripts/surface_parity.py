@@ -26,9 +26,24 @@ SRC = ROOT / "src"
 PORTED = ["error", "rng", "combinatorics", "bridge", "distribution"]   # distribution: M3's gate (part e)
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {}
+PARTIAL = {"descriptive": "M4"}
 
 SURFACE = {
+    # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
+    "descriptive::mean": ["fn pmn_mean"],
+    "descriptive::median": ["fn pmn_median", "fn _pmn_select_pair"],
+    "descriptive::mode": ["fn pmn_mode"],
+    "descriptive::variance": ["fn pmn_variance"],
+    "descriptive::std_dev": ["fn pmn_std_dev"],
+    "descriptive::skewness": ["fn pmn_skewness"],
+    "descriptive::kurtosis": ["fn pmn_kurtosis"],
+    "descriptive::percentile": ["fn pmn_percentile"],
+    "descriptive::quartiles": ["fn pmn_quartiles"],
+    "descriptive::iqr": ["fn pmn_iqr"],
+    "descriptive::min": ["fn pmn_min"],
+    "descriptive::max": ["fn pmn_max"],
+    "descriptive::range": ["fn pmn_range"],
+    "descriptive::sum": ["fn pmn_sum"],
     # error.rs (M1 part a; D6, ADR 007 rows 1 and 8)
     "error::PramanaError": ["enum PmnError", "fn pmn_err_name"],
     "error::PramanaError#Debug": ["fn pmn_err_debug"],

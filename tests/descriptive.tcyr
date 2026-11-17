@@ -1,0 +1,240 @@
+# descriptive.tcyr — src/descriptive.cyr and src/sort.cyr (M4 part a1; port plan §4.1, ledger L3, ADR 007 row 14).
+#
+# tests/parity.tcyr replays 1.3.0's values (tests/golden/descriptive.tsv), bit for bit. These carry 1.3.0's own tests
+# over (descriptive.rs) and pin what a replay doesn't: the buffer refusals, the stable rule's zero signs, the selection
+# against a full stable sort on long and adversarial slices, and that nothing is left claimed in the pool.
+
+include "tests/lib.cyr"
+
+fn bits(x: f64): i64 {
+    return load64(&x);
+}
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+# The value of a Result that must be Ok, or NaN.
+fn ok(t, v): f64 {
+    var nan: f64 = 0x7FF8000000000000;
+    if (t == Err) { return nan; }
+    var r: f64 = v;
+    return r;
+}
+
+# 1 when the Result is Err with the code.
+fn err_is(t, v, code): i64 {
+    if (t == Err && v == code) { return 1; }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var a = alloc(4096 * 8);
+    var s = alloc(4096 * 8);
+    var tmp = alloc(4096 * 8);
+
+    test_group("1.3.0's tests (mean, median, mode, variance, std_dev, percentile, min/max/range, sum, empty)");
+    for (var i = 0; i < 5; i = i + 1) { put(a, i, f64_from(i + 1)); }
+    var t, v = pmn_mean(a, 5);
+    assert(bits(ok(t, v)) == bits(3.0), "mean [1..5] = 3");
+    t, v = pmn_median(a, 5);
+    assert(bits(ok(t, v)) == bits(3.0), "median [1..5] = 3");
+    t, v = pmn_median(a, 4);
+    assert(bits(ok(t, v)) == bits(2.5), "median [1..4] = 2.5");
+    t, v = pmn_variance(a, 5);
+    assert(bits(ok(t, v)) == bits(2.0), "variance [1..5] = 2");
+    t, v = pmn_std_dev(a, 5);
+    var r2: f64 = f64_sqrt(2.0);
+    assert(bits(ok(t, v)) == bits(r2), "std_dev [1..5] = √2 exactly");
+    t, v = pmn_percentile(a, 5, 50.0);
+    assert(bits(ok(t, v)) == bits(3.0), "p50 = 3");
+    t, v = pmn_percentile(a, 5, 0.0);
+    assert(bits(ok(t, v)) == bits(1.0), "p0 = 1");
+    t, v = pmn_percentile(a, 5, 100.0);
+    assert(bits(ok(t, v)) == bits(5.0), "p100 = 5");
+    put(a, 0, 1.0);
+    put(a, 1, 2.0);
+    put(a, 2, 2.0);
+    put(a, 3, 3.0);
+    t, v = pmn_mode(a, 4);
+    assert(bits(ok(t, v)) == bits(2.0), "mode [1, 2, 2, 3] = 2");
+    put(a, 0, 3.0);
+    put(a, 1, 1.0);
+    put(a, 2, 4.0);
+    put(a, 3, 1.0);
+    put(a, 4, 5.0);
+    t, v = pmn_min(a, 5);
+    assert(bits(ok(t, v)) == bits(1.0), "min = 1");
+    t, v = pmn_max(a, 5);
+    assert(bits(ok(t, v)) == bits(5.0), "max = 5");
+    t, v = pmn_range(a, 5);
+    assert(bits(ok(t, v)) == bits(4.0), "range = 4");
+    put(a, 0, 1.0);
+    put(a, 1, 2.0);
+    put(a, 2, 3.0);
+    var s6: f64 = pmn_sum(a, 3);
+    assert(bits(s6) == bits(6.0), "sum [1, 2, 3] = 6");
+    var s0: f64 = pmn_sum(a, 0);
+    assert(bits(s0) == bits(-0.0), "the empty sum is −0.0, as Rust's");
+    t, v = pmn_mean(a, 0);
+    assert(err_is(t, v, PMN_ERR_INVALID_SAMPLE) == 1, "mean of [] is InvalidSample");
+    t, v = pmn_median(a, 0);
+    assert(err_is(t, v, PMN_ERR_INVALID_SAMPLE) == 1, "median of [] is InvalidSample");
+    t, v = pmn_variance(a, 0);
+    assert(err_is(t, v, PMN_ERR_INVALID_SAMPLE) == 1, "variance of [] is InvalidSample");
+
+    test_group("1.3.0's hardening tests (NaN refused without a panic, the sorted reference)");
+    for (var j = 0; j < 64; j = j + 1) { put(a, j, f64_from((j * 37) % 64)); }
+    var nan: f64 = 0x7FF8000000000000;
+    for (var j2 = 0; j2 < 64; j2 = j2 + 5) { put(a, j2, nan); }
+    t, v = pmn_median(a, 64);
+    assert(err_is(t, v, PMN_ERR_INVALID_SAMPLE) == 1, "median with NaN is InvalidSample");
+    t, v = pmn_percentile(a, 64, 50.0);
+    assert(err_is(t, v, PMN_ERR_INVALID_SAMPLE) == 1, "percentile with NaN is InvalidSample");
+    var q[24];
+    assert_eq(pmn_quartiles(a, 64, &q), PMN_ERR_INVALID_SAMPLE, "quartiles with NaN is InvalidSample");
+    t, v = pmn_iqr(a, 64);
+    assert(err_is(t, v, PMN_ERR_INVALID_SAMPLE) == 1, "iqr with NaN is InvalidSample");
+    for (var j3 = 0; j3 < 101; j3 = j3 + 1) {
+        var w: f64 = f64_from((j3 * 7919) % 101);
+        var w2: f64 = w * 0.5;
+        put(a, j3, w2 - 3.0);
+    }
+    memcpy(s, a, 101 * 8);
+    _pmn_sort_f64(s, 101, tmp);
+    t, v = pmn_median(a, 101);
+    assert(bits(ok(t, v)) == load64(s + 50 * 8), "median = sorted[50]");
+    var ps[64];
+    put(&ps, 0, 0.0);
+    put(&ps, 1, 1.0);
+    put(&ps, 2, 12.5);
+    put(&ps, 3, 25.0);
+    put(&ps, 4, 50.0);
+    put(&ps, 5, 73.3);
+    put(&ps, 6, 99.0);
+    put(&ps, 7, 100.0);
+    var sel_ok = 1;
+    for (var pi = 0; pi < 8; pi = pi + 1) {
+        var pf: f64 = load64(&ps + pi * 8);
+        var q100: f64 = pf / 100.0;
+        var rank: f64 = q100 * 100.0;
+        var flo: f64 = f64_floor(rank);
+        var fhi: f64 = f64_ceil(rank);
+        var lo = f64_to(flo);
+        var hi = f64_to(fhi);
+        var slo: f64 = load64(s + lo * 8);
+        var shi: f64 = load64(s + hi * 8);
+        var fr: f64 = rank - flo;
+        var dd: f64 = shi - slo;
+        var ref: f64 = slo + dd * fr;
+        t, v = pmn_percentile(a, 101, pf);
+        var got: f64 = ok(t, v);
+        if (f64_abs(got - ref) >= 0.000000000001) { sel_ok = 0; }
+    }
+    assert(sel_ok == 1, "percentile(p) within 1e-12 of the sorted reference at 1.3.0's eight p (n = 101)");
+    memcpy(s, a, 100 * 8);
+    _pmn_sort_f64(s, 100, tmp);
+    t, v = pmn_median(a, 100);
+    var m49: f64 = load64(s + 49 * 8);
+    var m50: f64 = load64(s + 50 * 8);
+    var msum: f64 = m49 + m50;
+    var mref: f64 = msum / 2.0;
+    assert(bits(ok(t, v)) == bits(mref), "the even median = (sorted[49] + sorted[50]) / 2");
+
+    test_group("the port's refusals: a null slice, a negative count, a null out, p outside [0, 100]");
+    t, v = pmn_mean(0, 3);
+    assert(err_is(t, v, PMN_ERR_INVALID_PARAMETER) == 1, "a null slice with n > 0");
+    t, v = pmn_median(a, 0 - 1);
+    assert(err_is(t, v, PMN_ERR_INVALID_PARAMETER) == 1, "a negative count");
+    t, v = pmn_mean(0, 0);
+    assert(err_is(t, v, PMN_ERR_INVALID_SAMPLE) == 1, "a null empty slice is just empty");
+    assert_eq(pmn_quartiles(a, 5, 0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    var sn: f64 = pmn_sum(0, 2);
+    assert(sn != sn, "sum of a null slice is NaN");
+    t, v = pmn_percentile(a, 5, 100.00000000000001);
+    assert(err_is(t, v, PMN_ERR_INVALID_PARAMETER) == 1, "p just above 100");
+    t, v = pmn_percentile(a, 5, nan);
+    assert(err_is(t, v, PMN_ERR_INVALID_PARAMETER) == 1, "p NaN");
+    t, v = pmn_percentile(a, 0, nan);
+    assert(err_is(t, v, PMN_ERR_INVALID_SAMPLE) == 1, "the slice is checked before p");
+    var mz: f64 = -0.0;
+    t, v = pmn_percentile(a, 5, mz);
+    assert(t != Err, "p = −0 is inside [0, 100]");
+
+    test_group("the stable rule (ADR 007 row 14): equal elements, −0 and +0 among them, keep their input order");
+    put(a, 0, 0.0);
+    put(a, 1, -0.0);
+    put(a, 2, 1.0);
+    t, v = pmn_median(a, 3);
+    assert(bits(ok(t, v)) == bits(-0.0), "median [+0, −0, 1] is the second zero, −0");
+    put(a, 0, -0.0);
+    put(a, 1, 0.0);
+    t, v = pmn_median(a, 3);
+    assert(bits(ok(t, v)) == bits(0.0), "median [−0, +0, 1] is +0");
+    t, v = pmn_percentile(a, 3, 0.0);
+    assert(bits(ok(t, v)) == bits(-0.0), "p0 of [−0, +0, 1] is the first zero");
+    put(a, 0, 2.0);
+    put(a, 1, -1.0);
+    put(a, 2, 0.0);
+    put(a, 3, -0.0);
+    t, v = pmn_percentile(a, 4, 50.0);
+    var pz: f64 = ok(t, v);
+    assert(bits(pz) == bits(0.0), "p50 of [2, −1, +0, −0]: (+0)·½ + (−0)·½ = +0");
+    t, v = pmn_mode(a, 4);
+    assert(bits(ok(t, v)) == bits(2.0), "mode: every pattern once, the first wins");
+    put(a, 0, -0.0);
+    put(a, 1, 0.0);
+    put(a, 2, 0.0);
+    put(a, 3, -0.0);
+    put(a, 4, -0.0);
+    t, v = pmn_mode(a, 5);
+    assert(bits(ok(t, v)) == bits(-0.0), "mode tells −0 from +0 by bits: −0 three times");
+    t, v = pmn_min(a, 5);
+    assert(bits(ok(t, v)) == bits(-0.0), "min keeps the later of equal operands, as Rust's reduce(f64::min)");
+
+    test_group("selection against a full stable sort: long, sorted, reversed, organ-pipe, constant, tie-heavy");
+    var g: PmnSimpleRng;
+    PmnSimpleRng_new(&g, 12345);
+    var sel_all = 1;
+    for (var shape = 0; shape < 6; shape = shape + 1) {
+        var n = 1000 + shape;
+        for (var k = 0; k < n; k = k + 1) {
+            var u: f64 = g.next_f64();
+            var x: f64 = u;
+            if (shape == 1) { x = f64_from(k); }
+            if (shape == 2) { x = f64_from(n - k); }
+            if (shape == 3) {
+                var half = n / 2;
+                if (k < half) { x = f64_from(k); } else { x = f64_from(n - k); }
+            }
+            if (shape == 4) { x = 2.0; }
+            if (shape == 5) {
+                var u3: f64 = u * 3.0;
+                var b: f64 = f64_from(_pmn_sat_usize(u3));
+                x = b - 1.0;
+                if (k % 7 == 0) { x = -0.0; }
+                if (k % 11 == 0) { x = 0.0; }
+            }
+            put(a, k, x);
+        }
+        memcpy(s, a, n * 8);
+        _pmn_sort_f64(s, n, tmp);
+        var o[24];
+        for (var kk = 0; kk < n; kk = kk + 97) {
+            if (_pmn_select_pair(a, n, kk, &o) != PMN_ERR_NONE) { sel_all = 0; }
+            if (load64(&o) != load64(s + kk * 8)) { sel_all = 0; }
+            if (kk + 1 < n && (load64(&o + 16) != 1 || load64(&o + 8) != load64(s + (kk + 1) * 8))) { sel_all = 0; }
+        }
+        if (_pmn_select_pair(a, n, n - 1, &o) != PMN_ERR_NONE || load64(&o + 16) != 0) { sel_all = 0; }
+    }
+    assert(sel_all == 1, "the k-th and its successor equal the stable sort's, bit for bit, on 6 shapes");
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

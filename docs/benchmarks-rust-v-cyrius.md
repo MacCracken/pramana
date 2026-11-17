@@ -872,3 +872,25 @@ call, and T1's double-double series and fractions cost far more, which ADR 009 a
 
 What is left is the call itself (Rust inlines the constructor and the method into one body), the correctly rounded
 primitives' cost over glibc's, and the compiler's register use in loops (part d1).
+
+## M4 part a1: the descriptive statistics (2026-11-16)
+
+**Bodies.** `tests/descriptive.bcyr` runs 1.3.0's own criterion bodies (`rust-old/benches/benchmarks.rs`); the Rust
+column is `rust-old/benchmarks.md` (2026-11-14, this host, criterion's point estimate; ADR 010). Three pinned runs
+(`taskset -c 5`) at a load average of 2.3–3.3.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `descriptive/stats_10000` (mean, variance, std_dev of 10⁴) | 36.9 µs | 140–141 µs | 3.8× |
+| `descriptive/median_10001` | 18.4 µs | 181–185 µs | 9.9× |
+| `descriptive/mode_10000` | 172.8 µs | 902–906 µs | 5.2× |
+
+- **What the ratios are.** A plain pass over 10⁴ f64s costs 2.15 ns an element here (21.5 µs), so `stats_10000`'s five
+  passes are the codegen's cost, not the algorithm's. The median is Wirth's selection (2.26 element visits per element
+  on this input, 13 partitions) plus two passes for the stable rule (ADR 007 row 14); Rust's `select_nth_unstable`
+  needs no second pass. The mode is a stable merge sort of (key, index) records, as Rust's sort of (value, index)
+  pairs.
+- **A finding, fixed locally (ledger L15).** The first median took 348 µs: the stdlib's `memcpy` moves a byte per
+  iteration, and the 80 KB copy took 134 µs of it (a word loop: 17 µs). With `_pmn_copy_words` it takes 182 µs. A
+  partition with fewer stores (Wirth's for Dijkstra's three-way) took it from 348 to 290 µs before that.
+

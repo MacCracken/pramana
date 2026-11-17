@@ -84,8 +84,8 @@ fn PmnMultivariateNormal_new(out: *PmnMultivariateNormal, mean, d, cov, rows, co
     if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
     var bc = blk + d * 8;
     var bl = bc + dd * 8;
-    memcpy(blk, mean, d * 8);
-    memcpy(bc, cov, dd * 8);
+    _pmn_copy_words(blk, mean, d);
+    _pmn_copy_words(bc, cov, dd);
     if (_pmn_cholesky(bc, d, bl) != PMN_ERR_NONE) {
         fl_free(blk);
         return PMN_ERR_INVALID_PARAMETER;
@@ -118,7 +118,7 @@ fn PmnMultivariateNormal_clone(out: *PmnMultivariateNormal, src: *PmnMultivariat
     var nb = _pmn_mvn_bytes(d);
     var blk = fl_alloc(nb);
     if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
-    memcpy(blk, src.buf, nb);
+    _pmn_copy_words(blk, src.buf, nb / 8);
     var ld: f64 = src.log_det;
     out.n = d;
     out.buf = blk;

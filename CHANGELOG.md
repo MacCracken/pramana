@@ -881,6 +881,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **the ledger:** all 21 upstream requests are still open, so nothing converts. The parts' accuracy findings, bound by
     parity, are now the roadmap's.
 
+- **M4 part a1: the descriptive statistics** (port plan §7; `src/sort.cyr`, `src/descriptive.cyr`). 1.3.0's
+  `mean`, `median`, `mode`, `variance`, `std_dev`, `skewness`, `kurtosis`, `percentile`, `quartiles`, `iqr`, `min`,
+  `max`, `range` and `sum`, in Rust's operation order (sums from −0.0, `reduce(f64::min)`'s tie rule, the mode's
+  bit-pattern runs and first-occurrence ties). The order statistics take the k-th element of a stable order in O(n)
+  (ADR 007 row 14; ledger L3): a quickselect for the value, then one pass for which equal element the stable order puts
+  there. A new golden module, `descriptive`, 23,180 rows from Python's models (ADR 010): empty, single, special,
+  constant, overflowing, NaN- and ∞-bearing slices, probe P6's zero-heavy slices, seeded and tie-heavy ones to 64
+  elements, and sorted, reversed, organ-pipe and constant slices of 1,000 and 1,001. Every row passes on the first
+  replay, at 0 ulp, on x86_64 ELF, PE and aarch64; five mutants (the sum's start, the min's tie, the percentile's
+  weights, the mode's ties, the stable zero) fail 13 to 2,314 rows each. `tests/descriptive.tcyr` (42 checks) carries
+  1.3.0's tests over and pins the refusals, the stable zeros and the selection against a full sort.
+  - **`_pmn_copy_words`** (ledger L15): the stdlib's `memcpy` moves one byte per iteration, 134 µs for the median's
+    80 KB copy against 17 µs a word at a time. Every f64 array the library copies goes through it, MultivariateNormal's
+    included; pramana joins the open cyrius issue with these numbers.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one
