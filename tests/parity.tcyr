@@ -519,6 +519,24 @@ fn _par_json_write(fp, fl): i64 {
         _par_json_k = wkn + 3;
         e = wkd.to_json(sb);
         var wkx = PmnKernelDensity_drop(&wkd);
+    } elif (_par_eq(fp, fl, "json::write::TestResult") == 1) {
+        var wtr: PmnTestResult;
+        var wtk = _par_test_from_toks(0, &wtr);
+        if (wtk < 0) { return 0 - 1; }
+        _par_json_k = wtk;
+        e = wtr.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::AnovaResult") == 1) {
+        var war: PmnAnovaResult;
+        _par_json_k = _par_anova_from_toks(0, &war);
+        e = war.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::ConfidenceInterval") == 1) {
+        var wci: PmnConfidenceInterval;
+        _par_json_k = _par_ci_from_toks(0, &wci);
+        e = wci.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::KsResult") == 1) {
+        var wkr: PmnKsResult;
+        _par_json_k = _par_ks_from_toks(0, &wkr);
+        e = wkr.to_json(sb);
     } elif (_par_eq(fp, fl, "json::write::PcaResult") == 1) {
         var wpr: PmnPcaResult;
         var wpk = _par_pca_from_toks(0, &wpr);
@@ -777,6 +795,37 @@ fn _par_json_pca(): i64 {
     return 1;
 }
 
+# json::TestResult (0), AnovaResult (1) and KsResult (2) rows (M4 part b1): the decoded fields, or the error.
+fn _par_json_results(which): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var e = 0;
+    if (which == 0) {
+        var tr: PmnTestResult;
+        e = PmnTestResult_from_json(&tr, doc, n);
+        if (e == PMN_ERR_NONE) {
+            _par_got_test(&tr);
+            PmnTestResult_drop(&tr);
+            return 1;
+        }
+    } elif (which == 1) {
+        var ar: PmnAnovaResult;
+        e = PmnAnovaResult_from_json(&ar, doc, n);
+        if (e == PMN_ERR_NONE) { return _par_got_anova(&ar); }
+    } elif (which == 2) {
+        var kr: PmnKsResult;
+        e = PmnKsResult_from_json(&kr, doc, n);
+        if (e == PMN_ERR_NONE) { return _par_got_ks(&kr); }
+    } else {
+        var cr: PmnConfidenceInterval;
+        e = PmnConfidenceInterval_from_json(&cr, doc, n);
+        if (e == PMN_ERR_NONE) { return _par_got_ci(&cr); }
+    }
+    _par_got_err(e);
+    return 1;
+}
+
 # json::Kernel rows through the port's reader (M4 part a2).
 fn _par_json_kernel(): i64 {
     var n = 0;
@@ -841,6 +890,10 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::KernelDensity") == 1) { return _par_json_kde(); }
     if (_par_eq(fp, fl, "json::Kernel") == 1) { return _par_json_kernel(); }
     if (_par_eq(fp, fl, "json::PcaResult") == 1) { return _par_json_pca(); }
+    if (_par_eq(fp, fl, "json::TestResult") == 1) { return _par_json_results(0); }
+    if (_par_eq(fp, fl, "json::AnovaResult") == 1) { return _par_json_results(1); }
+    if (_par_eq(fp, fl, "json::KsResult") == 1) { return _par_json_results(2); }
+    if (_par_eq(fp, fl, "json::ConfidenceInterval") == 1) { return _par_json_results(3); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -1019,6 +1072,42 @@ fn _par_debug(fp, fl): i64 {
         if (PmnKernelDensity_new(&dkd, _par_ds_a, dkn, dkh, _par_in_kernel(dkn + 2)) != PMN_ERR_NONE) { return 0 - 1; }
         e = dkd.debug(sb, _par_in(dkn + 3));
         var dkx = PmnKernelDensity_drop(&dkd);
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::TestResult") == 1) {
+        var dtr: PmnTestResult;
+        var dtk = _par_test_from_toks(0, &dtr);
+        if (dtk < 0 || dtk + 1 != _par_in_n) { return 0 - 1; }
+        e = dtr.debug(sb, _par_in(dtk));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::AnovaResult") == 1) {
+        var dar: PmnAnovaResult;
+        var dak = _par_anova_from_toks(0, &dar);
+        if (dak + 1 != _par_in_n) { return 0 - 1; }
+        e = dar.debug(sb, _par_in(dak));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::ConfidenceInterval") == 1) {
+        var dci: PmnConfidenceInterval;
+        var dck = _par_ci_from_toks(0, &dci);
+        if (dck + 1 != _par_in_n) { return 0 - 1; }
+        e = dci.debug(sb, _par_in(dck));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::KsResult") == 1) {
+        var dkr: PmnKsResult;
+        var dkk = _par_ks_from_toks(0, &dkr);
+        if (dkk + 1 != _par_in_n) { return 0 - 1; }
+        e = dkr.debug(sb, _par_in(dkk));
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -1967,6 +2056,261 @@ fn _par_descriptive(fp, fl): i64 {
     return _par_ds_result(t, v);
 }
 
+# ── `hypothesis` rows (M4 part b1): src/hypothesis.cyr. Slices, then scalars; a TestResult is its name (`s:`),
+# statistic, p-value, df, level and verdict; the one-sample KS test's CDF an `e:Cdf.<Name>` token.
+
+fn _par_cdf_std_normal(ctx, x: f64): f64 {
+    var r: f64 = _pmn_normal_cdf(x);
+    return r;
+}
+
+fn _par_cdf_uniform01(ctx, x: f64): f64 {
+    var r: f64 = _pmn_clamp(x, 0.0, 1.0);
+    return r;
+}
+
+fn _par_cdf_exponential1(ctx, x: f64): f64 {
+    if (x < 0.0) { return 0.0; }
+    var a: f64 = -x;
+    var e: f64 = _pmn_exp_m1(a);
+    var r: f64 = -e;
+    return r;
+}
+
+fn _par_cdf_overshoot(ctx, x: f64): f64 {
+    var t: f64 = 2.0 * x;
+    var r: f64 = t - 0.5;
+    return r;
+}
+
+fn _par_cdf_nan_at_half(ctx, x: f64): f64 {
+    if (x == 0.5) {
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+    var r: f64 = _pmn_clamp(x, 0.0, 1.0);
+    return r;
+}
+
+# The CDF named by an `e:Cdf.<Name>` token at k, or 0.
+fn _par_in_cdf(k): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + k * 8) != 101) { return 0; }
+    var p = _par_in(k) + 4;
+    var len = load64(_par_in_l + k * 8) - 4;
+    if (len == 9 && memeq(p, "StdNormal", 9) == 1) { return &_par_cdf_std_normal; }
+    if (len == 9 && memeq(p, "Uniform01", 9) == 1) { return &_par_cdf_uniform01; }
+    if (len == 12 && memeq(p, "Exponential1", 12) == 1) { return &_par_cdf_exponential1; }
+    if (len == 9 && memeq(p, "Overshoot", 9) == 1) { return &_par_cdf_overshoot; }
+    if (len == 9 && memeq(p, "NanAtHalf", 9) == 1) { return &_par_cdf_nan_at_half; }
+    return 0;
+}
+
+fn _par_got_test(r: *PmnTestResult): i64 {
+    _par_got_text(r.name, r.name_len);
+    var st: f64 = r.statistic;
+    var p: f64 = r.p_value;
+    var df: f64 = r.degrees_of_freedom;
+    var al: f64 = r.reject_at_alpha;
+    _par_got_f(st);
+    _par_got_f(p);
+    _par_got_f(df);
+    _par_got_f(al);
+    _par_got_i(r.reject);
+    return 1;
+}
+
+fn _par_got_anova(r: *PmnAnovaResult): i64 {
+    var a: f64 = r.ss_between;
+    var b: f64 = r.ss_within;
+    var c: f64 = r.ss_total;
+    _par_got_f(a);
+    _par_got_f(b);
+    _par_got_f(c);
+    _par_got_i(r.df_between);
+    _par_got_i(r.df_within);
+    var d: f64 = r.ms_between;
+    var e: f64 = r.ms_within;
+    var f: f64 = r.f_statistic;
+    var g: f64 = r.p_value;
+    var h: f64 = r.reject_at_alpha;
+    _par_got_f(d);
+    _par_got_f(e);
+    _par_got_f(f);
+    _par_got_f(g);
+    _par_got_f(h);
+    _par_got_i(r.reject);
+    return 1;
+}
+
+fn _par_got_ks(r: *PmnKsResult): i64 {
+    var a: f64 = r.statistic;
+    var b: f64 = r.p_value;
+    var c: f64 = r.reject_at_alpha;
+    _par_got_f(a);
+    _par_got_f(b);
+    _par_got_f(c);
+    _par_got_i(r.reject);
+    return 1;
+}
+
+fn _par_got_ci(r: *PmnConfidenceInterval): i64 {
+    var a: f64 = r.lower;
+    var b: f64 = r.upper;
+    var c: f64 = r.estimate;
+    var d: f64 = r.confidence_level;
+    _par_got_f(a);
+    _par_got_f(b);
+    _par_got_f(c);
+    _par_got_f(d);
+    return 1;
+}
+
+fn _par_ci_from_toks(k, r: *PmnConfidenceInterval): i64 {
+    var a: f64 = _par_in(k);
+    var b: f64 = _par_in(k + 1);
+    var c: f64 = _par_in(k + 2);
+    var d: f64 = _par_in(k + 3);
+    r.lower = a;
+    r.upper = b;
+    r.estimate = c;
+    r.confidence_level = d;
+    return k + 4;
+}
+
+fn _par_hypothesis(fp, fl): i64 {
+    if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_a == 0) { return 0 - 1; }
+    var recs[256];
+    var p = 0;
+    var k = 0;
+    var used = 0;
+    while (k < _par_in_n && load64(_par_in_k + k * 8) == 118) {
+        var n = _par_in(k);
+        if (p >= 16 || n < 0 || used + n > _PAR_DS_CAP) { return 0 - 1; }
+        _par_in_f64s(k, _par_ds_a + used * 8);
+        store64(&recs + p * 16, _par_ds_a + used * 8);
+        store64(&recs + p * 16 + 8, n);
+        used = used + n;
+        p = p + 1;
+        k = k + 1 + n;
+    }
+    var alpha: f64 = _par_in(_par_in_n - 1);
+    var e = 0;
+    var tr: PmnTestResult;
+    var kr: PmnKsResult;
+    if (_par_eq(fp, fl, "hypothesis::t_test_one_sample") == 1) {
+        if (p != 1) { return 0 - 1; }
+        var mu: f64 = _par_in(k);
+        e = pmn_t_test_one_sample(&tr, load64(&recs), load64(&recs + 8), mu, alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_test(&tr); }
+    } elif (_par_eq(fp, fl, "hypothesis::t_test_two_sample") == 1) {
+        if (p != 2) { return 0 - 1; }
+        e = pmn_t_test_two_sample(&tr, load64(&recs), load64(&recs + 8), load64(&recs + 16), load64(&recs + 24), alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_test(&tr); }
+    } elif (_par_eq(fp, fl, "hypothesis::chi_squared_test") == 1) {
+        if (p != 2) { return 0 - 1; }
+        e = pmn_chi_squared_test(&tr, load64(&recs), load64(&recs + 8), load64(&recs + 16), load64(&recs + 24), alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_test(&tr); }
+    } elif (_par_eq(fp, fl, "hypothesis::one_way_anova") == 1) {
+        var ar: PmnAnovaResult;
+        e = pmn_one_way_anova(&ar, &recs, p, alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_anova(&ar); }
+    } elif (_par_eq(fp, fl, "hypothesis::ks_two_sample") == 1) {
+        if (p != 2) { return 0 - 1; }
+        e = pmn_ks_two_sample(&kr, load64(&recs), load64(&recs + 8), load64(&recs + 16), load64(&recs + 24), alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_ks(&kr); }
+    } elif (_par_eq(fp, fl, "hypothesis::t_quantile") == 1) {
+        var tp: f64 = _par_in(0);
+        var td: f64 = _par_in(1);
+        var tq: f64 = _pmn_t_quantile(tp, td);
+        _par_got_f(tq);
+        return 1;
+    } elif (_par_eq(fp, fl, "hypothesis::z_quantile") == 1) {
+        var zp: f64 = _par_in(0);
+        var zq: f64 = _pmn_z_quantile(zp);
+        _par_got_f(zq);
+        return 1;
+    } elif (_par_eq(fp, fl, "hypothesis::ci_mean") == 1) {
+        var ci: PmnConfidenceInterval;
+        if (p != 1) { return 0 - 1; }
+        e = pmn_ci_mean(&ci, load64(&recs), load64(&recs + 8), alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_ci(&ci); }
+    } elif (_par_eq(fp, fl, "hypothesis::ci_two_means") == 1) {
+        var ci2: PmnConfidenceInterval;
+        if (p != 2) { return 0 - 1; }
+        e = pmn_ci_two_means(&ci2, load64(&recs), load64(&recs + 8), load64(&recs + 16), load64(&recs + 24), alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_ci(&ci2); }
+    } elif (_par_eq(fp, fl, "hypothesis::ci_proportion") == 1) {
+        var ci3: PmnConfidenceInterval;
+        e = pmn_ci_proportion(&ci3, _par_in(0), _par_in(1), alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_ci(&ci3); }
+    } elif (_par_eq(fp, fl, "hypothesis::ks_one_sample") == 1) {
+        var cdf = _par_in_cdf(k);
+        if (p != 1 || cdf == 0) { return 0 - 1; }
+        e = pmn_ks_one_sample(&kr, load64(&recs), load64(&recs + 8), cdf, 0, alpha);
+        if (e == PMN_ERR_NONE) { return _par_got_ks(&kr); }
+    } else {
+        return 0;
+    }
+    _par_got_err(e);
+    return 1;
+}
+
+# A TestResult, AnovaResult or KsResult built from golden tokens at the cursor (the codec's and Debug's rows), into
+# the given result; the next token.
+fn _par_test_from_toks(k, r: *PmnTestResult): i64 {
+    var n = 0;
+    var p = _par_in_bytes(k, &n);
+    if (p == 0) { return 0 - 1; }
+    r.name = p;
+    r.name_len = n;
+    r.owned = 0;
+    var a: f64 = _par_in(k + 1);
+    var b: f64 = _par_in(k + 2);
+    var c: f64 = _par_in(k + 3);
+    var d: f64 = _par_in(k + 4);
+    r.statistic = a;
+    r.p_value = b;
+    r.degrees_of_freedom = c;
+    r.reject_at_alpha = d;
+    r.reject = _par_in(k + 5);
+    return k + 6;
+}
+
+fn _par_anova_from_toks(k, r: *PmnAnovaResult): i64 {
+    var a: f64 = _par_in(k);
+    var b: f64 = _par_in(k + 1);
+    var c: f64 = _par_in(k + 2);
+    r.ss_between = a;
+    r.ss_within = b;
+    r.ss_total = c;
+    r.df_between = _par_in(k + 3);
+    r.df_within = _par_in(k + 4);
+    var d: f64 = _par_in(k + 5);
+    var e: f64 = _par_in(k + 6);
+    var f: f64 = _par_in(k + 7);
+    var g: f64 = _par_in(k + 8);
+    var h: f64 = _par_in(k + 9);
+    r.ms_between = d;
+    r.ms_within = e;
+    r.f_statistic = f;
+    r.p_value = g;
+    r.reject_at_alpha = h;
+    r.reject = _par_in(k + 10);
+    return k + 11;
+}
+
+fn _par_ks_from_toks(k, r: *PmnKsResult): i64 {
+    var a: f64 = _par_in(k);
+    var b: f64 = _par_in(k + 1);
+    var c: f64 = _par_in(k + 2);
+    r.statistic = a;
+    r.p_value = b;
+    r.reject_at_alpha = c;
+    r.reject = _par_in(k + 3);
+    return k + 4;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
@@ -1976,6 +2320,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "descriptive") == 1) { return _par_descriptive(fp, fl); }
     if (_par_eq(mp, ml, "dist") == 1) { return _par_dist(fp, fl); }
     if (_par_eq(mp, ml, "fmt") == 1) { return _par_fmt(fp, fl); }
+    if (_par_eq(mp, ml, "hypothesis") == 1) { return _par_hypothesis(fp, fl); }
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
     if (_par_eq(mp, ml, "linalg") == 1) { return _par_linalg(fp, fl); }
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
@@ -2088,6 +2433,17 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "KernelDensity::evaluate_grid") == 1) { return 0; }   # exp and powf (M4 part a2)
     if (_par_eq(fp, fl, "descriptive::pca") == 1) { return 0; }                # atan, cos, sin (part a3)
     if (_par_eq(fp, fl, "linalg::eigen_symmetric") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::t_test_one_sample") == 1) { return 0; }   # downstream of the T1 functions (b1)
+    if (_par_eq(fp, fl, "hypothesis::t_test_two_sample") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::chi_squared_test") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::one_way_anova") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::ks_two_sample") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::ks_one_sample") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::t_quantile") == 1) { return 0; }        # downstream of T1 (part b2)
+    if (_par_eq(fp, fl, "hypothesis::z_quantile") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::ci_mean") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::ci_two_means") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hypothesis::ci_proportion") == 1) { return 0; }
     if (_par_eq(fp, fl, "Normal::pdf") == 1) { return 0; }      # exp (M3 part a1)
     if (_par_eq(fp, fl, "Normal::cdf") == 1) { return 0; }      # downstream of the T1 Φ (ADR 009 as amended)
     if (_par_eq(fp, fl, "Normal::sample") == 1) { return 0; }   # Box–Muller: ln and cos

@@ -111,7 +111,13 @@ The feature sections below predate the port. New features land after 2.0.0 parit
     not cancel (M3 part c1);
   - Binomial's pmf is NaN at p = 5e-324 for k ≥ 1, where bd0's u overflows (M3 part c2);
   - MultivariateNormal's density loses digits with the covariance's condition number, 2×10⁻⁸ relative at κ ≈ 2×10⁸:
-    a refined solve (M3 part d2).
+    a refined solve (M3 part d2);
+  - `z_quantile` (Acklam and one Halley step) is within 0.5 ulp on 2,427 of 3,215 p below ½, but up to 387 ulp there
+    (near ½, where Φ(x) − p cancels) and up to 9.4×10⁶ ulp above ½ (p = 0.999999999999969: Φ's rounding next to 1
+    is most of the tail), against MPFR at 1,024 bits: a Halley step on 1 − Φ above ½, in double-double near ½ (M4
+    part b2; the T1 candidate of the plan's §12);
+  - `t_quantile` stops its bisection at 1e-12 relative, so it is up to 1.5×10⁶ ulp from the true quantile (p = 0.5005,
+    df = 29; 119 of 120 (p, df) beyond 1 ulp): a Newton step on the T1 CDF after the bisection (M4 part b2).
 
 ### Testing
 - [ ] Property-based tests via proptest or quickcheck

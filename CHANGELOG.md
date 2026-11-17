@@ -922,6 +922,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     aarch64), and `total_cmp` sorted PCA's components by it, so aarch64 ordered one golden row's components otherwise.
     Every NaN eigenvalue is now x86's default NaN before the sort; the model checks on every row that the rule gives
     1.3.0's x86 order.
+- **M4 part b1: the hypothesis tests** (port plan §7; `src/hypothesis.cyr`). 1.3.0's `t_test_one_sample`,
+  `t_test_two_sample` (Welch), `chi_squared_test` (exact p), `one_way_anova`, `ks_two_sample` (ties) and
+  `ks_one_sample` (the CDF a function pointer and a context, D7), with `TestResult` (its name borrowed, or owned when
+  read: `_drop`, Clone), `AnovaResult` and `KsResult`, their codecs and Debug, all in Rust's operation order. A new
+  golden module, `hypothesis`, 1,202 rows (seeded, constant, tie- and ±0-heavy, overflowing and non-finite samples;
+  every refusal; levels at and beside (0, 1)'s ends; five CDFs for the one-sample KS test), with 382 codec rows and 60
+  Debug rows. Every row passes at 0 ulp on x86_64 ELF, PE and aarch64. **More accurate than 1.3.0:** the p-values come
+  from the T1 incomplete beta and gamma (ADR 009), so `hypothesis.ref.tsv` holds 391 rows where 1.3.0's p-value moves:
+  by up to 391 ulp for the one-sample t-test, 165 for Welch's, 219 for the χ² test, 100 for ANOVA, and 53 for the
+  one-sample KS test (through Φ). Seven mutants fail 2 to 422 rows each (an eighth, `reject` at p = α exactly, has no
+  input that reaches it). `tests/hypothesis.tcyr` (81 checks) carries 1.3.0's tests over. A String field's Debug
+  escapes ASCII as Rust does (ADR 007 row 15, amended).
+- **M4 part b2: the confidence intervals and the quantiles** (port plan §7; `src/hypothesis.cyr`). 1.3.0's `ci_mean`,
+  `ci_two_means` (Welch's df), `ci_proportion` (Wald, clipped; successes and n u64 words) and `ConfidenceInterval`
+  with its codec and Debug, on the private `t_quantile` (bisection on the T1 Student-t CDF) and `z_quantile` (Acklam
+  and a Halley step on the T1 Φ). 395 more `hypothesis` rows (the quantiles at their region edges and specials, the
+  intervals over the samples and levels, the proportions to u64::MAX), 97 codec rows and 20 Debug rows; every row passes
+  at 0 ulp on x86_64 ELF, PE and aarch64, 15 where T1's or a correctly rounded value moves 1.3.0's. Three mutants fail
+  2 to 141 rows each (a fourth, Acklam's region at p = 0.02425 exactly, is equivalent after the Halley step).
+  `tests/hypothesis.tcyr` gains 1.3.0's CI and quantile tests (113 checks). **Measured against MPFR** (1,024 bits; the
+  plan's §3.4 row): `z_quantile` is within 0.5 ulp on 2,427 of 3,215 p below ½ but up to 387 ulp near ½ and 9.4×10⁶ ulp
+  above ½, and `t_quantile`'s bisection stops at 1e-12 relative (up to 1.5×10⁶ ulp): 1.3.0's algorithms, kept for
+  parity, and recorded on the roadmap as T1 candidates after 2.0.0.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

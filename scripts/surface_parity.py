@@ -26,7 +26,7 @@ SRC = ROOT / "src"
 PORTED = ["error", "rng", "combinatorics", "bridge", "distribution"]   # distribution: M3's gate (part e)
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {"descriptive": "M4"}
+PARTIAL = {"descriptive": "M4", "hypothesis": "M4"}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
@@ -60,6 +60,37 @@ SURFACE = {
     "descriptive::KernelDensity.evaluate": ["method PmnKernelDensity.evaluate"],
     "descriptive::KernelDensity.evaluate_grid": ["method PmnKernelDensity.evaluate_grid"],
     "descriptive::correlation_matrix": ["fn pmn_correlation_matrix"],
+    # hypothesis.rs's tests (M4 part b1; D7's callback, ADR 007 rows 1, 14 and 15)
+    "hypothesis::TestResult": ["struct PmnTestResult", "fn PmnTestResult_drop"],
+    "hypothesis::TestResult#Clone": ["fn PmnTestResult_clone"],
+    "hypothesis::TestResult#Debug": ["method PmnTestResult.debug"],
+    "hypothesis::TestResult#Serialize": ["method PmnTestResult.to_json"],
+    "hypothesis::TestResult#Deserialize": ["fn PmnTestResult_from_json"],
+    "hypothesis::AnovaResult": ["struct PmnAnovaResult"],
+    "hypothesis::AnovaResult#Clone": "a plain struct: copying it clones it",
+    "hypothesis::AnovaResult#Debug": ["method PmnAnovaResult.debug"],
+    "hypothesis::AnovaResult#Serialize": ["method PmnAnovaResult.to_json"],
+    "hypothesis::AnovaResult#Deserialize": ["fn PmnAnovaResult_from_json"],
+    "hypothesis::KsResult": ["struct PmnKsResult"],
+    "hypothesis::KsResult#Clone": "a plain struct: copying it clones it",
+    "hypothesis::KsResult#Debug": ["method PmnKsResult.debug"],
+    "hypothesis::KsResult#Serialize": ["method PmnKsResult.to_json"],
+    "hypothesis::KsResult#Deserialize": ["fn PmnKsResult_from_json"],
+    "hypothesis::t_test_one_sample": ["fn pmn_t_test_one_sample"],
+    "hypothesis::t_test_two_sample": ["fn pmn_t_test_two_sample", "fn _pmn_welch"],
+    "hypothesis::chi_squared_test": ["fn pmn_chi_squared_test"],
+    "hypothesis::one_way_anova": ["fn pmn_one_way_anova"],
+    "hypothesis::ks_two_sample": ["fn pmn_ks_two_sample", "fn _pmn_kolmogorov_sf"],
+    "hypothesis::ks_one_sample": ["fn pmn_ks_one_sample"],
+    # hypothesis.rs's intervals (M4 part b2)
+    "hypothesis::ConfidenceInterval": ["struct PmnConfidenceInterval"],
+    "hypothesis::ConfidenceInterval#Clone": "a plain struct: copying it clones it",
+    "hypothesis::ConfidenceInterval#Debug": ["method PmnConfidenceInterval.debug"],
+    "hypothesis::ConfidenceInterval#Serialize": ["method PmnConfidenceInterval.to_json"],
+    "hypothesis::ConfidenceInterval#Deserialize": ["fn PmnConfidenceInterval_from_json"],
+    "hypothesis::ci_mean": ["fn pmn_ci_mean", "fn _pmn_t_quantile"],
+    "hypothesis::ci_two_means": ["fn pmn_ci_two_means"],
+    "hypothesis::ci_proportion": ["fn pmn_ci_proportion", "fn _pmn_z_quantile"],
     # descriptive.rs's PCA (M4 part a3; hisab's Jacobi, ledger L6)
     "descriptive::pca": ["fn pmn_pca", "fn _pmn_eigen_symmetric"],
     "descriptive::PcaResult": ["struct PmnPcaResult", "fn PmnPcaResult_drop", "method PmnPcaResult.component",

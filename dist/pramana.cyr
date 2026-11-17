@@ -15598,3 +15598,1191 @@ fn PmnPcaResult_from_json(out: *PmnPcaResult, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
     return _pmn_json_decode(buf, len, &_pmn_pca_from_root, out);
 }
+
+# --- hypothesis.cyr ---
+
+# hypothesis.cyr — Rust 1.3.0's hypothesis tests (src/hypothesis.rs; port plan §4.1, D5, D7, D12; M4 part b1):
+# `TestResult`, `AnovaResult` and `KsResult`, and `t_test_one_sample`, `t_test_two_sample`, `chi_squared_test`,
+# `one_way_anova`, `ks_two_sample` and `ks_one_sample`, with each type's serde_json codec and derived Debug.
+#
+# Every test is 1.3.0's in its operation order, with its refusals in Rust's order: a significance level outside (0, 1)
+# or NaN is PMN_ERR_INVALID_PARAMETER, non-finite data PMN_ERR_INVALID_SAMPLE. The p-values come from the T1 special
+# functions (ADR 009): Student's t through the incomplete beta (src/dist_gamma.cyr's tails), the χ² test's exact upper
+# tail through the incomplete gamma, ANOVA's through the F survival, and the KS tests' through 1.3.0's Kolmogorov series
+# on the correctly rounded exp. The KS tests sort copies of their samples stably (ADR 007 row 14: Rust's unstable sort
+# can only differ in which of −0 and +0 comes first, which the ECDFs can't see), in pool scratch. A slice is a pointer
+# and a count; ANOVA's groups are 16-byte records (a pointer, then a count), Rust's `&[&[f64]]`; the one-sample KS
+# test's CDF is a function pointer and a context word, called as `callptr(cdf, ctx, x)` (D7).
+#
+# The results live in caller storage. `TestResult`'s `test_name` is a borrowed static string when a test writes it and
+# an owned copy when a document is read; `PmnTestResult_drop` frees a copy (and is a no-op otherwise).
+
+# ── TestResult ─────────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `TestResult`: the test's name (name, name_len bytes of UTF-8; owned 1 when it is a copy to free), the
+# statistic, the p-value, the degrees of freedom, the level used and the verdict (reject, 0 or 1).
+struct PmnTestResult {
+    name;
+    name_len;
+    owned;
+    statistic: f64;
+    p_value: f64;
+    degrees_of_freedom: f64;
+    reject_at_alpha: f64;
+    reject;
+}
+
+# Fills a TestResult from a test (its name a static C string).
+fn _pmn_test_fill(out: *PmnTestResult, name, stat: f64, p: f64, df: f64, alpha: f64): i64 {
+    out.name = name;
+    out.name_len = strlen(name);
+    out.owned = 0;
+    out.statistic = stat;
+    out.p_value = p;
+    out.degrees_of_freedom = df;
+    out.reject_at_alpha = alpha;
+    out.reject = 0;
+    if (p < alpha) { out.reject = 1; }
+    return PMN_ERR_NONE;
+}
+
+# Frees an owned name (a decoded one) and clears the result. PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER for a null r.
+fn PmnTestResult_drop(r: *PmnTestResult): i64 {
+    if (r == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (r.owned == 1 && r.name != 0) { fl_free(r.name); }
+    r.name = 0;
+    r.name_len = 0;
+    r.owned = 0;
+    return PMN_ERR_NONE;
+}
+
+# Rust's derived Clone: out gets src's fields and its own copy of the name when src owns one. PMN_ERR_NONE;
+# PMN_ERR_INVALID_PARAMETER for a null buffer or out overlapping src; PMN_ERR_OUT_OF_MEMORY when the copy can't be had.
+#must_use
+fn PmnTestResult_clone(out: *PmnTestResult, src: *PmnTestResult): i64 {
+    if (out == 0 || src == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 64, src, 64) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var name = src.name;
+    if (src.owned == 1) {
+        name = fl_alloc(src.name_len + 1);
+        if (name == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+        memcpy(name, src.name, src.name_len);
+    }
+    var st: f64 = src.statistic;
+    var p: f64 = src.p_value;
+    var df: f64 = src.degrees_of_freedom;
+    var al: f64 = src.reject_at_alpha;
+    out.name = name;
+    out.name_len = src.name_len;
+    out.owned = src.owned;
+    out.statistic = st;
+    out.p_value = p;
+    out.degrees_of_freedom = df;
+    out.reject_at_alpha = al;
+    out.reject = src.reject;
+    return PMN_ERR_NONE;
+}
+
+# Appends the n bytes of UTF-8 at p as Rust's Debug of a str: quoted, `\0`, `\t`, `\r`, `\n`, `\\` and `\"` escaped,
+# the other ASCII controls and DEL as `\u{x}` (lowercase hex, no padding), every other byte as it is. Rust also escapes
+# the non-ASCII characters its Unicode tables call unprintable or grapheme-extending; this writes those as they are
+# (ADR 007 row 15, amended: no golden row holds one).
+#must_use
+fn _pmn_dbg_str(sb, p, n): i64 {
+    var e = _pmn_json_w_lit(sb, "\"");
+    var hex = "0123456789abcdef";
+    var i = 0;
+    while (e == PMN_ERR_NONE && i < n) {
+        var c = load8(p + i);
+        if (c == 0) {
+            e = _pmn_json_w_lit(sb, "\\0");
+        } elif (c == 9) {
+            e = _pmn_json_w_lit(sb, "\\t");
+        } elif (c == 13) {
+            e = _pmn_json_w_lit(sb, "\\r");
+        } elif (c == 10) {
+            e = _pmn_json_w_lit(sb, "\\n");
+        } elif (c == 92) {
+            e = _pmn_json_w_lit(sb, "\\\\");
+        } elif (c == 34) {
+            e = _pmn_json_w_lit(sb, "\\\"");
+        } elif (c < 32 || c == 127) {
+            e = _pmn_json_w_lit(sb, "\\u{");
+            if (e == PMN_ERR_NONE && c >= 16) { e = _pmn_json_w_bytes(sb, hex + (c >> 4), 1); }
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, hex + (c & 15), 1); }
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        } else {
+            e = _pmn_json_w_bytes(sb, p + i, 1);
+        }
+        i = i + 1;
+    }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "\""); }
+    return e;
+}
+
+# A bool's Debug and JSON text alike: `true` or `false`.
+#must_use
+fn _pmn_w_bool(sb, b): i64 {
+    if (b == 1) { return _pmn_json_w_lit(sb, "true"); }
+    return _pmn_json_w_lit(sb, "false");
+}
+
+impl PmnTestResult {
+    # Appends Rust's derived Debug (D12): `TestResult { test_name: "..", statistic: .., p_value: ..,
+    # degrees_of_freedom: .., reject_at_alpha: .., reject: false }`, or the pretty form (alternate 1).
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var st: f64 = self.statistic;
+        var p: f64 = self.p_value;
+        var df: f64 = self.degrees_of_freedom;
+        var al: f64 = self.reject_at_alpha;
+        var e = _pmn_dbg_open(sb, "TestResult", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "test_name", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_str(sb, self.name, self.name_len); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "statistic", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, st); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "p_value", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, p); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "degrees_of_freedom", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, df); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "reject_at_alpha", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, al); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "reject", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_w_bool(sb, self.reject); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"test_name":"..","statistic":..,"p_value":..,"degrees_of_freedom":..,
+    # "reject_at_alpha":..,"reject":false}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var st: f64 = self.statistic;
+        var p: f64 = self.p_value;
+        var df: f64 = self.degrees_of_freedom;
+        var al: f64 = self.reject_at_alpha;
+        var e = _pmn_json_w_key(sb, "test_name", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_str(sb, self.name, self.name_len); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "statistic", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, st); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "p_value", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, p); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "degrees_of_freedom", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, df); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "reject_at_alpha", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, al); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "reject", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_w_bool(sb, self.reject); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# Reads n f64 fields of a struct node (names[0, n)) into vals; PMN_ERR_DESERIALIZE for any that isn't one.
+fn _pmn_hyp_f64s(slots, from, n, vals): i64 {
+    for (var i = 0; i < n; i = i + 1) {
+        if (_pmn_json_f64(load64(slots + (from + i) * 8), vals + i * 8) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    }
+    return PMN_ERR_NONE;
+}
+
+fn _pmn_test_from_root(root, out: *PmnTestResult): i64 {
+    var names[48];
+    store64(&names, "test_name");
+    store64(&names + 8, "statistic");
+    store64(&names + 16, "p_value");
+    store64(&names + 24, "degrees_of_freedom");
+    store64(&names + 32, "reject_at_alpha");
+    store64(&names + 40, "reject");
+    var sl[48];
+    var e = _pmn_json_struct(root, &names, 6, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var s[16];
+    if (_pmn_json_str(load64(&sl), &s) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var v[32];
+    if (_pmn_hyp_f64s(&sl, 1, 4, &v) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var b[8];
+    if (_pmn_json_bool(load64(&sl + 40), &b) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var n = load64(&s + 8);
+    var name = fl_alloc(n + 1);
+    if (name == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    memcpy(name, load64(&s), n);
+    store8(name + n, 0);
+    var st: f64 = load64(&v);
+    var p: f64 = load64(&v + 8);
+    var df: f64 = load64(&v + 16);
+    var al: f64 = load64(&v + 24);
+    out.name = name;
+    out.name_len = n;
+    out.owned = 1;
+    out.statistic = st;
+    out.p_value = p;
+    out.degrees_of_freedom = df;
+    out.reject_at_alpha = al;
+    out.reject = load64(&b);
+    return PMN_ERR_NONE;
+}
+
+# Reads a TestResult document, buf[0, len), into out (caller storage; its name an owned copy: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY. The derive validates nothing.
+#must_use
+fn PmnTestResult_from_json(out: *PmnTestResult, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_test_from_root, out);
+}
+
+# ── AnovaResult and KsResult ──────────────────────────────────────────────────────────────────────
+
+# Rust's `AnovaResult`: the sums of squares, the degrees of freedom (usizes), the mean squares, F, its p-value, the
+# level used and the verdict.
+struct PmnAnovaResult {
+    ss_between: f64;
+    ss_within: f64;
+    ss_total: f64;
+    df_between;
+    df_within;
+    ms_between: f64;
+    ms_within: f64;
+    f_statistic: f64;
+    p_value: f64;
+    reject_at_alpha: f64;
+    reject;
+}
+
+# Rust's `KsResult`: D, its p-value, the level used and the verdict.
+struct PmnKsResult {
+    statistic: f64;
+    p_value: f64;
+    reject_at_alpha: f64;
+    reject;
+}
+
+# An f64 field's Debug item: `name: value` (with `, ` or the pretty form's indentation, as _pmn_dbg_item writes it).
+#must_use
+fn _pmn_dbg_f64_field(sb, name, first, x: f64, alternate): i64 {
+    var e = _pmn_dbg_item(sb, name, first, alternate);
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, x); }
+    if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+    return e;
+}
+
+# An f64 field's JSON member: `"name":value` (after `{` or `,`).
+#must_use
+fn _pmn_json_f64_field(sb, name, first, x: f64): i64 {
+    var e = _pmn_json_w_key(sb, name, first);
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, x); }
+    return e;
+}
+
+impl PmnAnovaResult {
+    # Appends Rust's derived Debug (D12), `AnovaResult { ss_between: .., …, reject: false }`, or the pretty form.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "AnovaResult", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "ss_between", 1, self.ss_between, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "ss_within", 0, self.ss_within, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "ss_total", 0, self.ss_total, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "df_between", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.df_between); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "df_within", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.df_within); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "ms_between", 0, self.ms_between, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "ms_within", 0, self.ms_within, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "f_statistic", 0, self.f_statistic, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "p_value", 0, self.p_value, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "reject_at_alpha", 0, self.reject_at_alpha, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "reject", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_w_bool(sb, self.reject); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text of every field, in declaration order.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_f64_field(sb, "ss_between", 1, self.ss_between);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "ss_within", 0, self.ss_within); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "ss_total", 0, self.ss_total); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "df_between", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.df_between); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "df_within", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.df_within); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "ms_between", 0, self.ms_between); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "ms_within", 0, self.ms_within); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "f_statistic", 0, self.f_statistic); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "p_value", 0, self.p_value); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "reject_at_alpha", 0, self.reject_at_alpha); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "reject", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_w_bool(sb, self.reject); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_anova_from_root(root, out: *PmnAnovaResult): i64 {
+    var names[88];
+    store64(&names, "ss_between");
+    store64(&names + 8, "ss_within");
+    store64(&names + 16, "ss_total");
+    store64(&names + 24, "df_between");
+    store64(&names + 32, "df_within");
+    store64(&names + 40, "ms_between");
+    store64(&names + 48, "ms_within");
+    store64(&names + 56, "f_statistic");
+    store64(&names + 64, "p_value");
+    store64(&names + 72, "reject_at_alpha");
+    store64(&names + 80, "reject");
+    var sl[88];
+    var e = _pmn_json_struct(root, &names, 11, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var a[24];
+    var w[16];
+    var m[40];
+    var b[8];
+    if (_pmn_hyp_f64s(&sl, 0, 3, &a) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    if (_pmn_json_u64(load64(&sl + 24), &w) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    if (_pmn_json_u64(load64(&sl + 32), &w + 8) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    if (_pmn_hyp_f64s(&sl, 5, 5, &m) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    if (_pmn_json_bool(load64(&sl + 80), &b) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var x0: f64 = load64(&a);
+    var x1: f64 = load64(&a + 8);
+    var x2: f64 = load64(&a + 16);
+    var y0: f64 = load64(&m);
+    var y1: f64 = load64(&m + 8);
+    var y2: f64 = load64(&m + 16);
+    var y3: f64 = load64(&m + 24);
+    var y4: f64 = load64(&m + 32);
+    out.ss_between = x0;
+    out.ss_within = x1;
+    out.ss_total = x2;
+    out.df_between = load64(&w);
+    out.df_within = load64(&w + 8);
+    out.ms_between = y0;
+    out.ms_within = y1;
+    out.f_statistic = y2;
+    out.p_value = y3;
+    out.reject_at_alpha = y4;
+    out.reject = load64(&b);
+    return PMN_ERR_NONE;
+}
+
+# Reads an AnovaResult document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any
+# document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnAnovaResult_from_json(out: *PmnAnovaResult, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_anova_from_root, out);
+}
+
+impl PmnKsResult {
+    # Appends Rust's derived Debug (D12), `KsResult { statistic: .., p_value: .., reject_at_alpha: .., reject: false }`,
+    # or the pretty form.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "KsResult", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "statistic", 1, self.statistic, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "p_value", 0, self.p_value, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "reject_at_alpha", 0, self.reject_at_alpha, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "reject", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_w_bool(sb, self.reject); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"statistic":..,"p_value":..,"reject_at_alpha":..,"reject":false}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_f64_field(sb, "statistic", 1, self.statistic);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "p_value", 0, self.p_value); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "reject_at_alpha", 0, self.reject_at_alpha); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "reject", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_w_bool(sb, self.reject); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_ks_from_root(root, out: *PmnKsResult): i64 {
+    var names[32];
+    store64(&names, "statistic");
+    store64(&names + 8, "p_value");
+    store64(&names + 16, "reject_at_alpha");
+    store64(&names + 24, "reject");
+    var sl[32];
+    var e = _pmn_json_struct(root, &names, 4, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var v[24];
+    var b[8];
+    if (_pmn_hyp_f64s(&sl, 0, 3, &v) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    if (_pmn_json_bool(load64(&sl + 24), &b) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var s: f64 = load64(&v);
+    var p: f64 = load64(&v + 8);
+    var a: f64 = load64(&v + 16);
+    out.statistic = s;
+    out.p_value = p;
+    out.reject_at_alpha = a;
+    out.reject = load64(&b);
+    return PMN_ERR_NONE;
+}
+
+# Reads a KsResult document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document
+# serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnKsResult_from_json(out: *PmnKsResult, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_ks_from_root, out);
+}
+
+# ── the shared checks ─────────────────────────────────────────────────────────────────────────────
+
+# Rust's `validate_alpha` (and `validate_confidence`): PMN_ERR_INVALID_PARAMETER unless 0 < x < 1 (NaN refused).
+#must_use
+#pure
+fn _pmn_hyp_unit_open(x: f64): i64 {
+    if (x > 0.0 && x < 1.0) { return PMN_ERR_NONE; }
+    return PMN_ERR_INVALID_PARAMETER;
+}
+
+# 1 for a slice Rust could be given: n ≥ 0, and a pointer when n > 0.
+#must_use
+#pure
+fn _pmn_hyp_slice_ok(p, n): i64 {
+    if (n < 0 || (p == 0 && n > 0)) { return 0; }
+    return 1;
+}
+
+# Rust's `mean_and_sample_variance(data)` (n ≥ 2): out[0] the mean, out[1] Σ (x − m)² / (n − 1);
+# PMN_ERR_INVALID_SAMPLE unless both are finite (`require_finite_summary`).
+#must_use
+fn _pmn_hyp_msv(data, n, out): i64 {
+    var s: f64 = pmn_sum(data, n);
+    var nf: f64 = f64_from(n);
+    var m: f64 = s / nf;
+    var ss: f64 = _pmn_desc_ss(data, n, m);
+    var nm1: f64 = nf - 1.0;
+    var v: f64 = ss / nm1;
+    if (_pmn_is_finite(m) == 0 || _pmn_is_finite(v) == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    store64(out, m);
+    store64(out + 8, v);
+    return PMN_ERR_NONE;
+}
+
+# ── the t-tests and the χ² test ──────────────────────────────────────────────────────────────────
+
+# Rust's `t_test_one_sample(data, mu_0, alpha)`: t = (m − μ₀)/√(s²/n) on n − 1 degrees of freedom, its two-tailed p.
+# PMN_ERR_INVALID_PARAMETER for alpha outside (0, 1) or a non-finite μ₀; PMN_ERR_INVALID_SAMPLE for fewer than 2
+# observations, a non-finite mean or variance, or zero variance; PMN_ERR_INVALID_PARAMETER first for a null out or an
+# invalid slice.
+#must_use
+fn pmn_t_test_one_sample(out: *PmnTestResult, data, n, mu_0: f64, alpha: f64): i64 {
+    if (out == 0 || _pmn_hyp_slice_ok(data, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_hyp_unit_open(alpha) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_is_finite(mu_0) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    var nf: f64 = f64_from(n);
+    var mv[16];
+    var e = _pmn_hyp_msv(data, n, &mv);
+    if (e != PMN_ERR_NONE) { return e; }
+    var m: f64 = load64(&mv);
+    var sv: f64 = load64(&mv + 8);
+    if (sv == 0.0) { return PMN_ERR_INVALID_SAMPLE; }
+    var q: f64 = sv / nf;
+    var se: f64 = f64_sqrt(q);
+    var dm: f64 = m - mu_0;
+    var t: f64 = dm / se;
+    var df: f64 = nf - 1.0;
+    var p: f64 = _pmn_student_t_two_tailed(t, df);
+    return _pmn_test_fill(out, "one-sample t-test", t, p, df, alpha);
+}
+
+# Rust's private `welch_stats(a, b)` into out: the difference of means, its standard error and the
+# Welch–Satterthwaite degrees of freedom (1 when the denominator is 0). PMN_ERR_INVALID_SAMPLE for fewer than 2
+# observations in either sample, a non-finite summary, or zero variance in both.
+#must_use
+fn _pmn_welch(a, na, b, nb, out): i64 {
+    if (na < 2 || nb < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    var n1: f64 = f64_from(na);
+    var n2: f64 = f64_from(nb);
+    var s1[16];
+    var s2[16];
+    var e = _pmn_hyp_msv(a, na, &s1);
+    if (e != PMN_ERR_NONE) { return e; }
+    e = _pmn_hyp_msv(b, nb, &s2);
+    if (e != PMN_ERR_NONE) { return e; }
+    var m1: f64 = load64(&s1);
+    var var1: f64 = load64(&s1 + 8);
+    var m2: f64 = load64(&s2);
+    var var2: f64 = load64(&s2 + 8);
+    if (var1 == 0.0 && var2 == 0.0) { return PMN_ERR_INVALID_SAMPLE; }
+    var v1: f64 = var1 / n1;
+    var v2: f64 = var2 / n2;
+    var vs: f64 = v1 + v2;
+    var se: f64 = f64_sqrt(vs);
+    var num: f64 = _pmn_powi(vs, 2);
+    var p1: f64 = _pmn_powi(v1, 2);
+    var p2: f64 = _pmn_powi(v2, 2);
+    var d1: f64 = n1 - 1.0;
+    var d2: f64 = n2 - 1.0;
+    var q1: f64 = p1 / d1;
+    var q2: f64 = p2 / d2;
+    var den: f64 = q1 + q2;
+    var df: f64 = 1.0;
+    if (den != 0.0) { df = num / den; }
+    var diff: f64 = m1 - m2;
+    store64(out, diff);
+    store64(out + 8, se);
+    store64(out + 16, df);
+    return PMN_ERR_NONE;
+}
+
+# Rust's `t_test_two_sample(a, b, alpha)`: Welch's t, (m_a − m_b)/se, two-tailed on the Welch–Satterthwaite df.
+# PMN_ERR_INVALID_PARAMETER for alpha outside (0, 1); then welch_stats' refusals; PMN_ERR_INVALID_PARAMETER first for a
+# null out or an invalid slice.
+#must_use
+fn pmn_t_test_two_sample(out: *PmnTestResult, a, na, b, nb, alpha: f64): i64 {
+    if (out == 0 || _pmn_hyp_slice_ok(a, na) == 0 || _pmn_hyp_slice_ok(b, nb) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (_pmn_hyp_unit_open(alpha) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    var w[24];
+    var e = _pmn_welch(a, na, b, nb, &w);
+    if (e != PMN_ERR_NONE) { return e; }
+    var diff: f64 = load64(&w);
+    var se: f64 = load64(&w + 8);
+    var df: f64 = load64(&w + 16);
+    var t: f64 = diff / se;
+    var p: f64 = _pmn_student_t_two_tailed(t, df);
+    return _pmn_test_fill(out, "two-sample Welch t-test", t, p, df, alpha);
+}
+
+# Rust's `chi_squared_test(observed, expected, alpha)`: χ² = Σ (o − e)²/e from −0.0, its exact upper tail Q((k − 1)/2,
+# χ²/2) on the T1 incomplete gamma (1 when k − 1 = 0). PMN_ERR_INVALID_PARAMETER for alpha outside (0, 1);
+# PMN_ERR_DIMENSION_MISMATCH for lengths that differ; PMN_ERR_INVALID_SAMPLE for none, an expected frequency that isn't
+# positive and finite, or an observed one that isn't non-negative and finite, in Rust's order.
+#must_use
+fn pmn_chi_squared_test(out: *PmnTestResult, observed, no, expected, ne, alpha: f64): i64 {
+    if (out == 0 || _pmn_hyp_slice_ok(observed, no) == 0 || _pmn_hyp_slice_ok(expected, ne) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (_pmn_hyp_unit_open(alpha) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    if (no != ne) { return PMN_ERR_DIMENSION_MISMATCH; }
+    if (no == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    for (var i = 0; i < ne; i = i + 1) {
+        var x: f64 = load64(expected + i * 8);
+        if ((_pmn_is_finite(x) & (x > 0.0)) == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    }
+    for (var j = 0; j < no; j = j + 1) {
+        var y: f64 = load64(observed + j * 8);
+        if ((_pmn_is_finite(y) & (y >= 0.0)) == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    }
+    var chi2: f64 = -0.0;
+    for (var k = 0; k < no; k = k + 1) {
+        var o: f64 = load64(observed + k * 8);
+        var ex: f64 = load64(expected + k * 8);
+        var d: f64 = o - ex;
+        var dd: f64 = d * d;
+        var term: f64 = dd / ex;
+        chi2 = chi2 + term;
+    }
+    var df: f64 = f64_from(no - 1);
+    var p: f64 = 1.0;
+    if (df > 0.0) {
+        var a2: f64 = df / 2.0;
+        var x2: f64 = chi2 / 2.0;
+        p = _pmn_regularized_upper_incomplete_gamma(a2, x2);
+    }
+    return _pmn_test_fill(out, "chi-squared test", chi2, p, df, alpha);
+}
+
+# ── ANOVA ─────────────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `one_way_anova(groups, alpha)`, groups k 16-byte records (a pointer, then a count): the sums of squares from
+# the grand mean (summed from −0.0 over every observation in order) and each group's mean, the accumulators from +0.0
+# as written; F = MS_between / MS_within (∞ when MS_within is 0), its p-value the F survival clamped to [0, 1], into
+# out.
+# PMN_ERR_INVALID_PARAMETER for alpha outside (0, 1); PMN_ERR_INVALID_SAMPLE for fewer than 2 groups, an empty group,
+# no more observations than groups, a non-finite grand mean or sum of squares, or zero total variance, in Rust's
+# order; PMN_ERR_INVALID_PARAMETER first for a null buffer or an invalid group.
+#must_use
+fn pmn_one_way_anova(out: *PmnAnovaResult, groups, k, alpha: f64): i64 {
+    if (out == 0 || k < 0 || (groups == 0 && k > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var g = 0; g < k; g = g + 1) {
+        if (_pmn_hyp_slice_ok(load64(groups + g * 16), load64(groups + g * 16 + 8)) == 0) {
+            return PMN_ERR_INVALID_PARAMETER;
+        }
+    }
+    if (_pmn_hyp_unit_open(alpha) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    if (k < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    var total = 0;
+    for (var i = 0; i < k; i = i + 1) {
+        var ni = load64(groups + i * 16 + 8);
+        if (ni == 0) { return PMN_ERR_INVALID_SAMPLE; }
+        total = total + ni;
+    }
+    if (total <= k) { return PMN_ERR_INVALID_SAMPLE; }
+    var gs: f64 = -0.0;
+    for (var a = 0; a < k; a = a + 1) {
+        var ga = load64(groups + a * 16);
+        var na = load64(groups + a * 16 + 8);
+        for (var j = 0; j < na; j = j + 1) {
+            var x: f64 = load64(ga + j * 8);
+            gs = gs + x;
+        }
+    }
+    var tf: f64 = f64_from(total);
+    var gm: f64 = gs / tf;
+    var ssb: f64 = 0.0;
+    var ssw: f64 = 0.0;
+    for (var b = 0; b < k; b = b + 1) {
+        var gb = load64(groups + b * 16);
+        var nb = load64(groups + b * 16 + 8);
+        var nbf: f64 = f64_from(nb);
+        var sb: f64 = pmn_sum(gb, nb);
+        var gmean: f64 = sb / nbf;
+        var dg: f64 = gmean - gm;
+        var dg2: f64 = _pmn_powi(dg, 2);
+        var tb: f64 = nbf * dg2;
+        ssb = ssb + tb;
+        for (var q = 0; q < nb; q = q + 1) {
+            var y: f64 = load64(gb + q * 8);
+            var dy: f64 = y - gmean;
+            var dy2: f64 = _pmn_powi(dy, 2);
+            ssw = ssw + dy2;
+        }
+    }
+    var sst: f64 = ssb + ssw;
+    var fin = _pmn_is_finite(gm) & _pmn_is_finite(ssb) & _pmn_is_finite(ssw);
+    if (fin == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    if (sst == 0.0) { return PMN_ERR_INVALID_SAMPLE; }
+    var dfb = k - 1;
+    var dfw = total - k;
+    var dfbf: f64 = f64_from(dfb);
+    var dfwf: f64 = f64_from(dfw);
+    var msb: f64 = ssb / dfbf;
+    var msw: f64 = ssw / dfwf;
+    var fs: f64 = _PMN_F64_INFINITY;
+    if (msw > 0.0) { fs = msb / msw; }
+    var cdf, sf = _pmn_f_cdf_sf(fs, dfbf, dfwf);
+    var sfv: f64 = sf;
+    var p: f64 = _pmn_clamp(sfv, 0.0, 1.0);
+    out.ss_between = ssb;
+    out.ss_within = ssw;
+    out.ss_total = sst;
+    out.df_between = dfb;
+    out.df_within = dfw;
+    out.ms_between = msb;
+    out.ms_within = msw;
+    out.f_statistic = fs;
+    out.p_value = p;
+    out.reject_at_alpha = alpha;
+    out.reject = 0;
+    if (p < alpha) { out.reject = 1; }
+    return PMN_ERR_NONE;
+}
+
+# ── Kolmogorov–Smirnov ────────────────────────────────────────────────────────────────────────────
+
+# Rust's private `kolmogorov_sf(λ)`: Q(λ) = P(K > λ). For λ < 1.18, 1 − (√(2π)/λ)·(y + y⁹ + y²⁵ + y⁴⁹) with
+# y = e^(−π²/(8λ²)); otherwise 2(x − x⁴ + x⁹) with x = e^(−2λ²); each clamped to [0, 1]. NaN at NaN, 1 at λ ≤ 0.
+#must_use
+fn _pmn_kolmogorov_sf(lambda: f64): f64 {
+    if (lambda != lambda) { return lambda; }
+    if (lambda <= 0.0) { return 1.0; }
+    if (lambda < 1.18) {
+        var c8: f64 = _PMN_HYPOTHESIS_KOLMOGOROV_SF_PI2_OVER_8;
+        var s2p: f64 = _PMN_HYPOTHESIS_KOLMOGOROV_SF_SQRT_2PI;
+        var l2: f64 = lambda * lambda;
+        var nc: f64 = -c8;
+        var ar: f64 = nc / l2;
+        var y: f64 = _pmn_exp(ar);
+        var y9: f64 = _pmn_powi(y, 9);
+        var y25: f64 = _pmn_powi(y, 25);
+        var y49: f64 = _pmn_powi(y, 49);
+        var s1: f64 = y + y9;
+        var s2: f64 = s1 + y25;
+        var s3: f64 = s2 + y49;
+        var r: f64 = s2p / lambda;
+        var cdf: f64 = r * s3;
+        var om: f64 = 1.0 - cdf;
+        var c1: f64 = _pmn_clamp(om, 0.0, 1.0);
+        return c1;
+    }
+    var m2: f64 = -2.0 * lambda;
+    var e2: f64 = m2 * lambda;
+    var x: f64 = _pmn_exp(e2);
+    var x4: f64 = _pmn_powi(x, 4);
+    var x9: f64 = _pmn_powi(x, 9);
+    var t1: f64 = x - x4;
+    var t2: f64 = t1 + x9;
+    var tw: f64 = 2.0 * t2;
+    var c2: f64 = _pmn_clamp(tw, 0.0, 1.0);
+    return c2;
+}
+
+# Rust's private `ks_pvalue(d, n_eff)`: Q_KS((√n + 0.12 + 0.11/√n)·d), Stephens' correction; 1 for d ≤ 0.
+#must_use
+fn _pmn_ks_pvalue(d: f64, n_eff: f64): f64 {
+    if (d <= 0.0) { return 1.0; }
+    var sn: f64 = f64_sqrt(n_eff);
+    var a: f64 = sn + 0.12;
+    var b: f64 = 0.11 / sn;
+    var c: f64 = a + b;
+    var l: f64 = c * d;
+    var r: f64 = _pmn_kolmogorov_sf(l);
+    return r;
+}
+
+# Rust's `sorted_finite(data)`: a pool copy of data[0, n) sorted ascending (stably, ADR 007 row 14), into (copy, slot)
+# for _pmn_scratch_give; (0, −1) with PMN_ERR_INVALID_SAMPLE for a non-finite element, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn _pmn_sorted_finite(data, n, err): (i64, i64) {
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        if (_pmn_is_finite(x) == 0) {
+            store64(err, PMN_ERR_INVALID_SAMPLE);
+            return (0, 0 - 1);
+        }
+    }
+    var s, slot = _pmn_scratch_take(n * 16 + 8);
+    if (s == 0) {
+        store64(err, PMN_ERR_OUT_OF_MEMORY);
+        return (0, 0 - 1);
+    }
+    _pmn_copy_words(s, data, n);
+    _pmn_sort_f64(s, n, s + n * 8);
+    store64(err, PMN_ERR_NONE);
+    return (s, slot);
+}
+
+fn _pmn_ks_fill(out: *PmnKsResult, d: f64, p: f64, alpha: f64): i64 {
+    out.statistic = d;
+    out.p_value = p;
+    out.reject_at_alpha = alpha;
+    out.reject = 0;
+    if (p < alpha) { out.reject = 1; }
+    return PMN_ERR_NONE;
+}
+
+# Rust's `ks_two_sample(a, b, alpha)`: D, the largest |F_a − F_b| with both ECDFs advanced past every observation at
+# each next value (ties within and across the samples), and its p-value at n_eff = n_a·n_b/(n_a + n_b).
+# PMN_ERR_INVALID_PARAMETER for alpha outside (0, 1); PMN_ERR_INVALID_SAMPLE for an empty sample or a non-finite value;
+# PMN_ERR_INVALID_PARAMETER first for a null out or an invalid slice; PMN_ERR_OUT_OF_MEMORY when the sorted copies
+# can't be had.
+#must_use
+fn pmn_ks_two_sample(out: *PmnKsResult, a, na, b, nb, alpha: f64): i64 {
+    if (out == 0 || _pmn_hyp_slice_ok(a, na) == 0 || _pmn_hyp_slice_ok(b, nb) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (_pmn_hyp_unit_open(alpha) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    if (na == 0 || nb == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    var err[8];
+    var sa, slot_a = _pmn_sorted_finite(a, na, &err);
+    if (sa == 0) { return load64(&err); }
+    var sb, slot_b = _pmn_sorted_finite(b, nb, &err);
+    if (sb == 0) {
+        _pmn_scratch_give(sa, slot_a);
+        return load64(&err);
+    }
+    var naf: f64 = f64_from(na);
+    var nbf: f64 = f64_from(nb);
+    var dmax: f64 = 0.0;
+    var ia = 0;
+    var ib = 0;
+    while (ia < na && ib < nb) {
+        var xa: f64 = load64(sa + ia * 8);
+        var xb: f64 = load64(sb + ib * 8);
+        var v: f64 = _pmn_min(xa, xb);
+        var go = 1;
+        while (go == 1 && ia < na) {
+            var ya: f64 = load64(sa + ia * 8);
+            if (ya == v) { ia = ia + 1; } else { go = 0; }
+        }
+        go = 1;
+        while (go == 1 && ib < nb) {
+            var yb: f64 = load64(sb + ib * 8);
+            if (yb == v) { ib = ib + 1; } else { go = 0; }
+        }
+        var fa: f64 = f64_from(ia);
+        var fb: f64 = f64_from(ib);
+        var ea: f64 = fa / naf;
+        var eb: f64 = fb / nbf;
+        var de: f64 = ea - eb;
+        var ad: f64 = f64_abs(de);
+        dmax = _pmn_max(dmax, ad);
+    }
+    _pmn_scratch_give(sb, slot_b);
+    _pmn_scratch_give(sa, slot_a);
+    var pr: f64 = naf * nbf;
+    var sm: f64 = naf + nbf;
+    var neff: f64 = pr / sm;
+    var p: f64 = _pmn_ks_pvalue(dmax, neff);
+    return _pmn_ks_fill(out, dmax, p, alpha);
+}
+
+# Rust's `ks_one_sample(data, cdf, alpha)`: D, the largest gap between the ECDF (before and after each sorted point) and
+# the CDF there, clamped to [0, 1], and its p-value at n. The CDF is `callptr(cdf, ctx, x)`, returning an f64 (D7).
+# PMN_ERR_INVALID_PARAMETER for alpha outside (0, 1), then PMN_ERR_INVALID_SAMPLE for no data or a non-finite value,
+# then PMN_ERR_INVALID_PARAMETER where the CDF returns NaN; PMN_ERR_INVALID_PARAMETER first for a null out, cdf or an
+# invalid slice; PMN_ERR_OUT_OF_MEMORY when the sorted copy can't be had.
+#must_use
+fn pmn_ks_one_sample(out: *PmnKsResult, data, n, cdf, ctx, alpha: f64): i64 {
+    if (out == 0 || cdf == 0 || _pmn_hyp_slice_ok(data, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_hyp_unit_open(alpha) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    var err[8];
+    var s, slot = _pmn_sorted_finite(data, n, &err);
+    if (s == 0) { return load64(&err); }
+    var nf: f64 = f64_from(n);
+    var dmax: f64 = 0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(s + i * 8);
+        var th: f64 = callptr(cdf, ctx, x);
+        if (th != th) {
+            _pmn_scratch_give(s, slot);
+            return PMN_ERR_INVALID_PARAMETER;
+        }
+        var tc: f64 = _pmn_clamp(th, 0.0, 1.0);
+        var fi: f64 = f64_from(i);
+        var fi1: f64 = f64_from(i + 1);
+        var before: f64 = fi / nf;
+        var after: f64 = fi1 / nf;
+        var d1: f64 = after - tc;
+        var a1: f64 = f64_abs(d1);
+        dmax = _pmn_max(dmax, a1);
+        var d2: f64 = tc - before;
+        var a2: f64 = f64_abs(d2);
+        dmax = _pmn_max(dmax, a2);
+    }
+    _pmn_scratch_give(s, slot);
+    var p: f64 = _pmn_ks_pvalue(dmax, nf);
+    return _pmn_ks_fill(out, dmax, p, alpha);
+}
+
+# ── the quantiles and the confidence intervals (M4 part b2) ──────────────────────────────────────────
+
+# Rust's private `t_quantile(p, df)`: the Student-t quantile by bisection on the T1 CDF (src/dist_gamma.cyr's
+# `_pmn_student_t_cdf`), from [−100, 100] doubled out until it brackets p, then halved until hi − lo < 1e-12·max(|mid|,
+# 1), 200 steps at most. NaN at a NaN p or df, −∞ at p ≤ 0, ∞ at p ≥ 1, 0 within 1e-15 of ½. As 1.3.0, its accuracy is
+# the bisection's 1e-12 relative, not the CDF's.
+#must_use
+fn _pmn_t_quantile(p: f64, df: f64): f64 {
+    if (p != p || df != df) {
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+    if (p <= 0.0) {
+        var ninf: f64 = _PMN_F64_NEG_INFINITY;
+        return ninf;
+    }
+    if (p >= 1.0) {
+        var inf: f64 = _PMN_F64_INFINITY;
+        return inf;
+    }
+    var dp: f64 = p - 0.5;
+    if (f64_abs(dp) < 0.000000000000001) { return 0.0; }
+    var lo: f64 = -100.0;
+    var hi: f64 = 100.0;
+    var go = 1;
+    while (go == 1) {
+        var cl: f64 = _pmn_student_t_cdf(lo, df);
+        if (cl > p && _pmn_is_finite(lo) == 1) { lo = lo * 2.0; } else { go = 0; }
+    }
+    go = 1;
+    while (go == 1) {
+        var ch: f64 = _pmn_student_t_cdf(hi, df);
+        if (ch < p && _pmn_is_finite(hi) == 1) { hi = hi * 2.0; } else { go = 0; }
+    }
+    for (var i = 0; i < 200; i = i + 1) {
+        var s: f64 = lo + hi;
+        var mid: f64 = 0.5 * s;
+        var am: f64 = f64_abs(mid);
+        var sc: f64 = _pmn_max(am, 1.0);
+        var tol: f64 = 0.000000000001 * sc;
+        var w: f64 = hi - lo;
+        if (w < tol) { return mid; }
+        var cm: f64 = _pmn_student_t_cdf(mid, df);
+        if (cm < p) { lo = mid; } else { hi = mid; }
+    }
+    var s2: f64 = lo + hi;
+    var r: f64 = 0.5 * s2;
+    return r;
+}
+
+# Rust's private `z_quantile(p)`: Acklam's rational approximation (its three regions split at 0.02425 and 0.97575),
+# then one Halley step against the T1 Φ: x − u/(1 + x·u/2), u = (Φ(x) − p)/φ(x), when φ(x) is positive and finite.
+# NaN at NaN, −∞ at p ≤ 0, ∞ at p ≥ 1. The ln and exp are the correctly rounded ones (ADR 009).
+#must_use
+fn _pmn_z_quantile(p: f64): f64 {
+    if (p != p) { return p; }
+    if (p <= 0.0) {
+        var ninf: f64 = _PMN_F64_NEG_INFINITY;
+        return ninf;
+    }
+    if (p >= 1.0) {
+        var inf: f64 = _PMN_F64_INFINITY;
+        return inf;
+    }
+    var plow: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_P_LOW;
+    var phigh: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_P_HIGH;
+    var c0: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_C_0;
+    var c1: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_C_1;
+    var c2: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_C_2;
+    var c3: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_C_3;
+    var c4: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_C_4;
+    var c5: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_C_5;
+    var d0: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_D_0;
+    var d1: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_D_1;
+    var d2: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_D_2;
+    var d3: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_D_3;
+    var x: f64 = 0.0;
+    if (p < plow || p > phigh) {
+        var pt: f64 = p;
+        if (p > phigh) { pt = 1.0 - p; }
+        var lp: f64 = _pmn_ln(pt);
+        var m2: f64 = -2.0 * lp;
+        var q: f64 = f64_sqrt(m2);
+        var n1: f64 = c0 * q;
+        var n2: f64 = n1 + c1;
+        var n3: f64 = n2 * q;
+        var n4: f64 = n3 + c2;
+        var n5: f64 = n4 * q;
+        var n6: f64 = n5 + c3;
+        var n7: f64 = n6 * q;
+        var n8: f64 = n7 + c4;
+        var n9: f64 = n8 * q;
+        var num: f64 = n9 + c5;
+        var e1: f64 = d0 * q;
+        var e2: f64 = e1 + d1;
+        var e3: f64 = e2 * q;
+        var e4: f64 = e3 + d2;
+        var e5: f64 = e4 * q;
+        var e6: f64 = e5 + d3;
+        var e7: f64 = e6 * q;
+        var den: f64 = e7 + 1.0;
+        x = num / den;
+        if (p > phigh) {
+            var nn: f64 = -num;
+            x = nn / den;
+        }
+    } else {
+        var a0: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_A_0;
+        var a1: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_A_1;
+        var a2: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_A_2;
+        var a3: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_A_3;
+        var a4: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_A_4;
+        var a5: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_A_5;
+        var b0: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_B_0;
+        var b1: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_B_1;
+        var b2: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_B_2;
+        var b3: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_B_3;
+        var b4: f64 = _PMN_HYPOTHESIS_Z_QUANTILE_B_4;
+        var qc: f64 = p - 0.5;
+        var r: f64 = qc * qc;
+        var m1: f64 = a0 * r;
+        var m2c: f64 = m1 + a1;
+        var m3: f64 = m2c * r;
+        var m4: f64 = m3 + a2;
+        var m5: f64 = m4 * r;
+        var m6: f64 = m5 + a3;
+        var m7: f64 = m6 * r;
+        var m8: f64 = m7 + a4;
+        var m9: f64 = m8 * r;
+        var m10: f64 = m9 + a5;
+        var numc: f64 = m10 * qc;
+        var k1: f64 = b0 * r;
+        var k2: f64 = k1 + b1;
+        var k3: f64 = k2 * r;
+        var k4: f64 = k3 + b2;
+        var k5: f64 = k4 * r;
+        var k6: f64 = k5 + b3;
+        var k7: f64 = k6 * r;
+        var k8: f64 = k7 + b4;
+        var k9: f64 = k8 * r;
+        var denc: f64 = k9 + 1.0;
+        x = numc / denc;
+    }
+    var hx: f64 = -0.5 * x;
+    var ex: f64 = hx * x;
+    var e: f64 = _pmn_exp(ex);
+    var tau: f64 = _PMN_F64_TAU;
+    var st: f64 = f64_sqrt(tau);
+    var dens: f64 = e / st;
+    if (dens > 0.0 && _pmn_is_finite(dens) == 1) {
+        var phi: f64 = _pmn_normal_cdf(x);
+        var dif: f64 = phi - p;
+        var u: f64 = dif / dens;
+        var hu: f64 = 0.5 * x;
+        var xu: f64 = hu * u;
+        var de: f64 = 1.0 + xu;
+        var step: f64 = u / de;
+        var xn: f64 = x - step;
+        return xn;
+    }
+    return x;
+}
+
+# Rust's `ConfidenceInterval`: the bounds, the point estimate and the confidence level.
+struct PmnConfidenceInterval {
+    lower: f64;
+    upper: f64;
+    estimate: f64;
+    confidence_level: f64;
+}
+
+fn _pmn_ci_fill(out: *PmnConfidenceInterval, lo: f64, hi: f64, est: f64, cl: f64): i64 {
+    out.lower = lo;
+    out.upper = hi;
+    out.estimate = est;
+    out.confidence_level = cl;
+    return PMN_ERR_NONE;
+}
+
+impl PmnConfidenceInterval {
+    # Appends Rust's derived Debug (D12): `ConfidenceInterval { lower: .., upper: .., estimate: .., confidence_level:
+    # .. }`, or the pretty form.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "ConfidenceInterval", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "lower", 1, self.lower, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "upper", 0, self.upper, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "estimate", 0, self.estimate, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "confidence_level", 0, self.confidence_level, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"lower":..,"upper":..,"estimate":..,"confidence_level":..}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_f64_field(sb, "lower", 1, self.lower);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "upper", 0, self.upper); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "estimate", 0, self.estimate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "confidence_level", 0, self.confidence_level); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_ci_from_root(root, out: *PmnConfidenceInterval): i64 {
+    var names[32];
+    store64(&names, "lower");
+    store64(&names + 8, "upper");
+    store64(&names + 16, "estimate");
+    store64(&names + 24, "confidence_level");
+    var sl[32];
+    var e = _pmn_json_struct(root, &names, 4, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var v[32];
+    if (_pmn_hyp_f64s(&sl, 0, 4, &v) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var lo: f64 = load64(&v);
+    var hi: f64 = load64(&v + 8);
+    var es: f64 = load64(&v + 16);
+    var cl: f64 = load64(&v + 24);
+    return _pmn_ci_fill(out, lo, hi, es, cl);
+}
+
+# Reads a ConfidenceInterval document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for
+# any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY. The derive validates nothing.
+#must_use
+fn PmnConfidenceInterval_from_json(out: *PmnConfidenceInterval, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_ci_from_root, out);
+}
+
+# Rust's `ci_mean(data, confidence_level)`: m ± t·se, t the t quantile at 1 − α/2 on n − 1 df, se = √(s²/n).
+# PMN_ERR_INVALID_PARAMETER for a level outside (0, 1); PMN_ERR_INVALID_SAMPLE for fewer than 2 observations, a
+# non-finite mean or variance, or zero variance; PMN_ERR_INVALID_PARAMETER first for a null out or an invalid slice.
+#must_use
+fn pmn_ci_mean(out: *PmnConfidenceInterval, data, n, confidence_level: f64): i64 {
+    if (out == 0 || _pmn_hyp_slice_ok(data, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_hyp_unit_open(confidence_level) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    var nf: f64 = f64_from(n);
+    var mv[16];
+    var e = _pmn_hyp_msv(data, n, &mv);
+    if (e != PMN_ERR_NONE) { return e; }
+    var m: f64 = load64(&mv);
+    var sv: f64 = load64(&mv + 8);
+    if (sv == 0.0) { return PMN_ERR_INVALID_SAMPLE; }
+    var q: f64 = sv / nf;
+    var se: f64 = f64_sqrt(q);
+    var df: f64 = nf - 1.0;
+    var alpha: f64 = 1.0 - confidence_level;
+    var ha: f64 = alpha / 2.0;
+    var pq: f64 = 1.0 - ha;
+    var tc: f64 = _pmn_t_quantile(pq, df);
+    var margin: f64 = tc * se;
+    var lo: f64 = m - margin;
+    var hi: f64 = m + margin;
+    return _pmn_ci_fill(out, lo, hi, m, confidence_level);
+}
+
+# Rust's `ci_two_means(a, b, confidence_level)`: (m_a − m_b) ± t·se on Welch's df. PMN_ERR_INVALID_PARAMETER for a
+# level outside (0, 1); then welch_stats' refusals; PMN_ERR_INVALID_PARAMETER first for a null out or an invalid slice.
+#must_use
+fn pmn_ci_two_means(out: *PmnConfidenceInterval, a, na, b, nb, confidence_level: f64): i64 {
+    if (out == 0 || _pmn_hyp_slice_ok(a, na) == 0 || _pmn_hyp_slice_ok(b, nb) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (_pmn_hyp_unit_open(confidence_level) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    var w[24];
+    var e = _pmn_welch(a, na, b, nb, &w);
+    if (e != PMN_ERR_NONE) { return e; }
+    var diff: f64 = load64(&w);
+    var se: f64 = load64(&w + 8);
+    var df: f64 = load64(&w + 16);
+    var alpha: f64 = 1.0 - confidence_level;
+    var ha: f64 = alpha / 2.0;
+    var pq: f64 = 1.0 - ha;
+    var tc: f64 = _pmn_t_quantile(pq, df);
+    var margin: f64 = tc * se;
+    var lo: f64 = diff - margin;
+    var hi: f64 = diff + margin;
+    return _pmn_ci_fill(out, lo, hi, diff, confidence_level);
+}
+
+# Rust's `ci_proportion(successes, n, confidence_level)`, the Wald interval: p̂ ± z·√(p̂(1 − p̂)/n), clipped to [0, 1],
+# z the normal quantile at 1 − α/2; successes and n u64 words (unsigned). PMN_ERR_INVALID_PARAMETER for a level outside
+# (0, 1) or a null out; PMN_ERR_INVALID_SAMPLE for n = 0 or successes > n.
+#must_use
+fn pmn_ci_proportion(out: *PmnConfidenceInterval, successes, n, confidence_level: f64): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_hyp_unit_open(confidence_level) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    if (_pmn_u64_lt(n, successes) == 1) { return PMN_ERR_INVALID_SAMPLE; }
+    var sf: f64 = _pmn_u64_to_f64(successes);
+    var nf: f64 = _pmn_u64_to_f64(n);
+    var ph: f64 = sf / nf;
+    var alpha: f64 = 1.0 - confidence_level;
+    var ha: f64 = alpha / 2.0;
+    var pq: f64 = 1.0 - ha;
+    var z: f64 = _pmn_z_quantile(pq);
+    var om: f64 = 1.0 - ph;
+    var pp: f64 = ph * om;
+    var vq: f64 = pp / nf;
+    var se: f64 = f64_sqrt(vq);
+    var margin: f64 = z * se;
+    var l0: f64 = ph - margin;
+    var h0: f64 = ph + margin;
+    var lo: f64 = _pmn_max(l0, 0.0);
+    var hi: f64 = _pmn_min(h0, 1.0);
+    return _pmn_ci_fill(out, lo, hi, ph, confidence_level);
+}

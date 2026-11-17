@@ -107,4 +107,14 @@ def emit():
                      [g3.log_uniform(-10.0, 10.0) for _ in range(p)], [g3.unit() for _ in range(p)]))
     for c in pcas:
         both("debug::PcaResult", pca_toks(*c))
+    # M4 part b1: the three result types
+    g4 = Rng(0xA4093822299F31D0)
+    for k in range(10):
+        name = ["one-sample t-test", "two-sample Welch t-test", "chi-squared test", "", "a\"b\\c\n\t\x01\x7f"][k % 5]
+        both("debug::TestResult", [("s", name.encode("utf-8")), f(g4.signed_log_uniform(-20.0, 20.0)), f(g4.unit()),
+                                   f(g4.log_uniform(-3.0, 3.0)), f(g4.unit()), i(k % 2)])
+        both("debug::AnovaResult", [f(g4.log_uniform(-5.0, 5.0)) for _ in range(3)] + [i(g4.int(0, 50)),
+                                    i(g4.word())] + [f(g4.log_uniform(-5.0, 5.0)) for _ in range(5)] + [i(k % 2)])
+        both("debug::KsResult", [f(g4.unit()), f(g4.unit()), f(g4.unit()), i(k % 2)])
+        both("debug::ConfidenceInterval", [f(g4.signed_log_uniform(-20.0, 20.0)) for _ in range(3)] + [f(g4.unit())])
     return m

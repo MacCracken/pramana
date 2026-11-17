@@ -54,7 +54,8 @@
 > `scripts/golden/digests.txt` holds its sha256. Where this plan says "the oracle" for M4 onward, read "Python's model
 > of 1.3.0, from `rust-old/src`", and where it says "Rust twin", read "the twin's recorded numbers"; new proofs are
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
-> parts a1–a3, the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA, are done.
+> parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
+> hypothesis tests, the intervals and the quantiles) are done; c, the gate, is next.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1248,9 +1249,13 @@ a T1 function is recorded against T1:
   `linalg.cr.tsv` 9 rows, `descriptive.cr.tsv` 3 more; ADR 007 row 17 (a NaN eigenvalue's sign); every row passing at
   0 ulp on three targets ✅;
 - **b1:** `src/hypothesis.cyr`: `TestResult`, `AnovaResult` and `KsResult`; the one- and two-sample t-tests, the χ²
-  test (exact p), the one-way ANOVA, and the two KS tests (ties, the one-sample CDF a callback, D7);
+  test (exact p), the one-way ANOVA, and the two KS tests (ties, the one-sample CDF a callback, D7). A new golden
+  module, `hypothesis` (1,202 rows; `hypothesis.ref.tsv` 391 rows on T1's p-values), 382 codec and 60 Debug rows;
+  every row passing at 0 ulp on three targets ✅;
 - **b2:** `ConfidenceInterval`, `ci_mean`, `ci_two_means`, `ci_proportion`, and the quantiles they use, `t_quantile`
-  (bisection) and `z_quantile` (Acklam and a Halley step), measured against MPFR (port plan §3.4's row);
+  (bisection) and `z_quantile` (Acklam and a Halley step), measured against MPFR (port plan §3.4's row). 395 more
+  `hypothesis` rows, 97 codec and 20 Debug rows; every row passing at 0 ulp on three targets; the quantiles' gaps
+  (z up to 9.4×10⁶ ulp above ½, t's 1e-12 bisection) on the roadmap ✅;
 - **c:** M4's gate: NIST StRD's univariate and ANOVA sets (class R), the soak, surface parity, the benchmark rows
   against 1.3.0's criterion record, three targets.
 

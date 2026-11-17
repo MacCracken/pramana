@@ -665,6 +665,7 @@ def emit():
     multivariate_normal(m, g)
     kernel_density(m, Rng(0x3C6EF372FE94F82B))
     pca_result(m, Rng(0xA54FF53A5F1D36F1))
+    test_results(m, Rng(0x13198A2E03707344))
     return m
 
 def kde_toks(data, h, k):
@@ -721,4 +722,41 @@ def pca_result(m, g):
         read(m, "json::PcaResult", d)
     for c in cases:
         write(m, "PcaResult", pca_toks(*c))
+
+
+def test_results(m, g):
+    """M4 part b1: TestResult, AnovaResult and KsResult, plain derives (no validation)."""
+    names = B('"one-sample t-test"', '""', '"a\\"b\\\\c"', '"\\u00e9t\\u00e9"', '"\\n\\t\\u0001"', "null", "1",
+              '["x"]', '"\\ud800"')
+    nums = B("1.5", "0", "-0.0", "1e309", "null", '"1"', "true")
+    bools = B("false", "true", "0", "null", '"true"')
+    docs = struct_docs([("test_name", b'"one-sample t-test"'), ("statistic", b"1.5"), ("p_value", b"0.2"),
+                        ("degrees_of_freedom", b"9.0"), ("reject_at_alpha", b"0.05"), ("reject", b"false")],
+                       [names, nums, nums, nums, nums, bools])
+    for d in docs:
+        read(m, "json::TestResult", d)
+    usz = B("1", "0", "-1", "1.0", "18446744073709551615", "18446744073709551616", "null")
+    adocs = struct_docs([("ss_between", b"1.0"), ("ss_within", b"2.0"), ("ss_total", b"3.0"), ("df_between", b"1"),
+                         ("df_within", b"8"), ("ms_between", b"1.0"), ("ms_within", b"0.25"), ("f_statistic", b"4.0"),
+                         ("p_value", b"0.07"), ("reject_at_alpha", b"0.05"), ("reject", b"false")],
+                        [nums, nums, nums, usz, usz, nums, nums, nums, nums, nums, bools])
+    for d in adocs:
+        read(m, "json::AnovaResult", d)
+    kdocs = struct_docs([("statistic", b"0.25"), ("p_value", b"0.5"), ("reject_at_alpha", b"0.05"), ("reject", b"true")],
+                        [nums, nums, nums, bools])
+    for d in kdocs:
+        read(m, "json::KsResult", d)
+    for k in range(12):
+        name = ["one-sample t-test", "two-sample Welch t-test", "chi-squared test", "", "a\"b\\c\n",
+                "\u00e9t\u00e9"][k % 6]
+        write(m, "TestResult", [("s", name.encode("utf-8")), f(finite(g)), f(g.unit()), f(finite(g)), f(g.unit()),
+                                i(k % 2)])
+        write(m, "AnovaResult", [f(finite(g)) for _ in range(3)] + [i(g.int(0, 100)), i(g.word())]
+              + [f(finite(g)) for _ in range(5)] + [i(k % 2)])
+        write(m, "KsResult", [f(g.unit()), f(g.unit()), f(g.unit()), i(k % 2)])
+        write(m, "ConfidenceInterval", [f(finite(g)), f(finite(g)), f(finite(g)), f(g.unit())])
+    cdocs = struct_docs([("lower", b"4.8"), ("upper", b"5.2"), ("estimate", b"5.0"), ("confidence_level", b"0.95")],
+                        [nums, nums, nums, nums])
+    for d in cdocs:
+        read(m, "json::ConfidenceInterval", d)
 

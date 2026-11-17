@@ -797,6 +797,13 @@ class SerdeModel:
 
 # The generator's test structs and 1.3.0's two enums (scripts/golden/emit/m_json.py).
 JSON_STRUCTS = {
+    "TestResult": [("test_name", "String"), ("statistic", "f64"), ("p_value", "f64"), ("degrees_of_freedom", "f64"),
+                   ("reject_at_alpha", "f64"), ("reject", "bool")],
+    "AnovaResult": [("ss_between", "f64"), ("ss_within", "f64"), ("ss_total", "f64"), ("df_between", "usize"),
+                    ("df_within", "usize"), ("ms_between", "f64"), ("ms_within", "f64"), ("f_statistic", "f64"),
+                    ("p_value", "f64"), ("reject_at_alpha", "f64"), ("reject", "bool")],
+    "KsResult": [("statistic", "f64"), ("p_value", "f64"), ("reject_at_alpha", "f64"), ("reject", "bool")],
+    "ConfidenceInterval": [("lower", "f64"), ("upper", "f64"), ("estimate", "f64"), ("confidence_level", "f64")],
     "PcaResult": [("components", "Vec<Vec<f64>>"), ("eigenvalues", "Vec<f64>"), ("explained_variance_ratio", "Vec<f64>")],
     "Pair": [("mean", "f64"), ("std_dev", "f64")],
     "Shapes": [("x", "f64"), ("n", "u64"), ("k", "usize"), ("flag", "bool"), ("name", "String"), ("xs", "Vec<f64>"),
@@ -3579,6 +3586,22 @@ def rust_debug_f64(x):
     return sign + body
 
 
+def rust_debug_str(b):
+    """Rust's Debug of a str, for ASCII: quoted, \\0 \\t \\r \\n \\\\ \\" escaped, other controls and DEL as \\u{x};
+    every other byte as it is (src/hypothesis.cyr's `_pmn_dbg_str`; ADR 007 row 15 as amended)."""
+    out = ['"']
+    names = {0: "\\0", 9: "\\t", 13: "\\r", 10: "\\n", 92: "\\\\", 34: '\\"'}
+    raw = bytearray()
+    for c in b:
+        if c in names:
+            raw += names[c].encode()
+        elif c < 32 or c == 127:
+            raw += ("\\u{%x}" % c).encode()
+        else:
+            raw.append(c)
+    return '"' + raw.decode("utf-8") + '"'
+
+
 def debug_struct(name, fields, alt):
     """The derive's struct text from (field, text) pairs."""
     if alt:
@@ -3658,6 +3681,23 @@ def debug_text(fn, ins):
         data, h, k = ins[1:1 + n], ins[1 + n], ins[2 + n].split(".", 1)[1]
         return debug_struct("KernelDensity", [("data", rust_debug_list([rust_debug_f64(x) for x in data], alt, 1)),
                                               ("bandwidth", rust_debug_f64(h)), ("kernel", k)], alt)
+    if fn in ("debug::TestResult", "debug::AnovaResult", "debug::KsResult", "debug::ConfidenceInterval"):
+        ty = fn[len("debug::"):]
+        alt = ins[-1] == 1
+        vals = iter(ins[:-1])
+        fields = []
+        for name, kind in JSON_STRUCTS[ty]:
+            x = next(vals)
+            if kind == "String":
+                text = rust_debug_str(urllib.parse.unquote_to_bytes(x[len("s:"):]))
+            elif kind == "bool":
+                text = "true" if x == 1 else "false"
+            elif kind == "usize":
+                text = str(x % (1 << 64))
+            else:
+                text = rust_debug_f64(x)
+            fields.append((name, text))
+        return debug_struct(ty, fields, alt)
     if fn == "debug::PcaResult":
         alt = ins[-1] == 1
         it = iter(ins[:-1])
@@ -4107,8 +4147,344 @@ DESC = {  # name: model(L, slices, scalars) -> outputs
 LINALG_C = {"linalg::eigen_symmetric": eigen_model}
 
 
+# ── hypothesis (M4 part b1): 1.3.0's hypothesis.rs, its tests in their operation order ──
+# The p-values are Rust's formulas on L's special functions: Student's t through the incomplete beta (d_t_two_tailed),
+# the χ² tail through the incomplete gamma, ANOVA's through the F survival (d_f_cdf_sf), the KS series on L's exp.
+
+def s_tok(text):
+    """A string as its golden `s:` token text (scripts/golden/README.md)."""
+    out = []
+    for byte in text.encode("utf-8"):
+        out.append(chr(byte) if 0x21 <= byte <= 0x7E and byte != 0x25 else "%%%02X" % byte)
+    return "s:" + "".join(out)
+
+
+def hy_unit_open(x):
+    return 0.0 < x < 1.0
+
+
+def hy_msv(xs):
+    """`mean_and_sample_variance`: (m, s²), or None when either isn't finite."""
+    n = float(len(xs))
+    m = rsum(xs) / n
+    v = rsum([(x - m) * (x - m) for x in xs]) / (n - 1.0)
+    return (m, v) if math.isfinite(m) and math.isfinite(v) else None
+
+
+def hy_test(name, stat, p, df, alpha):
+    return [s_tok(name), stat, p, df, alpha, 1 if p < alpha else 0]
+
+
+def hy_t_one(L, sl, sc):
+    xs, mu, alpha = sl[0], sc[0], sc[1]
+    if not hy_unit_open(alpha) or not math.isfinite(mu):
+        return ["E:InvalidParameter"]
+    if len(xs) < 2:
+        return ["E:InvalidSample"]
+    n = float(len(xs))
+    mv = hy_msv(xs)
+    if mv is None or mv[1] == 0.0:
+        return ["E:InvalidSample"]
+    m, sv = mv
+    t = fdiv(m - mu, r_sqrt(sv / n))
+    df = n - 1.0
+    return hy_test("one-sample t-test", t, d_t_two_tailed(L, t, df), df, alpha)
+
+
+def hy_welch(a, b):
+    if len(a) < 2 or len(b) < 2:
+        return "E:InvalidSample"
+    n1, n2 = float(len(a)), float(len(b))
+    s1, s2 = hy_msv(a), hy_msv(b)
+    if s1 is None or s2 is None:
+        return "E:InvalidSample"
+    if s1[1] == 0.0 and s2[1] == 0.0:
+        return "E:InvalidSample"
+    v1, v2 = s1[1] / n1, s2[1] / n2
+    se = r_sqrt(v1 + v2)
+    num = powi(v1 + v2, 2)
+    den = powi(v1, 2) / (n1 - 1.0) + powi(v2, 2) / (n2 - 1.0)
+    df = 1.0 if den == 0.0 else fdiv(num, den)
+    return s1[0] - s2[0], se, df
+
+
+def hy_t_two(L, sl, sc):
+    alpha = sc[0]
+    if not hy_unit_open(alpha):
+        return ["E:InvalidParameter"]
+    w = hy_welch(sl[0], sl[1])
+    if isinstance(w, str):
+        return [w]
+    diff, se, df = w
+    t = fdiv(diff, se)
+    return hy_test("two-sample Welch t-test", t, d_t_two_tailed(L, t, df), df, alpha)
+
+
+def hy_chi2(L, sl, sc):
+    obs, exp_, alpha = sl[0], sl[1], sc[0]
+    if not hy_unit_open(alpha):
+        return ["E:InvalidParameter"]
+    if len(obs) != len(exp_):
+        return ["E:DimensionMismatch"]
+    if not obs:
+        return ["E:InvalidSample"]
+    if any(not (math.isfinite(e) and e > 0.0) for e in exp_):
+        return ["E:InvalidSample"]
+    if any(not (math.isfinite(o) and o >= 0.0) for o in obs):
+        return ["E:InvalidSample"]
+    chi2 = rsum([(o - e) * (o - e) / e for o, e in zip(obs, exp_)])
+    df = float(len(obs) - 1)
+    p = 1.0 if df <= 0.0 else (L.gamma or sp_gamma_inc)(L.K, L, df / 2.0, chi2 / 2.0)[1]
+    return hy_test("chi-squared test", chi2, p, df, alpha)
+
+
+def hy_anova(L, sl, sc):
+    groups, alpha = sl, sc[0]
+    if not hy_unit_open(alpha):
+        return ["E:InvalidParameter"]
+    k = len(groups)
+    if k < 2:
+        return ["E:InvalidSample"]
+    if any(not g for g in groups):
+        return ["E:InvalidSample"]
+    total = sum(len(g) for g in groups)
+    if total <= k:
+        return ["E:InvalidSample"]
+    gm = rsum([x for g in groups for x in g]) / float(total)
+    ssb, ssw = 0.0, 0.0
+    for g in groups:
+        ni = float(len(g))
+        mean = rsum(g) / ni
+        ssb += ni * powi(mean - gm, 2)
+        for x in g:
+            ssw += powi(x - mean, 2)
+    sst = ssb + ssw
+    if not (math.isfinite(gm) and math.isfinite(ssb) and math.isfinite(ssw)):
+        return ["E:InvalidSample"]
+    if sst == 0.0:
+        return ["E:InvalidSample"]
+    dfb, dfw = k - 1, total - k
+    msb, msw = ssb / float(dfb), ssw / float(dfw)
+    f_ = msb / msw if msw > 0.0 else math.inf
+    p = r_clamp(d_f_cdf_sf(L, f_, float(dfb), float(dfw))[1], 0.0, 1.0)
+    return [ssb, ssw, sst, dfb, dfw, msb, msw, f_, p, alpha, 1 if p < alpha else 0]
+
+
+def hy_kolmogorov_sf(L, lam):
+    if math.isnan(lam):
+        return lam
+    if lam <= 0.0:
+        return 1.0
+    if lam < 1.18:
+        y = L.exp(-1.2337005501361697 / (lam * lam))
+        cdf = 2.5066282746310002 / lam * (y + powi(y, 9) + powi(y, 25) + powi(y, 49))
+        return r_clamp(1.0 - cdf, 0.0, 1.0)
+    x = L.exp(-2.0 * lam * lam)
+    return r_clamp(2.0 * (x - powi(x, 4) + powi(x, 9)), 0.0, 1.0)
+
+
+def hy_ks_pvalue(L, d, n_eff):
+    if d <= 0.0:
+        return 1.0
+    sn = r_sqrt(n_eff)
+    return hy_kolmogorov_sf(L, (sn + 0.12 + fdiv(0.11, sn)) * d)
+
+
+def hy_ks_two(L, sl, sc):
+    a, b, alpha = sl[0], sl[1], sc[0]
+    if not hy_unit_open(alpha):
+        return ["E:InvalidParameter"]
+    if not a or not b:
+        return ["E:InvalidSample"]
+    if any(not math.isfinite(x) for x in a) or any(not math.isfinite(x) for x in b):
+        return ["E:InvalidSample"]
+    sa, sb = sorted(a), sorted(b)
+    na, nb = float(len(sa)), float(len(sb))
+    d, ia, ib = 0.0, 0, 0
+    while ia < len(sa) and ib < len(sb):
+        v = sp_min(sa[ia], sb[ib])
+        while ia < len(sa) and sa[ia] == v:
+            ia += 1
+        while ib < len(sb) and sb[ib] == v:
+            ib += 1
+        d = sp_max(d, abs(ia / na - ib / nb))
+    p = hy_ks_pvalue(L, d, (na * nb) / (na + nb))
+    return [d, p, alpha, 1 if p < alpha else 0]
+
+
+KS_CDFS = {  # the one-sample rows' CDFs, named by their `e:Cdf.<Name>` token; the harness has the same
+    "StdNormal": lambda L, x: L.ncdf(x),
+    "Uniform01": lambda L, x: r_clamp(x, 0.0, 1.0),
+    "Exponential1": lambda L, x: 0.0 if x < 0.0 else -L.expm1(-x),
+    "Overshoot": lambda L, x: 2.0 * x - 0.5,               # clamped by the test
+    "NanAtHalf": lambda L, x: math.nan if x == 0.5 else r_clamp(x, 0.0, 1.0),
+}
+
+
+def hy_ks_one(L, sl, sc):
+    xs, cdf, alpha = sl[0], KS_CDFS[sc[0][len("e:Cdf."):]], sc[1]
+    if not hy_unit_open(alpha):
+        return ["E:InvalidParameter"]
+    if not xs:
+        return ["E:InvalidSample"]
+    if any(not math.isfinite(x) for x in xs):
+        return ["E:InvalidSample"]
+    s = sorted(xs)
+    n = float(len(s))
+    d = 0.0
+    for i, x in enumerate(s):
+        th = cdf(L, x)
+        if math.isnan(th):
+            return ["E:InvalidParameter"]
+        th = r_clamp(th, 0.0, 1.0)
+        d = sp_max(d, abs((i + 1) / n - th))
+        d = sp_max(d, abs(th - i / n))
+    p = hy_ks_pvalue(L, d, n)
+    return [d, p, alpha, 1 if p < alpha else 0]
+
+
+HYP = {
+    "hypothesis::t_test_one_sample": hy_t_one,
+    "hypothesis::t_test_two_sample": hy_t_two,
+    "hypothesis::chi_squared_test": hy_chi2,
+    "hypothesis::one_way_anova": hy_anova,
+    "hypothesis::ks_two_sample": hy_ks_two,
+    "hypothesis::ks_one_sample": hy_ks_one,
+}
+
+
+# ── the quantiles and the confidence intervals (M4 part b2) ──
+
+ACKLAM = None
+
+
+def acklam(L):
+    global ACKLAM
+    if ACKLAM is None:
+        K = python_constants(Path(__file__).resolve().parents[2])
+        g = lambda name, n: [K[f"hypothesis::z_quantile::{name}[{i}]"] for i in range(n)]
+        ACKLAM = (g("A", 6), g("B", 5), g("C", 6), g("D", 4), K["hypothesis::z_quantile::P_LOW"],
+                  K["hypothesis::z_quantile::P_HIGH"])
+    return ACKLAM
+
+
+def hy_z_quantile(L, p):
+    """1.3.0's `z_quantile`: Acklam, then one Halley step against L's Φ."""
+    if math.isnan(p):
+        return p
+    if p <= 0.0:
+        return -math.inf
+    if p >= 1.0:
+        return math.inf
+    A, B, C, D, plow, phigh = acklam(L)
+    if p < plow:
+        q = r_sqrt(-2.0 * L.ln(p))
+        x = (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5]) / (
+            (((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    elif p <= phigh:
+        q = p - 0.5
+        r = q * q
+        x = (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q / (
+            ((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+    else:
+        q = r_sqrt(-2.0 * L.ln(1.0 - p))
+        x = -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5]) / (
+            (((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    density = L.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+    if density > 0.0 and math.isfinite(density):
+        u = (L.ncdf(x) - p) / density
+        return x - u / (1.0 + 0.5 * x * u)
+    return x
+
+
+def hy_t_quantile(L, p, df):
+    """1.3.0's `t_quantile`: bisection on L's Student-t CDF (d_t_cdf)."""
+    if math.isnan(p) or math.isnan(df):
+        return math.nan
+    if p <= 0.0:
+        return -math.inf
+    if p >= 1.0:
+        return math.inf
+    if abs(p - 0.5) < 1e-15:
+        return 0.0
+    lo, hi = -100.0, 100.0
+    while d_t_cdf(L, lo, df) > p and math.isfinite(lo):
+        lo *= 2.0
+    while d_t_cdf(L, hi, df) < p and math.isfinite(hi):
+        hi *= 2.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if (hi - lo) < 1e-12 * sp_max(abs(mid), 1.0):
+            return mid
+        if d_t_cdf(L, mid, df) < p:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def hy_ci(lo, hi, est, cl):
+    return [lo, hi, est, cl]
+
+
+def hy_ci_mean(L, sl, sc):
+    xs, cl = sl[0], sc[0]
+    if not hy_unit_open(cl):
+        return ["E:InvalidParameter"]
+    if len(xs) < 2:
+        return ["E:InvalidSample"]
+    n = float(len(xs))
+    mv = hy_msv(xs)
+    if mv is None or mv[1] == 0.0:
+        return ["E:InvalidSample"]
+    m, sv = mv
+    se = r_sqrt(sv / n)
+    tc = hy_t_quantile(L, 1.0 - (1.0 - cl) / 2.0, n - 1.0)
+    margin = tc * se
+    return hy_ci(m - margin, m + margin, m, cl)
+
+
+def hy_ci_two(L, sl, sc):
+    cl = sc[0]
+    if not hy_unit_open(cl):
+        return ["E:InvalidParameter"]
+    w = hy_welch(sl[0], sl[1])
+    if isinstance(w, str):
+        return [w]
+    diff, se, df = w
+    margin = hy_t_quantile(L, 1.0 - (1.0 - cl) / 2.0, df) * se
+    return hy_ci(diff - margin, diff + margin, diff, cl)
+
+
+def hy_ci_prop(L, sl, sc):
+    k, n, cl = sc[0] % (1 << 64), sc[1] % (1 << 64), sc[2]
+    if not hy_unit_open(cl):
+        return ["E:InvalidParameter"]
+    if n == 0:
+        return ["E:InvalidSample"]
+    if k > n:
+        return ["E:InvalidSample"]
+    ph = float(k) / float(n)
+    z = hy_z_quantile(L, 1.0 - (1.0 - cl) / 2.0)
+    margin = z * r_sqrt(ph * (1.0 - ph) / float(n))
+    return hy_ci(sp_max(ph - margin, 0.0), sp_min(ph + margin, 1.0), ph, cl)
+
+
+HYP_B2 = {
+    "hypothesis::t_quantile": lambda L, sl, sc: [hy_t_quantile(L, sc[0], sc[1])],
+    "hypothesis::z_quantile": lambda L, sl, sc: [hy_z_quantile(L, sc[0])],
+    "hypothesis::ci_mean": hy_ci_mean,
+    "hypothesis::ci_two_means": hy_ci_two,
+    "hypothesis::ci_proportion": hy_ci_prop,
+}
+
+
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
-STATS_T1 = {}
+STATS_T1 = {"hypothesis::t_test_one_sample": "incomplete beta", "hypothesis::t_test_two_sample": "incomplete beta",
+            "hypothesis::chi_squared_test": "incomplete gamma", "hypothesis::one_way_anova": "incomplete beta",
+            "hypothesis::ks_one_sample": "Φ", "hypothesis::z_quantile": "Φ", "hypothesis::t_quantile": "incomplete beta",
+            "hypothesis::ci_mean": "incomplete beta", "hypothesis::ci_two_means": "incomplete beta",
+            "hypothesis::ci_proportion": "Φ"}
 
 
 def stats_model(table, fn):
@@ -4126,7 +4502,8 @@ def check_stats(root, module, table, rows):
         return len(a) == len(b) and all(same(x, y) if isinstance(y, float) else x == y for x, y in zip(a, b))
 
     def toks(v):
-        return " ".join(f"f:{bits(w):016x}" if isinstance(w, float) else str(w) for w in v)
+        return " ".join(f"f:{bits(w):016x}" if isinstance(w, float) else f"i:{w}" if isinstance(w, int) else str(w)
+                        for w in v)
 
     for fn, cls, ins, outs, raw in rows:
         model = table.get(fn)
@@ -4160,7 +4537,7 @@ def check_stats(root, module, table, rows):
     return failures, by_fn, crs, refs
 
 
-STATS_MODULES = {"descriptive": DESC}
+STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}}
 
 
 def main(argv):

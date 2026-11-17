@@ -16,7 +16,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-MODULES = ["bridge", "combinatorics", "constants", "debug", "descriptive", "dist", "fmt", "json", "linalg", "math", "rng", "special"]
+MODULES = ["bridge", "combinatorics", "constants", "debug", "descriptive", "dist", "fmt", "hypothesis", "json", "linalg", "math", "rng", "special"]
 
 
 def emit(name):

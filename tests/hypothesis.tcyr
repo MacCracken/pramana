@@ -1,0 +1,527 @@
+# hypothesis.tcyr — src/hypothesis.cyr's tests and result types (M4 part b1).
+#
+# tests/parity.tcyr replays 1.3.0's values (tests/golden/hypothesis.tsv, json.tsv, debug.tsv) against T1's p-values.
+# These carry 1.3.0's own tests over (hypothesis.rs) and pin what a replay doesn't: the buffer refusals, an owned name's
+# drop and clone, and that nothing is left claimed.
+
+include "tests/lib.cyr"
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn fill(buf, n, a0: f64, step: f64): i64 {
+    for (var i = 0; i < n; i = i + 1) {
+        var fi: f64 = f64_from(i);
+        var s: f64 = fi * step;
+        var v: f64 = a0 + s;
+        put(buf, i, v);
+    }
+    return 0;
+}
+
+fn rel(x: f64, y: f64): f64 {
+    var d: f64 = x - y;
+    var q: f64 = d / y;
+    var r: f64 = f64_abs(q);
+    return r;
+}
+
+# 1.3.0's test_result_serde document, into buf; its length.
+fn tr_doc(buf): i64 {
+    var n = 0;
+    var parts[24];
+    store64(&parts, "{\"test_name\":\"test\",\"statistic\":1.5,");
+    store64(&parts + 8, "\"p_value\":0.05,\"degrees_of_freedom\":4.0,");
+    store64(&parts + 16, "\"reject_at_alpha\":0.05,\"reject\":true}");
+    for (var k = 0; k < 3; k = k + 1) {
+        var s = load64(&parts + k * 8);
+        var l = strlen(s);
+        memcpy(buf + n, s, l);
+        n = n + l;
+    }
+    return n;
+}
+
+fn cdf_uniform(ctx, x: f64): f64 {
+    var r: f64 = _pmn_clamp(x, 0.0, 1.0);
+    return r;
+}
+
+fn cdf_identity(ctx, x: f64): f64 {
+    return x;
+}
+
+fn cdf_nan(ctx, x: f64): f64 {
+    var n: f64 = _PMN_F64_NAN;
+    return n;
+}
+
+fn main() {
+    alloc_init();
+    var a = alloc(64 * 8);
+    var b = alloc(64 * 8);
+    var c = alloc(64 * 8);
+    var tr: PmnTestResult;
+    var ar: PmnAnovaResult;
+    var kr: PmnKsResult;
+    var g[64];
+
+    test_group("1.3.0's t-test, χ² and level tests");
+    put(a, 0, -1.0);
+    put(a, 1, -0.5);
+    put(a, 2, 0.0);
+    put(a, 3, 0.5);
+    put(a, 4, 1.0);
+    assert_eq(pmn_t_test_one_sample(&tr, a, 5, 0.0, 0.05), PMN_ERR_NONE, "centered data");
+    assert(tr.reject == 0, "centered data: H0 not rejected");
+    var sh[64];
+    put(&sh, 0, 10.0);
+    put(&sh, 1, 10.1);
+    put(&sh, 2, 9.9);
+    put(&sh, 3, 10.2);
+    put(&sh, 4, 9.8);
+    put(&sh, 5, 10.0);
+    put(&sh, 6, 10.1);
+    put(&sh, 7, 9.9);
+    assert_eq(pmn_t_test_one_sample(&tr, &sh, 8, 0.0, 0.05), PMN_ERR_NONE, "shifted data");
+    assert(tr.reject == 1 && tr.name_len == 17, "shifted data: H0 rejected, the test named");
+    fill(a, 5, 1.0, 1.0);
+    put(b, 0, 1.1);
+    put(b, 1, 2.1);
+    put(b, 2, 2.9);
+    put(b, 3, 4.1);
+    put(b, 4, 4.9);
+    assert_eq(pmn_t_test_two_sample(&tr, a, 5, b, 5, 0.05), PMN_ERR_NONE, "two similar samples");
+    assert(tr.reject == 0, "similar: not rejected");
+    for (var k = 0; k < 4; k = k + 1) { put(a, k, 50.0); }
+    assert_eq(pmn_chi_squared_test(&tr, a, 4, a, 4, 0.05), PMN_ERR_NONE, "a perfect fit");
+    var st: f64 = tr.statistic;
+    assert(tr.reject == 0 && st == 0.0, "χ² = 0, not rejected");
+    assert_eq(pmn_chi_squared_test(&tr, a, 2, a, 1, 0.05), PMN_ERR_DIMENSION_MISMATCH, "lengths 2 and 1");
+    fill(a, 3, 1.0, 1.0);
+    assert_eq(pmn_t_test_one_sample(&tr, a, 3, 0.0, 0.0), PMN_ERR_INVALID_PARAMETER, "α = 0");
+    assert_eq(pmn_t_test_one_sample(&tr, a, 3, 0.0, 1.0), PMN_ERR_INVALID_PARAMETER, "α = 1");
+    assert_eq(pmn_t_test_one_sample(&tr, a, 3, 0.0, -0.1), PMN_ERR_INVALID_PARAMETER, "α = −0.1");
+    var nan: f64 = _PMN_F64_NAN;
+    var inf: f64 = _PMN_F64_INFINITY;
+    fill(a, 4, 1.0, 1.0);
+    assert_eq(pmn_t_test_one_sample(&tr, a, 4, 0.0, nan), PMN_ERR_INVALID_PARAMETER, "α NaN (one-sample)");
+    assert_eq(pmn_t_test_two_sample(&tr, a, 4, a, 4, nan), PMN_ERR_INVALID_PARAMETER, "α NaN (two-sample)");
+    assert_eq(pmn_chi_squared_test(&tr, a, 4, a, 4, nan), PMN_ERR_INVALID_PARAMETER, "α NaN (χ²)");
+    store64(&g, a);
+    store64(&g + 8, 4);
+    store64(&g + 16, a);
+    store64(&g + 24, 4);
+    assert_eq(pmn_one_way_anova(&ar, &g, 2, nan), PMN_ERR_INVALID_PARAMETER, "α NaN (ANOVA)");
+    assert_eq(pmn_ks_two_sample(&kr, a, 4, a, 4, nan), PMN_ERR_INVALID_PARAMETER, "α NaN (KS)");
+
+    test_group("1.3.0's non-finite tests");
+    put(b, 0, 1.0);
+    put(b, 1, nan);
+    put(b, 2, 3.0);
+    put(c, 0, 1.0);
+    put(c, 1, 2.0);
+    put(c, 2, 4.0);
+    assert_eq(pmn_t_test_one_sample(&tr, b, 3, 0.0, 0.05), PMN_ERR_INVALID_SAMPLE, "NaN data");
+    assert_eq(pmn_t_test_one_sample(&tr, c, 3, inf, 0.05), PMN_ERR_INVALID_PARAMETER, "μ₀ = ∞");
+    var bi[16];
+    put(&bi, 0, 1.0);
+    put(&bi, 1, inf);
+    assert_eq(pmn_t_test_two_sample(&tr, c, 3, &bi, 2, 0.05), PMN_ERR_INVALID_SAMPLE, "∞ in b");
+    store64(&g, c);
+    store64(&g + 8, 3);
+    store64(&g + 16, b);
+    store64(&g + 24, 3);
+    assert_eq(pmn_one_way_anova(&ar, &g, 2, 0.05), PMN_ERR_INVALID_SAMPLE, "NaN in a group");
+    assert_eq(pmn_ks_two_sample(&kr, c, 3, b, 3, 0.05), PMN_ERR_INVALID_SAMPLE, "NaN in a KS sample");
+    assert_eq(pmn_ks_one_sample(&kr, b, 3, &cdf_identity, 0, 0.05), PMN_ERR_INVALID_SAMPLE, "NaN in the one sample");
+    var o2[16];
+    var e2[16];
+    put(&o2, 0, 1.0);
+    put(&o2, 1, -2.0);
+    put(&e2, 0, 1.0);
+    put(&e2, 1, 1.0);
+    assert_eq(pmn_chi_squared_test(&tr, &o2, 2, &e2, 2, 0.05), PMN_ERR_INVALID_SAMPLE, "a negative observation");
+    put(&o2, 1, 2.0);
+    put(&e2, 1, nan);
+    assert_eq(pmn_chi_squared_test(&tr, &o2, 2, &e2, 2, 0.05), PMN_ERR_INVALID_SAMPLE, "a NaN expectation");
+    assert_eq(pmn_ks_one_sample(&kr, c, 3, &cdf_nan, 0, 0.05), PMN_ERR_INVALID_PARAMETER, "a CDF returning NaN");
+
+    test_group("1.3.0's exactness tests (the χ² p-value, the Kolmogorov series)");
+    var q: f64 = 3.841458820694124 * 50.0;
+    var d: f64 = f64_sqrt(q);
+    var hp: f64 = 100.0 + d;
+    var hm: f64 = 100.0 - d;
+    put(&o2, 0, hp);
+    put(&o2, 1, hm);
+    put(&e2, 0, 100.0);
+    put(&e2, 1, 100.0);
+    assert_eq(pmn_chi_squared_test(&tr, &o2, 2, &e2, 2, 0.05), PMN_ERR_NONE, "df = 1");
+    var s2: f64 = tr.statistic;
+    var h2: f64 = s2 / 2.0;
+    var rt: f64 = f64_sqrt(h2);
+    var exact: f64 = _pmn_erfc(rt);
+    var p1: f64 = tr.p_value;
+    var pd: f64 = p1 - 0.05;
+    assert(rel(p1, exact) < 0.0000000000001 && f64_abs(pd) < 0.000000000001, "df = 1: p = erfc(√(χ²/2)) = 0.05");
+    var o3[24];
+    put(&o3, 0, 30.0);
+    put(&o3, 1, 10.0);
+    put(&o3, 2, 20.0);
+    var e3[24];
+    put(&e3, 0, 20.0);
+    put(&e3, 1, 20.0);
+    put(&e3, 2, 20.0);
+    assert_eq(pmn_chi_squared_test(&tr, &o3, 3, &e3, 3, 0.05), PMN_ERR_NONE, "df = 2");
+    var s3: f64 = tr.statistic;
+    var ns3: f64 = -s3;
+    var h3: f64 = ns3 / 2.0;
+    var ex2: f64 = _pmn_exp(h3);
+    var p2: f64 = tr.p_value;
+    assert(rel(p2, ex2) < 0.0000000000001, "df = 2: p = e^(−χ²/2)");
+    var lam[48];
+    var ref[48];
+    put(&lam, 0, 0.5);
+    put(&ref, 0, 0.9639452436648751);
+    put(&lam, 1, 0.8);
+    put(&ref, 1, 0.5441424115741981);
+    put(&lam, 2, 1.0);
+    put(&ref, 2, 0.26999967167735456);
+    put(&lam, 3, 1.18);
+    put(&ref, 3, 0.1234538094297657);
+    put(&lam, 4, 1.36);
+    put(&ref, 4, 0.049485876755377876);
+    put(&lam, 5, 2.0);
+    put(&ref, 5, 0.0006709252557796953);
+    var ks_ok = 1;
+    for (var j = 0; j < 6; j = j + 1) {
+        var lj: f64 = load64(&lam + j * 8);
+        var rj: f64 = load64(&ref + j * 8);
+        var got: f64 = _pmn_kolmogorov_sf(lj);
+        if (rel(got, rj) >= 0.0000000000001) { ks_ok = 0; }
+    }
+    assert(ks_ok == 1, "Q_KS at six λ within 1e-13 of the 200-term reference");
+    var q0: f64 = _pmn_kolmogorov_sf(0.0);
+    var q05: f64 = _pmn_kolmogorov_sf(0.05);
+    var qd: f64 = q05 - 1.0;
+    assert(q0 == 1.0 && f64_abs(qd) < 0.000000000000001, "Q_KS(0) = 1, Q_KS(0.05) ≈ 1");
+    var lo: f64 = 1.18 - 0.000000000001;
+    var hi: f64 = 1.18 + 0.000000000001;
+    var qlo: f64 = _pmn_kolmogorov_sf(lo);
+    var qhi: f64 = _pmn_kolmogorov_sf(hi);
+    var qg: f64 = qlo - qhi;
+    assert(f64_abs(qg) < 0.00000000001, "continuous across the series' switch at 1.18");
+
+    test_group("1.3.0's ANOVA tests");
+    fill(a, 5, 1.0, 1.0);
+    store64(&g, a);
+    store64(&g + 8, 5);
+    store64(&g + 16, a);
+    store64(&g + 24, 5);
+    store64(&g + 32, a);
+    store64(&g + 40, 5);
+    assert_eq(pmn_one_way_anova(&ar, &g, 3, 0.05), PMN_ERR_NONE, "identical groups");
+    var f0: f64 = ar.f_statistic;
+    var sb0: f64 = ar.ss_between;
+    assert(ar.reject == 0 && f64_abs(f0) < 0.0000000001 && f64_abs(sb0) < 0.0000000001, "not rejected, F = SSB = 0");
+    var ga[40];
+    var gb[40];
+    var gc[40];
+    put(&ga, 0, 1.0);
+    put(&ga, 1, 1.1);
+    put(&ga, 2, 0.9);
+    put(&ga, 3, 1.0);
+    put(&ga, 4, 1.2);
+    put(&gb, 0, 10.0);
+    put(&gb, 1, 10.1);
+    put(&gb, 2, 9.9);
+    put(&gb, 3, 10.2);
+    put(&gb, 4, 9.8);
+    put(&gc, 0, 100.0);
+    put(&gc, 1, 100.1);
+    put(&gc, 2, 99.9);
+    put(&gc, 3, 100.0);
+    put(&gc, 4, 100.2);
+    store64(&g, &ga);
+    store64(&g + 16, &gb);
+    store64(&g + 32, &gc);
+    assert_eq(pmn_one_way_anova(&ar, &g, 3, 0.05), PMN_ERR_NONE, "different groups");
+    var f1: f64 = ar.f_statistic;
+    var pv1: f64 = ar.p_value;
+    assert(ar.reject == 1 && f1 > 100.0 && pv1 < 0.001, "rejected, F > 100, p < 0.001");
+    fill(a, 5, 2.0, 1.0);
+    fill(b, 5, 4.0, 1.0);
+    store64(&g, a);
+    store64(&g + 16, b);
+    assert_eq(pmn_one_way_anova(&ar, &g, 2, 0.05), PMN_ERR_NONE, "two groups");
+    var f2: f64 = ar.f_statistic;
+    assert(ar.df_between == 1 && ar.df_within == 8 && f2 > 0.0, "df = (1, 8), F > 0");
+    put(&ga, 0, 1.0);
+    put(&ga, 1, 3.0);
+    put(&ga, 2, 5.0);
+    put(&gb, 0, 2.0);
+    put(&gb, 1, 4.0);
+    put(&gb, 2, 6.0);
+    put(&gc, 0, 7.0);
+    put(&gc, 1, 8.0);
+    put(&gc, 2, 9.0);
+    store64(&g, &ga);
+    store64(&g + 8, 3);
+    store64(&g + 16, &gb);
+    store64(&g + 24, 3);
+    store64(&g + 32, &gc);
+    store64(&g + 40, 3);
+    assert_eq(pmn_one_way_anova(&ar, &g, 3, 0.05), PMN_ERR_NONE, "the SS decomposition's groups");
+    var sst: f64 = ar.ss_total;
+    var ssb: f64 = ar.ss_between;
+    var ssw: f64 = ar.ss_within;
+    var dec: f64 = sst - ssb;
+    var dec2: f64 = dec - ssw;
+    assert(f64_abs(dec2) < 0.0000000001, "SST = SSB + SSW");
+    assert_eq(pmn_one_way_anova(&ar, &g, 1, 0.05), PMN_ERR_INVALID_SAMPLE, "one group");
+    store64(&g + 24, 0);
+    assert_eq(pmn_one_way_anova(&ar, &g, 2, 0.05), PMN_ERR_INVALID_SAMPLE, "an empty group");
+    store64(&g + 24, 3);
+    assert_eq(pmn_one_way_anova(&ar, &g, 2, 0.0), PMN_ERR_INVALID_PARAMETER, "α = 0");
+    put(&ga, 0, 1.0);
+    put(&ga, 1, 1.0);
+    put(&gb, 0, 2.0);
+    put(&gb, 1, 2.0);
+    put(&gc, 0, 3.0);
+    put(&gc, 1, 3.0);
+    store64(&g + 8, 2);
+    store64(&g + 24, 2);
+    store64(&g + 40, 2);
+    assert_eq(pmn_one_way_anova(&ar, &g, 3, 0.05), PMN_ERR_NONE, "constant groups, different means");
+    var finf: f64 = ar.f_statistic;
+    var p0: f64 = ar.p_value;
+    assert(finf == inf && p0 == 0.0 && ar.reject == 1, "F = ∞, p = 0, rejected");
+    put(&ga, 0, 4.0);
+    put(&ga, 1, 4.0);
+    store64(&g + 16, &ga);
+    assert_eq(pmn_one_way_anova(&ar, &g, 2, 0.05), PMN_ERR_INVALID_SAMPLE, "all identical: refused");
+    fill(&ga, 3, 0.0, 1.0);
+    fill(&gb, 3, 100.0, 1.0);
+    store64(&g, &ga);
+    store64(&g + 8, 3);
+    store64(&g + 16, &gb);
+    store64(&g + 24, 3);
+    assert_eq(pmn_one_way_anova(&ar, &g, 2, 0.05), PMN_ERR_NONE, "a tiny p");
+    var tp: f64 = ar.p_value;
+    var tf: f64 = ar.f_statistic;
+    var rf: f64 = f64_sqrt(tf);
+    var tt: f64 = _pmn_student_t_two_tailed(rf, 4.0);
+    assert(tp > 0.0 && tp < 0.000001 && rel(tp, tt) < 0.0000000001, "0 < p < 1e-6, = P(|T₄| > √F)");
+    var sb = str_builder_new();
+    assert_eq(ar.to_json(sb), PMN_ERR_NONE, "ANOVA to_json");
+    var ar2: PmnAnovaResult;
+    assert_eq(PmnAnovaResult_from_json(&ar2, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "and back");
+    var fa: f64 = ar.f_statistic;
+    var fb: f64 = ar2.f_statistic;
+    assert(fa == fb && ar2.df_between == ar.df_between && ar2.df_within == ar.df_within, "F and the dfs round-trip");
+
+    test_group("1.3.0's KS tests");
+    fill(a, 10, 1.0, 1.0);
+    fill(b, 10, 1.5, 1.0);
+    assert_eq(pmn_ks_two_sample(&kr, a, 10, b, 10, 0.05), PMN_ERR_NONE, "two shifted grids");
+    assert(kr.reject == 0, "similar: not rejected");
+    fill(a, 10, 1.0, 0.1);
+    fill(b, 10, 100.0, 0.1);
+    assert_eq(pmn_ks_two_sample(&kr, a, 10, b, 10, 0.05), PMN_ERR_NONE, "disjoint samples");
+    var d1: f64 = kr.statistic;
+    assert(kr.reject == 1 && d1 == 1.0, "rejected, D = 1");
+    for (var u = 0; u < 20; u = u + 1) {
+        var uf: f64 = f64_from(u + 1);
+        var uv: f64 = uf / 21.0;
+        put(a, u, uv);
+    }
+    assert_eq(pmn_ks_one_sample(&kr, a, 20, &cdf_uniform, 0, 0.05), PMN_ERR_NONE, "uniform data, uniform CDF");
+    assert(kr.reject == 0, "not rejected");
+    fill(a, 10, 0.01, 0.01);
+    assert_eq(pmn_ks_one_sample(&kr, a, 10, &cdf_uniform, 0, 0.05), PMN_ERR_NONE, "clustered data, uniform CDF");
+    assert(kr.reject == 1, "rejected");
+    fill(a, 3, 1.0, 1.0);
+    fill(b, 3, 4.0, 1.0);
+    assert_eq(pmn_ks_two_sample(&kr, a, 3, b, 3, 0.05), PMN_ERR_NONE, "[1, 2, 3] against [4, 5, 6]");
+    var dd: f64 = kr.statistic;
+    var dp: f64 = kr.p_value;
+    assert(dd >= 0.0 && dd <= 1.0 && dp >= 0.0 && dp <= 1.0, "D and p in [0, 1]");
+    assert_eq(pmn_ks_two_sample(&kr, a, 2, b, 0, 0.05), PMN_ERR_INVALID_SAMPLE, "an empty b");
+    assert_eq(pmn_ks_two_sample(&kr, a, 0, b, 2, 0.05), PMN_ERR_INVALID_SAMPLE, "an empty a");
+    assert_eq(pmn_ks_one_sample(&kr, a, 0, &cdf_identity, 0, 0.05), PMN_ERR_INVALID_SAMPLE, "an empty sample");
+    assert_eq(pmn_ks_two_sample(&kr, a, 2, a, 2, 0.0), PMN_ERR_INVALID_PARAMETER, "α = 0");
+    assert_eq(pmn_ks_two_sample(&kr, a, 3, a, 3, 0.05), PMN_ERR_NONE, "identical samples");
+    var dz: f64 = kr.statistic;
+    var pz: f64 = kr.p_value;
+    assert(dz == 0.0 && pz == 1.0 && kr.reject == 0, "D = 0, p = 1");
+    put(a, 0, 1.0);
+    put(a, 1, 1.0);
+    put(a, 2, 2.0);
+    put(a, 3, 2.0);
+    put(b, 0, 1.0);
+    put(b, 1, 2.0);
+    put(b, 2, 2.0);
+    put(b, 3, 2.0);
+    assert_eq(pmn_ks_two_sample(&kr, a, 4, b, 4, 0.05), PMN_ERR_NONE, "ties across the samples");
+    var dt: f64 = kr.statistic;
+    var dtd: f64 = dt - 0.25;
+    assert(f64_abs(dtd) < 0.000000000000001, "D = 0.25");
+    var kr2: PmnKsResult;
+    assert_eq(kr.to_json(sb), PMN_ERR_NONE, "KS to_json");
+
+    test_group("1.3.0's serde test, and the port's owned name");
+    var doc = alloc(256);
+    var dn = tr_doc(doc);
+    assert_eq(PmnTestResult_from_json(&tr, doc, dn), PMN_ERR_NONE, "a TestResult document");
+    var s15: f64 = tr.statistic;
+    assert(tr.name_len == 4 && memeq(tr.name, "test", 4) == 1 && s15 == 1.5 && tr.reject == 1 && tr.owned == 1,
+        "the name owned, the fields read");
+    var tr2: PmnTestResult;
+    assert_eq(PmnTestResult_clone(&tr2, &tr), PMN_ERR_NONE, "clone");
+    assert(tr2.name != tr.name && tr2.owned == 1, "the clone owns its own name");
+    var sb2 = str_builder_new();
+    assert_eq(tr2.to_json(sb2), PMN_ERR_NONE, "to_json");
+    var same = 0;
+    if (load64(sb2 + 8) == dn && memeq(load64(sb2), doc, dn) == 1) { same = 1; }
+    assert(same == 1, "written back byte for byte");
+    PmnTestResult_drop(&tr2);
+    PmnTestResult_drop(&tr);
+    assert(tr.name == 0 && tr.name_len == 0, "dropped");
+    assert_eq(pmn_t_test_one_sample(0, a, 3, 0.0, 0.05), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(pmn_ks_one_sample(&kr, a, 3, 0, 0, 0.05), PMN_ERR_INVALID_PARAMETER, "a null CDF");
+
+    test_group("1.3.0's confidence-interval tests (part b2)");
+    var ci: PmnConfidenceInterval;
+    var cd[80];
+    put(&cd, 0, 4.5);
+    put(&cd, 1, 5.2);
+    put(&cd, 2, 4.8);
+    put(&cd, 3, 5.1);
+    put(&cd, 4, 5.3);
+    put(&cd, 5, 4.9);
+    put(&cd, 6, 5.0);
+    put(&cd, 7, 5.2);
+    put(&cd, 8, 4.7);
+    put(&cd, 9, 5.1);
+    assert_eq(pmn_ci_mean(&ci, &cd, 10, 0.95), PMN_ERR_NONE, "a 95% CI of the mean");
+    var cl: f64 = ci.lower;
+    var cu: f64 = ci.upper;
+    var ce: f64 = ci.estimate;
+    var cc: f64 = ci.confidence_level;
+    assert(cl < 5.0 && cu > 5.0 && cc == 0.95 && cl < ce && ce < cu, "it contains 5, the estimate inside");
+    fill(a, 10, 1.0, 1.0);
+    assert_eq(pmn_ci_mean(&ci, a, 10, 0.90), PMN_ERR_NONE, "90%");
+    var l90: f64 = ci.lower;
+    var u90: f64 = ci.upper;
+    assert_eq(pmn_ci_mean(&ci, a, 10, 0.99), PMN_ERR_NONE, "99%");
+    var l99: f64 = ci.lower;
+    var u99: f64 = ci.upper;
+    var w90: f64 = u90 - l90;
+    var w99: f64 = u99 - l99;
+    assert(w99 > w90, "the 99% interval is wider");
+    fill(a, 5, 1.0, 1.0);
+    fill(b, 5, 1.5, 1.0);
+    assert_eq(pmn_ci_two_means(&ci, a, 5, b, 5, 0.95), PMN_ERR_NONE, "two overlapping samples");
+    var dl: f64 = ci.lower;
+    var du: f64 = ci.upper;
+    assert(dl < -0.5 && du > -0.5, "the interval contains −0.5");
+    put(a, 0, 100.0);
+    put(a, 1, 101.0);
+    put(a, 2, 99.0);
+    put(a, 3, 100.5);
+    put(a, 4, 100.2);
+    put(b, 0, 1.0);
+    put(b, 1, 2.0);
+    put(b, 2, 1.5);
+    put(b, 3, 1.8);
+    put(b, 4, 2.2);
+    assert_eq(pmn_ci_two_means(&ci, a, 5, b, 5, 0.95), PMN_ERR_NONE, "two disjoint samples");
+    var dj: f64 = ci.lower;
+    assert(dj > 0.0, "the interval excludes 0");
+    assert_eq(pmn_ci_proportion(&ci, 50, 100, 0.95), PMN_ERR_NONE, "50 of 100");
+    var pl: f64 = ci.lower;
+    var pu: f64 = ci.upper;
+    var pe: f64 = ci.estimate;
+    assert(pl < 0.5 && pu > 0.5 && pe == 0.5, "contains ½, p̂ = ½");
+    assert_eq(pmn_ci_proportion(&ci, 0, 100, 0.95), PMN_ERR_NONE, "0 of 100");
+    var p0l: f64 = ci.lower;
+    var p0e: f64 = ci.estimate;
+    assert(p0l >= 0.0 && p0e == 0.0, "clipped at 0");
+    assert_eq(pmn_ci_proportion(&ci, 100, 100, 0.95), PMN_ERR_NONE, "100 of 100");
+    var p1u: f64 = ci.upper;
+    var p1e: f64 = ci.estimate;
+    assert(p1u <= 1.0 && p1e == 1.0, "clipped at 1");
+    fill(a, 3, 1.0, 1.0);
+    assert_eq(pmn_ci_mean(&ci, a, 3, 0.0), PMN_ERR_INVALID_PARAMETER, "level 0");
+    assert_eq(pmn_ci_mean(&ci, a, 3, 1.0), PMN_ERR_INVALID_PARAMETER, "level 1");
+    assert_eq(pmn_ci_mean(&ci, a, 1, 0.95), PMN_ERR_INVALID_SAMPLE, "one observation");
+    assert_eq(pmn_ci_proportion(&ci, 5, 0, 0.95), PMN_ERR_INVALID_SAMPLE, "n = 0");
+    assert_eq(pmn_ci_proportion(&ci, 10, 5, 0.95), PMN_ERR_INVALID_SAMPLE, "successes > n");
+    assert_eq(pmn_ci_proportion(&ci, 0 - 1, 0 - 1, 0.95), PMN_ERR_NONE, "u64::MAX of u64::MAX: unsigned words");
+    var cdoc = "{\"lower\":1.5,\"upper\":3.5,\"estimate\":2.5,\"confidence_level\":0.95}";
+    var ci2: PmnConfidenceInterval;
+    assert_eq(PmnConfidenceInterval_from_json(&ci2, cdoc, strlen(cdoc)), PMN_ERR_NONE, "a ConfidenceInterval document");
+    var sb3 = str_builder_new();
+    assert_eq(ci2.to_json(sb3), PMN_ERR_NONE, "written back");
+    assert(load64(sb3 + 8) == strlen(cdoc) && memeq(load64(sb3), cdoc, strlen(cdoc)) == 1, "byte for byte");
+
+    test_group("1.3.0's quantile tests (part b2)");
+    var z975: f64 = _pmn_z_quantile(0.975);
+    var zd: f64 = z975 - 1.959963984540054;
+    assert(f64_abs(zd) < 0.00000000000001, "z(0.975) to 1e-14");
+    var z10: f64 = _pmn_z_quantile(0.0000000001);
+    var z10r: f64 = rel(z10, -6.361340902404056);
+    assert(z10r < 0.0000000000001, "z(1e-10) to 1e-13 relative");
+    var zh: f64 = _pmn_z_quantile(0.5);
+    assert(zh == 0.0, "z(½) = 0");
+    var zps[48];
+    put(&zps, 0, 0.0000000000000000000000000000000000001);
+    put(&zps, 1, 0.00000000000000000001);
+    put(&zps, 2, 0.001);
+    put(&zps, 3, 0.3);
+    put(&zps, 4, 0.9);
+    put(&zps, 5, 0.999999);
+    var zb = 1;
+    for (var zi = 0; zi < 6; zi = zi + 1) {
+        var zp: f64 = load64(&zps + zi * 8);
+        var zz: f64 = _pmn_z_quantile(zp);
+        var bk: f64 = _pmn_normal_cdf(zz);
+        if (rel(bk, zp) >= 0.000000000001) { zb = 0; }
+    }
+    assert(zb == 1, "Φ(z(p)) = p to 1e-12 at six p");
+    var zn: f64 = _pmn_z_quantile(nan);
+    assert(zn != zn, "z(NaN) is NaN");
+    var tq: f64 = _pmn_t_quantile(0.975, 1.0);
+    assert(rel(tq, 12.706204736174696) < 0.0000000001, "t(0.975; 1) = tan(0.475π) to 1e-10");
+    var tps[32];
+    var tds[32];
+    put(&tps, 0, 0.9);
+    put(&tds, 0, 3.0);
+    put(&tps, 1, 0.995);
+    put(&tds, 1, 10.0);
+    put(&tps, 2, 0.01);
+    put(&tds, 2, 50.0);
+    put(&tps, 3, 0.975);
+    put(&tds, 3, 1000000.0);
+    var tb = 1;
+    for (var ti = 0; ti < 4; ti = ti + 1) {
+        var tp: f64 = load64(&tps + ti * 8);
+        var td: f64 = load64(&tds + ti * 8);
+        var tqv: f64 = _pmn_t_quantile(tp, td);
+        var tc: f64 = _pmn_student_t_cdf(tqv, td);
+        var tdd: f64 = tc - tp;
+        if (f64_abs(tdd) >= 0.000000000001) { tb = 0; }
+    }
+    assert(tb == 1, "F_t(t(p)) = p to 1e-12 at four (p, df)");
+    var tn: f64 = _pmn_t_quantile(nan, 3.0);
+    assert(tn != tn, "t(NaN) is NaN");
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

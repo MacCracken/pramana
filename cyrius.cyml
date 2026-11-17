@@ -70,4 +70,5 @@ modules = [
     "src/descriptive.cyr",
     "src/kde.cyr",
     "src/pca.cyr",
+    "src/hypothesis.cyr",
 ]

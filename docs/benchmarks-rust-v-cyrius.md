@@ -907,3 +907,20 @@ The 200,000 kernel evaluations each take one exp. The correctly rounded exp cost
 5.7 ns (M1 part b1's record), so about 9.2 ms of the 11.9 ms is ADR 009's price for exp's last bit; the rest is the
 codegen's 3–4× on the arithmetic.
 
+## M4 part b1: the hypothesis tests (2026-11-17)
+
+`tests/hypothesis.bcyr` runs 1.3.0's three hypothesis criterion bodies. Three pinned runs at a load average of
+1.4–1.8.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `hypothesis/t_test_one_sample_1000` | 1.61 µs | 19.2–19.3 µs | 11.9× |
+| `hypothesis/ks_two_sample_1000` | 23.0 µs | 203–205 µs | 8.9× |
+| `hypothesis/chi_squared_test_20` | 0.157 µs | 11.0 µs | 70× |
+
+- **Where the time goes.** Each t-test and χ² p-value is one T1 special function in double-double arithmetic
+  (ADR 009): the incomplete beta at a = 499.5 for the t-test, the incomplete gamma at a = 9.5 for the χ² test. 1.3.0's
+  continued fractions in plain doubles were up to 391 and 219 ulp off on the golden rows; the port's are within ADR
+  009's 8 and 4 ulp. The χ² row's 11 µs is almost all that one function. The KS row is two stable merge sorts (1,000
+  and 1,200 elements) and the walk, the codegen's ratio.
+
