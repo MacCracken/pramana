@@ -519,6 +519,13 @@ fn _par_json_write(fp, fl): i64 {
         _par_json_k = wkn + 3;
         e = wkd.to_json(sb);
         var wkx = PmnKernelDensity_drop(&wkd);
+    } elif (_par_eq(fp, fl, "json::write::PcaResult") == 1) {
+        var wpr: PmnPcaResult;
+        var wpk = _par_pca_from_toks(0, &wpr);
+        if (wpk < 0) { return 0 - 1; }
+        _par_json_k = wpk;
+        e = wpr.to_json(sb);
+        var wpx = PmnPcaResult_drop(&wpr);
     } elif (_par_eq(fp, fl, "json::write::Poisson") == 1) {
         var wpo: PmnPoisson;
         var wpl: f64 = _par_in(0);
@@ -754,6 +761,22 @@ fn _par_mvn_codec_new(m, k): i64 {
     return at - k;
 }
 
+# json::PcaResult rows (M4 part a3): the decoded lists, or the error.
+fn _par_json_pca(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var r: PmnPcaResult;
+    var e = PmnPcaResult_from_json(&r, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_pca(&r);
+    PmnPcaResult_drop(&r);
+    return 1;
+}
+
 # json::Kernel rows through the port's reader (M4 part a2).
 fn _par_json_kernel(): i64 {
     var n = 0;
@@ -817,6 +840,7 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::MultivariateNormal") == 1) { return _par_json_mvn(); }
     if (_par_eq(fp, fl, "json::KernelDensity") == 1) { return _par_json_kde(); }
     if (_par_eq(fp, fl, "json::Kernel") == 1) { return _par_json_kernel(); }
+    if (_par_eq(fp, fl, "json::PcaResult") == 1) { return _par_json_pca(); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -995,6 +1019,16 @@ fn _par_debug(fp, fl): i64 {
         if (PmnKernelDensity_new(&dkd, _par_ds_a, dkn, dkh, _par_in_kernel(dkn + 2)) != PMN_ERR_NONE) { return 0 - 1; }
         e = dkd.debug(sb, _par_in(dkn + 3));
         var dkx = PmnKernelDensity_drop(&dkd);
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::PcaResult") == 1) {
+        var dpr: PmnPcaResult;
+        var dpk = _par_pca_from_toks(0, &dpr);
+        if (dpk < 0 || dpk + 1 != _par_in_n) { return 0 - 1; }
+        e = dpr.debug(sb, _par_in(dpk));
+        var dpx = PmnPcaResult_drop(&dpr);
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -1682,6 +1716,19 @@ fn _par_linalg(fp, fl): i64 {
         for (var k = 0; k < nn; k = k + 1) { _par_got_f(load64(_par_la_o + k * 8)); }
         return 1;
     }
+    if (_par_eq(fp, fl, "linalg::eigen_symmetric") == 1) {
+        var tol: f64 = _par_in(nn + 2);
+        var e3 = _pmn_eigen_symmetric(_par_la_a, n, tol, _par_in(nn + 3), _par_la_b, _par_la_o);
+        if (e3 != PMN_ERR_NONE) {
+            _par_got_err(e3);
+            return 1;
+        }
+        _par_got_seq(n);
+        for (var k3 = 0; k3 < n; k3 = k3 + 1) { _par_got_f(load64(_par_la_b + k3 * 8)); }
+        _par_got_seq(nn);
+        for (var k4 = 0; k4 < nn; k4 = k4 + 1) { _par_got_f(load64(_par_la_o + k4 * 8)); }
+        return 1;
+    }
     if (_par_eq(fp, fl, "linalg::cholesky_solve") == 1) {
         if (_par_in_f64s(nn + 2, _par_la_b) != n) { return 0 - 1; }
         var e2 = _pmn_cholesky_solve(_par_la_a, n, _par_la_b, _par_la_o);
@@ -1753,9 +1800,9 @@ fn _par_kde(): i64 {
     return r;
 }
 
-# `correlation_matrix` rows: the variables, each a slice; the p × p matrix row-major or the error.
-fn _par_corr(): i64 {
-    var recs[256];
+# Reads the variables (slices) of a corr or pca row into _par_ds_a, their records into recs (16 at most); the count, or
+# -1 for a defect.
+fn _par_vars(recs): i64 {
     var p = 0;
     var k = 0;
     var used = 0;
@@ -1764,12 +1811,90 @@ fn _par_corr(): i64 {
         var n = _par_in(k);
         if (n < 0 || used + n > _PAR_DS_CAP) { return 0 - 1; }
         _par_in_f64s(k, _par_ds_a + used * 8);
-        store64(&recs + p * 16, _par_ds_a + used * 8);
-        store64(&recs + p * 16 + 8, n);
+        store64(recs + p * 16, _par_ds_a + used * 8);
+        store64(recs + p * 16 + 8, n);
         used = used + n;
         p = p + 1;
         k = k + 1 + n;
     }
+    return p;
+}
+
+# Appends a PcaResult's three lists as golden tokens.
+fn _par_got_pca(r: *PmnPcaResult): i64 {
+    var rows = r.n_components();
+    _par_got_seq(rows);
+    for (var i = 0; i < rows; i = i + 1) {
+        var c = r.component_len(i);
+        var rp = r.component(i);
+        _par_got_seq(c);
+        for (var j = 0; j < c; j = j + 1) { _par_got_f(load64(rp + j * 8)); }
+    }
+    var ne = r.n_eigenvalues();
+    _par_got_seq(ne);
+    for (var k = 0; k < ne; k = k + 1) { _par_got_f(load64(r.eigenvalues() + k * 8)); }
+    var nr = r.n_ratios();
+    _par_got_seq(nr);
+    for (var q = 0; q < nr; q = q + 1) { _par_got_f(load64(r.explained_variance_ratio() + q * 8)); }
+    return 1;
+}
+
+# A PcaResult built from golden tokens at k0 (the codec's and Debug's rows), into out: the next token, or -1.
+fn _par_pca_from_toks(k0, out: *PmnPcaResult): i64 {
+    var k = k0;
+    if (k >= _par_in_n) { return 0 - 1; }
+    var rows = _par_in(k);
+    k = k + 1;
+    var cells = 0;
+    for (var i = 0; i < rows; i = i + 1) {
+        if (k >= _par_in_n) { return 0 - 1; }
+        var c = _par_in(k);
+        cells = cells + c;
+        k = k + 1 + c;
+    }
+    if (k >= _par_in_n) { return 0 - 1; }
+    var ne = _par_in(k);
+    var kr = k + 1 + ne;
+    if (kr >= _par_in_n) { return 0 - 1; }
+    var nr = _par_in(kr);
+    if (_pmn_pca_alloc(out, rows, cells, ne, nr) != PMN_ERR_NONE) { return 0 - 1; }
+    k = k0 + 1;
+    var at = 0;
+    for (var i2 = 0; i2 < rows; i2 = i2 + 1) {
+        var c2 = _par_in(k);
+        store64(out.offs + i2 * 8, at);
+        for (var j = 0; j < c2; j = j + 1) { store64(out.comp + (at + j) * 8, _par_in(k + 1 + j)); }
+        at = at + c2;
+        k = k + 1 + c2;
+    }
+    store64(out.offs + rows * 8, at);
+    for (var e = 0; e < ne; e = e + 1) { store64(out.evals + e * 8, _par_in(k + 1 + e)); }
+    k = k + 1 + ne;
+    for (var q = 0; q < nr; q = q + 1) { store64(out.ratio + q * 8, _par_in(k + 1 + q)); }
+    return k + 1 + nr;
+}
+
+# `pca` rows: the variables; the components, eigenvalues and ratios, or the error.
+fn _par_pca(): i64 {
+    var recs[256];
+    var p = _par_vars(&recs);
+    if (p < 0) { return 0 - 1; }
+    var r: PmnPcaResult;
+    var e = pmn_pca(&r, &recs, p);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_pca(&r);
+    PmnPcaResult_drop(&r);
+    return 1;
+}
+
+# `correlation_matrix` rows: the variables, each a slice; the p × p matrix row-major or the error.
+fn _par_corr(): i64 {
+    var recs[256];
+    var p = _par_vars(&recs);
+    if (p < 0) { return 0 - 1; }
     var e = pmn_correlation_matrix(&recs, p, _par_ds_o, _PAR_DS_CAP);
     if (e != PMN_ERR_NONE) {
         _par_got_err(e);
@@ -1787,6 +1912,7 @@ fn _par_descriptive(fp, fl): i64 {
     if (_par_ds_a == 0 || _par_ds_b == 0 || _par_ds_o == 0) { return 0 - 1; }
     if (_par_eq(fp, fl, "KernelDensity::evaluate_grid") == 1) { return _par_kde(); }
     if (_par_eq(fp, fl, "descriptive::correlation_matrix") == 1) { return _par_corr(); }
+    if (_par_eq(fp, fl, "descriptive::pca") == 1) { return _par_pca(); }
     var n = _par_in(0);
     if (n < 0 || n > _PAR_DS_CAP) { return 0 - 1; }
     _par_in_f64s(0, _par_ds_a);
@@ -1960,6 +2086,8 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "math::beta_inc") == 1) { return _par_c_beta_bound(); }     # T1 (part b5)
     if (_par_eq(fp, fl, "math::regularized_incomplete_beta") == 1) { return 0; }
     if (_par_eq(fp, fl, "KernelDensity::evaluate_grid") == 1) { return 0; }   # exp and powf (M4 part a2)
+    if (_par_eq(fp, fl, "descriptive::pca") == 1) { return 0; }                # atan, cos, sin (part a3)
+    if (_par_eq(fp, fl, "linalg::eigen_symmetric") == 1) { return 0; }
     if (_par_eq(fp, fl, "Normal::pdf") == 1) { return 0; }      # exp (M3 part a1)
     if (_par_eq(fp, fl, "Normal::cdf") == 1) { return 0; }      # downstream of the T1 Φ (ADR 009 as amended)
     if (_par_eq(fp, fl, "Normal::sample") == 1) { return 0; }   # Box–Muller: ln and cos

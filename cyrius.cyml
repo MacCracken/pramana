@@ -69,4 +69,5 @@ modules = [
     "src/sort.cyr",
     "src/descriptive.cyr",
     "src/kde.cyr",
+    "src/pca.cyr",
 ]

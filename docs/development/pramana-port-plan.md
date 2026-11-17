@@ -54,7 +54,7 @@
 > `scripts/golden/digests.txt` holds its sha256. Where this plan says "the oracle" for M4 onward, read "Python's model
 > of 1.3.0, from `rust-old/src`", and where it says "Rust twin", read "the twin's recorded numbers"; new proofs are
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
-> part a1, the descriptive statistics, and part a2, KDE and the correlation matrix, are done.
+> parts a1–a3, the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA, are done.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1244,7 +1244,9 @@ a T1 function is recorded against T1:
   `correlation_matrix`. 1,212 more `descriptive` rows, 145 codec rows and 40 Debug rows; `descriptive.cr.tsv` 3 rows;
   every row passing on the first replay, at 0 ulp, on three targets ✅;
 - **a3:** hisab 1.4.0's cyclic Jacobi `eigen_symmetric(tol, max_iter)` in `src/linalg.cyr` (ledger L6) and `pca`
-  with `PcaResult` (owned) in `src/pca.cyr`;
+  with `PcaResult` (owned) in `src/pca.cyr`. 123 `linalg` and 78 `descriptive` rows, 114 codec and 22 Debug rows;
+  `linalg.cr.tsv` 9 rows, `descriptive.cr.tsv` 3 more; ADR 007 row 17 (a NaN eigenvalue's sign); every row passing at
+  0 ulp on three targets ✅;
 - **b1:** `src/hypothesis.cyr`: `TestResult`, `AnovaResult` and `KsResult`; the one- and two-sample t-tests, the χ²
   test (exact p), the one-way ANOVA, and the two KS tests (ties, the one-sample CDF a callback, D7);
 - **b2:** `ConfidenceInterval`, `ci_mean`, `ci_two_means`, `ci_proportion`, and the quantiles they use, `t_quantile`

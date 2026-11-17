@@ -96,4 +96,15 @@ def emit():
                      ["Gaussian", "Epanechnikov", "Uniform", "Triangular"][k % 4]))
     for data, h, k in kdes:
         both("debug::KernelDensity", [v(len(data))] + [f(x) for x in data] + [f(h), e("Kernel", k)])
+    # M4 part a3: PcaResult, its lists of any shape
+    from .m_json import pca_toks
+    g3 = Rng(0x1F83D9AB5BE0CD19)
+    pcas = [([[1.0, 0.0], [0.0, 1.0]], [2.0, 1.0], [0.667, 0.333]), ([], [], []), ([[1.0], [2.0, 3.0], []], [5e-324],
+            [MAXF, -0.0])]
+    for k in range(8):
+        p = g3.int(1, 4)
+        pcas.append(([[g3.signed_log_uniform(-20.0, 20.0) for _ in range(p)] for _ in range(p)],
+                     [g3.log_uniform(-10.0, 10.0) for _ in range(p)], [g3.unit() for _ in range(p)]))
+    for c in pcas:
+        both("debug::PcaResult", pca_toks(*c))
     return m

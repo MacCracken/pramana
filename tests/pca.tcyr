@@ -1,0 +1,216 @@
+# pca.tcyr — src/linalg.cyr's Jacobi (hisab 1.4.0's eigen_symmetric, ledger L6) and src/pca.cyr (M4 part a3).
+#
+# tests/parity.tcyr replays the values (tests/golden/linalg.tsv, descriptive.tsv, json.tsv, debug.tsv). These carry
+# hisab's own eigen_symmetric tests (num/mod.rs) and 1.3.0's PCA tests (descriptive.rs: pca_*) over, and pin what a
+# replay doesn't: the buffer rules, a ragged document, the clone and the drop.
+
+include "tests/lib.cyr"
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn near(x: f64, y: f64, tol: f64): i64 {
+    var d: f64 = x - y;
+    if (f64_abs(d) < tol) { return 1; }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var a = alloc(64 * 8);
+    var vals = alloc(64 * 8);
+    var vecs = alloc(64 * 8);
+
+    test_group("hisab 1.4.0's eigen_symmetric tests (diagonal, 2×2, A·v = λv, orthonormal, 1×1, negative, empty)");
+    for (var z = 0; z < 9; z = z + 1) { store64(a + z * 8, 0); }
+    put(a, 0, 5.0);
+    put(a, 4, 3.0);
+    put(a, 8, 1.0);
+    assert_eq(_pmn_eigen_symmetric(a, 3, 0.000000000001, 1000, vals, vecs), PMN_ERR_NONE, "diag(5, 3, 1)");
+    var l0: f64 = load64(vals);
+    var l1: f64 = load64(vals + 8);
+    var l2: f64 = load64(vals + 16);
+    assert(l0 == 5.0 && l1 == 3.0 && l2 == 1.0, "λ = 5, 3, 1 by descending |λ|");
+    put(a, 0, 2.0);
+    put(a, 1, 1.0);
+    put(a, 2, 1.0);
+    put(a, 3, 2.0);
+    assert_eq(_pmn_eigen_symmetric(a, 2, 0.000000000001, 1000, vals, vecs), PMN_ERR_NONE, "[[2, 1], [1, 2]]");
+    var m0: f64 = load64(vals);
+    var m1: f64 = load64(vals + 8);
+    assert(near(m0, 3.0, 0.00000001) == 1 && near(m1, 1.0, 0.00000001) == 1, "λ = 3, 1 (the π/4 rotation)");
+    var m3[72];
+    put(&m3, 0, 4.0);
+    put(&m3, 1, 1.0);
+    put(&m3, 2, 0.0);
+    put(&m3, 3, 1.0);
+    put(&m3, 4, 3.0);
+    put(&m3, 5, 1.0);
+    put(&m3, 6, 0.0);
+    put(&m3, 7, 1.0);
+    put(&m3, 8, 2.0);
+    assert_eq(_pmn_eigen_symmetric(&m3, 3, 0.000000000001, 1000, vals, vecs), PMN_ERR_NONE, "the 3 × 3 tridiagonal");
+    var av_ok = 1;
+    var orth_ok = 1;
+    for (var k = 0; k < 3; k = k + 1) {
+        var lam: f64 = load64(vals + k * 8);
+        for (var i = 0; i < 3; i = i + 1) {
+            var av: f64 = 0.0;
+            for (var j = 0; j < 3; j = j + 1) {
+                var aij: f64 = load64(&m3 + (i * 3 + j) * 8);
+                var vj: f64 = load64(vecs + (k * 3 + j) * 8);
+                var pr: f64 = aij * vj;
+                av = av + pr;
+            }
+            var vi: f64 = load64(vecs + (k * 3 + i) * 8);
+            var lv: f64 = lam * vi;
+            if (near(av, lv, 0.000001) == 0) { av_ok = 0; }
+        }
+        for (var k2 = 0; k2 < 3; k2 = k2 + 1) {
+            var dot: f64 = 0.0;
+            for (var q = 0; q < 3; q = q + 1) {
+                var x1: f64 = load64(vecs + (k * 3 + q) * 8);
+                var x2: f64 = load64(vecs + (k2 * 3 + q) * 8);
+                var pq: f64 = x1 * x2;
+                dot = dot + pq;
+            }
+            var want: f64 = 0.0;
+            if (k == k2) { want = 1.0; }
+            if (near(dot, want, 0.000001) == 0) { orth_ok = 0; }
+        }
+    }
+    assert(av_ok == 1, "A·v = λv for each pair");
+    assert(orth_ok == 1, "the eigenvectors are orthonormal");
+    put(a, 0, 7.0);
+    assert_eq(_pmn_eigen_symmetric(a, 1, 0.000000000001, 100, vals, vecs), PMN_ERR_NONE, "[[7]]");
+    var s7: f64 = load64(vals);
+    var v7: f64 = load64(vecs);
+    assert(s7 == 7.0 && v7 == 1.0, "λ = 7, v = [1]");
+    put(a, 0, -2.0);
+    put(a, 1, 0.0);
+    put(a, 2, 0.0);
+    put(a, 3, -5.0);
+    assert_eq(_pmn_eigen_symmetric(a, 2, 0.000000000001, 100, vals, vecs), PMN_ERR_NONE, "diag(−2, −5)");
+    var n0: f64 = load64(vals);
+    var n1: f64 = load64(vals + 8);
+    assert(n0 == -5.0 && n1 == -2.0, "λ = −5, −2 by descending |λ|");
+    assert_eq(_pmn_eigen_symmetric(a, 0, 0.000000000001, 100, vals, vecs), PMN_ERR_INVALID_PARAMETER, "empty: refused");
+    assert_eq(_pmn_eigen_symmetric(a, 2, 0.000000000001, 100, a, vecs), PMN_ERR_INVALID_PARAMETER, "vals over a");
+    var nb = _pmn_eigen_symmetric(a, 2, 0.000000000001, 0 - 1, vals, vecs);
+    assert_eq(nb, PMN_ERR_INVALID_PARAMETER, "a negative budget");
+
+    test_group("1.3.0's PCA tests (ratios sum to 1, dominant component, descending, orthogonal, serde, refusals)");
+    var xs = alloc(100 * 8);
+    var ys = alloc(100 * 8);
+    var recs[64];
+    put(xs, 0, 1.0);
+    put(xs, 1, 2.0);
+    put(xs, 2, 3.0);
+    put(xs, 3, 4.0);
+    put(xs, 4, 5.0);
+    put(ys, 0, 2.1);
+    put(ys, 1, 3.9);
+    put(ys, 2, 6.1);
+    put(ys, 3, 7.9);
+    put(ys, 4, 10.1);
+    store64(&recs, xs);
+    store64(&recs + 8, 5);
+    store64(&recs + 16, ys);
+    store64(&recs + 24, 5);
+    var r: PmnPcaResult;
+    assert_eq(pmn_pca(&r, &recs, 2), PMN_ERR_NONE, "pca of y ≈ 2x");
+    var tr: f64 = 0.0;
+    for (var t = 0; t < r.n_ratios(); t = t + 1) {
+        var rv: f64 = load64(r.explained_variance_ratio() + t * 8);
+        tr = tr + rv;
+    }
+    assert(near(tr, 1.0, 0.000001) == 1, "the ratios sum to 1");
+    PmnPcaResult_drop(&r);
+    for (var u = 0; u < 100; u = u + 1) {
+        var uf: f64 = f64_from(u);
+        put(xs, u, uf);
+        var su: f64 = _pmn_sin(uf);
+        var s01: f64 = 0.01 * su;
+        var twice: f64 = 2.0 * uf;
+        put(ys, u, twice + s01);
+    }
+    store64(&recs + 8, 100);
+    store64(&recs + 24, 100);
+    assert_eq(pmn_pca(&r, &recs, 2), PMN_ERR_NONE, "pca of 2x + 0.01 sin x");
+    var r0: f64 = load64(r.explained_variance_ratio());
+    assert(r0 > 0.99, "the first component explains > 99%");
+    PmnPcaResult_drop(&r);
+    put(xs, 0, 1.0);
+    put(xs, 1, 3.0);
+    put(xs, 2, 2.0);
+    put(xs, 3, 5.0);
+    put(xs, 4, 4.0);
+    put(ys, 0, 5.0);
+    put(ys, 1, 1.0);
+    put(ys, 2, 4.0);
+    put(ys, 3, 2.0);
+    put(ys, 4, 3.0);
+    store64(&recs + 8, 5);
+    store64(&recs + 24, 5);
+    assert_eq(pmn_pca(&r, &recs, 2), PMN_ERR_NONE, "pca of two scrambles");
+    var e0: f64 = load64(r.eigenvalues());
+    var e1: f64 = load64(r.eigenvalues() + 8);
+    assert(e0 >= e1, "the eigenvalues descend");
+    var c0 = r.component(0);
+    var c1 = r.component(1);
+    var d0: f64 = load64(c0);
+    var d1: f64 = load64(c1);
+    var d2: f64 = load64(c0 + 8);
+    var d3: f64 = load64(c1 + 8);
+    var dp1: f64 = d0 * d1;
+    var dp2: f64 = d2 * d3;
+    var dot2: f64 = dp1 + dp2;
+    assert(near(dot2, 0.0, 0.000001) == 1 && r.component_len(0) == 2, "the components are orthogonal");
+    var sb = str_builder_new();
+    assert_eq(r.to_json(sb), PMN_ERR_NONE, "to_json");
+    var r2: PmnPcaResult;
+    assert_eq(PmnPcaResult_from_json(&r2, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "from_json of its text");
+    var same = 1;
+    if (r2.n_components() != 2 || r2.n_eigenvalues() != 2 || r2.n_ratios() != 2) { same = 0; }
+    for (var w = 0; w < 2; w = w + 1) {
+        if (load64(r2.eigenvalues() + w * 8) != load64(r.eigenvalues() + w * 8)) { same = 0; }
+        for (var w2 = 0; w2 < 2; w2 = w2 + 1) {
+            if (load64(r2.component(w) + w2 * 8) != load64(r.component(w) + w2 * 8)) { same = 0; }
+        }
+    }
+    assert(same == 1, "a round trip keeps every bit");
+    var r3: PmnPcaResult;
+    assert_eq(PmnPcaResult_clone(&r3, &r), PMN_ERR_NONE, "clone");
+    assert(r3.component(0) != r.component(0), "the clone owns its own block");
+    PmnPcaResult_drop(&r3);
+    PmnPcaResult_drop(&r2);
+    PmnPcaResult_drop(&r);
+    assert(r.n_components() == 0 && r.component(0) == 0, "a dropped one has nothing");
+    assert_eq(r.to_json(sb), PMN_ERR_INVALID_PARAMETER, "a dropped one refuses to_json");
+    assert_eq(pmn_pca(&r, &recs, 1), PMN_ERR_INVALID_SAMPLE, "fewer than 2 variables");
+    store64(&recs + 24, 4);
+    assert_eq(pmn_pca(&r, &recs, 2), PMN_ERR_DIMENSION_MISMATCH, "lengths 5 and 4");
+    assert_eq(pmn_pca(0, &recs, 2), PMN_ERR_INVALID_PARAMETER, "a null out");
+
+    test_group("a ragged document, as serde's derive reads one");
+    var doc = "{\"components\":[[1.0],[2.0,3.0],[]],\"eigenvalues\":[5e-324],\"explained_variance_ratio\":[]}";
+    assert_eq(PmnPcaResult_from_json(&r, doc, strlen(doc)), PMN_ERR_NONE, "rows of lengths 1, 2 and 0");
+    assert(r.n_components() == 3 && r.component_len(0) == 1 && r.component_len(1) == 2 && r.component_len(2) == 0,
+        "the row lengths kept");
+    var c12: f64 = load64(r.component(1) + 8);
+    assert(c12 == 3.0 && r.n_eigenvalues() == 1 && r.n_ratios() == 0, "the entries kept");
+    var sb2 = str_builder_new();
+    assert_eq(r.to_json(sb2), PMN_ERR_NONE, "written back");
+    var back = "{\"components\":[[1.0],[2.0,3.0],[]],\"eigenvalues\":[5e-324],\"explained_variance_ratio\":[]}";
+    assert(load64(sb2 + 8) == strlen(back) && memeq(load64(sb2), back, strlen(back)) == 1, "byte for byte");
+    PmnPcaResult_drop(&r);
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

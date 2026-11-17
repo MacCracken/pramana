@@ -99,7 +99,54 @@ def emit():
             all_stats(m, xs, ps=P_GRID)
     kde_rows(m, Rng(0xA54FF53A5F1D36F1))
     corr_rows(m, Rng(0x510E527FADE682D1))
+    pca_rows(m, Rng(0x9B05688C2B3E6C1F))
     return m
+
+
+def pca_row(m, vs):
+    ins = []
+    for x in vs:
+        ins += slice_(x)
+    row(m, V.DESC, "descriptive::pca", "C", ins)
+
+
+def pca_rows(m, g):
+    """`pca(variables)` (part a3): class C, its Jacobi's angle from atan, cos and sin."""
+    x = [1.0, 2.0, 3.0, 4.0, 5.0]
+    pca_row(m, [])
+    pca_row(m, [x])
+    pca_row(m, [[1.0], [2.0]])
+    pca_row(m, [x, [1.0, 2.0]])
+    pca_row(m, [x, [1.0, NAN, 3.0, 4.0, 5.0]])
+    pca_row(m, [x, [1.0, INF, 3.0, 4.0, 5.0]])
+    pca_row(m, [x, [2.1, 3.9, 6.1, 7.9, 10.1]])
+    xs = [float(j) for j in range(100)]
+    pca_row(m, [xs, [2.0 * v + 0.01 * V._libm.sin(v) for v in xs]])
+    pca_row(m, [[1.0, 3.0, 2.0, 5.0, 4.0], [5.0, 1.0, 4.0, 2.0, 3.0]])
+    pca_row(m, [x, [5.0, 3.0, 1.0, 4.0, 2.0]])
+    pca_row(m, [x, [3.0] * 5])                                    # a constant variable: a zero eigenvalue
+    pca_row(m, [[2.0] * 4, [3.0] * 4])                            # all constant: ratios 0
+    pca_row(m, [x, x])                                            # duplicated: rank 1
+    pca_row(m, [x, [-v for v in x]])
+    pca_row(m, [x, x, x])
+    pca_row(m, [[1e300, -1e300, 0.0], [1.0, 2.0, 3.0]])
+    pca_row(m, [[1e-300, 2e-300, 4e-300], [1.0, 2.0, 3.0]])
+    pca_row(m, [[-0.0, 0.0], [0.0, -0.0]])
+    for _ in range(60):
+        p = g.int(2, 6)
+        n = g.int(2, 40)
+        base = [g.uniform(-10.0, 10.0) for _ in range(n)]
+        vs = []
+        for j in range(p):
+            r = g.int(0, 2)
+            if r == 0:
+                vs.append([g.uniform(-10.0, 10.0) for _ in range(n)])
+            elif r == 1:
+                a = g.uniform(-3.0, 3.0)
+                vs.append([a * b + g.uniform(-0.5, 0.5) for b in base])
+            else:
+                vs.append([float(g.int(0, 3)) for _ in range(n)])
+        pca_row(m, vs)
 
 
 KERNELS = ["Gaussian", "Epanechnikov", "Uniform", "Triangular"]

@@ -664,6 +664,7 @@ def emit():
     binomial(m, g)
     multivariate_normal(m, g)
     kernel_density(m, Rng(0x3C6EF372FE94F82B))
+    pca_result(m, Rng(0xA54FF53A5F1D36F1))
     return m
 
 def kde_toks(data, h, k):
@@ -691,3 +692,33 @@ def kernel_density(m, g):
         read(m, "json::KernelDensity", d)
     for c in cases:
         write(m, "KernelDensity", kde_toks(*c))
+
+
+def pca_toks(comps, ev, ra):
+    out = [v(len(comps))]
+    for r in comps:
+        out += [v(len(r))] + [f(x) for x in r]
+    return out + [v(len(ev))] + [f(x) for x in ev] + [v(len(ra))] + [f(x) for x in ra]
+
+
+def pca_result(m, g):
+    """M4 part a3: PcaResult's derived codec (no validation: any shapes, ragged rows among them)."""
+    comps = B("[[1.0,0.0],[0.0,1.0]]", "[]", "[[]]", "[[1],[2,3]]", "[[1,null]]", "[1,2]", "null", "[[1e309]]", "{}",
+              "[[\"1\"]]", "[[1,2],]")
+    evs = B("[2.0,1.0]", "[]", "[1,null]", "null", "[[1]]", "[1e309]", "1")
+    docs = struct_docs([("components", b"[[1.0,0.0],[0.0,1.0]]"), ("eigenvalues", b"[2.0,1.0]"),
+                        ("explained_variance_ratio", b"[0.667,0.333]")], [comps, evs, evs])
+    docs += B('{"components":[[1,2]],"eigenvalues":[1],"explained_variance_ratio":[1],"x":1}', "[[[1]],[2],[3]]",
+              "[[[1]],[2]]", '{"components":[[1]],"eigenvalues":[1]}', "[]")
+    cases = [([[1.0, 0.0], [0.0, 1.0]], [2.0, 1.0], [0.667, 0.333]), ([], [], []), ([[1.0], [2.0, 3.0], []], [5e-324],
+             [MAXF, -0.0])]
+    for k in range(12):
+        p = g.int(1, 4)
+        cases.append(([[finite(g) for _ in range(p)] for _ in range(p)], [finite(g) for _ in range(p)],
+                      [g.unit() for _ in range(p)]))
+    docs += [V.serde_write("PcaResult", iter(parsed(pca_toks(*c)))) for c in cases]
+    for d in docs:
+        read(m, "json::PcaResult", d)
+    for c in cases:
+        write(m, "PcaResult", pca_toks(*c))
+

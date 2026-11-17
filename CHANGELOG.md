@@ -906,6 +906,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   exp misrounds (by up to 3 ulp), and the port gives the correctly rounded value; 10 codec rows are ADR 007 row 16's
   whole-document refusals. `json::Kernel` and `json::write::Kernel` now go through the port's own codec. Four mutants
   fail 4 to 48 rows each. `tests/kde.tcyr` (43 checks) carries 1.3.0's KDE and correlation tests over.
+- **M4 part a3: hisab's Jacobi and the PCA** (port plan §7; `src/linalg.cyr`, `src/pca.cyr`; ledger L6). hisab
+  1.4.0's cyclic Jacobi `eigen_symmetric(a, tol, max_iter)`, transcribed term for term (the π/4 angle below 1e-12,
+  rows then columns then V, no error when the budget runs out) on the correctly rounded atan, cos and sin, its order
+  by |λ| stable (ADR 007 row 14, widened); and 1.3.0's `pca` with `PcaResult` (owned, with `_drop` and Clone; its
+  derived codec reads rows of any lengths, as serde's does) and its Debug. 123 `linalg::eigen_symmetric` rows (the
+  empty, 1 × 1 and 2 × 2 edges, the angle's threshold at, below and above 1e-12 after one sweep and at convergence,
+  equal |λ|, tolerances 0 and ∞, budgets 0–3, seeded SPD and indefinite matrices to n = 10, Hilbert's and Lehmer's), 78
+  `descriptive::pca` rows, 114 codec rows and 22 Debug rows. Every row passes at 0 ulp on x86_64 ELF, PE and aarch64:
+  `linalg.cr.tsv` (9 rows) and `descriptive.cr.tsv` (3 more) hold the rows where a glibc misround of atan, cos or sin
+  moves the iteration, and the port gives the correctly rounded model's bits. Six mutants fail 1 to 171 rows each.
+  `tests/pca.tcyr` (37 checks) carries hisab's eigen tests and 1.3.0's PCA tests over.
+  - **A target dependence fixed** ([ADR 007 row 17](docs/decisions/007-port-api-divergences.md)): on overflowing data
+    an eigenvalue becomes NaN through 0·∞, with the hardware's default NaN sign (negative on x86, positive on
+    aarch64), and `total_cmp` sorted PCA's components by it, so aarch64 ordered one golden row's components otherwise.
+    Every NaN eigenvalue is now x86's default NaN before the sort; the model checks on every row that the rule gives
+    1.3.0's x86 order.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

@@ -1,0 +1,379 @@
+# pca.cyr — Rust 1.3.0's principal component analysis (src/descriptive.rs; port plan §4.1, D5, D11, D12; M4 part a3):
+# `pca` and `PcaResult`, its serde_json codec and derived Debug.
+#
+# `PcaResult` is owned (D11): the struct lives in caller storage and its three lists in one freelist block, freed by
+# `PmnPcaResult_drop`. Its derive reads any document of the right types, so the block holds what a document can: the
+# components as rows of any lengths (row offsets, then the entries), the eigenvalues and the ratios, each of any length.
+# `pca` fills one with a p × p result.
+#
+# `pca` is 1.3.0's in its operation order: the population covariance (means summed from −0.0 over n, each entry
+# Σ (x_i − m_i)(x_j − m_j) / n for j ≥ i, mirrored), hisab 1.4.0's Jacobi (src/linalg.cyr, ledger L6) with Rust's
+# tolerance 1e-12 and budget 1000, then the eigenvalues by descending total order (Rust's stable `sort_by` on
+# `total_cmp`), each floored at 0 by `f64::max`, and the ratios v / Σ v when the sum is positive, else 0. The Jacobi's
+# atan, cos and sin are the correctly rounded ones (ADR 009).
+
+# Rust's `PcaResult`: the components (one per row, sorted by descending eigenvalue), the eigenvalues and the explained
+# variance ratios. buf is the owned block; rows the number of components; offs the rows + 1 row offsets (in f64s, into
+# comp); ne and evals the eigenvalues; nr and ratio the ratios.
+struct PmnPcaResult {
+    buf;
+    rows;
+    offs;
+    comp;
+    ne;
+    evals;
+    nr;
+    ratio;
+}
+
+# Lays out a block for `rows` components of `cells` entries in all, ne eigenvalues and nr ratios, into out (the
+# offsets left for the caller to write). PMN_ERR_OUT_OF_MEMORY when it can't be had.
+#must_use
+fn _pmn_pca_alloc(out: *PmnPcaResult, rows, cells, ne, nr): i64 {
+    var words = rows + 1 + cells + ne + nr;
+    var blk = fl_alloc(words * 8 + 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    out.buf = blk;
+    out.rows = rows;
+    out.offs = blk;
+    out.comp = blk + (rows + 1) * 8;
+    out.ne = ne;
+    out.evals = out.comp + cells * 8;
+    out.nr = nr;
+    out.ratio = out.evals + ne * 8;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `pca(variables)`: vars holds p slices as 16-byte records (a pointer, then a count), Rust's `&[&[f64]]`; the
+# result into out (caller storage, owning a new block: drop it). PMN_ERR_INVALID_SAMPLE for fewer than 2 variables or
+# 2 observations, PMN_ERR_DIMENSION_MISMATCH for a variable of another length, PMN_ERR_INVALID_SAMPLE for a non-finite
+# value, in Rust's order; PMN_ERR_COMPUTATION_ERROR if the Jacobi refuses (it can't here: p ≥ 2); before them
+# PMN_ERR_INVALID_PARAMETER for a null out or vars, a negative count or a null variable with n > 0;
+# PMN_ERR_OUT_OF_MEMORY when the block or the scratch (2p² + p f64s, and the Jacobi's) can't be had. On a refusal out
+# is untouched.
+#must_use
+fn pmn_pca(out: *PmnPcaResult, vars, p): i64 {
+    if (out == 0 || p < 0 || (vars == 0 && p > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (p < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    var n = load64(vars + 8);
+    if (n < 0 || (load64(vars) == 0 && n > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    for (var i = 0; i < p; i = i + 1) {
+        var ni = load64(vars + i * 16 + 8);
+        if (ni < 0 || (load64(vars + i * 16) == 0 && ni > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+        if (ni != n) { return PMN_ERR_DIMENSION_MISMATCH; }
+    }
+    for (var a = 0; a < p; a = a + 1) {
+        var va = load64(vars + a * 16);
+        for (var k = 0; k < n; k = k + 1) {
+            var x: f64 = load64(va + k * 8);
+            if (_pmn_is_finite(x) == 0) { return PMN_ERR_INVALID_SAMPLE; }
+        }
+    }
+    var pp = p * p;
+    var s, slot = _pmn_scratch_take((3 * pp + 2 * p) * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var cov = s;
+    var evals = cov + pp * 8;
+    var evecs = evals + p * 8;
+    var means = evecs + pp * 8;
+    var idx = means + p * 8;
+    var nf: f64 = f64_from(n);
+    for (var b = 0; b < p; b = b + 1) {
+        var vb = load64(vars + b * 16);
+        var sum: f64 = pmn_sum(vb, n);
+        var m: f64 = sum / nf;
+        store64(means + b * 8, m);
+    }
+    for (var r = 0; r < p; r = r + 1) {
+        var xr = load64(vars + r * 16);
+        var mr: f64 = load64(means + r * 8);
+        for (var c = r; c < p; c = c + 1) {
+            var xc = load64(vars + c * 16);
+            var mc: f64 = load64(means + c * 8);
+            var acc: f64 = -0.0;
+            for (var k2 = 0; k2 < n; k2 = k2 + 1) {
+                var x1: f64 = load64(xr + k2 * 8);
+                var x2: f64 = load64(xc + k2 * 8);
+                var d1: f64 = x1 - mr;
+                var d2: f64 = x2 - mc;
+                var pr: f64 = d1 * d2;
+                acc = acc + pr;
+            }
+            var cv: f64 = acc / nf;
+            store64(cov + (r * p + c) * 8, cv);
+            store64(cov + (c * p + r) * 8, cv);
+        }
+    }
+    var tol: f64 = 0.000000000001;
+    var e = _pmn_eigen_symmetric(cov, p, tol, 1000, evals, evecs);
+    if (e != PMN_ERR_NONE) {
+        _pmn_scratch_give(s, slot);
+        if (e == PMN_ERR_OUT_OF_MEMORY) { return e; }
+        return PMN_ERR_COMPUTATION_ERROR;
+    }
+    # Rust's `indices.sort_by(|&a, &b| evals[b].total_cmp(&evals[a]))`: descending total order, stable. A NaN eigenvalue
+    # (overflowing data: 0·∞ in the rotations) takes the sign of the hardware's default NaN, negative on x86 and
+    # positive on aarch64, and `total_cmp` orders by it; so every NaN is first made x86's default NaN, and every target
+    # orders the components as 1.3.0 does on x86 (ADR 007 row 17).
+    for (var cn = 0; cn < p; cn = cn + 1) {
+        var ce: f64 = load64(evals + cn * 8);
+        if (ce != ce) { store64(evals + cn * 8, 0xFFF8000000000000); }
+    }
+    for (var q = 0; q < p; q = q + 1) {
+        var j = q - 1;
+        var lq: f64 = load64(evals + q * 8);
+        var go = 1;
+        while (go == 1 && j >= 0) {
+            var oj = load64(idx + j * 8);
+            var lj: f64 = load64(evals + oj * 8);
+            if (_pmn_total_cmp(lj, lq) < 0) {
+                store64(idx + (j + 1) * 8, oj);
+                j = j - 1;
+            } else {
+                go = 0;
+            }
+        }
+        store64(idx + (j + 1) * 8, q);
+    }
+    e = _pmn_pca_alloc(out, p, pp, p, p);
+    if (e != PMN_ERR_NONE) {
+        _pmn_scratch_give(s, slot);
+        return e;
+    }
+    var total: f64 = -0.0;
+    for (var t = 0; t < p; t = t + 1) {
+        var o = load64(idx + t * 8);
+        var lv: f64 = load64(evals + o * 8);
+        var fv: f64 = _pmn_max(lv, 0.0);
+        store64(out.evals + t * 8, fv);
+        total = total + fv;
+        store64(out.offs + t * 8, t * p);
+        _pmn_copy_words(out.comp + t * p * 8, evecs + o * p * 8, p);
+    }
+    store64(out.offs + p * 8, pp);
+    for (var u = 0; u < p; u = u + 1) {
+        var ev: f64 = load64(out.evals + u * 8);
+        var rt: f64 = 0.0;
+        if (total > 0.0) { rt = ev / total; }
+        store64(out.ratio + u * 8, rt);
+    }
+    _pmn_scratch_give(s, slot);
+    return PMN_ERR_NONE;
+}
+
+# Rust's derived Clone: a new block holding src's lists. PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER for a null or dropped
+# src, a null out or out overlapping src; PMN_ERR_OUT_OF_MEMORY when the block can't be had. Drop each one.
+#must_use
+fn PmnPcaResult_clone(out: *PmnPcaResult, src: *PmnPcaResult): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 64, src, 64) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var cells = load64(src.offs + src.rows * 8);
+    var tmp: PmnPcaResult;
+    var e = _pmn_pca_alloc(&tmp, src.rows, cells, src.ne, src.nr);
+    if (e != PMN_ERR_NONE) { return e; }
+    _pmn_copy_words(tmp.buf, src.buf, src.rows + 1 + cells + src.ne + src.nr);
+    out.buf = tmp.buf;
+    out.rows = tmp.rows;
+    out.offs = tmp.offs;
+    out.comp = tmp.comp;
+    out.ne = tmp.ne;
+    out.evals = tmp.evals;
+    out.nr = tmp.nr;
+    out.ratio = tmp.ratio;
+    return PMN_ERR_NONE;
+}
+
+# Frees r's block and marks it dropped (every call on it then refuses). PMN_ERR_NONE, a dropped one included;
+# PMN_ERR_INVALID_PARAMETER for a null r.
+fn PmnPcaResult_drop(r: *PmnPcaResult): i64 {
+    if (r == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (r.buf != 0) { fl_free(r.buf); }
+    r.buf = 0;
+    r.rows = 0;
+    r.ne = 0;
+    r.nr = 0;
+    return PMN_ERR_NONE;
+}
+
+impl PmnPcaResult {
+    # The number of components (rows), or 0 for a dropped one.
+    #must_use
+    fn n_components(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.rows;
+    }
+
+    # Component i's length, or −1 out of range (or dropped).
+    #must_use
+    fn component_len(self, i): i64 {
+        if (self == 0 || self.buf == 0 || i < 0 || i >= self.rows) { return 0 - 1; }
+        return load64(self.offs + (i + 1) * 8) - load64(self.offs + i * 8);
+    }
+
+    # Component i's entries (borrowed: valid until the drop), or 0 out of range (or dropped).
+    #must_use
+    fn component(self, i): i64 {
+        if (self == 0 || self.buf == 0 || i < 0 || i >= self.rows) { return 0; }
+        return self.comp + load64(self.offs + i * 8) * 8;
+    }
+
+    # The number of eigenvalues, or 0 for a dropped one.
+    #must_use
+    fn n_eigenvalues(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.ne;
+    }
+
+    # The eigenvalues (borrowed), or 0 for a dropped one.
+    #must_use
+    fn eigenvalues(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.evals;
+    }
+
+    # The number of explained variance ratios, or 0 for a dropped one.
+    #must_use
+    fn n_ratios(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.nr;
+    }
+
+    # The explained variance ratios (borrowed), or 0 for a dropped one.
+    #must_use
+    fn explained_variance_ratio(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.ratio;
+    }
+
+    # Appends Rust's derived Debug (D12): `PcaResult { components: [[..], ..], eigenvalues: [..],
+    # explained_variance_ratio: [..] }`, or the pretty form (alternate 1), each list one entry a line. PMN_ERR_NONE;
+    # PMN_ERR_OUT_OF_MEMORY when sb can't grow; PMN_ERR_INVALID_PARAMETER for a dropped self.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "PcaResult", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "components", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "["); }
+        if (e == PMN_ERR_NONE && self.rows > 0 && alternate == 1) { e = _pmn_json_w_lit(sb, "\n"); }
+        var r = 0;
+        while (e == PMN_ERR_NONE && r < self.rows) {
+            if (alternate == 1) {
+                e = _pmn_dbg_indent(sb, 2);
+            } elif (r > 0) {
+                e = _pmn_json_w_lit(sb, ", ");
+            }
+            if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.component(r), self.component_len(r), alternate, 2); }
+            if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_json_w_lit(sb, ",\n"); }
+            r = r + 1;
+        }
+        if (e == PMN_ERR_NONE && self.rows > 0 && alternate == 1) { e = _pmn_dbg_indent(sb, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "eigenvalues", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.evals, self.ne, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "explained_variance_ratio", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.ratio, self.nr, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"components":[[..],..],"eigenvalues":[..],"explained_variance_ratio":[..]}`.
+    # PMN_ERR_NONE; PMN_ERR_OUT_OF_MEMORY when sb can't grow; PMN_ERR_INVALID_PARAMETER for a dropped self.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_w_key(sb, "components", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "["); }
+        var r = 0;
+        while (e == PMN_ERR_NONE && r < self.rows) {
+            if (r > 0) { e = _pmn_json_w_lit(sb, ","); }
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.component(r), self.component_len(r)); }
+            r = r + 1;
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "eigenvalues", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.evals, self.ne); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "explained_variance_ratio", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.ratio, self.nr); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder for PmnPcaResult_from_json: the derive's three fields by serde's struct rules, each read whole as its type
+# (Vec<Vec<f64>>, rows of any lengths; Vec<f64>; Vec<f64>), then copied into a new block.
+fn _pmn_pca_from_root(root, out: *PmnPcaResult): i64 {
+    var names[24];
+    store64(&names, "components");
+    store64(&names + 8, "eigenvalues");
+    store64(&names + 16, "explained_variance_ratio");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var cv = load64(&sl);
+    var rows = _pmn_json_arr_len(cv);
+    if (rows < 0) { return PMN_ERR_DESERIALIZE; }
+    var cells = 0;
+    var x[8];
+    for (var r = 0; r < rows; r = r + 1) {
+        var row = _pmn_json_arr_get(cv, r);
+        var c = _pmn_json_arr_len(row);
+        if (c < 0) { return PMN_ERR_DESERIALIZE; }
+        for (var j = 0; j < c; j = j + 1) {
+            if (_pmn_json_f64(_pmn_json_arr_get(row, j), &x) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+        }
+        cells = cells + c;
+    }
+    var lens[16];
+    for (var f = 1; f < 3; f = f + 1) {
+        var lv = load64(&sl + f * 8);
+        var n = _pmn_json_arr_len(lv);
+        if (n < 0) { return PMN_ERR_DESERIALIZE; }
+        for (var k = 0; k < n; k = k + 1) {
+            if (_pmn_json_f64(_pmn_json_arr_get(lv, k), &x) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+        }
+        store64(&lens + (f - 1) * 8, n);
+    }
+    var tmp: PmnPcaResult;
+    e = _pmn_pca_alloc(&tmp, rows, cells, load64(&lens), load64(&lens + 8));
+    if (e != PMN_ERR_NONE) { return e; }
+    var at = 0;
+    for (var r2 = 0; r2 < rows; r2 = r2 + 1) {
+        var row2 = _pmn_json_arr_get(cv, r2);
+        var c2 = _pmn_json_arr_len(row2);
+        store64(tmp.offs + r2 * 8, at);
+        e = _pmn_json_vec_f64(row2, tmp.comp + at * 8, c2);
+        at = at + c2;
+        if (e != PMN_ERR_NONE) {
+            fl_free(tmp.buf);
+            return PMN_ERR_DESERIALIZE;
+        }
+    }
+    store64(tmp.offs + rows * 8, at);
+    e = _pmn_json_vec_f64(load64(&sl + 8), tmp.evals, tmp.ne);
+    if (e == PMN_ERR_NONE) { e = _pmn_json_vec_f64(load64(&sl + 16), tmp.ratio, tmp.nr); }
+    if (e != PMN_ERR_NONE) {
+        fl_free(tmp.buf);
+        return PMN_ERR_DESERIALIZE;
+    }
+    out.buf = tmp.buf;
+    out.rows = tmp.rows;
+    out.offs = tmp.offs;
+    out.comp = tmp.comp;
+    out.ne = tmp.ne;
+    out.evals = tmp.evals;
+    out.nr = tmp.nr;
+    out.ratio = tmp.ratio;
+    return PMN_ERR_NONE;
+}
+
+# Reads a PcaResult document, buf[0, len), into out (caller storage, owning a new block: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnPcaResult_from_json(out: *PmnPcaResult, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_pca_from_root, out);
+}

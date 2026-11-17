@@ -797,6 +797,7 @@ class SerdeModel:
 
 # The generator's test structs and 1.3.0's two enums (scripts/golden/emit/m_json.py).
 JSON_STRUCTS = {
+    "PcaResult": [("components", "Vec<Vec<f64>>"), ("eigenvalues", "Vec<f64>"), ("explained_variance_ratio", "Vec<f64>")],
     "Pair": [("mean", "f64"), ("std_dev", "f64")],
     "Shapes": [("x", "f64"), ("n", "u64"), ("k", "usize"), ("flag", "bool"), ("name", "String"), ("xs", "Vec<f64>"),
                ("ns", "Vec<u64>"), ("labels", "Vec<String>"), ("m", "Vec<Vec<f64>>"), ("kernel", "Kernel")],
@@ -3657,6 +3658,18 @@ def debug_text(fn, ins):
         data, h, k = ins[1:1 + n], ins[1 + n], ins[2 + n].split(".", 1)[1]
         return debug_struct("KernelDensity", [("data", rust_debug_list([rust_debug_f64(x) for x in data], alt, 1)),
                                               ("bandwidth", rust_debug_f64(h)), ("kernel", k)], alt)
+    if fn == "debug::PcaResult":
+        alt = ins[-1] == 1
+        it = iter(ins[:-1])
+
+        def vec(depth):
+            n = int(next(it)[len("v:"):])
+            return rust_debug_list([rust_debug_f64(next(it)) for _ in range(n)], alt, depth)
+
+        rows = int(next(it)[len("v:"):])
+        comps = rust_debug_list([vec(2) for _ in range(rows)], alt, 1)
+        return debug_struct("PcaResult", [("components", comps), ("eigenvalues", vec(1)),
+                                          ("explained_variance_ratio", vec(1))], alt)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:
@@ -3962,6 +3975,112 @@ def corr_model(L, sl, sc):
     return [f"v:{p * p}"] + [x for row in out for x in row]
 
 
+# ── hisab 1.4.0's Jacobi and the PCA (M4 part a3) ──
+
+HISAB_EPSILON = 1e-12
+
+
+def jacobi(L, a, n, tol, max_iter):
+    """hisab 1.4.0's `eigen_symmetric` (src/num/eigen.rs) on L's atan, cos and sin: (values, vectors) with vector k
+    V's column for the k-th value, ordered by descending |λ| with a stable insertion sort (ADR 007 row 14); None for
+    n = 0."""
+    if n == 0:
+        return None
+    if n == 1:
+        return [a[0]], [[1.0]]
+    w = [list(a[r * n:(r + 1) * n]) for r in range(n)]
+    v = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    tol_sq = tol * tol
+    for _ in range(max_iter):
+        converged = True
+        for p in range(n):
+            for q in range(p + 1, n):
+                if abs(w[p][q]) > tol_sq:
+                    converged = False
+                    dw = w[p][p] - w[q][q]
+                    if abs(dw) < HISAB_EPSILON:
+                        theta = math.pi * 0.25
+                    else:
+                        theta = 0.5 * L.atan(fdiv(2.0 * w[p][q], dw))
+                    c, s = L.cos(theta), L.sin(theta)
+                    ns = -s
+                    new_p = [c * w[p][i] + s * w[q][i] for i in range(n)]
+                    new_q = [ns * w[p][i] + c * w[q][i] for i in range(n)]
+                    w[p], w[q] = new_p, new_q
+                    for i in range(n):
+                        wp, wq = w[i][p], w[i][q]
+                        w[i][p] = c * wp + s * wq
+                        w[i][q] = ns * wp + c * wq
+                    for i in range(n):
+                        vp, vq = v[i][p], v[i][q]
+                        v[i][p] = c * vp + s * vq
+                        v[i][q] = ns * vp + c * vq
+        if converged:
+            break
+    lam = [w[i][i] for i in range(n)]
+    order = []
+    for k in range(n):
+        j = len(order)
+        while j > 0 and abs(lam[order[j - 1]]) < abs(lam[k]):
+            j -= 1
+        order.insert(j, k)
+    return [lam[o] for o in order], [[v[i][o] for i in range(n)] for o in order]
+
+
+def eigen_model(L, sl, sc):
+    """`linalg::eigen_symmetric(a, tol, max_iter)`: inputs n, the n × n matrix, tol and max_iter; outputs the values and
+    the vectors (row k the k-th), or hisab's refusal."""
+    n, tol, it = sc[0], sc[1], sc[2]
+    r = jacobi(L, sl[0], n, tol, it)
+    if r is None:
+        return ["E:InvalidParameter"]
+    vals, vecs = r
+    return [f"v:{n}"] + vals + [f"v:{n * n}"] + [x for row in vecs for x in row]
+
+
+def pca_model(L, sl, sc):
+    """`descriptive::pca(variables)`: the components (rows), the eigenvalues and the ratios, or the error."""
+    p = len(sl)
+    if p < 2:
+        return ["E:InvalidSample"]
+    n = len(sl[0])
+    if n < 2:
+        return ["E:InvalidSample"]
+    if any(len(x) != n for x in sl):
+        return ["E:DimensionMismatch"]
+    if any(not math.isfinite(x) for v in sl for x in v):
+        return ["E:InvalidSample"]
+    means = [rsum(v) / float(n) for v in sl]
+    cov = [[0.0] * p for _ in range(p)]
+    for i in range(p):
+        for j in range(i, p):
+            c = rsum([(a - means[i]) * (b - means[j]) for a, b in zip(sl[i], sl[j])]) / float(n)
+            cov[i][j] = cov[j][i] = c
+    vals, vecs = jacobi(L, [x for row in cov for x in row], p, 1e-12, 1000)
+
+    def order(key):
+        idx = []
+        for q in range(p):
+            j = len(idx)
+            while j > 0 and key(vals[idx[j - 1]]) < key(vals[q]):
+                j -= 1
+            idx.insert(j, q)
+        return idx
+
+    # ADR 007 row 17: every NaN eigenvalue sorts as x86's default NaN (sign set), on every target. Python's floats are
+    # x86's here, so the natural order is 1.3.0's on x86: the rule must give it on every golden row.
+    idx = order(lambda x: total_key(from_bits(0xFFF8000000000000)) if math.isnan(x) else total_key(x))
+    if idx != order(total_key):
+        raise ValueError("pca: the NaN rule orders this row otherwise than 1.3.0 on x86")
+    ev = [sp_max(vals[i], 0.0) for i in idx]
+    total = rsum(ev)
+    ratio = [x / total for x in ev] if total > 0.0 else [0.0] * p
+    out = [f"v:{p}"]
+    for i in idx:
+        out += [f"v:{p}"] + vecs[i]
+    return out + [f"v:{p}"] + ev + [f"v:{p}"] + ratio
+
+
 DESC = {  # name: model(L, slices, scalars) -> outputs
     "descriptive::sum": lambda L, s, r: [rsum(s[0])],
     "descriptive::mean": lambda L, s, r: [ds_mean(s[0])] if s[0] else ["E:InvalidSample"],
@@ -3980,7 +4099,12 @@ DESC = {  # name: model(L, slices, scalars) -> outputs
     # part a2
     "KernelDensity::evaluate_grid": kde_model,
     "descriptive::correlation_matrix": corr_model,
+    # part a3
+    "descriptive::pca": pca_model,
 }
+
+# hisab 1.4.0's Jacobi, in the linalg module beside its Cholesky rows (check_linalg's).
+LINALG_C = {"linalg::eigen_symmetric": eigen_model}
 
 
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
@@ -4131,11 +4255,16 @@ def main(argv):
             cr_file(gdir, module, provenance, crs, write_cr, failures)
             ref_file(gdir, module, provenance, refs, write_cr, failures)
         if module == "linalg":
-            f, by_fn = check_linalg(rows)
+            f, by_fn = check_linalg([r for r in rows if r[0] not in LINALG_C])
             failures.extend(f)
+            f2, by_fn2, crs, refs = check_stats(root, module, LINALG_C, [r for r in rows if r[0] in LINALG_C])
+            failures.extend(f2)
+            by_fn.update(by_fn2)
             for fn in sorted(by_fn):
                 ok, bad = by_fn[fn]
                 print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
+            cr_file(gdir, module, provenance, crs, write_cr, failures)
+            ref_file(gdir, module, provenance, refs, write_cr, failures)
         if module == "rng":
             f, by_fn = check_rng(rows)
             failures.extend(f)

@@ -112,3 +112,142 @@ fn _pmn_cholesky_solve(l, n, b, out): i64 {
     }
     return PMN_ERR_NONE;
 }
+
+# ── eigen_symmetric (M4 part a3, ledger L6) ───────────────────────────────────────────────────────────
+
+# hisab 1.4.0's `EPSILON_F64`: below it two diagonal entries count as equal, and the rotation angle is π/4.
+var _PMN_HISAB_EPSILON: f64 = 0.000000000001;
+
+# hisab's `eigen_symmetric(a, tol, max_iter)`: the cyclic Jacobi method, transcribed term for term. Each sweep visits
+# the pairs p < q in order and rotates every w[p][q] with |w[p][q]| > tol², by θ = π/4 when |w[p][p] − w[q][q]| <
+# 1e-12, else ½·atan(2·w[p][q] / (w[p][p] − w[q][q])): rows p and q of W first, then its columns, then V's columns.
+# It stops after a sweep that rotated nothing, or after max_iter sweeps either way, as hisab does (no error for that).
+# The eigenvalues, W's diagonal, are ordered by descending |λ| with a stable insertion sort (ADR 007 row 14: hisab's
+# `sort_unstable_by` may order exactly equal |λ| otherwise; NaN compares equal, as its `partial_cmp(..).unwrap_or
+# (Equal)`), into vals (n f64s); vecs (n × n, row-major) gets eigenvector k, V's column for the k-th, as its row k. The
+# angle's atan, cos and sin are the correctly rounded ones (ADR 009), so values differ from 1.4.0's where glibc
+# misrounds them. a is read whole (hisab's doc says the lower triangle; its code reads every entry). PMN_ERR_NONE;
+# PMN_ERR_INVALID_PARAMETER for n = 0 (hisab's "empty matrix"), a null or overlapping buffer, n out of range or a
+# negative max_iter; PMN_ERR_OUT_OF_MEMORY when the scratch (2n² + 3n f64s) can't be had.
+#must_use
+fn _pmn_eigen_symmetric(a, n, tol: f64, max_iter, vals, vecs): i64 {
+    if (a == 0 || vals == 0 || vecs == 0 || n <= 0 || n > 4096 || max_iter < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var nn = n * n;
+    if (_pmn_linalg_overlaps(a, nn * 8, vals, n * 8) == 1 || _pmn_linalg_overlaps(a, nn * 8, vecs, nn * 8) == 1) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (_pmn_linalg_overlaps(vals, n * 8, vecs, nn * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n == 1) {
+        store64(vals, load64(a));
+        store64(vecs, 1.0);
+        return PMN_ERR_NONE;
+    }
+    var s, slot = _pmn_scratch_take((2 * nn + 3 * n) * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var w = s;
+    var v = s + nn * 8;
+    var np = v + nn * 8;
+    var nq = np + n * 8;
+    var ord = nq + n * 8;
+    _pmn_copy_words(w, a, nn);
+    for (var z = 0; z < nn; z = z + 1) { store64(v + z * 8, 0); }
+    for (var d = 0; d < n; d = d + 1) { store64(v + (d * n + d) * 8, 1.0); }
+    var tol_sq: f64 = tol * tol;
+    var eps: f64 = _PMN_HISAB_EPSILON;
+    var pi: f64 = _PMN_F64_PI;
+    var quarter: f64 = pi * 0.25;                # FRAC_PI_4 = RN(π)/4 exactly
+    for (var it = 0; it < max_iter; it = it + 1) {
+        var converged = 1;
+        for (var p = 0; p < n; p = p + 1) {
+            for (var q = p + 1; q < n; q = q + 1) {
+                var wpq: f64 = load64(w + (p * n + q) * 8);
+                var awpq: f64 = f64_abs(wpq);
+                if (awpq > tol_sq) {
+                    converged = 0;
+                    var wpp: f64 = load64(w + (p * n + p) * 8);
+                    var wqq: f64 = load64(w + (q * n + q) * 8);
+                    var dw: f64 = wpp - wqq;
+                    var adw: f64 = f64_abs(dw);
+                    var theta: f64 = quarter;
+                    if (adw < eps) {
+                        theta = quarter;
+                    } else {
+                        var two: f64 = 2.0 * wpq;
+                        var ratio: f64 = two / dw;
+                        var at: f64 = _pmn_atan(ratio);
+                        theta = 0.5 * at;
+                    }
+                    var c: f64 = _pmn_cos(theta);
+                    var sn: f64 = _pmn_sin(theta);
+                    var ns: f64 = -sn;
+                    for (var i = 0; i < n; i = i + 1) {
+                        var wpi: f64 = load64(w + (p * n + i) * 8);
+                        var wqi: f64 = load64(w + (q * n + i) * 8);
+                        var a1: f64 = c * wpi;
+                        var a2: f64 = sn * wqi;
+                        var b1: f64 = ns * wpi;
+                        var b2: f64 = c * wqi;
+                        var rp: f64 = a1 + a2;
+                        var rq: f64 = b1 + b2;
+                        store64(np + i * 8, rp);
+                        store64(nq + i * 8, rq);
+                    }
+                    _pmn_copy_words(w + p * n * 8, np, n);
+                    _pmn_copy_words(w + q * n * 8, nq, n);
+                    for (var i2 = 0; i2 < n; i2 = i2 + 1) {
+                        var wp: f64 = load64(w + (i2 * n + p) * 8);
+                        var wq: f64 = load64(w + (i2 * n + q) * 8);
+                        var c1: f64 = c * wp;
+                        var c2: f64 = sn * wq;
+                        var d1: f64 = ns * wp;
+                        var d2: f64 = c * wq;
+                        var cp: f64 = c1 + c2;
+                        var cq: f64 = d1 + d2;
+                        store64(w + (i2 * n + p) * 8, cp);
+                        store64(w + (i2 * n + q) * 8, cq);
+                    }
+                    for (var i3 = 0; i3 < n; i3 = i3 + 1) {
+                        var vp: f64 = load64(v + (i3 * n + p) * 8);
+                        var vq: f64 = load64(v + (i3 * n + q) * 8);
+                        var e1: f64 = c * vp;
+                        var e2: f64 = sn * vq;
+                        var f1: f64 = ns * vp;
+                        var f2: f64 = c * vq;
+                        var xp: f64 = e1 + e2;
+                        var xq: f64 = f1 + f2;
+                        store64(v + (i3 * n + p) * 8, xp);
+                        store64(v + (i3 * n + q) * 8, xq);
+                    }
+                }
+            }
+        }
+        if (converged == 1) { it = max_iter; }
+    }
+    # The order: descending |λ|, stable.
+    for (var k = 0; k < n; k = k + 1) {
+        store64(ord + k * 8, k);
+        var j = k - 1;
+        var lk: f64 = load64(w + (k * n + k) * 8);
+        var ak: f64 = f64_abs(lk);
+        var go = 1;
+        while (go == 1 && j >= 0) {
+            var oj = load64(ord + j * 8);
+            var lj: f64 = load64(w + (oj * n + oj) * 8);
+            var aj: f64 = f64_abs(lj);
+            if (aj < ak) {
+                store64(ord + (j + 1) * 8, oj);
+                j = j - 1;
+            } else {
+                go = 0;
+            }
+        }
+        store64(ord + (j + 1) * 8, k);
+    }
+    for (var r = 0; r < n; r = r + 1) {
+        var o = load64(ord + r * 8);
+        store64(vals + r * 8, load64(w + (o * n + o) * 8));
+        for (var i4 = 0; i4 < n; i4 = i4 + 1) { store64(vecs + (r * n + i4) * 8, load64(v + (i4 * n + o) * 8)); }
+    }
+    _pmn_scratch_give(s, slot);
+    return PMN_ERR_NONE;
+}

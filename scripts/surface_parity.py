@@ -60,6 +60,14 @@ SURFACE = {
     "descriptive::KernelDensity.evaluate": ["method PmnKernelDensity.evaluate"],
     "descriptive::KernelDensity.evaluate_grid": ["method PmnKernelDensity.evaluate_grid"],
     "descriptive::correlation_matrix": ["fn pmn_correlation_matrix"],
+    # descriptive.rs's PCA (M4 part a3; hisab's Jacobi, ledger L6)
+    "descriptive::pca": ["fn pmn_pca", "fn _pmn_eigen_symmetric"],
+    "descriptive::PcaResult": ["struct PmnPcaResult", "fn PmnPcaResult_drop", "method PmnPcaResult.component",
+                               "method PmnPcaResult.eigenvalues", "method PmnPcaResult.explained_variance_ratio"],
+    "descriptive::PcaResult#Clone": ["fn PmnPcaResult_clone"],
+    "descriptive::PcaResult#Debug": ["method PmnPcaResult.debug"],
+    "descriptive::PcaResult#Serialize": ["method PmnPcaResult.to_json"],
+    "descriptive::PcaResult#Deserialize": ["fn PmnPcaResult_from_json"],
     # error.rs (M1 part a; D6, ADR 007 rows 1 and 8)
     "error::PramanaError": ["enum PmnError", "fn pmn_err_name"],
     "error::PramanaError#Debug": ["fn pmn_err_debug"],

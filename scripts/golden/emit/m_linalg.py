@@ -116,4 +116,69 @@ def emit():
         for b in rights(g, 3):
             solve_row(m, l, b)
     solve_row(m, [], [])
+    eigen_rows(m, Rng(0x6A09E667BB67AE85))
     return m
+
+
+def eigen_row(m, a, tol=1e-12, it=1000):
+    """hisab's `eigen_symmetric(a, tol, max_iter)` (M4 part a3, ledger L6): class C, its angle from atan, cos and sin."""
+    from .tsv import from_model, parsed
+    n = len(a)
+    ins = [i(n)] + mat(a) + [f(tol), i(it)]
+    sl, sc = V.take_slices(parsed(ins))
+    m.row("linalg::eigen_symmetric", "C", ins, from_model(V.LINALG_C["linalg::eigen_symmetric"](_glibc(), sl, sc)))
+
+
+_G = None
+
+
+def _glibc():
+    global _G
+    if _G is None:
+        from pathlib import Path
+        _G = V.dist_prims(Path(__file__).resolve().parents[3])[0]
+    return _G
+
+
+def eigen_rows(m, g):
+    eigen_row(m, [])
+    eigen_row(m, [[3.5]])
+    eigen_row(m, [[NAN]])
+    eigen_row(m, [[1.0, 0.0], [0.0, 1.0]])
+    eigen_row(m, [[2.0, 1.0], [1.0, 2.0]])                          # |w_pp − w_qq| < 1e-12: θ = π/4
+    eigen_row(m, [[2.0, 1.0], [1.0, 2.0 + 1e-13]])
+    eigen_row(m, [[2.0, 1.0], [1.0, 2.0 + 2e-12]])
+    from .tsv import bits as _bits, from_bits as _fb
+    for d in (1e-12, _fb(_bits(1e-12) - 1), _fb(_bits(1e-12) + 1)):   # |w_pp − w_qq| at, below and above 1e-12
+        for it in (1, 1000):                                           # one sweep shows the angle; then converged
+            eigen_row(m, [[d, 1.0], [1.0, 0.0]], it=it)
+    eigen_row(m, [[4.0, 1.0], [1.0, 9.0]])
+    eigen_row(m, [[1.0, 2.0], [2.0, 1.0]])                          # indefinite: λ = 3, −1
+    eigen_row(m, [[0.0, 0.0], [0.0, 0.0]])
+    eigen_row(m, [[1.0, 1e-13], [1e-13, 2.0]])                      # below tol²? no: 1e-13 > 1e-24
+    eigen_row(m, [[1.0, 1e-25], [1e-25, 2.0]])                      # below tol²: no rotation
+    eigen_row(m, [[-3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 1.0]])   # equal |λ|: the stable order
+    eigen_row(m, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    eigen_row(m, [[2.0, -1.0, 0.0], [-1.0, 2.0, -1.0], [0.0, -1.0, 2.0]])
+    eigen_row(m, [[1e300, 1e299], [1e299, 1e300]])
+    eigen_row(m, [[1e-300, 1e-301], [1e-301, 2e-300]])
+    eigen_row(m, [[TINY, TINY], [TINY, TINY]])
+    eigen_row(m, [[1.0, NAN], [NAN, 1.0]])
+    eigen_row(m, [[1.0, 2.0], [3.0, 4.0]])                          # not symmetric: every entry read
+    eigen_row(m, [[4.0, 1.0], [1.0, 9.0]], tol=0.0, it=50)          # tol 0: every sweep rotates
+    for it in (0, 1, 2, 3):
+        eigen_row(m, [[4.0, 1.0, 0.5], [1.0, 9.0, 2.0], [0.5, 2.0, 1.0]], it=it)
+    eigen_row(m, [[4.0, 1.0], [1.0, 9.0]], tol=1e-3)
+    eigen_row(m, [[4.0, 1.0], [1.0, 9.0]], tol=INF)
+    for n in (2, 3, 4, 5, 6, 8, 10):
+        for k in range(8):
+            a = spd(g, n, float(n))
+            eigen_row(m, a)
+        for k in range(4):
+            b = [[g.uniform(-1.0, 1.0) for _ in range(n)] for _ in range(n)]
+            sym = [[b[r][c] + b[c][r] for c in range(n)] for r in range(n)]
+            eigen_row(m, sym)
+    for n in (2, 3, 4):
+        eigen_row(m, hilbert(n))
+        eigen_row(m, lehmer(n))
+
