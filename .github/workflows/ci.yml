@@ -5,71 +5,79 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_call:   # reusable: release.yml gates on this CI workflow
+  workflow_call:   # release.yml runs this for a tag whose commit has no passing CI run on main
 
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run. A run on main always finishes, so every commit on main gets a
+# result, and release.yml reuses a passing one for the tagged commit instead of running CI again.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+defaults:
+  run:
+    shell: bash   # -eo pipefail: a failure anywhere in a pipe fails its step
+
+# Each task runs once. checks, corpus and bench start together; test starts when the corpus is up:
+# - checks: everything that needs neither the corpus nor a test run;
+# - corpus: generates the golden corpus once and hands it to test as an artifact;
+# - test: the suite, plain and bounds-checked side by side, against that corpus;
+# - bench: the benches, which read no corpus.
+# `cyrius audit` is not run here: its stages are fmt, lint and docs (checks), tests (test) and bench (bench), so
+# calling it would run the suite again. The local release gate still runs `cyrius audit`.
 jobs:
-  build-and-test:
-    name: Build & Test
+  checks:
+    name: Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # What `cyrius audit` walks (src/ and tests/), plus the examples. Left unquoted, the shell expands the globs.
+      SOURCES: src/*.cyr tests/*.cyr tests/*.tcyr tests/*.bcyr tests/*.fcyr
+      EXAMPLES: docs/examples/*.cyr
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (pinned — the release-integrity hardening item)
 
-      - name: Install Cyrius toolchain
-        # The cyrius.cyml [package].cyrius pin is the single source of
-        # truth for the toolchain version — never hardcode it here. Read
-        # the pin and hand it to the canonical upstream installer, which
-        # fetches + lays out $HOME/.cyrius/{bin,lib}. Do NOT hand-roll
-        # curl+tar+cp — scripts/install.sh is the supported entry point
-        # (matches patra / sigil).
-        run: |
-          set -e
-          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
-          echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
-            CYRIUS_VERSION="$CYRIUS_VERSION" sh
-          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-cyrius
 
-      - name: Resolve dependencies
-        run: cyrius deps
+      - name: Lockfile matches lib/ (resolves the tags, writes nothing)
+        run: cyrius deps --locked
 
-      - name: Golden corpus (generated, never committed; ADR 010)
-        # Python's models of pramana 1.3.0 write tests/golden/<module>.tsv; validate.py checks every row and writes
-        # the correctly rounded, reference and mapped rows (MPFR, through ctypes) that the replay holds the port to.
-        # scripts/golden/digests.txt holds the dev box's digests (glibc 2.44, x86_64, FMA): a runner whose libm gives
-        # other bits fails here, before the replay. NIST StRD's sets are committed in scripts/golden/strd.tar.xz (NIST
-        # refuses GitHub's runners) and unpacked into build/strd/, each pinned by sha256 in scripts/golden/strd.py.
-        # The full corpus replays on x86_64 ELF in `cyrius test`; PE and aarch64 are the local gates' (wine, qemu).
-        run: |
-          sudo apt-get install -y --no-install-recommends libmpfr6
-          python3 -I -B scripts/golden/gen.py .
-          python3 -I -B scripts/golden/validate.py . --write-cr
-          python3 -I -B scripts/golden/gen.py . --digests
+      - name: Format
+        run: cyrius fmt --check $SOURCES $EXAMPLES
+
+      - name: Lint (fails on any warning)
+        run: cyrius lint --exit-with-count $SOURCES $EXAMPLES
+
+      - name: Docs (every public fn has its comment, as audit's docs stage checks)
+        run: cyrius doc --check $SOURCES
+
+      - name: Include audit
+        run: cyrius vet src/main.cyr
 
       - name: Build
         run: |
           mkdir -p build
           cyrius build src/main.cyr build/${{ github.event.repository.name }}
 
-      - name: Test
-        # v5.6.28: bare `cyrius test` picks up the [build].test entry
-        # AND auto-discovers tests/*.tcyr — avoids the previous
-        # `cyrius test src/test.cyr` form that hard-failed when the
-        # stub didn't exist (Issue 1) and also wouldn't ever exercise
-        # tests/${proj}.tcyr.
-        run: cyrius test
+      - name: Bundle current (dist/pramana.cyr is what distlib writes from [lib])
+        run: cyrius distlib --check
 
-      - name: Test (bounds-checked)
-        run: cyrius test --bounds
+      - name: Examples (docs/examples, compiled and run)
+        run: |
+          for e in $EXAMPLES; do
+            n=$(basename "$e" .cyr)
+            cyrius build "$e" "build/example_$n"
+            "./build/example_$n" > /dev/null
+            echo "ok: $n"
+          done
 
-      - name: Lockfile matches lib/
-        run: cyrius deps --locked
+      - name: Fuzz (the 38 JSON readers on mutated documents)
+        run: cyrius fuzz tests/pramana.fcyr
 
-      - name: Audit (fmt, lint, test, bench)
-        run: cyrius audit
+      - name: MPFR (for the constants and ζ(k) checks)
+        run: sudo apt-get install -y --no-install-recommends libmpfr6
 
       - name: Conversion ledger (every stand-in marked, every note on a ledger row)
         run: python3 -I -B scripts/upstream_ledger.py --check
@@ -79,23 +87,6 @@ jobs:
 
       - name: Rust-test ledger (every 1.3.0 test carried over or retired, docs/development/rust-test-ledger.md current)
         run: python3 -I -B scripts/rust_test_ledger.py --check
-
-      - name: Fuzz (the 38 JSON readers on mutated documents)
-        run: cyrius fuzz tests/pramana.fcyr
-
-      - name: Examples (docs/examples, compiled and run)
-        run: |
-          set -e
-          mkdir -p build
-          for e in docs/examples/*.cyr; do
-            n=$(basename "$e" .cyr)
-            cyrius build "$e" "build/example_$n"
-            "./build/example_$n" > /dev/null
-            echo "ok: $n"
-          done
-
-      - name: Bundle current (dist/pramana.cyr is what distlib writes from [lib])
-        run: cyrius distlib --check
 
       - name: Vendored primitives current (src/crmath*.cyr; unverified without ../kimiya)
         run: python3 -I -B scripts/vendor_crmath.py . --check
@@ -114,3 +105,111 @@ jobs:
 
       - name: ζ(k) table current and inline words proven (src/zeta_data.cyr, src/dd.cyr, src/gammainc.cyr, src/betainc.cyr; MPFR)
         run: python3 -I -B scripts/gen_zeta.py . --check
+
+  corpus:
+    # Python's models of pramana 1.3.0 write tests/golden/<module>.tsv; validate.py checks every row and writes the
+    # correctly rounded, reference and mapped rows (MPFR, through ctypes) that the replay holds the port to.
+    # scripts/golden/digests.txt holds the dev box's digests (glibc 2.44, x86_64, FMA): a runner whose libm gives other
+    # bits fails here, before the replay. NIST StRD's sets are committed in scripts/golden/strd.tar.xz (NIST refuses
+    # GitHub's runners) and unpacked into build/strd/, each pinned by sha256 in scripts/golden/strd.py. The full corpus
+    # replays on x86_64 ELF in the test job; PE and aarch64 are the local gate's (wine, qemu).
+    name: Golden corpus (generated, never committed; ADR 010)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (pinned — the release-integrity hardening item)
+
+      - name: MPFR
+        run: sudo apt-get install -y --no-install-recommends libmpfr6
+
+      - name: Generate
+        run: python3 -I -B scripts/golden/gen.py .
+
+      - name: Generated constants current (src/constants.cyr and tests/constants_rows.cyr are gen.py's output)
+        run: git diff --exit-code -- src/constants.cyr tests/constants_rows.cyr
+
+      - name: MPFR reference cache (build/golden/)
+        # validate.py evaluates about 11,000 incomplete gamma and beta pairs at 320 bits or more, and keeps them in
+        # build/golden/, in a file named by a hash of the reference function's source and MPFR's version (a cache
+        # from another reference is never read). The pairs only change with the generator, so CI keeps that file
+        # too: an unchanged generator restores it exactly, and a changed one restores the last file of the same
+        # reference code and evaluates only the new pairs. A change to validate.py or mpfr_ref.py restores nothing,
+        # so every pair is evaluated again. Validation took 5:15 without the cache and 3:18 with it, on 4 cores.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/golden/
+          key: mpfr-ref-${{ hashFiles('scripts/golden/validate.py', 'scripts/golden/mpfr_ref.py') }}-${{ hashFiles('scripts/golden/**', 'rust-old/src/**') }}
+          restore-keys: mpfr-ref-${{ hashFiles('scripts/golden/validate.py', 'scripts/golden/mpfr_ref.py') }}-
+
+      - name: Validate every row; write the MPFR overlays
+        run: python3 -I -B scripts/golden/validate.py . --write-cr
+
+      - name: Digests as recorded
+        run: python3 -I -B scripts/golden/gen.py . --digests
+
+      - name: Hand the corpus to the test jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-corpus
+          path: tests/golden/
+          if-no-files-found: error
+          retention-days: 3
+
+  test:
+    name: Test (${{ matrix.mode }})
+    needs: [corpus]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: plain
+            flags: ''
+          - mode: bounds-checked
+            flags: '--bounds'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (pinned — the release-integrity hardening item)
+
+      - uses: ./.github/actions/setup-cyrius
+
+      - name: The corpus job's golden corpus
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: golden-corpus
+          path: tests/golden/
+
+      - name: Test (warning-free, not just passing)
+        # Bare `cyrius test` runs every tests/*.tcyr, the parity replay among them. A compiler warning is a bug
+        # (CLAUDE.md), so any `warning:` in the output fails the step.
+        run: |
+          cyrius test ${{ matrix.flags }} 2>&1 | tee "$RUNNER_TEMP/test.log"
+          if grep -n 'warning:' "$RUNNER_TEMP/test.log"; then
+            echo "::error::cyrius test ${{ matrix.flags }} printed the warnings above; it must be warning-free"
+            exit 1
+          fi
+
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (pinned — the release-integrity hardening item)
+
+      - uses: ./.github/actions/setup-cyrius
+
+      - name: Bench (every bench builds and runs; the numbers are a record, not a gate)
+        # A shared runner's timings are not comparable run to run. The record is docs/benchmarks-rust-v-cyrius.md,
+        # measured on pinned, interleaved runs. This run's numbers go to the job summary.
+        run: |
+          cyrius bench 2>&1 | tee "$RUNNER_TEMP/bench.log"
+          if grep -n 'warning:' "$RUNNER_TEMP/bench.log"; then
+            echo "::error::cyrius bench printed the warnings above; its compiles must be warning-free"
+            exit 1
+          fi
+          {
+            echo "### cyrius bench on ${RUNNER_OS} (a shared runner)"
+            echo '```'
+            grep -E ' avg |passed, .* failed' "$RUNNER_TEMP/bench.log" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

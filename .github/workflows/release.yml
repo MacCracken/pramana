@@ -5,24 +5,28 @@ on:
     tags: ['[0-9]+.[0-9]+.[0-9]+*']
 
 permissions:
-  contents: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash   # -eo pipefail
 
 jobs:
-  ci:
-    name: CI Gate
-    uses: ./.github/workflows/ci.yml
-
-  release:
-    name: Build & Release
-    needs: [ci]
+  verify:
+    name: Version and CI status
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read     # this commit's CI runs
+      contents: read
+    outputs:
+      ci-passed: ${{ steps.ci.outputs.passed }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (pinned — the release-integrity hardening item)
 
       - name: Verify version consistency
-        # VERSION is the single source of truth; cyrius.cyml derives it
-        # via version = "${file:VERSION}". Both must equal the pushed tag
-        # (matches patra / sigil).
+        # VERSION is the single source of truth; cyrius.cyml derives it via version = "${file:VERSION}". Both must
+        # equal the pushed tag (as in patra and sigil). This runs first, so a wrong tag fails in seconds.
         run: |
           FILE_VERSION=$(cat VERSION | tr -d '[:space:]')
           CYML_RAW=$(grep '^version = ' cyrius.cyml | head -1 | sed 's/version = "\(.*\)"/\1/')
@@ -36,18 +40,50 @@ jobs:
           [ "$CYML_VERSION" = "$TAG" ] || { echo "cyrius.cyml ($CYML_RAW) != tag ($TAG)"; exit 1; }
           echo "Version verified: $TAG (cyml: $CYML_RAW)"
 
-      - name: Install Cyrius toolchain
-        # Canonical installer — see ci.yml for rationale.
+      - name: This commit's CI run on main
+        id: ci
+        # CI already ran on this commit when it was pushed to main. A passing run is reused, not repeated. A run still
+        # going (a tag pushed with its commit) is waited for, up to 45 minutes. With no passing run (a commit that
+        # never reached main, or a failed or cancelled run), the ci job below runs the full CI here.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -e
-          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
-          echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
-            CYRIUS_VERSION="$CYRIUS_VERSION" sh
-          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+          url="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=push&head_sha=$GITHUB_SHA&per_page=20"
+          for _ in $(seq 90); do
+            runs=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$url")
+            passed=$(jq -r '[.workflow_runs[] | select(.conclusion == "success")][0].html_url // empty' <<< "$runs")
+            if [ -n "$passed" ]; then
+              echo "CI passed on $GITHUB_SHA: $passed"
+              echo "passed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            running=$(jq '[.workflow_runs[] | select(.status != "completed")] | length' <<< "$runs")
+            [ "$running" -gt 0 ] || break
+            echo "CI is still running on $GITHUB_SHA; checking again in 30 s"
+            sleep 30
+          done
+          echo "No passing CI run on $GITHUB_SHA: the release runs CI itself"
+          echo "passed=false" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve dependencies
-        run: cyrius deps
+  ci:
+    name: CI Gate
+    needs: [verify]
+    if: needs.verify.outputs.ci-passed != 'true'
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Build & Release
+    needs: [verify, ci]
+    # ci is skipped when verify found a passing run for this commit.
+    if: ${{ !cancelled() && needs.verify.result == 'success' && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # the GitHub release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (pinned — the release-integrity hardening item)
+
+      - uses: ./.github/actions/setup-cyrius
 
       - name: Build
         run: |
@@ -63,10 +99,8 @@ jobs:
           echo "$BODY" > /tmp/release-body.md
 
       - name: Source tarball + checksums
-        # The source tarball + SHA256SUMS are what `cyrius deps` fetches and
-        # sha256-verifies downstream — without them this project cannot be
-        # consumed as a dependency. This is the release artifact, not just
-        # the built binary.
+        # The source tarball + SHA256SUMS are what `cyrius deps` fetches and sha256-verifies downstream — without them
+        # this project cannot be consumed as a dependency. This is the release artifact, not just the built binary.
         run: |
           TAG="${GITHUB_REF_NAME}"
           NAME="${{ github.event.repository.name }}"

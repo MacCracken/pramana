@@ -5,9 +5,10 @@
 
 ## Version
 
-**2.0.0** (`VERSION`), the Cyrius library, pending its tag. `cyrius.cyml` reads the version through
-`version = "${file:VERSION}"`, and the release workflow checks both against the tag. The zugot recipe
-(`~/Repos/zugot/marketplace/pramana.cyml`) is at 2.0.0, its sha256 to be filled from the release tarball.
+**2.0.0** (`VERSION`), the Cyrius library, tagged at `2a1e358` (2026-11-17) and published by the release workflow.
+`cyrius.cyml` reads the version through `version = "${file:VERSION}"`, and the release workflow checks both against
+the tag. The zugot recipe (`~/Repos/zugot/marketplace/pramana.cyml`) is at 2.0.0, its sha256 still to be filled from
+the release's `SHA256SUMS` (a 2.0.x item on the roadmap).
 
 The last Rust release is **1.3.0**, tagged at `284eb18` (2026-11-14). Its source, with the hidden `oracle` hooks
 (`94a7153`), is frozen in `rust-old/`: read as text, never built or run (ADR 010). crates.io keeps 1.3.x for Rust
@@ -133,11 +134,12 @@ removed; its record stays. Since M2's gate the port meets ADR 009's bound on eve
 
 ## Upstream requests and stand-ins
 
-The conversion ledger is the port plan's §10: 14 rows (L1–L14), all open, each naming its upstream request, and four
-requests filed with no stand-in. `python3 -I -B scripts/upstream_ledger.py --check` gates it (CI too): 18 `UPSTREAM`
-notes in `src/` so far, 0 failures. L13 (M1 part d3a) is the JSON reader's guard against `vec_push_a`'s capacity
-abort, added to the open cyrius vec issue; L14 (part d4) the JSON writers' reservations before the stdlib writers
-that abort on a failed grow, added to the open cyrius str_builder issue. The rest of the stand-ins arrive with M1–M7.
+The conversion ledger is the port plan's §10: 15 rows (L1–L15), all open, each naming its upstream request, and six
+requests filed with no stand-in. `python3 -I -B scripts/upstream_ledger.py --check` gates it (CI too): 24 `UPSTREAM`
+notes in `src/`, 0 failures. L13 (M1 part d3a) is the JSON reader's guard against `vec_push_a`'s capacity abort,
+added to the open cyrius vec issue; L14 (part d4) the JSON writers' reservations before the stdlib writers that abort
+on a failed grow, added to the open cyrius str_builder issue; L15 (M4 part a1) the word-wise copy, added to the open
+cyrius memcpy issue. Converting them as their libraries ship is 2.0.x work ([`roadmap.md`](roadmap.md)).
 
 ## Dependencies
 
@@ -157,6 +159,14 @@ Direct (declared in `cyrius.cyml`; 51 files locked in `cyrius.lock`):
 
 ## Next
 
-2.0.0 is ready to tag; the maintainer tags and releases it. After that: the 2.1 candidates on the roadmap (the AI
-client's tools, D4's StRD shortfalls, the accuracy findings), and the upstream requests in the port plan's §10 as
-their libraries ship.
+2.0.0 is released. Next is [`roadmap.md`](roadmap.md)'s 2.0.x, which finishes the port:
+- the release's loose ends (the zugot recipe's sha256, the crates.io 1.3.x notice);
+- a Cyrius threat model;
+- the verification CI doesn't do yet (cross-target parity, the vendored sources, `crverify`, coverage);
+- the §10 stand-ins as their libraries ship.
+
+Then 2.1.0: the accuracy findings, D4's StRD shortfalls and the AI client's tools.
+
+CI runs four parallel jobs: checks, the golden corpus (once, handed to the tests as an artifact), the tests (plain
+and bounds-checked) and the benches. The release workflow reuses the tagged commit's passing CI run on main rather
+than running CI again.

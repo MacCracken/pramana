@@ -1,0 +1,18 @@
+name: Set up Cyrius
+description: Install the Cyrius toolchain that cyrius.cyml pins, with the canonical upstream installer
+
+runs:
+  using: composite
+  steps:
+    - name: Install Cyrius toolchain
+      # The cyrius.cyml [package].cyrius pin is the single source of truth for the toolchain version: never hardcode
+      # it here. Read the pin and hand it to the canonical upstream installer, which fetches and lays out
+      # $HOME/.cyrius/{bin,lib}. Do NOT hand-roll curl+tar+cp: scripts/install.sh is the supported entry point (as in
+      # patra and sigil). Every job that runs cyrius uses this one step, so the install is written once.
+      shell: bash
+      run: |
+        CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+        echo "Installing Cyrius $CYRIUS_VERSION"
+        curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+          CYRIUS_VERSION="$CYRIUS_VERSION" sh
+        echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"

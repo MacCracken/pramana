@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **CI** (`.github/workflows/ci.yml`). The single 21-step serial job is now four parallel jobs, and each task runs once:
+  - **Checks:** fmt, lint, docs, vet, `deps --locked`, the build, the bundle, the examples, the fuzz harness, the
+    three ledgers and the vendored-source checks;
+  - **Golden corpus:** generated once, then handed to the tests as an artifact;
+  - **Test:** `cyrius test` and `cyrius test --bounds`, side by side;
+  - **Benchmarks:** these read no corpus, so they start at once.
+
+  **What ran more than once.** The plain suite ran twice: in `cyrius test`, then again in `cyrius audit`'s tests
+  stage, beside `cyrius test --bounds`. CI now runs audit's stages as its own steps, so the plain suite runs once.
+  `cyrius deps` rewrote `lib/` before `deps --locked` checked it. Now `--locked` alone checks the committed `lib/`.
+  The toolchain install, copied into both workflows, is a local action, `.github/actions/setup-cyrius`.
+
+  **Measured.** The last serial run took 11 min 14 s on GitHub (run 44135964005): 211 s of corpus, 63 s and 65 s of
+  tests, and 300 s of audit. Replayed step by step from the new YAML, in `ubuntu:26.04` containers at 4 CPUs each,
+  with a cold MPFR cache, every job passed:
+  - checks: 35 s;
+  - corpus: 316 s, 293 s of it validation;
+  - tests: 114 s plain and 116 s bounds-checked, side by side;
+  - bench: 363 s, alongside.
+
+  Corpus then tests, the critical path, took 7 min 48 s of wall time, container setup included. GitHub's own
+  figure comes with the first run.
+
+  **New gates.**
+  - **Warning-free.** `cyrius test` and `cyrius bench` fail on any compiler `warning:`, as CLAUDE.md requires.
+  - **Generated constants current.** `src/constants.cyr` and `tests/constants_rows.cyr` must be what `gen.py`
+    writes. Before, the replay ran on the regenerated files, so a stale committed copy passed.
+  - **The local gate's other checks.** `cyrius vet`, and fmt and lint over `docs/examples/`.
+  - **Benches must run.** A bench that fails to build or run fails CI. Audit ignored its bench stage's result, and its
+    timings are still not gated.
+
+  **The MPFR cache.** validate.py's MPFR reference pairs (`build/golden/`, each file named by a hash of its reference
+  function and MPFR's version) are cached across runs. Any change to `validate.py` or `mpfr_ref.py` starts the cache
+  empty. Validation took 5:15 without the cache and 3:18 with it, on 4 cores.
+
+  **Concurrency.** A newer push to a pull request cancels its older run. Runs on main always finish, so every commit on
+  main gets a result the release can reuse.
+- **Release** (`.github/workflows/release.yml`). The tag's version check now runs first, in seconds. Before, it ran
+  after an 11-minute CI gate. The release then reuses the tagged commit's passing CI run on main, found through the
+  GitHub API, rather than running CI again: the 2.0.0 release re-ran all of CI on `2a1e358`, which CI had already
+  passed. It waits for a run still going, up to 45 minutes, and runs the full CI itself only when no passing run
+  exists.
+- **Roadmap** (`docs/development/roadmap.md`). Done items are removed; they are in this changelog. 2.0.x finishes the
+  port: the release's loose ends, the threat model, the verification CI doesn't do yet, and the §10 stand-ins as their
+  libraries ship. 2.1.0 takes the accuracy findings, D4's StRD shortfalls and the AI client's tools. 2.2.0–2.7.0 take
+  the 1.x feature sections, restated for Cyrius, and the rest of 2.x is unscheduled.
+
 ## [2.0.0] - 2026-11-17
 
 ### Breaking
