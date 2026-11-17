@@ -18739,6 +18739,7 @@ fn _pmn_hmm_forward(h: *PmnHiddenMarkovModel, obs, t, alpha, scales): i64 {
 
 # Rust's `ln` of a probability in Viterbi: ln p for p > 0, else −∞.
 #must_use
+#pure
 fn _pmn_safe_ln(p: f64): f64 {
     if (p > 0.0) {
         var r: f64 = _pmn_ln(p);

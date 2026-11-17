@@ -13,7 +13,9 @@
 # its JSON both ways, each block freed by its drop, a tenth of them at d = 32 (a block over 4 KB, mapped and
 # unmapped). M4's gate (part c) adds every M4 call: the statistics, correlation, a KDE and a PCA built, written, read
 # back and dropped, the six tests, the intervals and a decoded TestResult's owned name, 10^4 rounds at up to 300 points.
-# M5's gate (part d) adds every M5 call: the fits, the time series, ARIMA and its codec, the Bayesian calls.
+# M5's gate (part d) adds every M5 call: the fits, the time series, ARIMA and its codec, the Bayesian calls. M6's gate
+# (part c) adds every M6 call: a Markov chain and an HMM built, run, written, read back and dropped, and the Monte
+# Carlo calls with their McmcResults cloned, written, read back and dropped.
 
 include "tests/lib.cyr"
 
@@ -599,6 +601,123 @@ fn m5_round(r, a, b, o, recs, sb): f64 {
     return acc;
 }
 
+# M6's callbacks for the soak: an integrand, a log-density and a Gibbs conditional.
+fn m6_f(ctx, x: f64): f64 {
+    var r: f64 = x * x;
+    return r;
+}
+
+fn m6_target(ctx, xs, dim): f64 {
+    var x: f64 = load64(xs);
+    var h: f64 = -0.5 * x;
+    var r: f64 = h * x;
+    return r;
+}
+
+fn m6_cond(ctx, state, dim, rp: *PmnRngRef): f64 {
+    var u: f64 = rp.o.next_f64();
+    return u;
+}
+
+# Row i of an n × m stochastic matrix at p: weights 1 + (3i + 5j + r) mod 7, normalized.
+fn m6_rows(p, n, m, r): i64 {
+    for (var i = 0; i < n; i = i + 1) {
+        var t: f64 = 0.0;
+        for (var j = 0; j < m; j = j + 1) {
+            var w: f64 = f64_from(1 + (i * 3 + j * 5 + r) % 7);
+            store64(p + (i * m + j) * 8, w);
+            t = t + w;
+        }
+        for (var k = 0; k < m; k = k + 1) {
+            var x: f64 = load64(p + (i * m + k) * 8);
+            var y: f64 = x / t;
+            store64(p + (i * m + k) * 8, y);
+        }
+    }
+    return 0;
+}
+
+# One round of every M6 call (M6 part c): a chain built, walked, its steady state taken, cloned, written, read back
+# and dropped; an HMM built, its likelihood, path and a Baum–Welch round, written, read back and dropped; Monte Carlo
+# integration, π, a Metropolis–Hastings chain cloned, written, read back and dropped, and a Gibbs run. Up to 8 states,
+# 5 symbols and 200 observations.
+fn m6_round(r, a, o, obs, sb): f64 {
+    var n = 2 + r % 7;
+    var m = 2 + r % 4;
+    var bm = a + 64 * 8;
+    var ip = a + 128 * 8;
+    m6_rows(a, n, n, r);
+    m6_rows(bm, n, m, r + 3);
+    var nf: f64 = f64_from(n);
+    var u: f64 = 1.0 / nf;
+    for (var i = 0; i < n; i = i + 1) { store64(ip + i * 8, u); }
+    var acc: f64 = 0.0;
+    var g: PmnSimpleRng;
+    PmnSimpleRng_new(&g, r + 1);
+    var c: PmnMarkovChain;
+    if (PmnMarkovChain_new(&c, a, n, n, r % n) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (c.simulate(50, &g, o, 400) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (c.steady_state(o, 400) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var s0: f64 = load64(o);
+    acc = acc + s0;
+    var c2: PmnMarkovChain;
+    if (PmnMarkovChain_clone(&c2, &c) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (c2.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var c3: PmnMarkovChain;
+    if (PmnMarkovChain_from_json(&c3, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnMarkovChain_drop(&c3);
+    PmnMarkovChain_drop(&c2);
+    PmnMarkovChain_drop(&c);
+    var t = 10 + r % 190;
+    for (var k = 0; k < t; k = k + 1) { store64(obs + k * 8, (k * 7 + k / 3 + r) % m); }
+    var h: PmnHiddenMarkovModel;
+    if (PmnHiddenMarkovModel_new(&h, a, n, n, bm, n, m, ip, n) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var tl, vl = h.forward_log_likelihood(obs, t);
+    if (tl == Err) { return 0.0 / 0.0; }
+    var ll: f64 = vl;
+    acc = acc + ll;
+    if (h.viterbi(obs, t, o, 400) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var h2: PmnHiddenMarkovModel;
+    if (h.baum_welch(obs, t, 1, &h2) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (h2.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var h3: PmnHiddenMarkovModel;
+    if (PmnHiddenMarkovModel_from_json(&h3, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnHiddenMarkovModel_drop(&h3);
+    PmnHiddenMarkovModel_drop(&h2);
+    PmnHiddenMarkovModel_drop(&h);
+    var er: PmnEstimateResult;
+    if (pmn_monte_carlo_integrate(&er, &m6_f, 0, 0.0, 1.0, 50, &g) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var ev: f64 = er.value;
+    acc = acc + ev;
+    var tp, vp = pmn_monte_carlo_pi(100, &g);
+    if (tp == Err) { return 0.0 / 0.0; }
+    var x0[8];
+    store64(&x0, 0.0);
+    var res: PmnMcmcResult;
+    if (pmn_metropolis_hastings(&res, &m6_target, 0, &x0, 1, 1.0, 20 + r % 80, 5, &g) != PMN_ERR_NONE) {
+        return 0.0 / 0.0;
+    }
+    var rc: PmnMcmcResult;
+    if (PmnMcmcResult_clone(&rc, &res) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (rc.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var rd: PmnMcmcResult;
+    if (PmnMcmcResult_from_json(&rd, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var ar: f64 = rd.acceptance_rate;
+    acc = acc + ar;
+    PmnMcmcResult_drop(&rd);
+    PmnMcmcResult_drop(&rc);
+    PmnMcmcResult_drop(&res);
+    var conds[16];
+    store64(&conds, &m6_cond);
+    store64(&conds + 8, 0);
+    if (pmn_gibbs_sampling(&res, &conds, 1, &x0, 1, 20, 2, &g) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnMcmcResult_drop(&res);
+    return acc;
+}
+
 fn main() {
     alloc_init();
     g_vals = alloc(20000 * 8);
@@ -796,6 +915,35 @@ fn main() {
     var yv1 = vm_kb();
     if (yv0 >= 0) {
         assert_eq(yv1 - yv0, 0, "the mapped size: unchanged");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing claimed");
+
+    test_group("10^4 rounds of every M6 call: chains, models and results built, written, read, dropped (M6 part c)");
+    var m6a = alloc(200 * 8);
+    var m6o = alloc(400 * 8);
+    var m6obs = alloc(200 * 8);
+    var m6sb = str_builder_new();
+    var m6w: f64 = 0.0;
+    for (var rc = 0; rc < 400; rc = rc + 1) {   # every size the loop makes, so the pool's slots reach their marks
+        var wc: f64 = m6_round(rc, m6a, m6o, m6obs, m6sb);
+        m6w = m6w + wc;
+    }
+    var zb0 = alloc_used();
+    var zf0 = _fl_arena_pos;
+    var zv0 = vm_kb();
+    var m6acc: f64 = m6w;
+    for (var rd = 0; rd < 10000; rd = rd + 1) {
+        var vd: f64 = m6_round(rd, m6a, m6o, m6obs, m6sb);
+        m6acc = m6acc + vd;
+    }
+    assert(_pmn_is_finite(m6acc) == 1, "every call succeeds, every value finite");
+    assert_eq(alloc_used() - zb0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - zf0, 0, "the freelist's arena: 0 bytes carved");
+    var zv1 = vm_kb();
+    if (zv0 >= 0) {
+        assert_eq(zv1 - zv0, 0, "the mapped size: unchanged");
     } else {
         println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
     }

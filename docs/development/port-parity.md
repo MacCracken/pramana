@@ -4551,3 +4551,19 @@ Of the other four, one is equivalent: the zero-density escape written as `lp −
 rejects exactly as −∞ does, after the same draw. Three need draws SimpleRng never makes: π's `≤ 1` on x² + y² = 1
 exactly, MH's strict `r < exp(la)` against exp(−∞) = 0, and a run length past 2⁶³ (ADR 007 row 18). A scripted
 `PmnRng` in `tests/monte_carlo.tcyr` makes those draws, and its unit tests catch all three.
+
+### 12.3 Part c: M6's gate (2026-11-17)
+
+- **Three targets.** The whole corpus replays on x86_64 ELF, PE and aarch64: 18 modules, 311,620 rows ok, 54,279
+  accepted (ADR 9: 53,959; ADR 7: 320). Nothing is failed, measured or pending.
+- **The soak.** 10⁴ rounds of every M6 call, after a 400-round warm-up (`tests/soak.tcyr`). Each round builds a chain
+  of 2 to 8 states, walks it, takes its steady state, clones it, writes it, reads it back and drops all three. It
+  builds an HMM of up to 5 symbols, with its likelihood, Viterbi path and a Baum–Welch round over up to 200
+  observations, and writes, reads back and drops it. Then it runs integration, π and a Metropolis–Hastings chain
+  (the chain cloned, written, read back and dropped) and a Gibbs run. Afterwards the bump heap, the freelist's arena,
+  the mapped size and the pool's slots are where they were.
+- **Surface parity.** `markov` (21 items) and `monte_carlo` (14) are ported: 335 items in twelve modules, none
+  pending.
+- **The audit.** Neither source uses `+?`, `-?`, `*?`, `assert_fatal`, `panic`, `result_unwrap`, an unchecked
+  `vec_get` or `alloc_reset`. Every buffer is checked for null and for aliasing. `#pure` is on `_pmn_safe_ln`, the
+  one value-only helper.

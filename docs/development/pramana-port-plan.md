@@ -56,7 +56,8 @@
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
 > parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
-> begun:** parts a–d are done: **M5 is complete.** **M6 has begun:** parts a (the Markov chains and HMMs) and b (Monte Carlo) are done.
+> begun:** parts a–d are done: **M5 is complete.** **M6 has begun:** parts a (the Markov chains and HMMs), b (Monte Carlo) and c, the gate, are done: **M6 is
+> complete.** M7 is next.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1292,7 +1293,8 @@ Rust's operation order with its refusals, each type with its codec and Debug; go
   function pointer and a context (D7). A new golden module, `monte_carlo` (1,608 rows; `monte_carlo.cr.tsv` 19
   chains), 174 codec and 18 Debug rows; every row passing on the first replay, at 0 ulp, on three targets; ADR 007
   row 18 (a count at or past 2⁶³ refused) ✅;
-- **c:** M6's gate: the soak, surface parity, the benchmark rows, three targets.
+- **c:** M6's gate: the soak, surface parity, the benchmark rows, three targets. The soak's M6 group takes nothing;
+  `markov` and `monte_carlo` ported in surface parity; every row at 0 ulp on three targets ✅. **M6 is complete.**
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

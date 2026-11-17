@@ -1022,6 +1022,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     `PmnRng`.
   - **A divergence** ([ADR 007](docs/decisions/007-port-api-divergences.md) row 18): a count at or past 2⁶³, such as
     a burn-in that would start a run of 2⁶³ steps, is refused rather than run.
+- **M6 part c: M6's gate** (port plan §7; results in `docs/development/port-parity.md` §12.3). **M6 is complete:**
+  1.3.0's `markov.rs` and `monte_carlo.rs` are ported.
+  - **Three targets:** the whole corpus (18 modules, 311,620 rows ok, 54,279 accepted: 53,959 under ADR 9 and 320
+    under ADR 7) replays at 0 ulp, with nothing failed, measured or pending, on x86_64 ELF, PE and aarch64;
+  - **the soak** gains 10⁴ rounds of every M6 call. Each round builds, runs, writes, reads back and drops a chain, an
+    HMM and the Monte Carlo results, and nothing is taken (`tests/soak.tcyr`, 43 checks);
+  - **surface parity:** `markov` and `monte_carlo` are ported (335 items in twelve modules, none pending);
+  - **the audit:** neither source has an aborting construct, and `#pure` is on the value-only helper;
+  - **the benchmark rows:** M6's six rows run at 3.2–11.7× Rust (`docs/benchmarks-rust-v-cyrius.md`).
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one
