@@ -83,7 +83,7 @@ _par_dg_init();
 var _par_ds_a = 0;
 var _par_ds_b = 0;
 var _par_ds_o = 0;
-var _PAR_DS_CAP = 4096;
+var _PAR_DS_CAP = 32768;                   # NIST StRD's SmLs03, 06 and 09 have 18,009 observations
 
 # ── hooks ───────────────────────────────────────────────────────────────────────────
 

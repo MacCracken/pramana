@@ -4350,3 +4350,84 @@ and solve:
   - **The T1 cdfs** run 22–115× (median 81×): the double-double incomplete gamma and beta, whose cost ADR 009
     accepts.
   - **The codec rows** run 24–42×: `fmtf.cyr`'s digit search (ledger L10).
+
+## 10. M4: descriptive statistics and hypothesis tests
+
+M4 ports 1.3.0's `descriptive.rs` and `hypothesis.rs` under ADR 010: the golden rows come from Python's models of
+1.3.0 (`scripts/golden/validate.py`), written by `gen.py` and never committed. Its parts are in the plan's §7. Every
+row of every part passed on its first replay but where noted, at 0 ulp, on x86_64 ELF, PE (wine) and aarch64 (qemu).
+
+### 10.1 Parts a1–a3: the statistics, KDE, correlation, the Jacobi and the PCA (2026-11-16/17)
+
+- **a1** (`src/sort.cyr`, `src/descriptive.cyr`): 23,180 `descriptive` rows. The order statistics' stable rule (ADR
+  007 row 14) is pinned by probe P6's zero-heavy slices: a mutant that takes the quickselect's own zero fails 841 rows.
+  The stdlib's byte-wise `memcpy` cost the 10⁴-element median two thirds of its time (ledger L15).
+- **a2** (`src/kde.cyr`): 1,212 more rows; 3 where glibc's exp misrounds go to `descriptive.cr.tsv`, and the port
+  gives the correctly rounded value.
+- **a3** (`src/linalg.cyr`'s Jacobi, ledger L6; `src/pca.cyr`): 123 `linalg` and 78 `descriptive` rows. The Jacobi is
+  chaotic in its angle, so a glibc misround of atan, cos or sin anywhere in the sweeps moves the result: 9 `linalg` and
+  3 PCA rows go to the `.cr.tsv` files, each matched at 0 ulp. The π/4 threshold at |w_pp − w_qq| = 1e-12 is visible
+  only after a single sweep (at convergence both branches give the same bits), so its rows run one sweep.
+- **A target dependence, found on aarch64** (ADR 007 row 17): overflowing data makes an eigenvalue NaN through 0·∞,
+  with the hardware's default NaN sign, and `total_cmp` ordered PCA's components by it. The port now sorts every NaN
+  eigenvalue as x86's default NaN, and the model checks on each row that this is 1.3.0's x86 order.
+
+### 10.2 Parts b1–b2: the tests, the intervals and the quantiles (2026-11-17)
+
+- **The p-values** come from the T1 incomplete beta and gamma, so `hypothesis.ref.tsv` holds 414 rows where 1.3.0's
+  value moves: the one-sample t-test by up to 391 ulp, Welch's by 165, the χ² test by 219, ANOVA by 100, the
+  one-sample KS test (through Φ) by 53. The port is ADR 009's T1 functions on Rust's formulas, at 0 ulp.
+- **The quantiles, against MPFR at 1,024 bits** (the error as (Φ(z) − p)/φ(z), in ulps of z; 6,402 p, log-spaced to
+  10⁻³⁰⁰ and 4,000 uniform):
+  - `z_quantile`, below ½: within 0.5 ulp on 2,427 of 3,215, within 4 on 3,129, at most 387 (near ½, where Φ(x) − p
+    cancels);
+  - above ½: at most 9.4×10⁶ ulp (p = 0.999999999999969: Φ's rounding next to 1 is most of the tail 1 − p);
+  - `t_quantile` stops its bisection at 1e-12 relative: 1 of 120 (p, df) within 1 ulp, the worst 1.5×10⁶ ulp.
+
+  These are 1.3.0's algorithms, kept for parity (D4); the roadmap holds them as T1 candidates.
+
+### 10.3 Part c: M4's gate (2026-11-17)
+
+**NIST StRD** (plan §3.6; `scripts/golden/strd.py` fetches the sets into `build/strd/`, pinned by sha256, and never
+commits them). The sets are golden rows too, so the replay proves the port computes the model's values bit for bit;
+`strd.py` then measures those values against NIST's certified ones as LRE, the correct significant digits (15 at most):
+
+| Set | mean | sd (from the population variance) |
+|---|---|---|
+| PiDigits, Lottery, Lew, NumAcc1 | 15.0 | 14.9–15.0 |
+| Mavro | 15.0 | 13.1 |
+| Michelso | 15.0 | 13.8 |
+| NumAcc2 | 14.0 | 14.6 |
+| NumAcc3 | 15.0 | 9.5 |
+| NumAcc4 | 14.0 | 8.3 |
+
+| Set (difficulty) | SS between | SS within | F | R² |
+|---|---|---|---|---|
+| SiRstv (lower) | 12.5 | 13.1 | 12.4 | 12.5 |
+| SmLs01–03 (lower) | 12.7–14.4 | 12.7–15.0 | 13.4–14.4 | 13.6–14.6 |
+| AtmWtAg (average) | 8.5 | 10.9 | 8.5 | 8.6 |
+| SmLs04–06 (average) | 6.5–8.5 | 10.3 | 6.5–8.5 | 6.7–8.8 |
+| SmLs07–09 (higher) | −0.9–2.7 | 1.3–4.3 | −0.8–2.7 | 0.1–3.0 |
+
+The univariate sets keep 8.3 digits or more; 1.3.0's one-way ANOVA, its group means from plain sums of values near
+10¹², keeps almost none on the higher-difficulty sets. D4 keeps Rust's operation order in 2.0, so these are 2.1
+candidates on the roadmap: a shifted or compensated sum for the means and the sums of squares. Lag-1 autocorrelation
+is `timeseries`' (M5).
+
+**The soak** gains 10⁴ rounds of every M4 call (the statistics, correlation, a KDE and a PCA built, written, read back
+and dropped, the six tests, the intervals and a decoded TestResult's owned name, at up to 300 points): the bump heap,
+the freelist's arena, the mapped size and the pool are unchanged, every value finite. `tests/soak.tcyr` has 33 checks.
+
+**Surface.** `descriptive` and `hypothesis` move to surface parity's ported modules (255 items in seven modules, none
+pending). **The ledger:** 15 rows, 23 notes in `src/`; L3 (the stable sort) and L6 (the Jacobi) have their stand-ins,
+L15 (word copies) is new; nothing converts.
+
+**M4's result.** 1.3.0's `descriptive.rs` and `hypothesis.rs` are ported:
+- **The corpus:** `descriptive`, 24,497 rows; `hypothesis`, 1,608; `linalg`'s Jacobi, 123; 816 codec and 142 Debug rows
+  for the eight M4 types. Every row passes at 0 ulp against 1.3.0's bits, its correction where glibc misrounds, or
+  Rust's formula on the T1 functions.
+- **The replay:** thirteen modules, warning-free on x86_64 ELF, PE and aarch64.
+- **Tests:** `tests/descriptive.tcyr` (42), `tests/kde.tcyr` (43), `tests/pca.tcyr` (37), `tests/hypothesis.tcyr`
+  (113), and the soak.
+- **Cost** (`docs/benchmarks-rust-v-cyrius.md`): the statistics 3.8–9.9× Rust; the KDE 11×, the hypothesis tests
+  9–12×, the χ² test 70×, each of the last dominated by a correctly rounded exp or a T1 function (ADR 009's price).

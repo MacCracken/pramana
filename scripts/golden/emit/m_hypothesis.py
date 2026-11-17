@@ -134,7 +134,22 @@ def emit():
     for a in ALPHAS:
         row(m, "hypothesis::ks_one_sample", sl([0.1, 0.5, 0.9]) + [e("Cdf", "Uniform01"), f(a)])
     b2_rows(m, Rng(0x082EFA98EC4E6C89), ss)
+    strd_rows(m)
     return m
+
+
+def strd_rows(m):
+    """NIST StRD's one-way ANOVA sets (M4 part c), replayed as 1.3.0's model computes them; strd.py measures them."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("strd", ROOT / "scripts" / "golden" / "strd.py")
+    S = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(S)
+    for name in S.ANOVA:
+        groups, _ = S.anova(name, ROOT)
+        ins = []
+        for x in groups:
+            ins += sl(x)
+        row(m, "hypothesis::one_way_anova", ins + [f(0.05)])
 
 
 def b2_row(m, fn, ins):

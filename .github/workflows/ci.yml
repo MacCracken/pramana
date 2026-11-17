@@ -40,7 +40,8 @@ jobs:
         # Python's models of pramana 1.3.0 write tests/golden/<module>.tsv; validate.py checks every row and writes
         # the correctly rounded, reference and mapped rows (MPFR, through ctypes) that the replay holds the port to.
         # scripts/golden/digests.txt holds the dev box's digests (glibc 2.44, x86_64, FMA): a runner whose libm gives
-        # other bits fails here, before the replay.
+        # other bits fails here, before the replay. gen.py fetches NIST StRD's sets into build/strd/ (pinned by sha256).
+        # The full corpus replays on x86_64 ELF in `cyrius test`; PE and aarch64 are the local gates' (wine, qemu).
         run: |
           sudo apt-get install -y --no-install-recommends libmpfr6
           python3 -I -B scripts/golden/gen.py .

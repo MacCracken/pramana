@@ -945,6 +945,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   plan's §3.4 row): `z_quantile` is within 0.5 ulp on 2,427 of 3,215 p below ½ but up to 387 ulp near ½ and 9.4×10⁶ ulp
   above ½, and `t_quantile`'s bisection stops at 1e-12 relative (up to 1.5×10⁶ ulp): 1.3.0's algorithms, kept for
   parity, and recorded on the roadmap as T1 candidates after 2.0.0.
+- **M4 part c: M4's gate** (port plan §7; results in `docs/development/port-parity.md` §10). **M4 is complete:**
+  1.3.0's `descriptive.rs` and `hypothesis.rs` are ported. Every one of their rows passes at 0 ulp on x86_64 ELF, PE and
+  aarch64: `descriptive` 24,497, `hypothesis` 1,608, `linalg`'s Jacobi 123, and 816 codec and 142 Debug rows.
+  - **NIST StRD** (plan §3.6, D4): `scripts/golden/strd.py` fetches the nine univariate and eleven ANOVA sets into
+    `build/strd/` (pinned by sha256, never committed); they are golden rows, and their LRE against the certified values
+    is measured: the means keep 14–15 digits, the population variance 8.3 (NumAcc4) to 15, and 1.3.0's one-way ANOVA
+    6.5–8.8 on the average-difficulty sets and −0.9–4.3 on SmLs07–09. D4 keeps Rust's operation order in 2.0; the
+    shortfalls are 2.1 candidates on the roadmap;
+  - **the soak** gains 10⁴ rounds of every M4 call, KDE, PCA and TestResult built, written, read and dropped: nothing
+    taken (`tests/soak.tcyr`, 33 checks);
+  - **surface parity:** `descriptive` and `hypothesis` are ported modules (255 items in seven modules, none pending);
+  - **the harness** reads rows of up to 32,768 values (SmLs09's 18,009).
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

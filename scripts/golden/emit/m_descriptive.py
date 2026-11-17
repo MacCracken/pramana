@@ -100,7 +100,22 @@ def emit():
     kde_rows(m, Rng(0xA54FF53A5F1D36F1))
     corr_rows(m, Rng(0x510E527FADE682D1))
     pca_rows(m, Rng(0x9B05688C2B3E6C1F))
+    strd_rows(m)
     return m
+
+
+def strd_rows(m):
+    """NIST StRD's univariate sets (M4 part c; build/strd/, fetched and pinned by scripts/golden/strd.py): the mean,
+    variance and standard deviation 1.3.0's model computes, class A; strd.py measures them against the certified
+    values."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("strd", ROOT / "scripts" / "golden" / "strd.py")
+    S = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(S)
+    for name in S.UNIVARIATE:
+        data, _ = S.univariate(name, ROOT)
+        for fn in ("mean", "variance", "std_dev"):
+            row(m, V.DESC, "descriptive::" + fn, "A", slice_(data))
 
 
 def pca_row(m, vs):

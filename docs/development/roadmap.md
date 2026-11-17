@@ -117,7 +117,10 @@ The feature sections below predate the port. New features land after 2.0.0 parit
     is most of the tail), against MPFR at 1,024 bits: a Halley step on 1 − Φ above ½, in double-double near ½ (M4
     part b2; the T1 candidate of the plan's §12);
   - `t_quantile` stops its bisection at 1e-12 relative, so it is up to 1.5×10⁶ ulp from the true quantile (p = 0.5005,
-    df = 29; 119 of 120 (p, df) beyond 1 ulp): a Newton step on the T1 CDF after the bisection (M4 part b2).
+    df = 29; 119 of 120 (p, df) beyond 1 ulp): a Newton step on the T1 CDF after the bisection (M4 part b2);
+  - against NIST StRD (M4 part c; `docs/development/port-parity.md` §10.3): `one_way_anova` keeps 6.5–8.8 digits on the
+    average-difficulty sets and −0.9–4.3 on SmLs07–09, whose values sit near 10¹², and the population variance 8.3 on
+    NumAcc4: a shifted or compensated sum for the means and the sums of squares (D4's 2.1 candidates).
 
 ### Testing
 - [ ] Property-based tests via proptest or quickcheck

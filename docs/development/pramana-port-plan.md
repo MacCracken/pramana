@@ -55,7 +55,7 @@
 > of 1.3.0, from `rust-old/src`", and where it says "Rust twin", read "the twin's recorded numbers"; new proofs are
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
 > parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
-> hypothesis tests, the intervals and the quantiles) are done; c, the gate, is next.
+> hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** M5 is next.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1257,7 +1257,10 @@ a T1 function is recorded against T1:
   `hypothesis` rows, 97 codec and 20 Debug rows; every row passing at 0 ulp on three targets; the quantiles' gaps
   (z up to 9.4×10⁶ ulp above ½, t's 1e-12 bisection) on the roadmap ✅;
 - **c:** M4's gate: NIST StRD's univariate and ANOVA sets (class R), the soak, surface parity, the benchmark rows
-  against 1.3.0's criterion record, three targets.
+  against 1.3.0's criterion record, three targets. StRD fetched and pinned by `scripts/golden/strd.py`, replayed as
+  golden rows and measured (ANOVA's shortfalls on the higher-difficulty sets are D4's 2.1 candidates); the soak's M4
+  group; `descriptive` and `hypothesis` ported in surface parity; every row at 0 ulp on three targets ✅. **M4 is
+  complete.**
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

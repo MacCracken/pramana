@@ -11,7 +11,8 @@
 # thirteen caller-storage distributions: 10^4 rounds of every call of each, codecs and Debug included. And M3 part d2's
 # MultivariateNormal, the one owned distribution: 10^4 rounds of its constructor, both densities, a draw, a clone and
 # its JSON both ways, each block freed by its drop, a tenth of them at d = 32 (a block over 4 KB, mapped and
-# unmapped).
+# unmapped). M4's gate (part c) adds every M4 call: the statistics, correlation, a KDE and a PCA built, written, read
+# back and dropped, the six tests, the intervals and a decoded TestResult's owned name, 10^4 rounds at up to 300 points.
 
 include "tests/lib.cyr"
 
@@ -463,6 +464,78 @@ fn m2_round(r): f64 {
     return s;
 }
 
+fn m4_cdf(ctx, x: f64): f64 {
+    var r: f64 = _pmn_normal_cdf(x);
+    return r;
+}
+
+# One round of every M4 call (M4 part c): the fourteen statistics, correlation, a KDE and a PCA built, evaluated,
+# written, read back and dropped, the six tests, the three intervals, and a TestResult read and dropped. Sizes vary with
+# r, up to 300 points, so the pool's slots grow to their marks in the warm-up.
+fn m4_round(r, a, b, o, sb): f64 {
+    var n = 2 + r % 299;
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = f64_from((i * 7919 + r * 13) % 1009);
+        var y: f64 = x * 0.01;
+        store64(a + i * 8, y);
+        var z: f64 = f64_from((i * 104729 + r) % 997);
+        var w: f64 = z * 0.02;
+        store64(b + i * 8, w);
+    }
+    var acc: f64 = pmn_sum(a, n);
+    var t, v = pmn_median(a, n);
+    t, v = pmn_mode(a, n);
+    t, v = pmn_kurtosis(a, n);
+    t, v = pmn_percentile(a, n, 37.5);
+    t, v = pmn_iqr(a, n);
+    t, v = pmn_range(a, n);
+    var q: f64 = v;
+    acc = acc + q;
+    var recs[32];
+    store64(&recs, a);
+    store64(&recs + 8, n);
+    store64(&recs + 16, b);
+    store64(&recs + 24, n);
+    if (pmn_correlation_matrix(&recs, 2, o, 4) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var kd: PmnKernelDensity;
+    if (PmnKernelDensity_silverman(&kd, a, n, r % 4) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var dens: f64 = kd.evaluate(1.0);
+    acc = acc + dens;
+    store64(sb + 8, 0);
+    if (kd.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var kd2: PmnKernelDensity;
+    if (PmnKernelDensity_from_json(&kd2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnKernelDensity_drop(&kd2);
+    PmnKernelDensity_drop(&kd);
+    var pr: PmnPcaResult;
+    if (pmn_pca(&pr, &recs, 2) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (pr.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var pr2: PmnPcaResult;
+    if (PmnPcaResult_from_json(&pr2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnPcaResult_drop(&pr2);
+    PmnPcaResult_drop(&pr);
+    var tr: PmnTestResult;
+    var kr: PmnKsResult;
+    var ar: PmnAnovaResult;
+    var ci: PmnConfidenceInterval;
+    if (pmn_t_test_two_sample(&tr, a, n, b, n, 0.05) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var tp: f64 = tr.p_value;
+    acc = acc + tp;
+    store64(sb + 8, 0);
+    if (tr.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var tr2: PmnTestResult;
+    if (PmnTestResult_from_json(&tr2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnTestResult_drop(&tr2);
+    if (pmn_ks_two_sample(&kr, a, n, b, n, 0.05) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (pmn_ks_one_sample(&kr, a, n, &m4_cdf, 0, 0.05) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (pmn_one_way_anova(&ar, &recs, 2, 0.05) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (pmn_ci_proportion(&ci, r % 50, 50, 0.95) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var cu: f64 = ci.upper;
+    acc = acc + cu;
+    return acc;
+}
+
 fn main() {
     alloc_init();
     g_vals = alloc(20000 * 8);
@@ -601,6 +674,35 @@ fn main() {
     var qv1 = vm_kb();
     if (qv0 >= 0) {
         assert_eq(qv1 - qv0, 0, "the mapped size: unchanged");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing claimed");
+
+    test_group("10^4 rounds of every M4 call, KDE, PCA and TestResult built, written, read and dropped (M4 part c)");
+    var m4a = alloc(300 * 8);
+    var m4b = alloc(300 * 8);
+    var m4o = alloc(4 * 8);
+    var m4sb = str_builder_new();
+    var m4w: f64 = 0.0;
+    for (var r8 = 0; r8 < 600; r8 = r8 + 1) {   # every size the loop makes, so the pool's slots reach their marks
+        var w8: f64 = m4_round(r8, m4a, m4b, m4o, m4sb);
+        m4w = m4w + w8;
+    }
+    var xb0 = alloc_used();
+    var xf0 = _fl_arena_pos;
+    var xv0 = vm_kb();
+    var m4acc: f64 = m4w;
+    for (var r9 = 0; r9 < 10000; r9 = r9 + 1) {
+        var v9: f64 = m4_round(r9, m4a, m4b, m4o, m4sb);
+        m4acc = m4acc + v9;
+    }
+    assert(_pmn_is_finite(m4acc) == 1, "every call succeeds, every value finite");
+    assert_eq(alloc_used() - xb0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - xf0, 0, "the freelist's arena: 0 bytes carved");
+    var xv1 = vm_kb();
+    if (xv0 >= 0) {
+        assert_eq(xv1 - xv0, 0, "the mapped size: unchanged");
     } else {
         println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
     }

@@ -23,10 +23,10 @@ RUST = ROOT / "rust-old" / "src"
 SRC = ROOT / "src"
 
 # The modules ported so far, in the plan's order. A milestone adds its modules here with their SURFACE entries.
-PORTED = ["error", "rng", "combinatorics", "bridge", "distribution"]   # distribution: M3's gate (part e)
+PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptive", "hypothesis"]   # M4's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {"descriptive": "M4", "hypothesis": "M4"}
+PARTIAL = {}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
