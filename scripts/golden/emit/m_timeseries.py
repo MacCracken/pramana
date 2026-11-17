@@ -97,4 +97,12 @@ def emit():
             row(m, "timeseries::arima_forecast", sl(phi) + [i(dd), f(icpt), f(rv)] + sl(x[:dd + len(phi) - 1]) + [i(3)])
     row(m, "timeseries::arima_forecast", sl([]) + [i(0), f(2.5), f(1.0)] + sl([1.0]) + [i(3)])
     row(m, "timeseries::arima_forecast", sl([0.5]) + [i(-1), f(0.0), f(1.0)] + sl([1.0, 2.0, 3.0]) + [i(2)])
+    # NIST StRD's univariate sets (M5 part d): the certified lag-1 autocorrelation's input
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("strd", ROOT / "scripts" / "golden" / "strd.py")
+    S = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(S)
+    for name in S.UNIVARIATE:
+        data, _ = S.univariate(name, ROOT)
+        row(m, "timeseries::autocorrelation", sl(data) + [i(1)])
     return m

@@ -4431,3 +4431,55 @@ L15 (word copies) is new; nothing converts.
   (113), and the soak.
 - **Cost** (`docs/benchmarks-rust-v-cyrius.md`): the statistics 3.8–9.9× Rust; the KDE 11×, the hypothesis tests
   9–12×, the χ² test 70×, each of the last dominated by a correctly rounded exp or a T1 function (ADR 009's price).
+
+## 11. M5: regression, time series and Bayesian inference
+
+M5 ports 1.3.0's `regression.rs`, `timeseries.rs` and `bayesian.rs` under ADR 010, in four parts (the plan's §7).
+Every row of every part passed on its first replay but where noted, at 0 ulp, on x86_64 ELF, PE and aarch64.
+
+### 11.1 Parts a–c (2026-11-17)
+
+- **a, regression** (`src/regression.cyr`; hisab's `least_squares_poly` in `src/linalg.cyr`, ledger L5): 571 rows.
+  One logistic fit, where glibc's exp misrounds, is in `regression.cr.tsv`. Two mutant survivors were closed with
+  rows: hisab's dependence threshold (a column norm between 1e-12 and 1e-6, x = 10⁻⁴·k at degree 2) and the Newton
+  steps' 1e-8 stop (60 more seeded fits).
+- **b, time series** (`src/timeseries.cyr`): 1,331 rows; c(0)'s 1e-30 floor needed a series with c(0) ≈ 2.5e-25.
+  `moving_average` refuses an output that overlaps its input: its slide re-reads x[i − window].
+- **c, Bayesian** (`src/bayesian.cyr`): 2,005 rows; naive Bayes' 1e-300 floor is a word proven by
+  `scripts/crverify/consts.py`.
+
+### 11.2 Part d: M5's gate (2026-11-17)
+
+**NIST StRD** (plan §3.6, D4; `scripts/golden/strd.py`): the linear least squares sets 1.3.0's fits can take, y on x
+alone (NoInt1/2 need a fit without an intercept and Longley a multiple regression, which 1.3.0 doesn't have), and the
+univariate sets' lag-1 autocorrelation. Replayed as golden rows (the port computes the models' values bit for bit) and
+measured as LRE:
+
+| Set | Degree | Worst coefficient | R² |
+|---|---|---|---|
+| Norris (lower) | 1 | 12.0 (the linear fit: slope 14.4, intercept 12.8) | 15.0 |
+| Pontius (lower) | 2 | 11.8 | 15.0 |
+| Wampler1–4 (higher) | 5 | 7.4–10.9 | 15.0 |
+| Wampler5 (higher) | 5 | 6.5 | 13.7 |
+| Filip (higher) | 10 | 4.0 | 11.0 |
+
+| Univariate set | r(1) |
+|---|---|
+| Lottery, Lew, NumAcc1 | 15.0 |
+| PiDigits, Mavro, Michelso, NumAcc2 | 13.0–13.8 |
+| NumAcc3, NumAcc4 | 11.2, 9.0 |
+
+hisab's modified Gram–Schmidt on the raw Vandermonde matrix does fit Filip, where the plan expected a refusal, but
+keeps 4.0 digits of its worst coefficient. D4 keeps Rust's operation order in 2.0; a centered, scaled Householder fit is
+the 2.1 candidate on the roadmap.
+
+**The soak** gains 10⁴ rounds of every M5 call (the three fits and their codecs and drops, the time series, an ARIMA
+fit, forecast and codec, the Bayesian calls) at up to 200 points: nothing taken (`tests/soak.tcyr`, 38 checks).
+**Surface:** `regression`, `timeseries` and `bayesian` are ported (300 items in ten modules, none pending).
+**The ledger:** 15 rows; L5 has its stand-in; nothing converts.
+
+**M5's result.** 1.3.0's `regression.rs`, `timeseries.rs` and `bayesian.rs` are ported: `regression` 571 rows,
+`timeseries` 1,331, `bayesian` 2,005, and 458 codec and 74 Debug rows for their six types, every one at 0 ulp on three
+targets. Tests: `tests/regression.tcyr` (46), `tests/timeseries.tcyr` (45), `tests/bayesian.tcyr` (19) and the soak.
+Cost: 1.8–8.5× Rust on the arithmetic rows, 17× for naive Bayes (its 44 correctly rounded logarithms).
+

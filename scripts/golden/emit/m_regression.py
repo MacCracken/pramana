@@ -122,4 +122,20 @@ def emit():
             row(m, "regression::predict_logistic_proba", "C", sl(cs) + sl(feats))
             for th in (0.5, 0.0, 1.0, NAN):
                 row(m, "regression::predict_logistic_class", "C", sl(cs) + sl(feats) + [f(th)])
+    strd_rows(m)
     return m
+
+
+def strd_rows(m):
+    """NIST StRD's linear least squares sets (M5 part d; build/strd/, pinned by scripts/golden/strd.py): each
+    polynomial fit at its certified degree (and Norris's linear fit), replayed as 1.3.0's model computes them."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("strd", ROOT / "scripts" / "golden" / "strd.py")
+    S = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(S)
+    for name in S.REGRESSION:
+        x, y, cert = S.regression(name, ROOT)
+        k = len(cert["coefficients"]) - 1
+        row(m, "regression::polynomial_regression", "A", sl(x) + sl(y) + [i(k)])
+        if k == 1:
+            row(m, "regression::linear_regression", "A", sl(x) + sl(y))

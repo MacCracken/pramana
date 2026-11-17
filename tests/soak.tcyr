@@ -13,6 +13,7 @@
 # its JSON both ways, each block freed by its drop, a tenth of them at d = 32 (a block over 4 KB, mapped and
 # unmapped). M4's gate (part c) adds every M4 call: the statistics, correlation, a KDE and a PCA built, written, read
 # back and dropped, the six tests, the intervals and a decoded TestResult's owned name, 10^4 rounds at up to 300 points.
+# M5's gate (part d) adds every M5 call: the fits, the time series, ARIMA and its codec, the Bayesian calls.
 
 include "tests/lib.cyr"
 
@@ -536,6 +537,68 @@ fn m4_round(r, a, b, o, sb): f64 {
     return acc;
 }
 
+# One round of every M5 call (M5 part d): the three fits with their predictions, residuals, codecs and drops, the
+# time-series functions, an ARIMA fit, forecast, codec and drop, and the Bayesian calls, at up to 200 points.
+fn m5_round(r, a, b, o, recs, sb): f64 {
+    var n = 8 + r % 192;
+    for (var i = 0; i < n; i = i + 1) {
+        var fi: f64 = f64_from(i);
+        store64(a + i * 8, fi);
+        var w: f64 = f64_from((i * 7919 + r * 31) % 101);
+        var y: f64 = w * 0.03;
+        var s: f64 = 0.5 * fi;
+        var yv: f64 = s + y;
+        store64(b + i * 8, yv);
+        store64(recs + i * 16, b + i * 8);
+        store64(recs + i * 16 + 8, 1);
+    }
+    var acc: f64 = 0.0;
+    var lm: PmnLinearModel;
+    if (pmn_linear_regression(&lm, a, n, b, n) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (pmn_residuals(&lm, a, n, b, n, o, 200) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var pm: PmnPolynomialModel;
+    if (pmn_polynomial_regression(&pm, a, n, b, n, 1 + r % 3) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (pm.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var pm2: PmnPolynomialModel;
+    if (PmnPolynomialModel_from_json(&pm2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var pp: f64 = pmn_predict_poly(&pm2, 3.0);
+    acc = acc + pp;
+    PmnPolynomialModel_drop(&pm2);
+    PmnPolynomialModel_drop(&pm);
+    var lab = o + 100 * 8;
+    for (var j = 0; j < n; j = j + 1) {
+        var lv: f64 = 0.0;
+        if ((j * 13 + r) % 7 > 3) { lv = 1.0; }
+        store64(lab + j * 8, lv);
+    }
+    var lg: PmnLogisticModel;
+    if (pmn_logistic_regression(&lg, recs, n, lab, n, 1.0, 20) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var lp: f64 = pmn_predict_logistic_proba(&lg, b, 1);
+    acc = acc + lp;
+    PmnLogisticModel_drop(&lg);
+    if (pmn_moving_average(b, n, 5, o, 200) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (pmn_exponential_smoothing(b, n, 0.3, o, 200) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (pmn_difference(b, n, 2, o, 200) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var t, v = pmn_autocorrelation(b, n, 1);
+    var am: PmnArimaModel;
+    if (pmn_arima_fit(&am, b, n, 2, 1) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    if (pmn_arima_forecast(&am, b, n, 5, o, 200) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    store64(sb + 8, 0);
+    if (am.to_json(sb) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var am2: PmnArimaModel;
+    if (PmnArimaModel_from_json(&am2, load64(sb), load64(sb + 8)) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    PmnArimaModel_drop(&am2);
+    PmnArimaModel_drop(&am);
+    var f0: f64 = load64(o);
+    acc = acc + f0;
+    var u: PmnBayesianUpdate;
+    if (PmnBayesianUpdate_new(&u, 0.5, 0.4, 0.3) != PMN_ERR_NONE) { return 0.0 / 0.0; }
+    var po: f64 = u.posterior();
+    acc = acc + po;
+    return acc;
+}
+
 fn main() {
     alloc_init();
     g_vals = alloc(20000 * 8);
@@ -703,6 +766,36 @@ fn main() {
     var xv1 = vm_kb();
     if (xv0 >= 0) {
         assert_eq(xv1 - xv0, 0, "the mapped size: unchanged");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing claimed");
+
+    test_group("10^4 rounds of every M5 call, the models built, written, read and dropped (M5 part d)");
+    var m5a = alloc(200 * 8);
+    var m5b = alloc(200 * 8);
+    var m5o = alloc(400 * 8);
+    var m5r = alloc(200 * 16);
+    var m5sb = str_builder_new();
+    var m5w: f64 = 0.0;
+    for (var ra = 0; ra < 400; ra = ra + 1) {   # every size the loop makes, so the pool's slots reach their marks
+        var wa: f64 = m5_round(ra, m5a, m5b, m5o, m5r, m5sb);
+        m5w = m5w + wa;
+    }
+    var yb0 = alloc_used();
+    var yf0 = _fl_arena_pos;
+    var yv0 = vm_kb();
+    var m5acc: f64 = m5w;
+    for (var rb = 0; rb < 10000; rb = rb + 1) {
+        var vb: f64 = m5_round(rb, m5a, m5b, m5o, m5r, m5sb);
+        m5acc = m5acc + vb;
+    }
+    assert(_pmn_is_finite(m5acc) == 1, "every call succeeds, every value finite");
+    assert_eq(alloc_used() - yb0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - yf0, 0, "the freelist's arena: 0 bytes carved");
+    var yv1 = vm_kb();
+    if (yv0 >= 0) {
+        assert_eq(yv1 - yv0, 0, "the mapped size: unchanged");
     } else {
         println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
     }

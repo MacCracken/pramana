@@ -982,6 +982,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   probability grid, the coherence bound at, below and above 1 + 1e-12, seeded and degenerate naive Bayes problems),
   97 codec and 10 Debug rows. Every row passes on the first replay, at 0 ulp, on x86_64 ELF, PE and aarch64. Two
   mutants (the coherence test and the winner's tie) fail 2 rows each. `tests/bayesian.tcyr` (19 checks).
+- **M5 part d: M5's gate** (port plan §7; results in `docs/development/port-parity.md` §11). **M5 is complete:**
+  1.3.0's `regression.rs`, `timeseries.rs` and `bayesian.rs` are ported, every row at 0 ulp on x86_64 ELF, PE and
+  aarch64.
+  - **NIST StRD** (plan §3.6, D4): Norris, Pontius, Filip and Wampler1–5 (fetched and pinned by `strd.py`) and the
+    univariate sets' r(1), replayed as golden rows and measured: Norris and Pontius keep 11.8–15 digits, Wampler1–5's
+    coefficients 6.5–10.9, Filip's 4.0 (hisab's Gram–Schmidt fits it; the plan expected a refusal), r(1) 9.0–15. The
+    shortfalls are D4's 2.1 candidates on the roadmap;
+  - **the soak** gains 10⁴ rounds of every M5 call: nothing taken (`tests/soak.tcyr`, 38 checks);
+  - **surface parity:** `regression`, `timeseries` and `bayesian` are ported (300 items in ten modules, none pending).
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

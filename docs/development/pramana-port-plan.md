@@ -56,7 +56,7 @@
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
 > parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
-> begun:** parts a (regression), b (time series) and c (Bayesian) are done; d, the gate, is next.
+> begun:** parts a–d are done: **M5 is complete.** M6 is next.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1277,7 +1277,19 @@ rows in new modules `regression`, `timeseries` and `bayesian`:
 - **c:** `src/bayesian.cyr`: Bayes' theorem, the update and naive Bayes. A new golden module, `bayesian` (2,005
   rows), 97 codec and 10 Debug rows; every row passing on the first replay, at 0 ulp, on three targets ✅;
 - **d:** M5's gate: NIST StRD's regression sets (Norris, Pontius, Wampler1–5, Filip; class R, D4) and the
-  univariate sets' lag-1 autocorrelation, the soak, surface parity, the benchmark rows, three targets.
+  univariate sets' lag-1 autocorrelation, the soak, surface parity, the benchmark rows, three targets. StRD fetched,
+  replayed and measured (Filip keeps 4.0 digits, Wampler 6.5–10.9: D4's 2.1 candidates); the soak's M5 group; the
+  three modules ported in surface parity; every row at 0 ulp on three targets ✅. **M5 is complete.**
+
+**M6's parts** (set at its start, 2026-11-17, under ADR 010). 1.3.0's `markov.rs` and `monte_carlo.rs`, each in
+Rust's operation order with its refusals, each type with its codec and Debug; golden rows in new modules `markov` and
+`monte_carlo`, the RNG streams at fixed seeds (class S):
+- **a:** `src/markov.cyr`: `MarkovChain` (owned, validated; `step` and `simulate` generic over `R: PmnRng`,
+  `steady_state` with the stall switch to the lazy chain) and `HiddenMarkovModel` (owned, validated; the scaled
+  forward pass, Viterbi, scaled Baum–Welch);
+- **b:** `src/monte_carlo.cyr`: Monte Carlo integration, π, Metropolis–Hastings and Gibbs sampling, their callbacks a
+  function pointer and a context (D7);
+- **c:** M6's gate: the soak, surface parity, the benchmark rows, three targets.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

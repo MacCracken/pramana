@@ -17,6 +17,9 @@ BASE = "https://www.itl.nist.gov/div898/strd/"
 UNIVARIATE = ["PiDigits", "Lottery", "Lew", "Mavro", "Michelso", "NumAcc1", "NumAcc2", "NumAcc3", "NumAcc4"]
 ANOVA = ["SiRstv", "SmLs01", "SmLs02", "SmLs03", "AtmWtAg", "SmLs04", "SmLs05", "SmLs06", "SmLs07", "SmLs08",
          "SmLs09"]
+# Linear least squares (M5 part d): the sets 1.3.0's fits can take, y on x alone. NoInt1/2 need a fit without an
+# intercept and Longley a multiple regression, neither of which 1.3.0 has.
+REGRESSION = ["Norris", "Pontius", "Filip", "Wampler1", "Wampler2", "Wampler3", "Wampler4", "Wampler5"]
 SHA256 = {
     "AtmWtAg": "5a1083c9062d3966f244bffa376fc9b033244abf86a0d0dd016af39cd71fb8a7",
     "Lew": "081b231f686d01fa00247b8072909206947c8321bd62e060d9aaae5f4866c44e",
@@ -38,6 +41,14 @@ SHA256 = {
     "SmLs07": "fd95c510aa8b3ce7f67ddd32846ccead7d9abae441790336c6fb0fcb0ae3558f",
     "SmLs08": "87dd38dfffeb65d39dbe3e8ba73bd16644fc396c1aad03fc0295225f3ba6aef9",
     "SmLs09": "f4688c5a0d5690fc86fa27e0c5a265eef0b24641e74af27aa72d9615084dd13f",
+    "Norris": "5ab6906c68a9c4b2eb1661c0cd7d2a09f5a469a6d4e05b6b691f190f5f7b944f",
+    "Pontius": "de60baa5dc66fd804f9316f895bc5aa2b8f791c09d1ecc1ec39f8b199b8c15c7",
+    "Filip": "403b34689e401d915cb28bd69311d3ca5c3007d88d3b670b00e3203042315072",
+    "Wampler1": "8bcd6f00dbe8c307ebc5c971e12b950eb3cdb75afbc2b38573082b5fcb0d7fbc",
+    "Wampler2": "01ba5f08b5b9f84431f3754216e006939a80264a1caa69fe08b3cbc543f9ee3e",
+    "Wampler3": "c5b025f6ebf0365de92d80e478ad826b01a6dfdafb71964ea8bae7eec993ce53",
+    "Wampler4": "dcff32075a52ecf31af70dad340776237544b1a29b5034a40f8b3e6b607cf9c1",
+    "Wampler5": "c4e260a6638db61287bfea75a2dd3b324c86c5d40931ddc6d8fab0c0305ffa39",
 }
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -48,7 +59,7 @@ def path(name, root=ROOT):
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{name}.dat"
     if not p.exists():
-        sub = "univ/data/" if name in UNIVARIATE else "anova/"
+        sub = "univ/data/" if name in UNIVARIATE else "anova/" if name in ANOVA else "lls/data/LINKS/DATA/"
         with urllib.request.urlopen(BASE + sub + name + ".dat", timeout=60) as r:
             p.write_bytes(r.read())
     got = hashlib.sha256(p.read_bytes()).hexdigest()
@@ -97,6 +108,28 @@ def anova(name, root=ROOT):
     return [groups[k] for k in sorted(groups)], cert
 
 
+def regression(name, root=ROOT):
+    """(x, y, certified {coefficients B0 … Bk as decimals, r2}) of a linear least squares set: k is the degree."""
+    lines = path(name, root).read_text(encoding="ascii").splitlines()
+    cert, coefs = {}, []
+    for l in lines:
+        w = l.split()
+        if len(w) >= 2 and w[0].startswith("B") and w[0][1:].isdigit():
+            coefs.append(w[1])
+        if l.strip().startswith("R-Squared"):
+            cert["r2"] = w[-1]
+    cert["coefficients"] = coefs
+    span = next(l for l in lines if "Data" in l and "(lines" in l)
+    first = int(span.split("(lines")[1].split("to")[0])
+    x, y = [], []
+    for l in lines[first - 1:]:
+        w = l.split()
+        if len(w) == 2:
+            y.append(float(w[0]))
+            x.append(float(w[1]))
+    return x, y, cert
+
+
 def lre(x, c):
     """The log relative error of x against the certified decimal c: −log10(|x − c|/|c|), or −log10|x − c| at c = 0;
     15 when they agree to the certified value's 15 digits or better, as NIST's convention caps it."""
@@ -132,6 +165,8 @@ def report(root=ROOT):
         s = sd_from_variance(v, len(data))
         rows.append((name, "mean", lre(m, cert["mean"])))
         rows.append((name, "sd (from the variance)", lre(float(s), cert["sd"]) if s else 0.0))
+        r1 = V.ts_acf(data, 1)[0]
+        rows.append((name, "r(1)", lre(r1, cert["r1"])))
     L = V.dist_prims(root)[2]
     for name in ANOVA:
         groups, cert = anova(name, root)
@@ -145,6 +180,21 @@ def report(root=ROOT):
         rows.append((name, "R²", lre(ssb / sst, cert["r2"])))
         if dfb != cert["dfb"] or dfw != cert["dfw"]:
             rows.append((name, "df", 0.0))
+    for name in REGRESSION:
+        x, y, cert = regression(name, root)
+        k = len(cert["coefficients"]) - 1
+        fit = V.rg_poly(x, y, k)
+        if isinstance(fit, str):
+            rows.append((name, f"degree {k}: {fit}", 0.0))
+            continue
+        coefs, _, r2 = fit
+        worst = min(lre(c, b) for c, b in zip(coefs, cert["coefficients"]))
+        rows.append((name, f"degree {k}, worst coefficient", worst))
+        rows.append((name, f"degree {k}, R²", lre(r2, cert["r2"])))
+        if k == 1:
+            lin = V.rg_linear(x, y)
+            rows.append((name, "linear fit, slope", lre(lin[0], cert["coefficients"][1])))
+            rows.append((name, "linear fit, intercept", lre(lin[1], cert["coefficients"][0])))
     return rows
 
 

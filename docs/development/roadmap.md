@@ -120,7 +120,11 @@ The feature sections below predate the port. New features land after 2.0.0 parit
     df = 29; 119 of 120 (p, df) beyond 1 ulp): a Newton step on the T1 CDF after the bisection (M4 part b2);
   - against NIST StRD (M4 part c; `docs/development/port-parity.md` §10.3): `one_way_anova` keeps 6.5–8.8 digits on the
     average-difficulty sets and −0.9–4.3 on SmLs07–09, whose values sit near 10¹², and the population variance 8.3 on
-    NumAcc4: a shifted or compensated sum for the means and the sums of squares (D4's 2.1 candidates).
+    NumAcc4: a shifted or compensated sum for the means and the sums of squares (D4's 2.1 candidates);
+  - against NIST StRD's regression sets (M5 part d; port-parity §11.2): hisab's Gram–Schmidt on the raw Vandermonde
+    matrix keeps 4.0 digits of Filip's worst coefficient (degree 10) and 6.5–10.9 of Wampler1–5's (degree 5): a
+    centered, scaled Householder QR (D4's other 2.1 candidate); NoInt1/2 and Longley need a fit without an intercept
+    and a multiple regression, which 1.3.0 doesn't have.
 
 ### Testing
 - [ ] Property-based tests via proptest or quickcheck
