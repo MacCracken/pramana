@@ -652,3 +652,36 @@ load average of 3 (1.88, 2.06, 2.02). Every row's sum is the same in all three r
 
 These are findings to measure against, not changes for this part. The incomplete gamma's cost is T1's, which ADR 009
 accepts.
+
+## M3 part b2: Beta, StudentT and FDistribution (2026-11-16)
+
+**Bodies.** `tests/dist.bcyr` and its twin `m3_dist.rs` gain eight rows, with part a1's loop. Each row builds its
+distribution on every call, as the twin does. Pinned to core 5, interleaved, each round started under a load average
+of 3. The first round (load 2.99) ran while another process took the box to a load of 14: every Cyrius row came out
+1.6–1.7× rounds 2 and 3, so it was discarded and a fourth round run once the load was back under 3. The record is
+rounds 2–4 (loads 2.84, 2.90, 2.94). Every row's sum is the same in all four rounds.
+- **The digests:** all 34 are explained by `validate.py`'s models (`build/handoff/bench_digests_dist.py`). The pdfs
+  differ from 1.3.0's on 3,424–4,094 of 4,096 values (T1's lnΓ and ln B), the cdfs on 2,468–2,878 (T1's incomplete
+  beta), and the draws on 2–8 (glibc's misrounds inside Marsaglia–Tsang).
+- **The earlier rows,** re-measured: within 5% of their records.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `Beta::pdf`, Beta(2, 5), x in [0, 1) | 100.8–101.8 ns | 789–893 ns | 8.2× |
+| `Beta::cdf`, Beta(2, 5), x in [0, 1) | 157.7–159.0 ns | 3.55–3.79 µs | 23× |
+| `Beta::sample`, α = β in [0.5, 10) | 70.6–71.4 ns | 536–562 ns | 7.7× |
+| `StudentT::pdf`, t(5), x in [−10, 10) | 71.2–72.8 ns | 430–459 ns | 6.2× |
+| `StudentT::cdf`, t(5), x in [−10, 10) | 220.2–220.8 ns | 20.7–21.9 µs | 97× |
+| `StudentT::sample`, df in [1, 30) | 64.4–65.5 ns | 490–493 ns | 7.6× |
+| `FDistribution::cdf`, F(4, 9), x in [0, 10) | 156.2–157.1 ns | 17.65–17.85 µs | 114× |
+| `FDistribution::sample`, d1 = d2 in [1, 30) | 80.3–80.9 ns | 556–560 ns | 6.9× |
+
+**Where the time goes.**
+- **The cdfs are T1's incomplete beta,** as M2 part b5 measured it (17.8–18.5 µs on small shapes): 20.7–21.9 µs for
+  t(5), at (2.5, ½), and 17.7 µs for F(4, 9), at (2, 4.5). Beta(2, 5)'s cdf is cheaper, 3.6 µs.
+- **The pdfs** are ln B or lnΓ on T1 (three lnΓ below shapes of 10, at 153–179 ns each) with two or three correctly
+  rounded primitives.
+- **A draw** is two Marsaglia–Tsang variates, or a Box–Muller normal and one.
+
+These are findings to measure against, not changes for this part. The incomplete beta's cost is T1's, which ADR 009
+accepts.

@@ -4,7 +4,8 @@
 # (debug.tsv). These tests carry 1.3.0's own unit tests over (distribution.rs) and pin what a replay doesn't: a
 # constructor's refusals, the identities each method keeps bit for bit, a consumer's own generator through the trait,
 # and the codecs' and Debug's exact text. Part a1: Normal, Box–Muller and Debug's f64 form; part a2: Uniform,
-# Exponential and Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma, ChiSquared and Marsaglia–Tsang.
+# Exponential and Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma, ChiSquared and Marsaglia–Tsang; part b2:
+# Beta, StudentT and FDistribution, with Rust's Student-t and F tails.
 
 include "tests/lib.cyr"
 
@@ -934,6 +935,375 @@ fn main() {
     store64(sb + 8, 0);
     assert_eq(chi.debug(sb, 1), PMN_ERR_NONE, "ChiSquared {:#?}");
     assert(text_is(sb, "ChiSquared {\n    df: 5.0,\n}") == 1, "one field a line");
+
+    test_group("1.3.0's Beta tests (beta_mean_and_variance, _cdf_endpoints, _uniform_is_beta_1_1, _sample_in_range)");
+    var bt: PmnBeta;
+    assert_eq(PmnBeta_new(&bt, 2.0, 5.0), PMN_ERR_NONE, "Beta(2, 5)");
+    var btm: f64 = bt.mean();
+    var btv: f64 = bt.variance();
+    var w27: f64 = 2.0 / 7.0;
+    var wv: f64 = 10.0 / 392.0;
+    assert(bits(btm) == bits(w27) && bits(btv) == bits(wv), "mean 2/7 and variance 10/392, bit for bit");
+    assert_eq(PmnBeta_new(&bt, 2.0, 3.0), PMN_ERR_NONE, "Beta(2, 3)");
+    var bc0: f64 = bt.cdf(0.0);
+    var bc1: f64 = bt.cdf(1.0);
+    assert(bc0 == 0.0 && bc1 == 1.0, "cdf(0) = 0 and cdf(1) = 1 exactly");
+    assert_eq(PmnBeta_new(&bt, 1.0, 1.0), PMN_ERR_NONE, "Beta(1, 1)");
+    var bp5: f64 = bt.pdf(0.5);
+    var bc5: f64 = bt.cdf(0.5);
+    assert(bp5 == 1.0 && bc5 == 0.5, "Beta(1, 1) is U(0, 1): pdf(½) = 1 and cdf(½) = ½ exactly (1.3.0: within 1e-8)");
+    assert_eq(PmnBeta_new(&bt, 2.0, 5.0), PMN_ERR_NONE, "Beta(2, 5)");
+    PmnSimpleRng_new(&g, 42);
+    var b_in = 1;
+    for (var bi = 0; bi < 10000; bi = bi + 1) {
+        var bsx: f64 = bt.sample(&g);
+        if (bsx < 0.0 || bsx > 1.0 || bsx != bsx) { b_in = 0; }
+    }
+    assert_eq(b_in, 1, "10,000 draws from seed 42, all in [0, 1]");
+    assert_eq(PmnBeta_new(&bt, 0.5, 0.5), PMN_ERR_NONE, "Beta(0.5, 0.5)");
+    PmnSimpleRng_new(&g, 42);
+    var b_in2 = 1;
+    for (var bj = 0; bj < 10000; bj = bj + 1) {
+        var bs2: f64 = bt.sample(&g);
+        if (bs2 < 0.0 || bs2 > 1.0 || bs2 != bs2) { b_in2 = 0; }
+    }
+    assert_eq(b_in2, 1, "α, β < 1 (beta_small_alpha_sample): 10,000 draws, all in [0, 1]");
+
+    test_group("1.3.0's Student-t tests (symmetric_pdf, mean_and_variance, sample_symmetric, cdf_closed_forms)");
+    var tt: PmnStudentT;
+    assert_eq(PmnStudentT_new(&tt, 5.0), PMN_ERR_NONE, "t(5)");
+    var tpp1: f64 = tt.pdf(1.0);
+    var tpm1: f64 = tt.pdf(-1.0);
+    var tc0: f64 = tt.cdf(0.0);
+    assert(bits(tpp1) == bits(tpm1) && tc0 == 0.5, "pdf even bit for bit, cdf(0) = ½ exactly");
+    var tmn: f64 = tt.mean();
+    var tvr: f64 = tt.variance();
+    var w53: f64 = 5.0 / 3.0;
+    assert(tmn == 0.0 && bits(tvr) == bits(w53), "mean 0, variance 5/3");
+    assert_eq(PmnStudentT_new(&tt, 1.0), PMN_ERR_NONE, "t(1)");
+    var t1m: f64 = tt.mean();
+    var t1v: f64 = tt.variance();
+    assert(t1m != t1m && t1v != t1v, "df = 1: mean and variance NaN");
+    assert_eq(PmnStudentT_new(&tt, 1.5), PMN_ERR_NONE, "t(1.5)");
+    var t15m: f64 = tt.mean();
+    var t15v: f64 = tt.variance();
+    assert(t15m == 0.0 && t15v == inf, "df = 1.5: mean 0, variance +∞");
+    assert_eq(PmnStudentT_new(&tt, 10.0), PMN_ERR_NONE, "t(10)");
+    PmnSimpleRng_new(&g, 42);
+    var tsum: f64 = 0.0;
+    for (var ti = 0; ti < 50000; ti = ti + 1) {
+        var ts: f64 = tt.sample(&g);
+        tsum = tsum + ts;
+    }
+    var tavg: f64 = tsum / 50000.0;
+    assert(f64_abs(tavg) < 0.1, "50,000 draws of t(10) from seed 42: the mean within 0.1 of 0");
+    var t1d: PmnStudentT;
+    var t2d: PmnStudentT;
+    assert_eq(PmnStudentT_new(&t1d, 1.0), PMN_ERR_NONE, "t(1)");
+    assert_eq(PmnStudentT_new(&t2d, 2.0), PMN_ERR_NONE, "t(2)");
+    var cf_ok = 1;
+    for (var ci2 = 0; ci2 < 6; ci2 = ci2 + 1) {
+        var cxv: f64 = -30.0;
+        if (ci2 == 1) { cxv = -2.5; }
+        if (ci2 == 2) { cxv = -0.3; }
+        if (ci2 == 3) { cxv = 0.0; }
+        if (ci2 == 4) { cxv = 0.7; }
+        if (ci2 == 5) { cxv = 4.0; }
+        var c1v: f64 = t1d.cdf(cxv);
+        var at: f64 = _pmn_atan(cxv);
+        var atp: f64 = at / pi;
+        var w1v: f64 = 0.5 + atp;
+        var c2v: f64 = t2d.cdf(cxv);
+        var x2v: f64 = cxv * cxv;
+        var x2p: f64 = 2.0 + x2v;
+        var sq2: f64 = f64_sqrt(x2p);
+        var dn2: f64 = 2.0 * sq2;
+        var q2v: f64 = cxv / dn2;
+        var w2v: f64 = 0.5 + q2v;
+        if (f64_abs(c1v - w1v) >= 0.000000000000001 || f64_abs(c2v - w2v) >= 0.000000000000001) { cf_ok = 0; }
+    }
+    assert_eq(cf_ok, 1, "t(1) is ½ + atan(x)/π and t(2) is ½ + x/(2√(2 + x²)), within 1e-15");
+    var tail1: f64 = t1d.cdf(-10000000000.0);
+    var e10: f64 = 1.0 / 10000000000.0;
+    var at10: f64 = _pmn_atan(e10);
+    var wt1: f64 = at10 / pi;
+    assert(rel_ok(tail1, wt1, 0.000000000001) == 1, "the far tail keeps its relative precision: atan(1e-10)/π");
+    var tci: f64 = t1d.cdf(inf);
+    var tcn: f64 = t1d.cdf(ninf2);
+    var tcnan: f64 = t1d.cdf(nan);
+    assert(tci == 1.0 && tcn == 0.0 && tcnan != tcnan, "cdf(±∞) = 1 and 0, NaN at NaN");
+
+    test_group("1.3.0's Student-t and F tests (large_df_approaches_normal, pdf_matches_gamma_form, F closed form)");
+    assert_eq(PmnStudentT_new(&tt, 1000000000.0), PMN_ERR_NONE, "t(1e9)");
+    assert_eq(PmnNormal_new(&n, 0.0, 1.0), PMN_ERR_NONE, "N(0, 1)");
+    var tz1: f64 = tt.cdf(1.96);
+    var nz1: f64 = n.cdf(1.96);
+    var tz2: f64 = tt.pdf(0.3);
+    var nz2: f64 = n.pdf(0.3);
+    assert(f64_abs(tz1 - nz1) < 0.000000001 && f64_abs(tz2 - nz2) < 0.000000001, "t(1e9) is N(0, 1) within 1e-9");
+    var gf_ok = 1;
+    for (var gi2 = 0; gi2 < 3; gi2 = gi2 + 1) {
+        var gdf: f64 = 0.5;
+        if (gi2 == 1) { gdf = 3.0; }
+        if (gi2 == 2) { gdf = 30.0; }
+        assert_eq(PmnStudentT_new(&tt, gdf), PMN_ERR_NONE, "t(df)");
+        var gp: f64 = tt.pdf(1.3);
+        var gh: f64 = gdf + 1.0;
+        gh = gh / 2.0;
+        var gl1: f64 = _pmn_ln_gamma(gh);
+        var ghd: f64 = gdf / 2.0;
+        var gl2: f64 = _pmn_ln_gamma(ghd);
+        var gpi: f64 = gdf * pi;
+        var gl3: f64 = _pmn_ln(gpi);
+        var gq: f64 = 1.69 / gdf;
+        var gq1: f64 = 1.0 + gq;
+        var gl4: f64 = _pmn_ln(gq1);
+        var gsm: f64 = gl1 - gl2;
+        var hl3: f64 = 0.5 * gl3;
+        gsm = gsm - hl3;
+        var hl4: f64 = gh * gl4;
+        gsm = gsm - hl4;
+        var gw: f64 = _pmn_exp(gsm);
+        if (rel_ok(gp, gw, 0.0000000000001) == 0) { gf_ok = 0; }
+    }
+    assert_eq(gf_ok, 1, "the pdf is the lnΓ form within 1e-13, at df = 0.5, 3 and 30 (30 takes the ln B form)");
+    var fdd: PmnFDistribution;
+    var ff_ok = 1;
+    for (var fi = 0; fi < 3; fi = fi + 1) {
+        var fd2v: f64 = 5.0;
+        if (fi == 1) { fd2v = 100.0; }
+        if (fi == 2) { fd2v = 1000000.0; }
+        assert_eq(PmnFDistribution_new(&fdd, 2.0, fd2v), PMN_ERR_NONE, "F(2, d2)");
+        var fcv: f64 = fdd.cdf(2.5);
+        var f5: f64 = 5.0 / fd2v;
+        var fl1: f64 = _pmn_ln_1p(f5);
+        var fh: f64 = -fd2v;
+        fh = fh / 2.0;
+        var fm: f64 = fh * fl1;
+        var fem: f64 = _pmn_exp_m1(fm);
+        var fw: f64 = -fem;
+        if (rel_ok(fcv, fw, 0.000000000001) == 0) { ff_ok = 0; }
+    }
+    assert_eq(ff_ok, 1, "F(2, d2)'s cdf is 1 − (1 + 2x/d2)^(−d2/2) within 1e-12, d2 = 5, 100 and 1e6");
+    var sfc, sfs = _pmn_f_cdf_sf(1000000.0, 2.0, 5.0);
+    var sfb: f64 = 2000000.0 / 5.0;
+    sfb = 1.0 + sfb;
+    var sfw: f64 = _pmn_powf(sfb, -2.5);
+    assert(rel_ok(sfs, sfw, 0.00000000001) == 1, "the upper tail is direct: no 1 − cdf rounding to 0");
+    var sic, sis = _pmn_f_cdf_sf(inf, 2.0, 5.0);
+    assert(sic == 1.0 && sis == 0.0, "f_cdf_sf(∞) = (1, 0)");
+
+    test_group("1.3.0's F tests (f_distribution_mean, _variance, _cdf_nonneg, _sample_positive)");
+    assert_eq(PmnFDistribution_new(&fdd, 5.0, 10.0), PMN_ERR_NONE, "F(5, 10)");
+    var fmn: f64 = fdd.mean();
+    var fvr: f64 = fdd.variance();
+    var w108: f64 = 10.0 / 8.0;
+    var wfv: f64 = 2600.0 / 1920.0;
+    assert(bits(fmn) == bits(w108) && f64_abs(fvr - wfv) < 0.0000000001, "mean 10/8 exactly, variance 2600/1920");
+    var fc0: f64 = fdd.cdf(0.0);
+    var fc100: f64 = fdd.cdf(100.0);
+    assert(fc0 == 0.0 && fc100 > 0.99, "cdf(0) = 0, cdf(100) > 0.99");
+    PmnSimpleRng_new(&g, 42);
+    var f_pos = 1;
+    for (var fj = 0; fj < 10000; fj = fj + 1) {
+        var fs: f64 = fdd.sample(&g);
+        if (!(fs > 0.0)) { f_pos = 0; }
+    }
+    assert_eq(f_pos, 1, "10,000 draws from seed 42, all positive");
+    assert_eq(PmnFDistribution_new(&fdd, 5.0, 2.0), PMN_ERR_NONE, "F(5, 2)");
+    var f2m: f64 = fdd.mean();
+    assert(f2m != f2m, "d2 ≤ 2: mean NaN");
+    assert_eq(PmnFDistribution_new(&fdd, 5.0, 4.0), PMN_ERR_NONE, "F(5, 4)");
+    var f4v: f64 = fdd.variance();
+    var f4m: f64 = fdd.mean();
+    assert(f4v != f4v && f4m == 2.0, "d2 ≤ 4: variance NaN, mean 4/2");
+
+    test_group("the constructors' refusals (constructors_reject_non_finite_parameters; D11)");
+    var bbt: PmnBeta;
+    assert_eq(PmnBeta_new(&bbt, 1.0, nan), PMN_ERR_INVALID_PARAMETER, "a NaN beta");
+    assert_eq(PmnBeta_new(&bbt, 0.0, 1.0), PMN_ERR_INVALID_PARAMETER, "alpha 0");
+    assert_eq(PmnBeta_new(&bbt, 1.0, inf), PMN_ERR_INVALID_PARAMETER, "an infinite beta");
+    assert_eq(PmnBeta_new(0, 1.0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    bbt.alpha = 7.0;
+    bbt.beta = 8.0;
+    assert_eq(PmnBeta_new(&bbt, -1.0, 1.0), PMN_ERR_INVALID_PARAMETER, "alpha −1");
+    var bba: f64 = bbt.alpha;
+    assert(bba == 7.0, "a refusal writes nothing");
+    var btt: PmnStudentT;
+    assert_eq(PmnStudentT_new(&btt, nan), PMN_ERR_INVALID_PARAMETER, "a NaN df");
+    assert_eq(PmnStudentT_new(&btt, mz), PMN_ERR_INVALID_PARAMETER, "df −0");
+    assert_eq(PmnStudentT_new(0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    var bfd: PmnFDistribution;
+    assert_eq(PmnFDistribution_new(&bfd, 1.0, nan), PMN_ERR_INVALID_PARAMETER, "a NaN d2");
+    assert_eq(PmnFDistribution_new(&bfd, inf, 1.0), PMN_ERR_INVALID_PARAMETER, "an infinite d1");
+    assert_eq(PmnFDistribution_new(0, 1.0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out");
+
+    test_group("the oracle's wiring tests: each cdf is its incomplete-beta hook's, bit for bit");
+    var wi_ok = 1;
+    for (var wb1 = 0; wb1 < 4; wb1 = wb1 + 1) {
+        var wa: f64 = 0.5;
+        var wbv: f64 = 0.5;
+        if (wb1 == 1) {
+            wa = 2.0;
+            wbv = 5.0;
+        }
+        if (wb1 == 2) {
+            wa = 30.0;
+            wbv = 0.7;
+        }
+        if (wb1 == 3) {
+            wa = 400.0;
+            wbv = 350.0;
+        }
+        assert_eq(PmnBeta_new(&bt, wa, wbv), PMN_ERR_NONE, "Beta(a, b)");
+        for (var wk = 1; wk < 64; wk = wk + 1) {
+            var wkf: f64 = f64_from(wk);
+            var wxx: f64 = wkf / 64.0;
+            var wc: f64 = bt.cdf(wxx);
+            var wix: f64 = _pmn_regularized_incomplete_beta(wxx, wa, wbv);
+            var wy: f64 = 1.0 - wxx;
+            var wbi, wbq = _pmn_beta_inc(wa, wbv, wxx, wy);
+            if (bits(wc) != bits(wix) || bits(wbi) != bits(wix)) { wi_ok = 0; }
+        }
+    }
+    assert_eq(wi_ok, 1, "Beta(a, b).cdf(x) is I_x(a, b) is beta_inc(a, b, x, 1 − x)'s first value");
+    var wt_ok = 1;
+    for (var wd = 0; wd < 4; wd = wd + 1) {
+        var wdf: f64 = 1.0;
+        if (wd == 1) { wdf = 3.5; }
+        if (wd == 2) { wdf = 30.0; }
+        if (wd == 3) { wdf = 1000000.0; }
+        assert_eq(PmnStudentT_new(&tt, wdf), PMN_ERR_NONE, "t(df)");
+        for (var wt = 0 - 50; wt <= 50; wt = wt + 1) {
+            var wtf: f64 = f64_from(wt);
+            var wtc: f64 = tt.cdf(wtf);
+            var wth: f64 = _pmn_student_t_cdf(wtf, wdf);
+            if (bits(wtc) != bits(wth)) { wt_ok = 0; }
+        }
+    }
+    assert_eq(wt_ok, 1, "StudentT(df).cdf(t) is student_t_cdf(t, df)");
+    assert_eq(PmnFDistribution_new(&fdd, 4.0, 9.0), PMN_ERR_NONE, "F(4, 9)");
+    var wf_ok = 1;
+    for (var wfx = 1; wfx <= 120; wfx = wfx + 1) {
+        var wff: f64 = f64_from(wfx);
+        var wfv2: f64 = wff / 4.0;
+        var wfc: f64 = fdd.cdf(wfv2);
+        var wsc, wss = _pmn_f_cdf_sf(wfv2, 4.0, 9.0);
+        if (bits(wfc) != bits(wsc)) { wf_ok = 0; }
+    }
+    assert_eq(wf_ok, 1, "FDistribution(4, 9).cdf(x) is f_cdf_sf(x, 4, 9)'s first value");
+
+    test_group("the edges and identities");
+    assert_eq(PmnBeta_new(&bt, 2.0, 5.0), PMN_ERR_NONE, "Beta(2, 5)");
+    var be0: f64 = bt.pdf(0.0);
+    var be1: f64 = bt.pdf(1.0);
+    var bepn: f64 = bt.pdf(nan);
+    var becn: f64 = bt.cdf(nan);
+    var becm: f64 = bt.cdf(-1.0);
+    var becp: f64 = bt.cdf(2.0);
+    assert(be0 == 0.0 && be1 == 0.0 && bepn != bepn && becn != becn, "the pdf is 0 at 0 and 1, NaN at NaN");
+    assert(becm == 0.0 && becp == 1.0, "the cdf is 0 below and 1 above");
+    PmnSimpleRng_new(&g, 7);
+    PmnSimpleRng_new(&h, 7);
+    var bd_ok = 1;
+    for (var bk = 0; bk < 2000; bk = bk + 1) {
+        var bda: f64 = bt.sample(&g);
+        var bgx: f64 = _pmn_sample_gamma_standard(2.0, &h);
+        var bgy: f64 = _pmn_sample_gamma_standard(5.0, &h);
+        var bgs: f64 = bgx + bgy;
+        var bdb: f64 = bgx / bgs;
+        if (bits(bda) != bits(bdb)) { bd_ok = 0; }
+    }
+    assert_eq(bd_ok, 1, "a Beta draw is X/(X + Y), X ~ Gamma(α, 1) then Y ~ Gamma(β, 1), bit for bit");
+    var t0a: f64 = _pmn_student_t_two_tailed(0.0, 3.0);
+    var tna: f64 = _pmn_student_t_two_tailed(nan, 3.0);
+    var tnb: f64 = _pmn_student_t_two_tailed(1.0, nan);
+    var tia: f64 = _pmn_student_t_two_tailed(inf, 3.0);
+    assert(t0a == 1.0 && tna != tna && tnb != tnb && tia == 0.0, "P(|T| ≥ 0) = 1, P(|T| ≥ ∞) = 0, NaN at NaN");
+    var tsy = 1;
+    for (var tk = 1; tk <= 80; tk = tk + 1) {
+        var tkf: f64 = f64_from(tk);
+        var tkx: f64 = tkf / 4.0;
+        var tnk: f64 = -tkx;
+        var tpa: f64 = _pmn_student_t_two_tailed(tkx, 3.5);
+        var tpb: f64 = _pmn_student_t_two_tailed(tnk, 3.5);
+        if (bits(tpa) != bits(tpb)) { tsy = 0; }
+    }
+    assert_eq(tsy, 1, "the two-tailed p-value is even in t, bit for bit");
+    assert_eq(PmnStudentT_new(&tt, 3.0), PMN_ERR_NONE, "t(3)");
+    PmnSimpleRng_new(&g, 7);
+    PmnSimpleRng_new(&h, 7);
+    var td_ok = 1;
+    for (var tq = 0; tq < 2000; tq = tq + 1) {
+        var tda: f64 = tt.sample(&g);
+        var tz: f64 = _pmn_standard_normal(&h);
+        var tg: f64 = _pmn_sample_gamma_standard(1.5, &h);
+        var tv: f64 = tg * 2.0;
+        var tvd: f64 = tv / 3.0;
+        var tsq: f64 = f64_sqrt(tvd);
+        var tdb: f64 = tz / tsq;
+        if (bits(tda) != bits(tdb)) { td_ok = 0; }
+    }
+    assert_eq(td_ok, 1, "a t draw is Z/√(V/df), Z from Box–Muller then V a χ² variate, bit for bit");
+    var zc, zs = _pmn_f_cdf_sf(0.0, 4.0, 9.0);
+    var nc, ns = _pmn_f_cdf_sf(nan, 4.0, 9.0);
+    var mc, ms = _pmn_f_cdf_sf(-1.0, 4.0, 9.0);
+    assert(zc == 0.0 && zs == 1.0 && mc == 0.0 && ms == 1.0, "f_cdf_sf is (0, 1) at and below 0");
+    assert(nc != nc && ns != ns, "(NaN, NaN) at NaN");
+    var cc_ok = 1;
+    for (var ck = 1; ck <= 64; ck = ck + 1) {
+        var ckf: f64 = f64_from(ck);
+        var ckx: f64 = ckf / 8.0;
+        var ccc, ccs = _pmn_f_cdf_sf(ckx, 4.0, 9.0);
+        var csum2: f64 = ccc + ccs;
+        if (f64_abs(csum2 - 1.0) > 0.000000000000001) { cc_ok = 0; }
+    }
+    assert_eq(cc_ok, 1, "the cdf and the survival sum to 1 within 1e-15");
+
+    test_group("JSON and Debug (the serde round trips and deserialize_rejects; D5, D12)");
+    assert_eq(PmnBeta_new(&bt, 2.0, 5.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(bt.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"alpha\":2.0,\"beta\":5.0}") == 1, "as serde_json writes it");
+    var rbt: PmnBeta;
+    assert_eq(PmnBeta_from_json(&rbt, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rba: f64 = rbt.alpha;
+    var rbb: f64 = rbt.beta;
+    assert(rba == 2.0 && rbb == 5.0, "the same shapes");
+    var jb = "{\"alpha\":1.0,\"beta\":-2.0}";
+    assert_eq(PmnBeta_from_json(&rbt, jb, strlen(jb)), PMN_ERR_DESERIALIZE, "beta −2");
+    assert_eq(PmnStudentT_new(&tt, 5.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(tt.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"df\":5.0}") == 1, "as serde_json writes it");
+    var rtt: PmnStudentT;
+    assert_eq(PmnStudentT_from_json(&rtt, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var jt = "{\"df\":-1.0}";
+    assert_eq(PmnStudentT_from_json(&rtt, jt, strlen(jt)), PMN_ERR_DESERIALIZE, "df −1");
+    assert_eq(PmnFDistribution_new(&fdd, 5.0, 10.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(fdd.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"d1\":5.0,\"d2\":10.0}") == 1, "as serde_json writes it");
+    var rfd: PmnFDistribution;
+    assert_eq(PmnFDistribution_from_json(&rfd, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rf1: f64 = rfd.d1;
+    var rf2: f64 = rfd.d2;
+    assert(rf1 == 5.0 && rf2 == 10.0, "the same degrees of freedom");
+    var jf = "{\"d1\":1.0,\"d2\":0.0}";
+    assert_eq(PmnFDistribution_from_json(&rfd, jf, strlen(jf)), PMN_ERR_DESERIALIZE, "d2 0");
+    assert_eq(PmnFDistribution_from_json(0, jf, strlen(jf)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    store64(sb + 8, 0);
+    assert_eq(bt.debug(sb, 0), PMN_ERR_NONE, "Beta {:?}");
+    assert(text_is(sb, "Beta { alpha: 2.0, beta: 5.0 }") == 1, "Beta { alpha: 2.0, beta: 5.0 }");
+    store64(sb + 8, 0);
+    assert_eq(tt.debug(sb, 1), PMN_ERR_NONE, "StudentT {:#?}");
+    assert(text_is(sb, "StudentT {\n    df: 5.0,\n}") == 1, "one field a line");
+    store64(sb + 8, 0);
+    assert_eq(fdd.debug(sb, 0), PMN_ERR_NONE, "FDistribution {:?}");
+    assert(text_is(sb, "FDistribution { d1: 5.0, d2: 10.0 }") == 1, "FDistribution { d1: 5.0, d2: 10.0 }");
+    store64(sb + 8, 0);
+    assert_eq(fdd.debug(sb, 1), PMN_ERR_NONE, "FDistribution {:#?}");
+    assert(text_is(sb, "FDistribution {\n    d1: 5.0,\n    d2: 10.0,\n}") == 1, "one field a line");
 
     return assert_summary();
 }

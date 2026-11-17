@@ -8,7 +8,8 @@
 
 use pramana::SimpleRng;
 use pramana::distribution::{
-    Bernoulli, Cauchy, ChiSquared, Distribution, Exponential, Gamma, Normal, Uniform, Weibull,
+    Bernoulli, Beta, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, StudentT, Uniform,
+    Weibull,
 };
 use std::hint::black_box;
 use std::time::Instant;
@@ -105,4 +106,13 @@ fn main() {
     row(&mut r, "Gamma::sample, alpha in [0.1, 10), beta = 1", |_, y, g| Gamma::new(y, 1.0).unwrap().sample(g), u, sd);
     row(&mut r, "ChiSquared::cdf, chi2(5), x in [0, 20)", |x, _, _| ChiSquared::new(5.0).unwrap().cdf(x), (0.0, 20.0), u);
     row(&mut r, "ChiSquared::sample, df in [1, 30)", |_, y, g| ChiSquared::new(y).unwrap().sample(g), u, (1.0, 30.0));
+    // part b2
+    row(&mut r, "Beta::pdf, Beta(2, 5), x in [0, 1)", |x, _, _| Beta::new(2.0, 5.0).unwrap().pdf(x), u, u);
+    row(&mut r, "Beta::cdf, Beta(2, 5), x in [0, 1)", |x, _, _| Beta::new(2.0, 5.0).unwrap().cdf(x), u, u);
+    row(&mut r, "Beta::sample, alpha = beta in [0.5, 10)", |_, y, g| Beta::new(y, y).unwrap().sample(g), u, (0.5, 10.0));
+    row(&mut r, "StudentT::pdf, t(5), x in [-10, 10)", |x, _, _| StudentT::new(5.0).unwrap().pdf(x), wide, u);
+    row(&mut r, "StudentT::cdf, t(5), x in [-10, 10)", |x, _, _| StudentT::new(5.0).unwrap().cdf(x), wide, u);
+    row(&mut r, "StudentT::sample, df in [1, 30)", |_, y, g| StudentT::new(y).unwrap().sample(g), u, (1.0, 30.0));
+    row(&mut r, "FDistribution::cdf, F(4, 9), x in [0, 10)", |x, _, _| FDistribution::new(4.0, 9.0).unwrap().cdf(x), (0.0, 10.0), u);
+    row(&mut r, "FDistribution::sample, d1 = d2 in [1, 30)", |_, y, g| FDistribution::new(y, y).unwrap().sample(g), u, (1.0, 30.0));
 }

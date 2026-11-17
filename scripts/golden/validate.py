@@ -812,6 +812,9 @@ JSON_VALIDATED = {
     "Weibull": ([("k", "f64"), ("lambda", "f64")], lambda k, la: d_positive(k) and d_positive(la)),
     "Gamma": ([("alpha", "f64"), ("beta", "f64")], lambda a, b: d_positive(a) and d_positive(b)),
     "ChiSquared": ([("df", "f64")], lambda df: d_positive(df)),
+    "Beta": ([("alpha", "f64"), ("beta", "f64")], lambda a, b: d_positive(a) and d_positive(b)),
+    "StudentT": ([("df", "f64")], lambda df: d_positive(df)),
+    "FDistribution": ([("d1", "f64"), ("d2", "f64")], lambda a, b: d_positive(a) and d_positive(b)),
 }
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
@@ -1533,11 +1536,31 @@ def t1_ln_gamma(x):
 
 
 # ── the T1 incomplete gamma (M2 part b4), as src/gammainc.cyr and src/dd.cyr compute it ──
-# Every double-double step is the port's, in its order. kimiya's double-double ln and exp cores are MPFR's
-# double-doubles of the same values (mpfr_ref.ln_dd, mpfr_ref.exp_dd: within 2^-80 and 2^-70 of the port's), with the
-# exp core's exponent E taken as the port takes it, ⌊RN(RN(M·512/ln 2))/512⌋; γ and ζ(k) are MPFR's (zeta_table).
+# Every double-double step is the port's, in its order. kimiya's double-double ln core is MPFR's double-double of the
+# same value (mpfr_ref.ln_dd, within 2^-80 of the port's); its exp core is transcribed (t_exp_core, from M3 part b2),
+# as MPFR's double-double (within 2^-70) gave the port's rounding everywhere but at an exact tie: F(2, 2)'s cdf at
+# x = 1.8125 is 1 − v with v's last bit set, and the core's unnormalized low word decided it. γ and ζ(k) are MPFR's
+# (zeta_table).
 INVLN2N = mpfr_ref.inv_ln2(512)     # kimiya's _KM_CR_EXP_INVLN2N, 0x40871547652B82FE
 ZETA = []
+KM_EXP = {}                          # kimiya's exp table and constants, read from src/crmath_data.cyr
+
+
+def km_exp_tables(root):
+    """Reads kimiya's exp core data from the vendored src/crmath_data.cyr: the 2^(j/512) table's A_j and B_j words and
+    the reduction and Taylor constants, as the port loads them."""
+    text = (root / "src" / "crmath_data.cyr").read_text(encoding="utf-8")
+    block = text[text.index("var _PMN_KM_CR_EXP_T: i64[2048] = {"):]
+    block = block[block.index("{") + 1:block.index("}")]
+    words = [from_bits(int(w, 16)) for w in re.findall(r"0x[0-9A-Fa-f]{16}", block)]
+    if len(words) != 2048:
+        raise SystemExit("kimiya's exp table: expected 2,048 words")
+    KM_EXP["T"] = words
+    for name in ("INVLN2N", "L1", "L2", "P3", "P4", "P5"):
+        m = re.search(rf"var _PMN_KM_CR_EXP_{name} = (0x[0-9A-Fa-f]{{16}});", text)
+        KM_EXP[name] = from_bits(int(m.group(1), 16))
+    if bits(KM_EXP["INVLN2N"]) != bits(INVLN2N):
+        raise SystemExit("kimiya's INVLN2N differs from 512/ln 2 rounded")
 
 
 def t_dd_add(ah, al, bh, bl):
@@ -1557,12 +1580,33 @@ def t_dd_div(ah, al, bh, bl):
     return t_fast_two_sum(q1, r3 / bh)
 
 
-def t_exp_core(mh, ml):
-    """kimiya's exp core: (h, l, E) with h + l = e^(mh + ml)/2^E."""
-    tt = (mh * INVLN2N) + 6755399441055744.0
-    e = int(tt - 6755399441055744.0) >> 9
-    h, l = mpfr_ref.exp_dd(mh, ml, e)
-    return h, l, e
+def t_exp_core(xh, xl):
+    """kimiya's exp core, `_pmn_km_exp_core` in src/crmath.cyr, operation for operation: (hi, lo, E) with hi + lo within
+    about 2^-70 of e^(xh + xl)/2^E, lo unnormalized when r1 = 0."""
+    if not KM_EXP:
+        km_exp_tables(Path(__file__).resolve().parents[2])
+    T = KM_EXP["T"]
+    tt = (xh * KM_EXP["INVLN2N"]) + 6755399441055744.0
+    kd = tt - 6755399441055744.0
+    k = bits(tt) - 0x4338000000000000
+    j = k & 511
+    e = k >> 9
+    rh = xh - (kd * KM_EXP["L1"])
+    s = (kd * KM_EXP["L2"]) - xl
+    r = rh - s
+    rl = (rh - r) - s
+    c = r + 49152.0
+    r1 = c - 49152.0
+    r2 = r - r1
+    z = r * r
+    q = (z * (0.5 + (r * KM_EXP["P3"]))) + ((z * z) * (KM_EXP["P4"] + (r * KM_EXP["P5"])))
+    a, b = T[4 * j], T[4 * j + 1]
+    p1 = a * r1
+    hi = a + p1
+    e1 = p1 - (hi - a)
+    rlq = rl + q
+    lo = (e1 + b) + ((a * (r2 + rlq)) + (b * (r + rlq)))
+    return hi, lo, e
 
 
 def t_dd_expm1(th, tl):
@@ -2775,6 +2819,100 @@ def d_chi_squared_pdf(L, df, x):
     return L.exp(s)
 
 
+def d_beta_inc(L, a, b, x, y):
+    """1.3.0's beta_inc (I, 1 − I): its continued fraction, or T1's in the reference model."""
+    return (L.beta or sp_beta_inc)(L.K, L, a, b, x, y)
+
+
+def d_beta_pdf(L, a, b, x):
+    if x <= 0.0 or x >= 1.0:
+        return 0.0
+    return L.exp((a - 1.0) * L.ln(x) + (b - 1.0) * L.ln1p(-x) - sp_ln_beta(L.K, L, a, b))
+
+
+def d_beta_cdf(L, a, b, x):
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    return d_beta_inc(L, a, b, x, 1.0 - x)[0]
+
+
+def d_t_two_tailed(L, t, df):
+    if math.isnan(t) or math.isnan(df):
+        return math.nan
+    t2 = t * t
+    x = fdiv(1.0, 1.0 + fdiv(t2, df))
+    y = fdiv(1.0, 1.0 + fdiv(df, t2))
+    i = d_beta_inc(L, df / 2.0, 0.5, x, y)[0]
+    return 0.0 if i < 0.0 else 1.0 if i > 1.0 else i
+
+
+def d_t_cdf(L, t, df):
+    tt = d_t_two_tailed(L, t, df)
+    return 1.0 - 0.5 * tt if t >= 0.0 else 0.5 * tt
+
+
+def d_t_pdf(L, df, x):
+    h = (df + 1.0) / 2.0
+    q = fdiv(x * x, df)
+    if df >= 20.0:
+        s = -sp_ln_beta(L.K, L, df / 2.0, 0.5) - 0.5 * L.ln(df) - h * L.ln1p(q)
+    else:
+        s = sp_ln_gamma(L.K, L, h) - sp_ln_gamma(L.K, L, df / 2.0) - 0.5 * L.ln(df * math.pi) - h * L.ln(1.0 + q)
+    return L.exp(s)
+
+
+def d_t_variance(df):
+    if df > 2.0:
+        return fdiv(df, df - 2.0)
+    return math.inf if df > 1.0 else math.nan
+
+
+def d_t_sample(L, df, u):
+    z = d_standard_normal(L, u)
+    v = d_gamma_standard(L, df / 2.0, u) * 2.0
+    return fdiv(z, math.sqrt(fdiv(v, df)))
+
+
+def d_f_cdf_sf(L, x, d1, d2):
+    if math.isnan(x):
+        return [math.nan, math.nan]
+    if x <= 0.0:
+        return [0.0, 1.0]
+    r = fdiv(d1 * x, d2)
+    u = fdiv(1.0, 1.0 + fdiv(1.0, r))
+    v = fdiv(1.0, 1.0 + r)
+    return list(d_beta_inc(L, d1 / 2.0, d2 / 2.0, u, v))
+
+
+def d_f_pdf(L, d1, d2, x):
+    if x <= 0.0:
+        return 0.0
+    h1, h2 = d1 / 2.0, d2 / 2.0
+    s = h1 * L.ln(fdiv(d1, d2)) + (h1 - 1.0) * L.ln(x) - (h1 + h2) * L.ln1p(fdiv(d1 * x, d2)) \
+        - sp_ln_beta(L.K, L, h1, h2)
+    return L.exp(s)
+
+
+def d_f_variance(d1, d2):
+    if d2 > 4.0:
+        return fdiv(2.0 * d2 * d2 * (d1 + d2 - 2.0), d1 * (d2 - 2.0) * (d2 - 2.0) * (d2 - 4.0))
+    return math.nan
+
+
+def d_f_sample(L, d1, d2, u):
+    x1 = d_gamma_standard(L, d1 / 2.0, u) * 2.0
+    x2 = d_gamma_standard(L, d2 / 2.0, u) * 2.0
+    return fdiv(fdiv(x1, d1), fdiv(x2, d2))
+
+
+def d_beta_sample(L, a, b, u):
+    gx = d_gamma_standard(L, a, u)
+    gy = d_gamma_standard(L, b, u)
+    return fdiv(gx, gx + gy)
+
+
 def d_new(ok, fields):
     return fields if ok else ["E:InvalidParameter"]
 
@@ -2847,9 +2985,38 @@ DIST = {  # name: model(L, *inputs) -> outputs (a list)
         L, lambda L, u: d_gamma_standard(L, df / 2.0, u) * 2.0, seed, n),
     "sample_gamma_standard": lambda L, a, seed, n: [f"v:{n}"] + d_sample(
         L, lambda L, u: d_gamma_standard(L, a, u), seed, n),
+    # part b2
+    "Beta::new": lambda L, a, b: d_new(d_positive(a) and d_positive(b), [a, b]),
+    "Beta::pdf": lambda L, a, b, x: [d_beta_pdf(L, a, b, x)],
+    "Beta::cdf": lambda L, a, b, x: [d_beta_cdf(L, a, b, x)],
+    "Beta::mean": lambda L, a, b: [fdiv(a, a + b)],
+    "Beta::variance": lambda L, a, b: [fdiv(a * b, (a + b) * (a + b) * ((a + b) + 1.0))],
+    "Beta::sample": lambda L, a, b, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_beta_sample(L, a, b, u), seed, n),
+    "StudentT::new": lambda L, df: d_new(d_positive(df), [df]),
+    "StudentT::pdf": lambda L, df, x: [d_t_pdf(L, df, x)],
+    "StudentT::cdf": lambda L, df, x: [d_t_cdf(L, x, df)],
+    "StudentT::mean": lambda L, df: [0.0 if df > 1.0 else math.nan],
+    "StudentT::variance": lambda L, df: [d_t_variance(df)],
+    "StudentT::sample": lambda L, df, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_t_sample(L, df, u), seed, n),
+    "FDistribution::new": lambda L, d1, d2: d_new(d_positive(d1) and d_positive(d2), [d1, d2]),
+    "FDistribution::pdf": lambda L, d1, d2, x: [d_f_pdf(L, d1, d2, x)],
+    "FDistribution::cdf": lambda L, d1, d2, x: [d_f_cdf_sf(L, x, d1, d2)[0]],
+    "FDistribution::mean": lambda L, d1, d2: [fdiv(d2, d2 - 2.0) if d2 > 2.0 else math.nan],
+    "FDistribution::variance": lambda L, d1, d2: [d_f_variance(d1, d2)],
+    "FDistribution::sample": lambda L, d1, d2, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_f_sample(L, d1, d2, u), seed, n),
+    "student_t_two_tailed": lambda L, t, df: [d_t_two_tailed(L, t, df)],
+    "student_t_cdf": lambda L, t, df: [d_t_cdf(L, t, df)],
+    "f_cdf_sf": lambda L, x, d1, d2: d_f_cdf_sf(L, x, d1, d2),
 }
 DIST_T1 = {"Normal::cdf": "Φ", "Weibull::mean": "lnΓ", "Weibull::variance": "lnΓ", "Gamma::pdf": "lnΓ",
-           "Gamma::cdf": "incomplete gamma", "ChiSquared::pdf": "lnΓ", "ChiSquared::cdf": "incomplete gamma"}   # rows downstream of a T1 function (ADR 009 as amended)
+           "Gamma::cdf": "incomplete gamma", "ChiSquared::pdf": "lnΓ", "ChiSquared::cdf": "incomplete gamma",
+           "Beta::pdf": "lnΓ (ln B)", "Beta::cdf": "incomplete beta", "StudentT::pdf": "lnΓ (ln B)",
+           "StudentT::cdf": "incomplete beta", "FDistribution::pdf": "lnΓ (ln B)",
+           "FDistribution::cdf": "incomplete beta", "student_t_two_tailed": "incomplete beta",
+           "student_t_cdf": "incomplete beta", "f_cdf_sf": "incomplete beta"}   # rows downstream of a T1 function (ADR 009 as amended)
 
 
 def dist_prims(root):
@@ -3037,6 +3204,11 @@ def debug_text(fn, ins):
                             ins[2] == 1)
     if fn == "debug::ChiSquared":
         return debug_struct("ChiSquared", [("df", rust_debug_f64(ins[0]))], ins[1] == 1)
+    if fn in ("debug::Beta", "debug::FDistribution"):
+        name, (fa, fb) = (("Beta", ("alpha", "beta")) if fn == "debug::Beta" else ("FDistribution", ("d1", "d2")))
+        return debug_struct(name, [(fa, rust_debug_f64(ins[0])), (fb, rust_debug_f64(ins[1]))], ins[2] == 1)
+    if fn == "debug::StudentT":
+        return debug_struct("StudentT", [("df", rust_debug_f64(ins[0]))], ins[1] == 1)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:

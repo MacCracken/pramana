@@ -41,8 +41,9 @@
 > part b5, the incomplete beta within 8 ulp, is committed (`a19e947`), and part c, M2's gate, is committed
 > (`46d107b`): **M2 is complete.** M3, the distributions, has begun (its parts are in §7): part a1, the trait,
 > Box–Muller and Normal, with Debug's f64 form, is committed (`7e1ca00`), part a2, Uniform, Exponential and
-> Bernoulli, is committed (`5b76636`), part a3, Cauchy and Weibull, is committed (`a636914`), and part b1, Gamma,
-> ChiSquared and Marsaglia–Tsang, is done and not committed.
+> Bernoulli, is committed (`5b76636`), part a3, Cauchy and Weibull, is committed (`a636914`), part b1, Gamma,
+> ChiSquared and Marsaglia–Tsang, is committed (`ded8c4b`), and part b2, Beta, StudentT and FDistribution, is done
+> and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1188,7 +1189,11 @@ T1 function is recorded against T1 from the start (ADR 009 as amended):
   support and around its mode, 96 streams, the oracle's sampler hook), 436 codec rows and 64 Debug rows;
   `dist.ref.tsv` 7,847 more rows on the T1 functions; every row passing on the first replay, at 0 ulp, on three
   targets ✅;
-- **b2:** `Beta`, `StudentT` and `FDistribution`, with the oracle's Student-t and F hooks;
+- **b2:** `Beta`, `StudentT` and `FDistribution` in `src/dist_gamma.cyr`, on the T1 incomplete beta, with Rust's
+  Student-t and F tails gated on the oracle's hooks. 36,081 more `dist` rows (the pdf and cdf across each support, 147
+  streams, 4,072 tail rows), 665 codec rows and 96 Debug rows; `dist.ref.tsv` 16,556 more rows; `validate.py`'s exp
+  core transcribed exactly (a tie it had rounded differently); every row passing the replay, at 0 ulp, on three
+  targets ✅;
 - **c1:** `Poisson` (Loader's pdf, PTRS), beside Bernoulli in `src/dist_disc.cyr`;
 - **c2:** `Binomial` (the saddle-point pdf, the `beta_inc` CDF, Beta splitting);
 - **d1:** `src/linalg.cyr`: hisab 1.4.0's Cholesky and solve, transcribed allocation-free (ledger L4);

@@ -770,6 +770,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 291–296 ns a Gamma pdf (6.2× Rust), 13.0–13.2 µs a Gamma or χ² cdf (98–101×: the T1
     incomplete gamma, 12.9 µs of it), 275–297 ns a draw (7.8–7.9×: Marsaglia–Tsang on the correctly rounded ln, cos and
     pow); every bench digest is explained by the models.
+- **M3 part b2: Beta, StudentT, FDistribution and their tails** (`src/dist_gamma.cyr`; port plan §7; D5, D7 as
+  amended, D11, D12; results in `docs/development/port-parity.md` §9.5):
+  - **`PmnBeta`, `PmnStudentT`, `PmnFDistribution`:** each constructor refuses as 1.3.0 does, writing nothing; the
+    pdfs on ln B or lnΓ and the cdfs on the T1 incomplete beta, in Rust's operation order; the draws from
+    Marsaglia–Tsang and Box–Muller in Rust's order; serde_json's text byte for byte, read through each constructor;
+    the derived Debug;
+  - **the tails:** `_pmn_student_t_two_tailed`, `_pmn_student_t_cdf` and `_pmn_f_cdf_sf`, Rust's cancellation-free
+    Student-t and F tails, which M4's hypothesis tests share, gated on the oracle's hooks;
+  - **golden rows:** 36,081 more `dist` rows (146,523: each constructor's grid, the pdf and cdf across each support,
+    the t pdf's switch at df = 20, 147 streams, 4,072 tail rows), 665 codec rows and 96 Debug rows. `validate.py`
+    models every one; `dist.ref.tsv` gains 16,556 rows that the T1 functions move, and `dist.cr.tsv` 157. Every row
+    passes the replay, at 0 ulp, warning-free, on x86_64 ELF, PE and aarch64;
+  - **the model's exp core** (`scripts/golden/validate.py`): kimiya's double-double exp core is now transcribed in
+    place of MPFR's double-double, which differed from the port at an exact tie (12 F(2, 2) and Beta rows, 1 ulp).
+    `special.ref.tsv` and `special.cr.tsv` are unchanged;
+  - **accuracy:** against MPFR, Beta's cdf is within 1 ulp on all 4,178 golden rows with shapes ≤ 10⁵ (4,175 exact),
+    never less accurate than 1.3.0, which gives NaN or 0 at the 5e-324 edges;
+  - **tests and checks:** `tests/dist.tcyr`, 440 checks (106 new); all 24 non-equivalent mutants fail (the t tail's
+    clamp is a guard no input reaches); surface parity maps 33 more items (34 pending);
+  - **cost:** 430–893 ns a pdf (6.2–8.2× Rust), 3.6 µs a Beta cdf and 17.7–21.9 µs a t or F cdf
+    (23–114×: the T1 incomplete beta), 490–562 ns a draw (6.9–7.7×); every bench digest is explained by the models.
 
 ### Performance
 

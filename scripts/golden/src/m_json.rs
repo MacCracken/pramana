@@ -10,8 +10,8 @@
 //!   row 8);
 //! - 1.3.0's `SimpleRng` (e1), read through its repr and `new`, so a state of 0 reads as 1.
 //! - 1.3.0's `Normal` (M3 part a1), read through `NormalRepr` and `Normal::new`, so a std_dev it refuses is an error;
-//!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2), `Cauchy` and `Weibull` (a3), and `Gamma` and
-//!   `ChiSquared` (b1), the same way.
+//!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2), `Cauchy` and `Weibull` (a3), `Gamma` and
+//!   `ChiSquared` (b1), and `Beta`, `StudentT` and `FDistribution` (b2), the same way.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -45,7 +45,9 @@
 
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
-use pramana::distribution::{Bernoulli, Cauchy, ChiSquared, Exponential, Gamma, Normal, Uniform, Weibull};
+use pramana::distribution::{
+    Bernoulli, Beta, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, StudentT, Uniform, Weibull,
+};
 use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
 use serde::{Deserialize, Serialize};
@@ -601,6 +603,9 @@ pub fn emit() -> Module {
     weibull(&mut m, &mut g);
     gamma(&mut m, &mut g);
     chi_squared(&mut m, &mut g);
+    beta(&mut m, &mut g);
+    student_t(&mut m, &mut g);
+    f_distribution(&mut m, &mut g);
     m
 }
 
@@ -783,6 +788,71 @@ fn chi_squared(m: &mut Module, g: &mut Rng) {
     for &df in &dfs {
         let x = ChiSquared::new(df).expect("valid parameters");
         m.row("json::write::ChiSquared", Class::A, &[f(df)], &[text(&x)]);
+    }
+}
+
+// ── M3 b2: Beta's, StudentT's and FDistribution's codecs ──
+
+/// A two-shape codec's rows: `struct_docs`'s variants on each field's number forms, the sequence forms, and seeded
+/// documents, half with the second field negated; then the writes.
+fn two_positive<T: Serialize + for<'de> Deserialize<'de>>(
+    m: &mut Module,
+    g: &mut Rng,
+    name: &str,
+    fields: [&str; 2],
+    make: impl Fn(f64, f64) -> T,
+    read: impl Fn(&T) -> Vec<Tok>,
+) {
+    let base = serde_json::to_value(make(2.0, 3.0)).expect("a value");
+    let forms = f64_forms();
+    let mut docs = struct_docs(&base, &fields, &[forms.clone(), forms]);
+    let zero = format!("{{\"{}\":1.0,\"{}\":0.0}}", fields[0], fields[1]);
+    docs.extend(bytes(&["[0.5,2.0]", "[0.5]", "[0.5,-2.0]", "[0.5,2.0,1]", &zero]));
+    let mut pairs: Vec<(f64, f64)> = vec![(1.0, 1.0), (f64::MAX, f64::from_bits(1)), (1e-300, 1e300)];
+    pairs.extend((0..40).map(|_| (g.log_uniform(-20.0, 20.0), g.log_uniform(-20.0, 20.0))));
+    for &(a, b) in &pairs {
+        let (x, y) = (ryu_like(a), ryu_like(b));
+        docs.push(format!("{{\"{}\":{x},\"{}\":{y}}}", fields[0], fields[1]).into_bytes());
+        docs.push(format!("{{\"{}\":{x},\"{}\":{}}}", fields[0], fields[1], ryu_like(-b)).into_bytes());
+    }
+    let func = format!("json::{name}");
+    for d in &docs {
+        row(m, &func, d, serde_json::from_slice::<T>(d), &read);
+    }
+    let wfunc = format!("json::write::{name}");
+    for &(a, b) in &pairs {
+        m.row(&wfunc, Class::A, &[f(a), f(b)], &[text(&make(a, b))]);
+    }
+}
+
+fn beta(m: &mut Module, g: &mut Rng) {
+    two_positive(m, g, "Beta", ["alpha", "beta"], |a, b| Beta::new(a, b).expect("valid"), |x| {
+        vec![f(x.alpha), f(x.beta)]
+    });
+}
+
+fn f_distribution(m: &mut Module, g: &mut Rng) {
+    two_positive(m, g, "FDistribution", ["d1", "d2"], |a, b| FDistribution::new(a, b).expect("valid"), |x| {
+        vec![f(x.d1), f(x.d2)]
+    });
+}
+
+fn student_t(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(StudentT::new(3.0).expect("valid")).expect("a StudentT");
+    let mut docs = struct_docs(&base, &["df"], &[f64_forms()]);
+    docs.extend(bytes(&["[3.0]", "[]", "[3.0,1]", "[-3.0]", r#"{"df":0.0}"#]));
+    let mut dfs: Vec<f64> = vec![1.0, f64::MIN_POSITIVE, f64::from_bits(1), f64::MAX];
+    dfs.extend((0..40).map(|_| g.log_uniform(-20.0, 20.0)));
+    for &df in &dfs {
+        docs.push(format!("{{\"df\":{}}}", ryu_like(df)).into_bytes());
+        docs.push(format!("{{\"df\":{}}}", ryu_like(-df)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::StudentT", d, serde_json::from_slice::<StudentT>(d), |x| vec![f(x.df)]);
+    }
+    for &df in &dfs {
+        let x = StudentT::new(df).expect("valid parameters");
+        m.row("json::write::StudentT", Class::A, &[f(df)], &[text(&x)]);
     }
 }
 

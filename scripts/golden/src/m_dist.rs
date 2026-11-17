@@ -32,6 +32,11 @@
 //! shapes from three seeds. Class C but the constructors, means and variances: the pdf takes glibc's ln and exp and
 //! 1.3.0's Lanczos lnΓ, the cdf 1.3.0's incomplete gamma, and the draws glibc's ln, cos and pow.
 //!
+//! Part b2, `Beta`, `StudentT` and `FDistribution`, the same kinds of rows, and the oracle's Student-t and F tails
+//! (`student_t_two_tailed`, `student_t_cdf`, `f_cdf_sf`, which the hypothesis tests share) on their own grids. Class C
+//! but the constructors, means and variances: the pdfs take glibc's ln, ln_1p and exp and 1.3.0's lnΓ or ln B, the
+//! cdfs 1.3.0's incomplete beta, and the draws Marsaglia–Tsang's.
+//!
 //! Inputs: the parameters, then x (or the seed and the count). Outputs: the value, or the draws as a sequence.
 
 use std::hint::black_box;
@@ -39,7 +44,8 @@ use std::hint::black_box;
 use crate::grids::{Rng as Seeds, specials};
 use crate::tsv::{Class, Module, Tok, err, f, i};
 use pramana::distribution::{
-    Bernoulli, Cauchy, ChiSquared, Distribution, Exponential, Gamma, Normal, Uniform, Weibull,
+    Bernoulli, Beta, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, StudentT, Uniform,
+    Weibull,
 };
 use pramana::{SimpleRng, oracle};
 
@@ -569,6 +575,240 @@ fn gamma_standard(m: &mut Module) {
     }
 }
 
+fn beta(m: &mut Module, g: &mut Seeds) {
+    for &a in &param_grid() {
+        for &b in &param_grid() {
+            match Beta::new(black_box(a), black_box(b)) {
+                Ok(d) => m.row("Beta::new", Class::A, &[f(a), f(b)], &[f(d.alpha), f(d.beta)]),
+                Err(e) => m.row("Beta::new", Class::A, &[f(a), f(b)], &[err(&e)]),
+            }
+        }
+    }
+    let fixed: Vec<(f64, f64)> = vec![
+        (2.0, 5.0),
+        (1.0, 1.0),
+        (0.5, 0.5),
+        (2.0, 2.0),
+        (5.0, 1.0),
+        (0.1, 0.1),
+        (30.0, 0.7),
+        (400.0, 350.0),
+        (1e3, 1e3),
+        (1e-3, 1.0),
+        (1.0, 1e5),
+        (1e5, 1e5),
+        (2e9, 3.0),
+        (f64::from_bits(1), 1.0),
+        (f64::MAX, 1.0),
+    ];
+    let seeded: Vec<(f64, f64)> = (0..40).map(|_| (g.log_uniform(-2.0, 3.0), g.log_uniform(-2.0, 3.0))).collect();
+    let point = |m: &mut Module, a: f64, b: f64, x: f64| {
+        let d = Beta::new(a, b).expect("valid parameters");
+        m.row("Beta::pdf", Class::C, &[f(a), f(b), f(x)], &[f(d.pdf(black_box(x)))]);
+        m.row("Beta::cdf", Class::C, &[f(a), f(b), f(x)], &[f(d.cdf(black_box(x)))]);
+    };
+    for &(a, b) in &fixed {
+        let mean = a / (a + b);
+        let sd = (a * b / ((a + b) * (a + b) * (a + b + 1.0))).sqrt();
+        let mut xs: Vec<f64> = (-4..=68).map(|j| f64::from(j) / 64.0).collect();
+        xs.extend((1..=60).flat_map(|j| [f64::from(-j).exp2(), 1.0 - f64::from(-j).exp2()]));
+        xs.extend((-16..=16).map(|j| mean + sd * (f64::from(j) / 2.0)));
+        xs.extend(around(0.0).into_iter().chain(around(1.0)));
+        xs.extend(specials());
+        for x in xs {
+            point(m, a, b, x);
+        }
+    }
+    for &(a, b) in &seeded {
+        for j in 0..=16 {
+            point(m, a, b, f64::from(j) / 16.0);
+        }
+    }
+    for _ in 0..1000 {
+        let a = g.log_uniform(-2.0, 3.0);
+        let b = g.log_uniform(-2.0, 3.0);
+        let x = g.unit();
+        point(m, a, b, x);
+    }
+    for &(a, b) in fixed.iter().chain(&seeded) {
+        let d = Beta::new(a, b).expect("valid parameters");
+        m.row("Beta::mean", Class::A, &[f(a), f(b)], &[f(d.mean())]);
+        m.row("Beta::variance", Class::A, &[f(a), f(b)], &[f(d.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, Beta)> =
+        fixed.iter().map(|&(a, b)| (vec![a, b], Beta::new(a, b).expect("valid"))).collect();
+    streams(m, "Beta::sample", Class::C, &cases);
+}
+
+/// Student-t's points: |t| ≤ 20 by quarters, far out (t² overflows from 1.35e154), and the specials.
+fn t_points() -> Vec<f64> {
+    let mut ts: Vec<f64> = (-80..=80).map(|k| f64::from(k) / 4.0).collect();
+    for z in [1e3, 1e10, 1e20, 1e155, 1e300] {
+        ts.extend([z, -z]);
+    }
+    ts.extend(specials());
+    ts
+}
+
+fn student_t(m: &mut Module, g: &mut Seeds) {
+    for &df in &param_grid() {
+        match StudentT::new(black_box(df)) {
+            Ok(d) => m.row("StudentT::new", Class::A, &[f(df)], &[f(d.df)]),
+            Err(e) => m.row("StudentT::new", Class::A, &[f(df)], &[err(&e)]),
+        }
+    }
+    let fixed: Vec<f64> = vec![
+        3.0,
+        1.0,
+        2.0,
+        3.5,
+        5.0,
+        10.0,
+        19.999_999_999_999_996,
+        20.0,
+        30.0,
+        100.0,
+        1e3,
+        1e6,
+        0.5,
+        0.1,
+        1e-3,
+        2e9,
+        3e9,
+        f64::from_bits(1),
+    ];
+    let seeded: Vec<f64> = (0..40).map(|_| g.log_uniform(-1.0, 4.0)).collect();
+    let point = |m: &mut Module, df: f64, x: f64| {
+        let d = StudentT::new(df).expect("valid parameters");
+        m.row("StudentT::pdf", Class::C, &[f(df), f(x)], &[f(d.pdf(black_box(x)))]);
+        m.row("StudentT::cdf", Class::C, &[f(df), f(x)], &[f(d.cdf(black_box(x)))]);
+    };
+    for &df in &fixed {
+        for x in t_points() {
+            point(m, df, x);
+        }
+    }
+    for &df in &seeded {
+        for k in -16..=16 {
+            point(m, df, f64::from(k) / 2.0);
+        }
+    }
+    for _ in 0..1000 {
+        let df = g.log_uniform(-1.0, 4.0);
+        let x = g.signed_log_uniform(-3.0, 3.0);
+        point(m, df, x);
+    }
+    for &df in fixed.iter().chain(&seeded) {
+        let d = StudentT::new(df).expect("valid parameters");
+        m.row("StudentT::mean", Class::A, &[f(df)], &[f(d.mean())]);
+        m.row("StudentT::variance", Class::A, &[f(df)], &[f(d.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, StudentT)> =
+        fixed.iter().map(|&df| (vec![df], StudentT::new(df).expect("valid"))).collect();
+    streams(m, "StudentT::sample", Class::C, &cases);
+}
+
+fn f_distribution(m: &mut Module, g: &mut Seeds) {
+    for &d1 in &param_grid() {
+        for &d2 in &param_grid() {
+            match FDistribution::new(black_box(d1), black_box(d2)) {
+                Ok(d) => m.row("FDistribution::new", Class::A, &[f(d1), f(d2)], &[f(d.d1), f(d.d2)]),
+                Err(e) => m.row("FDistribution::new", Class::A, &[f(d1), f(d2)], &[err(&e)]),
+            }
+        }
+    }
+    let fixed: Vec<(f64, f64)> = vec![
+        (4.0, 9.0),
+        (1.0, 1.0),
+        (2.0, 2.0),
+        (5.0, 2.0),
+        (1.0, 30.0),
+        (30.0, 1.0),
+        (10.0, 20.0),
+        (100.0, 100.0),
+        (1e3, 1e4),
+        (0.5, 0.5),
+        (0.1, 3.0),
+        (1e5, 1e5),
+        (2e9, 5.0),
+        (3.0, 4.5),
+        (3.0, 4.0),
+        (f64::from_bits(1), 1.0),
+    ];
+    let seeded: Vec<(f64, f64)> = (0..40).map(|_| (g.log_uniform(-1.0, 3.0), g.log_uniform(-1.0, 3.0))).collect();
+    let point = |m: &mut Module, d1: f64, d2: f64, x: f64| {
+        let d = FDistribution::new(d1, d2).expect("valid parameters");
+        m.row("FDistribution::pdf", Class::C, &[f(d1), f(d2), f(x)], &[f(d.pdf(black_box(x)))]);
+        m.row("FDistribution::cdf", Class::C, &[f(d1), f(d2), f(x)], &[f(d.cdf(black_box(x)))]);
+    };
+    for &(d1, d2) in &fixed {
+        let mut xs: Vec<f64> = (-4..=96).map(|j| f64::from(j) / 16.0).collect();
+        xs.extend((-40..=20).map(|j| f64::from(j).exp2()));
+        xs.extend([1e10, 1e300]);
+        xs.extend(specials());
+        for x in xs {
+            point(m, d1, d2, x);
+        }
+    }
+    for &(d1, d2) in &seeded {
+        for j in 0..=16 {
+            point(m, d1, d2, f64::from(j) / 4.0);
+        }
+    }
+    for _ in 0..1000 {
+        let d1 = g.log_uniform(-1.0, 3.0);
+        let d2 = g.log_uniform(-1.0, 3.0);
+        let x = g.log_uniform(-3.0, 2.0);
+        point(m, d1, d2, x);
+    }
+    for &(d1, d2) in fixed.iter().chain(&seeded) {
+        let d = FDistribution::new(d1, d2).expect("valid parameters");
+        m.row("FDistribution::mean", Class::A, &[f(d1), f(d2)], &[f(d.mean())]);
+        m.row("FDistribution::variance", Class::A, &[f(d1), f(d2)], &[f(d.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, FDistribution)> =
+        fixed.iter().map(|&(d1, d2)| (vec![d1, d2], FDistribution::new(d1, d2).expect("valid"))).collect();
+    streams(m, "FDistribution::sample", Class::C, &cases);
+}
+
+/// The oracle's Student-t and F tails on their own grids: the hypothesis tests (M4) call them directly, and
+/// `f_cdf_sf`'s survival is no public method's.
+fn tails(m: &mut Module, g: &mut Seeds) {
+    for df in [0.5, 1.0, 3.5, 30.0, 1e6, 2e9] {
+        for t in t_points() {
+            m.row("student_t_two_tailed", Class::C, &[f(t), f(df)], &[f(oracle::student_t_two_tailed(t, df))]);
+            m.row("student_t_cdf", Class::C, &[f(t), f(df)], &[f(oracle::student_t_cdf(t, df))]);
+        }
+    }
+    for &df in &specials() {
+        for t in [0.0, 1.5, -2.0, f64::NAN] {
+            m.row("student_t_two_tailed", Class::C, &[f(t), f(df)], &[f(oracle::student_t_two_tailed(t, df))]);
+        }
+    }
+    for _ in 0..500 {
+        let df = g.log_uniform(-1.0, 5.0);
+        let t = g.signed_log_uniform(-3.0, 3.0);
+        m.row("student_t_two_tailed", Class::C, &[f(t), f(df)], &[f(oracle::student_t_two_tailed(t, df))]);
+    }
+    let pairs = [(4.0, 9.0), (1.0, 1.0), (0.5, 30.0), (100.0, 3.0), (1e4, 1e4)];
+    for (d1, d2) in pairs {
+        let mut xs: Vec<f64> = (-4..=96).map(|j| f64::from(j) / 16.0).collect();
+        xs.extend((-40..=20).map(|j| f64::from(j).exp2()));
+        xs.extend(specials());
+        for x in xs {
+            let (c, sf) = oracle::f_cdf_sf(x, d1, d2);
+            m.row("f_cdf_sf", Class::C, &[f(x), f(d1), f(d2)], &[f(c), f(sf)]);
+        }
+    }
+    for _ in 0..500 {
+        let d1 = g.log_uniform(-1.0, 4.0);
+        let d2 = g.log_uniform(-1.0, 4.0);
+        let x = g.log_uniform(-4.0, 3.0);
+        let (c, sf) = oracle::f_cdf_sf(x, d1, d2);
+        m.row("f_cdf_sf", Class::C, &[f(x), f(d1), f(d2)], &[f(c), f(sf)]);
+    }
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("dist");
     let mut g = Seeds::new(0x510e_527f_ade6_82d1);
@@ -581,5 +821,9 @@ pub fn emit() -> Module {
     gamma(&mut m, &mut g);
     chi_squared(&mut m, &mut g);
     gamma_standard(&mut m);
+    beta(&mut m, &mut g);
+    student_t(&mut m, &mut g);
+    f_distribution(&mut m, &mut g);
+    tails(&mut m, &mut g);
     m
 }

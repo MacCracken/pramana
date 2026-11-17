@@ -1,10 +1,11 @@
 # dist_gamma.cyr — the gamma family of Rust 1.3.0's src/distribution.rs (port plan §4.1, D5, D7, D11, D12; M3 parts
 # b1 and b2): their constructors, the five `PmnDistribution` methods, serde_json's codec and the derived Debug, as
-# src/dist_cont.cyr's. Gamma and ChiSquared (part b1); Beta, StudentT and FDistribution arrive in part b2.
+# src/dist_cont.cyr's. Gamma and ChiSquared (part b1); Beta, StudentT and FDistribution (b2), with Rust's Student-t
+# and F tails, which the hypothesis tests (M4) share.
 #
-# Their densities take lnΓ and their cdfs the regularized incomplete gamma, both T1 (ADR 009): a row downstream of
-# them is Rust's formula on T1's value. Their draws are Marsaglia and Tsang's, `_pmn_sample_gamma_standard` in
-# src/dist.cyr.
+# Their densities take lnΓ or ln B and their cdfs the regularized incomplete gamma or beta, all T1 (ADR 009): a row
+# downstream of them is Rust's formula on T1's value. Their draws are Marsaglia and Tsang's,
+# `_pmn_sample_gamma_standard` in src/dist.cyr.
 
 include "src/dist.cyr"   # the trait, for `cyrius lint`'s compile of this file alone (see src/dist.cyr)
 
@@ -265,4 +266,522 @@ fn _pmn_chi_squared_from_root(root, out): i64 {
 fn PmnChiSquared_from_json(out: *PmnChiSquared, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
     return _pmn_json_decode(buf, len, &_pmn_chi_squared_from_root, out);
+}
+
+# ── Beta (part b2) ──────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `Beta`: the beta distribution on [0, 1] with shapes `alpha` and `beta`.
+struct PmnBeta {
+    alpha: f64;
+    beta: f64;
+}
+
+# Rust's `Beta::new(alpha, beta)` into out (caller storage, D11): PMN_ERR_NONE, or PMN_ERR_INVALID_PARAMETER, writing
+# nothing, unless alpha and beta are both finite and positive; or for a null out.
+#must_use
+fn PmnBeta_new(out: *PmnBeta, alpha: f64, beta: f64): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_require_positive(alpha);
+    if (e == PMN_ERR_NONE) { e = _pmn_require_positive(beta); }
+    if (e != PMN_ERR_NONE) { return e; }
+    out.alpha = alpha;
+    out.beta = beta;
+    return PMN_ERR_NONE;
+}
+
+impl PmnDistribution for PmnBeta {
+    # Rust's `pdf`: exp((α − 1)·ln x + (β − 1)·ln(1 − x) − ln B(α, β)) on (0, 1), else 0 (NaN at NaN), ln(1 − x) as
+    # ln_1p(−x). On the correctly rounded ln, ln_1p and exp and ln B on the T1 lnΓ.
+    #must_use
+    fn pdf(self, x: f64): f64 {
+        if (x <= 0.0 || x >= 1.0) { return 0.0; }
+        var a: f64 = self.alpha;
+        var b: f64 = self.beta;
+        var am1: f64 = a - 1.0;
+        var lx: f64 = _pmn_ln(x);
+        var t1: f64 = am1 * lx;
+        var bm1: f64 = b - 1.0;
+        var nx: f64 = -x;
+        var ly: f64 = _pmn_ln_1p(nx);
+        var t2: f64 = bm1 * ly;
+        var lb: f64 = _pmn_ln_beta(a, b);
+        var s: f64 = t1 + t2;
+        s = s - lb;
+        var r: f64 = _pmn_exp(s);
+        return r;
+    }
+
+    # Rust's `cdf`: 0 at and below 0, 1 from 1, else I_x(α, β), the T1 regularized incomplete beta (NaN at NaN).
+    #must_use
+    fn cdf(self, x: f64): f64 {
+        if (x <= 0.0) { return 0.0; }
+        if (x >= 1.0) { return 1.0; }
+        var a: f64 = self.alpha;
+        var b: f64 = self.beta;
+        var r: f64 = _pmn_regularized_incomplete_beta(x, a, b);
+        return r;
+    }
+
+    # Rust's `mean`: α/(α + β).
+    #must_use
+    fn mean(self): f64 {
+        var a: f64 = self.alpha;
+        var b: f64 = self.beta;
+        var ab: f64 = a + b;
+        return a / ab;
+    }
+
+    # Rust's `variance`: α·β/((α + β)²·(α + β + 1)), as Rust groups it.
+    #must_use
+    fn variance(self): f64 {
+        var a: f64 = self.alpha;
+        var b: f64 = self.beta;
+        var ab: f64 = a + b;
+        var num: f64 = a * b;
+        var ab2: f64 = ab * ab;
+        var ab1: f64 = ab + 1.0;
+        var den: f64 = ab2 * ab1;
+        return num / den;
+    }
+
+    # Rust's `sample`, the gamma ratio: X/(X + Y), X a Gamma(α, 1) variate and Y a Gamma(β, 1) one, drawn in that
+    # order.
+    #must_use
+    fn sample<R: PmnRng>(self, rng: *R): f64 {
+        var a: f64 = self.alpha;
+        var b: f64 = self.beta;
+        var gx: f64 = _pmn_sample_gamma_standard(a, rng);
+        var gy: f64 = _pmn_sample_gamma_standard(b, rng);
+        var t: f64 = gx + gy;
+        return gx / t;
+    }
+}
+
+impl PmnBeta {
+    # Appends Rust's Debug (D12): `Beta { alpha: 2.0, beta: 5.0 }`, or its alternate form. PMN_ERR_NONE, or
+    # PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var a: f64 = self.alpha;
+        var b: f64 = self.beta;
+        var e = _pmn_dbg_open(sb, "Beta", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "alpha", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, a); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "beta", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, b); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text, `{"alpha":A,"beta":B}`: PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var a: f64 = self.alpha;
+        var b: f64 = self.beta;
+        var e = _pmn_json_w_key(sb, "alpha", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, a); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "beta", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, b); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder for PmnBeta_from_json: BetaRepr's two f64 fields, then `Beta::new`.
+fn _pmn_beta_from_root(root, out): i64 {
+    var names[16];
+    store64(&names, "alpha");
+    store64(&names + 8, "beta");
+    var v[16];
+    var e = _pmn_dist_fields(root, &names, 2, &v);
+    if (e != PMN_ERR_NONE) { return e; }
+    var a: f64 = load64(&v);
+    var b: f64 = load64(&v + 8);
+    if (PmnBeta_new(out, a, b) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a Beta document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document
+# serde_json refuses (a shape the constructor refuses among them), or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnBeta_from_json(out: *PmnBeta, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_beta_from_root, out);
+}
+
+# ── StudentT (part b2) ──────────────────────────────────────────────────────────────────────────────
+
+# Rust's `student_t_two_tailed`: P(|T| ≥ |t|) = I_x(df/2, ½) with x = 1/(1 + t²/df) and its complement
+# y = 1/(1 + df/t²), both formed without cancellation, on the T1 incomplete beta; clamped to [0, 1]. NaN when t or df
+# is. The hypothesis tests (M4) share it.
+#must_use
+fn _pmn_student_t_two_tailed(t: f64, df: f64): f64 {
+    if (t != t || df != df) {
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+    var t2: f64 = t * t;
+    var q1: f64 = t2 / df;
+    var d1: f64 = 1.0 + q1;
+    var x: f64 = 1.0 / d1;
+    var q2: f64 = df / t2;
+    var d2: f64 = 1.0 + q2;
+    var y: f64 = 1.0 / d2;
+    var h: f64 = df / 2.0;
+    var i, c = _pmn_beta_inc(h, 0.5, x, y);
+    var r: f64 = _pmn_clamp(i, 0.0, 1.0);
+    return r;
+}
+
+# Rust's `student_t_cdf`: 1 − ½·P(|T| ≥ |t|) for t ≥ 0, ½·P(|T| ≥ |t|) below, so each tail keeps its accuracy.
+#must_use
+fn _pmn_student_t_cdf(t: f64, df: f64): f64 {
+    var tt: f64 = _pmn_student_t_two_tailed(t, df);
+    var h: f64 = 0.5 * tt;
+    if (t >= 0.0) { return 1.0 - h; }
+    return h;
+}
+
+# Rust's `StudentT`: Student's t distribution with `df` degrees of freedom.
+struct PmnStudentT {
+    df: f64;
+}
+
+# Rust's `StudentT::new(df)` into out (caller storage, D11): PMN_ERR_NONE, or PMN_ERR_INVALID_PARAMETER, writing
+# nothing, unless df is finite and positive; or for a null out.
+#must_use
+fn PmnStudentT_new(out: *PmnStudentT, df: f64): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_require_positive(df);
+    if (e != PMN_ERR_NONE) { return e; }
+    out.df = df;
+    return PMN_ERR_NONE;
+}
+
+impl PmnDistribution for PmnStudentT {
+    # Rust's `pdf`, as exp of its log. From df = 20, −ln B(ν/2, ½) − ½·ln ν − ((ν + 1)/2)·ln_1p(x²/ν), as the two lnΓ
+    # cancel there; below, lnΓ((ν + 1)/2) − lnΓ(ν/2) − ½·ln(νπ) − ((ν + 1)/2)·ln(1 + x²/ν). On the correctly rounded
+    # primitives and the T1 lnΓ.
+    #must_use
+    fn pdf(self, x: f64): f64 {
+        var df: f64 = self.df;
+        var dp1: f64 = df + 1.0;
+        var h: f64 = dp1 / 2.0;
+        var xx: f64 = x * x;
+        var q: f64 = xx / df;
+        var s: f64 = 0.0;
+        if (df >= 20.0) {
+            var hd: f64 = df / 2.0;
+            var lb: f64 = _pmn_ln_beta(hd, 0.5);
+            var ld: f64 = _pmn_ln(df);
+            var hld: f64 = 0.5 * ld;
+            var lq: f64 = _pmn_ln_1p(q);
+            var hlq: f64 = h * lq;
+            s = -lb;
+            s = s - hld;
+            s = s - hlq;
+        } else {
+            var lg1: f64 = _pmn_ln_gamma(h);
+            var hd2: f64 = df / 2.0;
+            var lg2: f64 = _pmn_ln_gamma(hd2);
+            var pi: f64 = _PMN_F64_PI;
+            var dpi: f64 = df * pi;
+            var ldp: f64 = _pmn_ln(dpi);
+            var hldp: f64 = 0.5 * ldp;
+            var q1: f64 = 1.0 + q;
+            var lq1: f64 = _pmn_ln(q1);
+            var hlq1: f64 = h * lq1;
+            s = lg1 - lg2;
+            s = s - hldp;
+            s = s - hlq1;
+        }
+        var r: f64 = _pmn_exp(s);
+        return r;
+    }
+
+    # Rust's `cdf`: `student_t_cdf`.
+    #must_use
+    fn cdf(self, x: f64): f64 {
+        var df: f64 = self.df;
+        var r: f64 = _pmn_student_t_cdf(x, df);
+        return r;
+    }
+
+    # Rust's `mean`: 0 for df > 1, else undefined, NaN.
+    #must_use
+    fn mean(self): f64 {
+        var df: f64 = self.df;
+        if (df > 1.0) { return 0.0; }
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+
+    # Rust's `variance`: df/(df − 2) for df > 2, +∞ for 1 < df ≤ 2, else NaN.
+    #must_use
+    fn variance(self): f64 {
+        var df: f64 = self.df;
+        if (df > 2.0) {
+            var d2: f64 = df - 2.0;
+            return df / d2;
+        }
+        if (df > 1.0) {
+            var inf: f64 = _PMN_F64_INFINITY;
+            return inf;
+        }
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+
+    # Rust's `sample`: Z/√(V/df), Z from Box–Muller and then V a χ²(df) variate, 2·Gamma(df/2, 1).
+    #must_use
+    fn sample<R: PmnRng>(self, rng: *R): f64 {
+        var z: f64 = _pmn_standard_normal(rng);
+        var df: f64 = self.df;
+        var hd: f64 = df / 2.0;
+        var g: f64 = _pmn_sample_gamma_standard(hd, rng);
+        var v: f64 = g * 2.0;
+        var vd: f64 = v / df;
+        var sq: f64 = f64_sqrt(vd);
+        return z / sq;
+    }
+}
+
+impl PmnStudentT {
+    # Appends Rust's Debug (D12): `StudentT { df: 3.0 }`, or its alternate form. PMN_ERR_NONE, or
+    # PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var df: f64 = self.df;
+        var e = _pmn_dbg_open(sb, "StudentT", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "df", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, df); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text, `{"df":D}`: PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var df: f64 = self.df;
+        var e = _pmn_json_w_key(sb, "df", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, df); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder for PmnStudentT_from_json: StudentTRepr's one f64 field, then `StudentT::new`.
+fn _pmn_student_t_from_root(root, out): i64 {
+    var names[8];
+    store64(&names, "df");
+    var v[8];
+    var e = _pmn_dist_fields(root, &names, 1, &v);
+    if (e != PMN_ERR_NONE) { return e; }
+    var df: f64 = load64(&v);
+    if (PmnStudentT_new(out, df) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a StudentT document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any
+# document serde_json refuses (a df the constructor refuses among them), or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnStudentT_from_json(out: *PmnStudentT, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_student_t_from_root, out);
+}
+
+# ── FDistribution (part b2) ─────────────────────────────────────────────────────────────────────────
+
+# Rust's `f_cdf_sf`: (the cdf, the survival) of F(d1, d2) at x, each without cancellation, as the T1 incomplete
+# beta's (I_u, 1 − I_u) at u = d1x/(d1x + d2) and its complement v = d2/(d1x + d2), each formed directly. (NaN, NaN)
+# at NaN, (0, 1) at and below 0. The hypothesis tests (M4) share it.
+#must_use
+fn _pmn_f_cdf_sf(x: f64, d1: f64, d2: f64): (f64, f64) {
+    if (x != x) {
+        var nan: f64 = _PMN_F64_NAN;
+        return (nan, nan);
+    }
+    if (x <= 0.0) { return (0.0, 1.0); }
+    var dx: f64 = d1 * x;
+    var r: f64 = dx / d2;
+    var ir: f64 = 1.0 / r;
+    var du: f64 = 1.0 + ir;
+    var u: f64 = 1.0 / du;
+    var dv: f64 = 1.0 + r;
+    var v: f64 = 1.0 / dv;
+    var h1: f64 = d1 / 2.0;
+    var h2: f64 = d2 / 2.0;
+    var c, s = _pmn_beta_inc(h1, h2, u, v);
+    return (c, s);
+}
+
+# Rust's `FDistribution`: Fisher–Snedecor's F with `d1` and `d2` degrees of freedom.
+struct PmnFDistribution {
+    d1: f64;
+    d2: f64;
+}
+
+# Rust's `FDistribution::new(d1, d2)` into out (caller storage, D11): PMN_ERR_NONE, or PMN_ERR_INVALID_PARAMETER,
+# writing nothing, unless d1 and d2 are both finite and positive; or for a null out.
+#must_use
+fn PmnFDistribution_new(out: *PmnFDistribution, d1: f64, d2: f64): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_require_positive(d1);
+    if (e == PMN_ERR_NONE) { e = _pmn_require_positive(d2); }
+    if (e != PMN_ERR_NONE) { return e; }
+    out.d1 = d1;
+    out.d2 = d2;
+    return PMN_ERR_NONE;
+}
+
+impl PmnDistribution for PmnFDistribution {
+    # Rust's `pdf`: exp(h1·ln(d1/d2) + (h1 − 1)·ln x − (h1 + h2)·ln_1p(d1x/d2) − ln B(h1, h2)), h = d/2, for x > 0,
+    # else 0 (NaN at NaN). On the correctly rounded primitives and ln B on the T1 lnΓ.
+    #must_use
+    fn pdf(self, x: f64): f64 {
+        if (x <= 0.0) { return 0.0; }
+        var d1: f64 = self.d1;
+        var d2: f64 = self.d2;
+        var h1: f64 = d1 / 2.0;
+        var h2: f64 = d2 / 2.0;
+        var rd: f64 = d1 / d2;
+        var lrd: f64 = _pmn_ln(rd);
+        var t1: f64 = h1 * lrd;
+        var h1m1: f64 = h1 - 1.0;
+        var lx: f64 = _pmn_ln(x);
+        var t2: f64 = h1m1 * lx;
+        var hs: f64 = h1 + h2;
+        var dx: f64 = d1 * x;
+        var q: f64 = dx / d2;
+        var lq: f64 = _pmn_ln_1p(q);
+        var t3: f64 = hs * lq;
+        var lb: f64 = _pmn_ln_beta(h1, h2);
+        var s: f64 = t1 + t2;
+        s = s - t3;
+        s = s - lb;
+        var r: f64 = _pmn_exp(s);
+        return r;
+    }
+
+    # Rust's `cdf`: `f_cdf_sf`'s first value.
+    #must_use
+    fn cdf(self, x: f64): f64 {
+        var d1: f64 = self.d1;
+        var d2: f64 = self.d2;
+        var c, s = _pmn_f_cdf_sf(x, d1, d2);
+        return c;
+    }
+
+    # Rust's `mean`: d2/(d2 − 2) for d2 > 2, else undefined, NaN.
+    #must_use
+    fn mean(self): f64 {
+        var d2: f64 = self.d2;
+        if (d2 > 2.0) {
+            var dm: f64 = d2 - 2.0;
+            return d2 / dm;
+        }
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+
+    # Rust's `variance`: 2·d2²·(d1 + d2 − 2)/(d1·(d2 − 2)²·(d2 − 4)) for d2 > 4, as Rust groups it, else NaN.
+    #must_use
+    fn variance(self): f64 {
+        var d1: f64 = self.d1;
+        var d2: f64 = self.d2;
+        if (d2 > 4.0) {
+            var n1: f64 = 2.0 * d2;
+            n1 = n1 * d2;
+            var sm: f64 = d1 + d2;
+            sm = sm - 2.0;
+            var num: f64 = n1 * sm;
+            var m2: f64 = d2 - 2.0;
+            var den: f64 = d1 * m2;
+            den = den * m2;
+            var m4: f64 = d2 - 4.0;
+            den = den * m4;
+            return num / den;
+        }
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+
+    # Rust's `sample`: (X1/d1)/(X2/d2), X1 and X2 χ² variates, 2·Gamma(d/2, 1), drawn in that order.
+    #must_use
+    fn sample<R: PmnRng>(self, rng: *R): f64 {
+        var d1: f64 = self.d1;
+        var d2: f64 = self.d2;
+        var h1: f64 = d1 / 2.0;
+        var g1: f64 = _pmn_sample_gamma_standard(h1, rng);
+        var x1: f64 = g1 * 2.0;
+        var h2: f64 = d2 / 2.0;
+        var g2: f64 = _pmn_sample_gamma_standard(h2, rng);
+        var x2: f64 = g2 * 2.0;
+        var a: f64 = x1 / d1;
+        var b: f64 = x2 / d2;
+        return a / b;
+    }
+}
+
+impl PmnFDistribution {
+    # Appends Rust's Debug (D12): `FDistribution { d1: 4.0, d2: 9.0 }`, or its alternate form. PMN_ERR_NONE, or
+    # PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var d1: f64 = self.d1;
+        var d2: f64 = self.d2;
+        var e = _pmn_dbg_open(sb, "FDistribution", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "d1", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, d1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "d2", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, d2); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text, `{"d1":D1,"d2":D2}`: PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var d1: f64 = self.d1;
+        var d2: f64 = self.d2;
+        var e = _pmn_json_w_key(sb, "d1", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, d1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "d2", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, d2); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder for PmnFDistribution_from_json: FDistributionRepr's two f64 fields, then `FDistribution::new`.
+fn _pmn_f_distribution_from_root(root, out): i64 {
+    var names[16];
+    store64(&names, "d1");
+    store64(&names + 8, "d2");
+    var v[16];
+    var e = _pmn_dist_fields(root, &names, 2, &v);
+    if (e != PMN_ERR_NONE) { return e; }
+    var d1: f64 = load64(&v);
+    var d2: f64 = load64(&v + 8);
+    if (PmnFDistribution_new(out, d1, d2) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads an FDistribution document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any
+# document serde_json refuses (a degree of freedom the constructor refuses among them), or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnFDistribution_from_json(out: *PmnFDistribution, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_f_distribution_from_root, out);
 }

@@ -3683,3 +3683,124 @@ modules: 237,710 rows ok and 33,441 accepted (33,331 under ADR 9, 110 under ADR 
 **Cost** (`docs/benchmarks-rust-v-cyrius.md`): 291–296 ns a Gamma pdf (6.2× Rust), 13.0–13.2 µs a Gamma or χ² cdf
 (98–101×: the T1 incomplete gamma, 12.9 µs of it alone), and 275–297 ns a draw (7.8–7.9×: Marsaglia–Tsang on the
 correctly rounded ln, cos and pow). The bench's 26 digests are all explained by the models.
+
+### 9.5 Part b2: Beta, StudentT, FDistribution and their tails (2026-11-16)
+
+**The modules.** `src/dist_gamma.cyr` gains `PmnBeta { alpha, beta }`, `PmnStudentT { df }` and
+`PmnFDistribution { d1, d2 }`, with the methods, codec and Debug of the others, and Rust's two tails, which M4's
+hypothesis tests share:
+- **`_pmn_student_t_two_tailed(t, df)`:** P(|T| ≥ |t|) = I_x(df/2, ½) at x = 1/(1 + t²/df) and its complement
+  y = 1/(1 + df/t²), each formed directly, on the T1 incomplete beta, clamped to [0, 1]; `_pmn_student_t_cdf` takes
+  1 − ½·p for t ≥ 0 and ½·p below, so each tail keeps its accuracy.
+- **`_pmn_f_cdf_sf(x, d1, d2)`:** (the cdf, the survival) as the T1 incomplete beta's (I_u, 1 − I_u) at
+  u = 1/(1 + 1/r) and v = 1/(1 + r), r = d1x/d2, each formed directly.
+- **Beta:** the pdf exp((α − 1)·ln x + (β − 1)·ln_1p(−x) − ln B(α, β)) on (0, 1), with ln B on the T1 lnΓ; the cdf
+  I_x(α, β) on the T1 incomplete beta; a draw X/(X + Y) from two Marsaglia–Tsang variates, X first.
+- **StudentT:** the pdf in Rust's two forms, the ln B one from df = 20 (where the two lnΓ cancel) and the lnΓ one
+  below; the cdf `student_t_cdf`; the moments 0 and df/(df − 2), +∞ for 1 < df ≤ 2, NaN below; a draw Z/√(V/df),
+  Z from Box–Muller first, then V a χ² variate.
+- **FDistribution:** the pdf on ln_1p and ln B; the cdf `f_cdf_sf`'s first value; the moments for d2 > 2 and
+  d2 > 4, NaN below; a draw (X1/d1)/(X2/d2), X1 first.
+
+**The golden rows.**
+- **`dist`, 36,081 more rows (146,523 in all):**
+  - each constructor on the 20-value grid, every pair for Beta and F; class A;
+  - `Beta::pdf` and `Beta::cdf`, 5,310 rows each: fifteen fixed (α, β) (from 5e-324 to f64::MAX, (2e9, 3) past T1's
+    10⁹) at x = j/64, at 2⁻ʲ and 1 − 2⁻ʲ for j up to 60, at the mean ± up to 8 standard deviations, at 0 and 1 and
+    their neighbours, and at the specials; 40 seeded pairs at sixteenths; 1,000 seeded triples. Class C;
+  - `StudentT::pdf` and `StudentT::cdf`, 5,578 rows each: eighteen fixed df (5e-324 to 3e9, with 20 and the double
+    below it either side of the pdf's switch) at |t| ≤ 20 by quarters, far out to ±1e300 (t² overflows from 1.35e154)
+    and at the specials; 40 seeded df; 1,000 seeded pairs. Class C;
+  - `FDistribution::pdf` and `FDistribution::cdf`, 4,464 rows each: sixteen fixed pairs (with d2 = 2, 4 and 4.5
+    around the moments' edges) at sixteenths to 6, at powers of two and at the specials; 40 seeded pairs; 1,000
+    seeded triples. Class C;
+  - every mean and variance, class A; 147 streams, 10⁴ draws of Beta(2, 5), t(3) and F(4, 9) from three seeds and
+    256 of each other fixed case. Class C;
+  - the oracle's tails on their own grids: `student_t_two_tailed` (1,626 rows) and `student_t_cdf` (1,086) at six df
+    from 0.5 to 2e9 and the specials, and `f_cdf_sf` (1,360 rows, both values) at five pairs and 500 seeded triples.
+    Class C.
+- **`json`,** 665 more rows (8,832 in all), and **`debug`,** 96 more (25,624), as part a2's.
+
+**The models.** `validate.py` models every row in Rust's operation order, on 1.3.0's ln B and incomplete beta
+through glibc and on correctly rounded primitives, or on the T1 functions as the port computes them.
+- **`dist.cr.tsv`** gains 157 rows where glibc misrounds: 120 pdf values, 31 streams and 6 cdf values (1,054 rows in
+  all).
+- **`dist.ref.tsv`** gains 16,556 rows that the T1 functions move: 5,898 pdf values (ln B and lnΓ), 7,717 cdf values
+  and 2,941 tail rows (the incomplete beta). It has 28,202 rows in all.
+- Thirty documents serde_json reads only by skipping a member unchecked join `json.map.tsv` (140 rows).
+
+**The model's exp core.** The first replay failed 12 rows by 1 ulp: eleven F(2, 2) cdf values and one Beta cdf
+value. F(2, 2)'s cdf is I_u(1, 1), and T1 takes the smaller of u and v as exact, so it returns 1 − v. At
+x = 1.8125, v's last bit is set, so 1 − v is an exact tie at double precision, and the double-double's low word
+decides the rounding.
+- The port's T1 prefactor takes e^M from kimiya's double-double exp core, whose contract is h + l within about 2⁻⁷⁰
+  of e^M/2^E, with l unnormalized. `validate.py` stood in for that core with MPFR's exact double-double, which
+  agreed with the port's final rounding on every M2 row but not at this tie.
+- `t_exp_core` now transcribes `_pmn_km_exp_core` operation for operation, its table and constants read from
+  `src/crmath_data.cyr`. All 12 rows then match. `special.ref.tsv` and `special.cr.tsv` are byte-identical
+  afterwards, and only `dist.ref.tsv` changes, on 15 lines.
+- The port's value at those ties is 1 ulp from MPFR's (within T1's 8 ulp). The model's ln core is still MPFR's
+  double-double (within 2⁻⁸⁰ of kimiya's); a tie there would show the same way, as a 1-ulp replay failure, and be
+  fixed the same way.
+
+**The result.** Every row passes the replay: ten modules, 257,809 rows ok and 50,184 accepted (50,044 under ADR 9,
+140 under ADR 7), warning-free. Every b2 row is at 0 ulp, against 1.3.0's bits, its correction or Rust's formula on
+the T1 functions.
+
+**The cdf against MPFR** (Beta's golden rows with 0 < x < 1 and shapes ≤ 10⁵, I_x(α, β) with x exact,
+`mpfr_ref.beta_ic`): the port is within 1 ulp on all 4,178 (4,175 exact) and never less accurate than 1.3.0, which
+is exact on 2,014. 1.3.0's far misses are its edges: NaN at x = 5e-324 for large shapes (the truth is 0), and 0 at
+α = 5e-324 (116 rows; the truth is about 1, but its lnΓ(5e-324) is +∞).
+
+**Mutation checks** (`build/handoff/mut_b2.py`: the replay and `tests/dist.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| Beta: beta only finite | 120 | 1 |
+| Beta's pdf with ln(1 − x) for ln_1p(−x) | 35 | 0 |
+| Beta's pdf with x > 1 for its upper arm | 126 | 0 |
+| Beta's cdf as 1 − I_(1−x)(β, α) | 1,386 | 1 |
+| Beta's variance as (ab·(ab + 1))·ab | 13 | 0 |
+| Beta's draw with Y drawn first | 39 | 1 |
+| the t tail with y as 1 − x | 2,337 | 1 |
+| t's pdf switching at df > 20 | 85 | 0 |
+| t's pdf with ln(1 + q) in the ln B form | 1,649 | 1 |
+| t's pdf with ln ν + ln π | 174 | 0 |
+| t's variance NaN for 1 < df ≤ 2 | 3 | 1 |
+| t's mean 0 from df = 1 | 1 | 1 |
+| t's draw with V before Z | 54 | 1 |
+| the F tail with u as r/(1 + r) | 529 | 1 |
+| the F tail with v as 1 − u | 1,406 | 1 |
+| F's pdf with ln(1 + q) | 708 | 0 |
+| F's pdf with ln d1 − ln d2 | 886 | 0 |
+| F's mean from d2 = 2 | 2 | 1 |
+| F's variance with d1·(m2·m2) | 3 | 0 |
+| F's draw with X2 first | 45 | 0 |
+| F's JSON names read swapped | 70 | 1 |
+| t's refusal decoded as `INVALID_PARAMETER` | 51 | 1 |
+| F's Debug named `F` | 32 | 2 |
+| Beta's Debug named `BetaDist` | 32 | 1 |
+| the t tail without its clamp | 0 | 0 |
+
+- **All 24 non-equivalent mutants fail.** The cancellation-free forms matter most: y as 1 − x, or v as 1 − u, moves
+  1,406–2,337 rows.
+- **The clamp is equivalent:** T1's incomplete beta never leaves [0, 1], so Rust's clamp is a guard no input reaches.
+
+**Tests.** `tests/dist.tcyr` has 440 checks, 106 of them new:
+- 1.3.0's tests: `beta_mean_and_variance`, `beta_cdf_endpoints`, `beta_uniform_is_beta_1_1` (now exact),
+  `beta_sample_in_range`, `beta_small_alpha_sample`, `student_t_symmetric_pdf`, `student_t_mean_and_variance`,
+  `student_t_sample_symmetric`, `student_t_cdf_closed_forms` (df = 1 and 2 within 10⁻¹⁵, the far tail, ±∞ and NaN),
+  `student_t_large_df_approaches_normal`, `student_t_pdf_matches_gamma_form`, `f_distribution_mean`,
+  `f_distribution_variance`, `f_distribution_cdf_nonneg`, `f_distribution_sample_positive`,
+  `f_distribution_closed_form_and_tail` (the direct upper tail), the serde round trips, and the three types' lines of
+  `constructors_reject_non_finite_parameters` and `deserialize_rejects_invalid_parameters`;
+- the oracle's wiring tests: each cdf is its incomplete-beta hook's, bit for bit;
+- the edges and identities: the tails at 0, ±∞ and NaN, the two-tailed p-value even in t, the cdf and survival
+  summing to 1, and each draw bit for bit against its formula on the same stream, in Rust's draw order;
+- each codec's text and refusals, and each Debug's form.
+
+**Surface parity.** 33 more items are mapped (127 of `distribution`'s 161), and 34 are pending until M3's gate.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 430–893 ns a pdf (6.2–8.2× Rust), 3.6 µs a Beta cdf and 17.7–21.9 µs
+a t or F cdf (23–114×: the T1 incomplete beta), and 490–562 ns a draw (6.9–7.7×). The bench's 34 digests are all
+explained by the models.
