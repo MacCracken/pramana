@@ -1011,3 +1011,58 @@ printer's 2.8–13.9 µs a value, M1 part d1's finding, which ledger L10 asks im
 
 `{:.4}` is exact, on fmtf's bignum. Rust's own `{:.4}` takes Grisu's fast path and falls back to Dragon4 only on a
 close call, so it would be faster. The other two rows are a dozen of those and the statistics.
+
+
+## M8 part b: the 2.0.0 record, 1.3.0's 34 criterion rows (2026-11-17)
+
+Every criterion body of `rust-old/benches/benchmarks.rs`, as written, in both columns. The Rust column is
+`rust-old/benchmarks.md`'s current run (this host, 2026-11-14; ADR 010). The Cyrius column is three pinned runs
+(`taskset -c 5`, load average 0.2–0.7) of `tests/criterion.bcyr`, which holds the seventeen bodies no part ran
+whole, and of the modules' own benches for the other seventeen. The ratio is the median run over Rust's.
+
+| Row | Rust 1.3.0 | Cyrius 2.0.0 | Cyrius / Rust |
+|---|---|---|---|
+| `bayesian/naive_bayes_4class_10feat` | 173 ns | 3.0 µs | 17.2× |
+| `combinatorics/combinations_30_15` | 45.4 ns | 535 ns–539 ns | 11.8× |
+| `descriptive/kde_gaussian_200pts_1000eval` | 1.05 ms | 11.11 ms–11.20 ms | 10.6× |
+| `descriptive/median_10001` | 18.4 µs | 168 µs–169 µs | 9.2× |
+| `descriptive/mode_10000` | 173 µs | 834 µs–838 µs | 4.8× |
+| `descriptive/stats_10000` | 36.9 µs | 129 µs | 3.5× |
+| `distribution/beta_sample_1000` | 43.4 µs | 475 µs–476 µs | 10.9× |
+| `distribution/binomial_cdf_n200_20pts` | 3.8 µs | 233 µs–239 µs | 62.0× |
+| `distribution/binomial_sample_n10000_100` | 44.8 µs | 418 µs–419 µs | 9.4× |
+| `distribution/cauchy_sample_1000` | 10.2 µs | 191 µs–192 µs | 18.9× |
+| `distribution/chi_squared_cdf_1000` | 57.3 µs | 1.90 ms–1.91 ms | 33.2× |
+| `distribution/f_sample_1000` | 48.0 µs | 481 µs–484 µs | 10.0× |
+| `distribution/gamma_sample_1000` | 20.7 µs | 241 µs–244 µs | 11.7× |
+| `distribution/mvn_pdf_3d_1000` | 71.7 µs | 302 µs–304 µs | 4.2× |
+| `distribution/mvn_sample_3d_1000` | 67.8 µs | 491 µs–502 µs | 7.4× |
+| `distribution/normal_cdf_1000` | 23.9 µs | 1.25 ms | 52.1× |
+| `distribution/normal_pdf_1000` | 6.3 µs | 63.1 µs–63.8 µs | 10.1× |
+| `distribution/poisson_cdf_lambda100_200pts` | 22.9 µs | 1.35 ms–1.36 ms | 59.0× |
+| `distribution/poisson_sample_lambda100` | 27.9 µs | 294 µs–296 µs | 10.6× |
+| `distribution/student_t_pdf_1000` | 38.6 µs | 391 µs–394 µs | 10.2× |
+| `distribution/weibull_sample_1000` | 20.1 µs | 211 µs–213 µs | 10.6× |
+| `hypothesis/chi_squared_test_20` | 157 ns | 10.4 µs | 66.3× |
+| `hypothesis/ks_two_sample_1000` | 23.0 µs | 196 µs–197 µs | 8.6× |
+| `hypothesis/t_test_one_sample_1000` | 1.6 µs | 18.2 µs | 11.3× |
+| `markov/hmm_baum_welch_200_x5` | 152 µs | 537 µs–540 µs | 3.5× |
+| `markov/hmm_forward_1000` | 45.0 µs | 143 µs–144 µs | 3.2× |
+| `markov/steady_state_10` | 619 ns | 7.3 µs | 11.8× |
+| `markov/step_1000` | 2.0 µs | 15.2 µs–15.5 µs | 7.6× |
+| `monte_carlo/mh_1d_10000` | 850 µs | 2.97 ms–2.99 ms | 3.5× |
+| `monte_carlo/pi_100000` | 328 µs | 2.29 ms–2.30 ms | 7.0× |
+| `regression/linear_1000` | 3.7 µs | 30.8 µs–31.1 µs | 8.5× |
+| `regression/logistic_1d_43pts` | 9.3 µs | 48.2 µs–48.6 µs | 5.2× |
+| `regression/polynomial_degree3_100pts` | 3.3 µs | 17.5 µs–17.8 µs | 5.4× |
+| `timeseries/moving_average_10000_w50` | 29.5 µs | 52.1 µs–53.2 µs | 1.8× |
+
+The geometric mean is **10.0×**, the median 10.1×, and the range 1.8–66.3×. Three costs make up
+most of it, each named by an earlier part:
+- **Correct rounding** (ADR 009). glibc's exp, ln and cos are 5–9 ns, and the correctly rounded ones 46–91 ns.
+- **The T1 functions.** The incomplete gamma and beta are within 4 and 8 ulp, where 1.3.0 was up to 10⁶ ulp off.
+  They dominate the four cdf rows and the χ² test, at 33–66×.
+- **Cyrius's codegen**, about 8× on plain loops (M5 part a).
+
+The draws go through a bounded generic (M1 part e1: 10 ns against Rust's inlined 1.7 ns). Speed is measured, not
+gated (CLAUDE.md), and every one of these rows is at least as accurate as 1.3.0's.

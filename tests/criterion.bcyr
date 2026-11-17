@@ -1,0 +1,255 @@
+# criterion.bcyr — the eighteen of 1.3.0's 34 criterion bodies (rust-old/benches/benchmarks.rs) that no part's bench
+# ran as written (M8 part b): M1–M3 measured per call, these are the bodies whole. With the modules' own benches they
+# give docs/benchmarks-rust-v-cyrius.md's 34 rows in both columns. Each row prints a result.
+
+include "tests/lib.cyr"
+
+var sink: f64 = 0.0;
+
+fn keep(x: f64): i64 {
+    var a: f64 = sink;
+    var s: f64 = a + x;
+    sink = s;
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var g: PmnSimpleRng;
+    var n: PmnNormal;
+    if (PmnNormal_new(&n, 0.0, 1.0) != PMN_ERR_NONE) { return 1; }
+
+    var b1 = bench_new("distribution/normal_pdf_1000");
+    bench_batch_start(b1);
+    for (var r = 0; r < 2000; r = r + 1) {
+        for (var i = 0; i < 1000; i = i + 1) {
+            var fi: f64 = f64_from(i);
+            var d: f64 = fi - 500.0;
+            var x: f64 = d / 100.0;
+            keep(n.pdf(x));
+        }
+    }
+    bench_batch_stop(b1, 2000);
+    bench_report(b1);
+
+    var data = alloc(10000 * 8);
+    for (var j = 0; j < 10000; j = j + 1) {
+        var fj: f64 = f64_from(j);
+        var v: f64 = fj * 0.1;
+        store64(data + j * 8, v);
+    }
+    var b2 = bench_new("descriptive/stats_10000");
+    bench_batch_start(b2);
+    for (var r2 = 0; r2 < 2000; r2 = r2 + 1) {
+        var t1, v1 = pmn_mean(data, 10000);
+        var t2, v2 = pmn_variance(data, 10000);
+        var t3, v3 = pmn_std_dev(data, 10000);
+        keep(v3);
+    }
+    bench_batch_stop(b2, 2000);
+    bench_report(b2);
+
+    var u: PmnU128;
+    var b3 = bench_new("combinatorics/combinations_30_15");
+    bench_batch_start(b3);
+    for (var r3 = 0; r3 < 200000; r3 = r3 + 1) {
+        if (pmn_combinations(30, 15, &u) != PMN_ERR_NONE) { return 1; }
+    }
+    bench_batch_stop(b3, 200000);
+    bench_report(b3);
+
+    var po: PmnPoisson;
+    if (PmnPoisson_new(&po, 100.0) != PMN_ERR_NONE) { return 1; }
+    var b4 = bench_new("distribution/poisson_sample_lambda100");
+    bench_batch_start(b4);
+    for (var r4 = 0; r4 < 500; r4 = r4 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        for (var k4 = 0; k4 < 1000; k4 = k4 + 1) { keep(po.sample(&g)); }
+    }
+    bench_batch_stop(b4, 500);
+    bench_report(b4);
+
+    var ga: PmnGamma;
+    if (PmnGamma_new(&ga, 5.0, 2.0) != PMN_ERR_NONE) { return 1; }
+    var b5 = bench_new("distribution/gamma_sample_1000");
+    bench_batch_start(b5);
+    for (var r5 = 0; r5 < 500; r5 = r5 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        for (var k5 = 0; k5 < 1000; k5 = k5 + 1) { keep(ga.sample(&g)); }
+    }
+    bench_batch_stop(b5, 500);
+    bench_report(b5);
+
+    var be: PmnBeta;
+    if (PmnBeta_new(&be, 2.0, 5.0) != PMN_ERR_NONE) { return 1; }
+    var b6 = bench_new("distribution/beta_sample_1000");
+    bench_batch_start(b6);
+    for (var r6 = 0; r6 < 500; r6 = r6 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        for (var k6 = 0; k6 < 1000; k6 = k6 + 1) { keep(be.sample(&g)); }
+    }
+    bench_batch_stop(b6, 500);
+    bench_report(b6);
+
+    var ch: PmnChiSquared;
+    if (PmnChiSquared_new(&ch, 10.0) != PMN_ERR_NONE) { return 1; }
+    var b7 = bench_new("distribution/chi_squared_cdf_1000");
+    bench_batch_start(b7);
+    for (var r7 = 0; r7 < 50; r7 = r7 + 1) {
+        for (var k7 = 0; k7 < 1000; k7 = k7 + 1) {
+            var fk: f64 = f64_from(k7);
+            var xc: f64 = fk * 0.05;
+            keep(ch.cdf(xc));
+        }
+    }
+    bench_batch_stop(b7, 50);
+    bench_report(b7);
+
+    var st: PmnStudentT;
+    if (PmnStudentT_new(&st, 5.0) != PMN_ERR_NONE) { return 1; }
+    var b8 = bench_new("distribution/student_t_pdf_1000");
+    bench_batch_start(b8);
+    for (var r8 = 0; r8 < 500; r8 = r8 + 1) {
+        for (var k8 = 0; k8 < 1000; k8 = k8 + 1) {
+            var f8: f64 = f64_from(k8);
+            var d8: f64 = f8 - 500.0;
+            var x8: f64 = d8 / 100.0;
+            keep(st.pdf(x8));
+        }
+    }
+    bench_batch_stop(b8, 500);
+    bench_report(b8);
+
+    var fd: PmnFDistribution;
+    if (PmnFDistribution_new(&fd, 5.0, 10.0) != PMN_ERR_NONE) { return 1; }
+    var b9 = bench_new("distribution/f_sample_1000");
+    bench_batch_start(b9);
+    for (var r9 = 0; r9 < 500; r9 = r9 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        for (var k9 = 0; k9 < 1000; k9 = k9 + 1) { keep(fd.sample(&g)); }
+    }
+    bench_batch_stop(b9, 500);
+    bench_report(b9);
+
+    var ca: PmnCauchy;
+    if (PmnCauchy_new(&ca, 0.0, 1.0) != PMN_ERR_NONE) { return 1; }
+    var b10 = bench_new("distribution/cauchy_sample_1000");
+    bench_batch_start(b10);
+    for (var r10 = 0; r10 < 1000; r10 = r10 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        for (var k10 = 0; k10 < 1000; k10 = k10 + 1) { keep(ca.sample(&g)); }
+    }
+    bench_batch_stop(b10, 1000);
+    bench_report(b10);
+
+    var we: PmnWeibull;
+    if (PmnWeibull_new(&we, 2.0, 3.0) != PMN_ERR_NONE) { return 1; }
+    var b11 = bench_new("distribution/weibull_sample_1000");
+    bench_batch_start(b11);
+    for (var r11 = 0; r11 < 1000; r11 = r11 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        for (var k11 = 0; k11 < 1000; k11 = k11 + 1) { keep(we.sample(&g)); }
+    }
+    bench_batch_stop(b11, 1000);
+    bench_report(b11);
+
+    var mean = alloc(3 * 8);
+    store64(mean, 0.0);
+    store64(mean + 8, 0.0);
+    store64(mean + 16, 0.0);
+    var cov = alloc(9 * 8);
+    store64(cov, 1.0);
+    store64(cov + 8, 0.3);
+    store64(cov + 16, 0.1);
+    store64(cov + 24, 0.3);
+    store64(cov + 32, 2.0);
+    store64(cov + 40, 0.5);
+    store64(cov + 48, 0.1);
+    store64(cov + 56, 0.5);
+    store64(cov + 64, 3.0);
+    var mv: PmnMultivariateNormal;
+    if (PmnMultivariateNormal_new(&mv, mean, 3, cov, 3, 3) != PMN_ERR_NONE) { return 1; }
+    var out3 = alloc(3 * 8);
+    var b12 = bench_new("distribution/mvn_sample_3d_1000");
+    bench_batch_start(b12);
+    for (var r12 = 0; r12 < 300; r12 = r12 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        for (var k12 = 0; k12 < 1000; k12 = k12 + 1) {
+            if (mv.sample(&g, out3, 3) != PMN_ERR_NONE) { return 1; }
+        }
+    }
+    bench_batch_stop(b12, 300);
+    keep(load64(out3));
+    bench_report(b12);
+
+    var x3 = alloc(3 * 8);
+    var b13 = bench_new("distribution/mvn_pdf_3d_1000");
+    bench_batch_start(b13);
+    for (var r13 = 0; r13 < 300; r13 = r13 + 1) {
+        for (var k13 = 0; k13 < 1000; k13 = k13 + 1) {
+            var f13: f64 = f64_from(k13);
+            var a13: f64 = f13 * 0.01;
+            var s13: f64 = _pmn_sin(a13);
+            store64(x3, a13);
+            store64(x3 + 8, s13);
+            store64(x3 + 16, 0.5);
+            var tp, vp = mv.pdf(x3, 3);
+            if (tp == Err) { return 1; }
+            keep(vp);
+        }
+    }
+    bench_batch_stop(b13, 300);
+    bench_report(b13);
+    PmnMultivariateNormal_drop(&mv);
+
+    var b14 = bench_new("distribution/normal_cdf_1000");
+    bench_batch_start(b14);
+    for (var r14 = 0; r14 < 100; r14 = r14 + 1) {
+        for (var k14 = 0; k14 < 1000; k14 = k14 + 1) {
+            var f14: f64 = f64_from(k14);
+            var d14: f64 = f14 - 500.0;
+            var x14: f64 = d14 / 100.0;
+            keep(n.cdf(x14));
+        }
+    }
+    bench_batch_stop(b14, 100);
+    bench_report(b14);
+
+    var b15 = bench_new("distribution/poisson_cdf_lambda100_200pts");
+    bench_batch_start(b15);
+    for (var r15 = 0; r15 < 200; r15 = r15 + 1) {
+        for (var k15 = 0; k15 < 200; k15 = k15 + 1) { keep(po.cdf(f64_from(k15))); }
+    }
+    bench_batch_stop(b15, 200);
+    bench_report(b15);
+
+    var bi: PmnBinomial;
+    if (PmnBinomial_new(&bi, 200, 0.3) != PMN_ERR_NONE) { return 1; }
+    var b16 = bench_new("distribution/binomial_cdf_n200_20pts");
+    bench_batch_start(b16);
+    for (var r16 = 0; r16 < 500; r16 = r16 + 1) {
+        for (var k16 = 0; k16 < 200; k16 = k16 + 10) { keep(bi.cdf(f64_from(k16))); }
+    }
+    bench_batch_stop(b16, 500);
+    bench_report(b16);
+
+    var bl: PmnBinomial;
+    if (PmnBinomial_new(&bl, 10000, 0.3) != PMN_ERR_NONE) { return 1; }
+    var b17 = bench_new("distribution/binomial_sample_n10000_100");
+    bench_batch_start(b17);
+    for (var r17 = 0; r17 < 500; r17 = r17 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        for (var k17 = 0; k17 < 100; k17 = k17 + 1) { keep(bl.sample(&g)); }
+    }
+    bench_batch_stop(b17, 500);
+    bench_report(b17);
+
+    print("  sink: ", 8);
+    var sk: f64 = sink;
+    fmt_hex(load64(&sk));
+    println("");
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

@@ -1082,6 +1082,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   carry it. 319 are carried over, each as the Rust test states it, and the 11 of `tests/oracle.rs` retire with the
   `oracle` feature (ADR 010). `tests/integration.tcyr` (35 checks) carries 1.3.0's `tests/integration.rs` and its doc
   tests over. The ledger's check runs in CI.
+- **M8 part b: the benchmark record** (port plan §7; `docs/benchmarks-rust-v-cyrius.md`). All 34 of 1.3.0's
+  criterion rows are now in both columns. `tests/criterion.bcyr` runs whole the seventeen bodies no part ran as
+  written, and the modules' benches run the rest (three pinned runs). Cyrius is 1.8–66× Rust, with a geometric mean
+  of 10.0×: the correctly rounded primitives (ADR 009), the T1 functions in the cdfs (33–66×) and the codegen,
+  each with every row at least as accurate as 1.3.0's.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one
