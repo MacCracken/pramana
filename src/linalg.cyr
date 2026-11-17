@@ -251,3 +251,101 @@ fn _pmn_eigen_symmetric(a, n, tol: f64, max_iter, vals, vecs): i64 {
     _pmn_scratch_give(s, slot);
     return PMN_ERR_NONE;
 }
+
+# ── least_squares_poly (M5 part a, ledger L5) ──────────────────────────────────────────────────────
+
+# hisab 1.4.0's `least_squares_poly(x, y, degree)`: the degree-d least-squares polynomial of (x, y)[0, m), its d + 1
+# coefficients a₀ … a_d into out. Transcribed term for term: the raw Vandermonde columns x^j (`powi` with a run-time
+# exponent, compiler-rt's square-and-multiply), hisab's `qr_decompose` by modified Gram–Schmidt (each column's dot
+# products with the earlier orthonormal columns from −0.0, subtracted in turn; its norm the correctly rounded √ of the
+# sum of squares; columns dependent when the norm is below 1e-12), Qᵀy from −0.0, and back substitution. Every value
+# is 1.4.0's bit for bit. PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER, as hisab's InvalidInput, for m = 0, m < d + 1 or
+# dependent columns, and for a null or overlapping buffer or a negative count; PMN_ERR_OUT_OF_MEMORY when the scratch
+# ((d + 1)(m + d + 2) f64s) can't be had. A NaN norm is not refused (NaN < 1e-12 is false), as hisab's.
+#must_use
+fn _pmn_least_squares_poly(x, y, m, degree, out): i64 {
+    if (x == 0 || y == 0 || out == 0 || m <= 0 || degree < 0 || m > _PMN_LINALG_MAX_N) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    var n = degree + 1;
+    if (m < n) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, n * 8, x, m * 8) == 1 || _pmn_linalg_overlaps(out, n * 8, y, m * 8) == 1) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    var s, slot = _pmn_scratch_take((n * m + n * n + n) * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var q = s;                       # column j at q + j·m
+    var r = q + n * m * 8;           # r[col][row] at r + (col·n + row)
+    var qty = r + n * n * 8;
+    for (var j = 0; j < n; j = j + 1) {
+        for (var k = 0; k < m; k = k + 1) {
+            var xk: f64 = load64(x + k * 8);
+            var pw: f64 = _pmn_powi(xk, j);
+            store64(q + (j * m + k) * 8, pw);
+        }
+    }
+    for (var z = 0; z < n * n; z = z + 1) { store64(r + z * 8, 0); }
+    var eps: f64 = _PMN_HISAB_EPSILON;
+    for (var c = 0; c < n; c = c + 1) {
+        for (var i = 0; i < c; i = i + 1) {
+            var dot: f64 = -0.0;
+            for (var k2 = 0; k2 < m; k2 = k2 + 1) {
+                var qi: f64 = load64(q + (i * m + k2) * 8);
+                var qc: f64 = load64(q + (c * m + k2) * 8);
+                var pr: f64 = qi * qc;
+                dot = dot + pr;
+            }
+            store64(r + (c * n + i) * 8, dot);
+            for (var k3 = 0; k3 < m; k3 = k3 + 1) {
+                var qi2: f64 = load64(q + (i * m + k3) * 8);
+                var qc2: f64 = load64(q + (c * m + k3) * 8);
+                var sub: f64 = dot * qi2;
+                var nv: f64 = qc2 - sub;
+                store64(q + (c * m + k3) * 8, nv);
+            }
+        }
+        var ss: f64 = -0.0;
+        for (var k4 = 0; k4 < m; k4 = k4 + 1) {
+            var qv: f64 = load64(q + (c * m + k4) * 8);
+            var sq: f64 = qv * qv;
+            ss = ss + sq;
+        }
+        var norm: f64 = f64_sqrt(ss);
+        if (norm < eps) {
+            _pmn_scratch_give(s, slot);
+            return PMN_ERR_INVALID_PARAMETER;
+        }
+        store64(r + (c * n + c) * 8, norm);
+        for (var k5 = 0; k5 < m; k5 = k5 + 1) {
+            var qv2: f64 = load64(q + (c * m + k5) * 8);
+            var dv: f64 = qv2 / norm;
+            store64(q + (c * m + k5) * 8, dv);
+        }
+    }
+    for (var j2 = 0; j2 < n; j2 = j2 + 1) {
+        var acc: f64 = -0.0;
+        for (var k6 = 0; k6 < m; k6 = k6 + 1) {
+            var qj: f64 = load64(q + (j2 * m + k6) * 8);
+            var yk: f64 = load64(y + k6 * 8);
+            var p2: f64 = qj * yk;
+            acc = acc + p2;
+        }
+        store64(qty + j2 * 8, acc);
+    }
+    var i2 = n - 1;
+    while (i2 >= 0) {
+        var sum: f64 = load64(qty + i2 * 8);
+        for (var j3 = i2 + 1; j3 < n; j3 = j3 + 1) {
+            var rji: f64 = load64(r + (j3 * n + i2) * 8);
+            var cj: f64 = load64(out + j3 * 8);
+            var p3: f64 = rji * cj;
+            sum = sum - p3;
+        }
+        var rii: f64 = load64(r + (i2 * n + i2) * 8);
+        var ci: f64 = sum / rii;
+        store64(out + i2 * 8, ci);
+        i2 = i2 - 1;
+    }
+    _pmn_scratch_give(s, slot);
+    return PMN_ERR_NONE;
+}

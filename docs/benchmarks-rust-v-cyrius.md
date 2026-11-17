@@ -924,3 +924,18 @@ codegen's 3–4× on the arithmetic.
   009's 8 and 4 ulp. The χ² row's 11 µs is almost all that one function. The KS row is two stable merge sorts (1,000
   and 1,200 elements) and the walk, the codegen's ratio.
 
+## M5 part a: regression (2026-11-17)
+
+`tests/regression.bcyr` runs 1.3.0's three regression criterion bodies. Three pinned runs at a load average of
+1.2–1.7.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `regression/linear_1000` | 3.66 µs | 31.0–31.8 µs | 8.5× |
+| `regression/logistic_1d_43pts` | 9.32 µs | 48.5–48.7 µs | 5.2× |
+| `regression/polynomial_degree3_100pts` | 3.27 µs | 17.6–17.8 µs | 5.4× |
+
+The linear fit is four passes over 1,000 points (the two means, the centered sums, the sums of squares): the
+codegen's cost on plain loops, which Rust vectorizes. The logistic fit's exps and the polynomial fit's Gram–Schmidt
+come in at 5×.
+

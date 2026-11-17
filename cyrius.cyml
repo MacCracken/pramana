@@ -71,4 +71,5 @@ modules = [
     "src/kde.cyr",
     "src/pca.cyr",
     "src/hypothesis.cyr",
+    "src/regression.cyr",
 ]

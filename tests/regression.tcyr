@@ -1,0 +1,295 @@
+# regression.tcyr — src/regression.cyr and src/linalg.cyr's least_squares_poly (M5 part a; ledger L5).
+#
+# tests/parity.tcyr replays 1.3.0's values (tests/golden/regression.tsv, json.tsv, debug.tsv). These carry 1.3.0's own
+# tests over (regression.rs) and pin what a replay doesn't: the buffer rules, the drops and clones, a round trip
+# through JSON, and that nothing is left claimed.
+
+include "tests/lib.cyr"
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn near(x: f64, y: f64, tol: f64): i64 {
+    var d: f64 = x - y;
+    if (f64_abs(d) < tol) { return 1; }
+    return 0;
+}
+
+# rows[i] = (buf + i·p·8, p): n feature rows of p values each, the records for pmn_logistic_regression.
+fn rows_of(recs, buf, n, p): i64 {
+    for (var i = 0; i < n; i = i + 1) {
+        store64(recs + i * 16, buf + i * p * 8);
+        store64(recs + i * 16 + 8, p);
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var x = alloc(64 * 8);
+    var y = alloc(64 * 8);
+    var o = alloc(64 * 8);
+    var lm: PmnLinearModel;
+
+    test_group("1.3.0's linear tests (perfect line, predict, residuals, mismatch, serde)");
+    for (var i = 0; i < 5; i = i + 1) {
+        var xi: f64 = f64_from(i + 1);
+        put(x, i, xi);
+        var tw: f64 = 2.0 * xi;
+        var yi: f64 = tw + 1.0;
+        put(y, i, yi);
+    }
+    assert_eq(pmn_linear_regression(&lm, x, 5, y, 5), PMN_ERR_NONE, "y = 2x + 1");
+    var sl: f64 = lm.slope;
+    var ic: f64 = lm.intercept;
+    var r2: f64 = lm.r_squared;
+    assert(near(sl, 2.0, 0.0000000001) == 1 && near(ic, 1.0, 0.0000000001) == 1 && near(r2, 1.0, 0.0000000001) == 1,
+        "slope 2, intercept 1, R² 1");
+    lm.slope = 2.0;
+    lm.intercept = 1.0;
+    lm.r_squared = 1.0;
+    var p7: f64 = pmn_predict(&lm, 3.0);
+    assert(p7 == 7.0, "predict(3) = 7");
+    lm.slope = 1.0;
+    lm.intercept = 0.0;
+    put(x, 0, 1.0);
+    put(x, 1, 2.0);
+    put(x, 2, 3.0);
+    put(y, 0, 1.1);
+    put(y, 1, 1.9);
+    put(y, 2, 3.2);
+    assert_eq(pmn_residuals(&lm, x, 3, y, 3, o, 3), PMN_ERR_NONE, "residuals");
+    var e0: f64 = load64(o);
+    var e1: f64 = load64(o + 8);
+    var e2: f64 = load64(o + 16);
+    assert(near(e0, 0.1, 0.0000000001) == 1 && near(e1, -0.1, 0.0000000001) == 1 && near(e2, 0.2, 0.0000000001) == 1,
+        "0.1, −0.1, 0.2");
+    assert_eq(pmn_residuals(&lm, x, 3, y, 3, o, 2), PMN_ERR_INVALID_PARAMETER, "cap < n");
+    assert_eq(pmn_linear_regression(&lm, x, 1, y, 2), PMN_ERR_DIMENSION_MISMATCH, "lengths 1 and 2");
+    lm.slope = 2.5;
+    lm.intercept = -1.3;
+    lm.r_squared = 0.98;
+    var sb = str_builder_new();
+    assert_eq(lm.to_json(sb), PMN_ERR_NONE, "to_json");
+    var lm2: PmnLinearModel;
+    assert_eq(PmnLinearModel_from_json(&lm2, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "from_json");
+    var a1: f64 = lm2.slope;
+    var a2: f64 = lm2.intercept;
+    assert(a1 == 2.5 && a2 == -1.3, "the fields round-trip");
+
+    test_group("1.3.0's polynomial tests (quadratic, predict, residuals, cubic, refusals, serde)");
+    var pm: PmnPolynomialModel;
+    for (var k = 0; k < 10; k = k + 1) {
+        var xk: f64 = f64_from(k);
+        put(x, k, xk);
+        var t2: f64 = 2.0 * xk;
+        var t3: f64 = 3.0 * xk;
+        var t4: f64 = t3 * xk;
+        var s1: f64 = 1.0 + t2;
+        var yk: f64 = s1 + t4;
+        put(y, k, yk);
+    }
+    assert_eq(pmn_polynomial_regression(&pm, x, 10, y, 10, 2), PMN_ERR_NONE, "1 + 2x + 3x²");
+    var c0: f64 = load64(pm.coefficients());
+    var c1: f64 = load64(pm.coefficients() + 8);
+    var c2: f64 = load64(pm.coefficients() + 16);
+    var pr2: f64 = pm.r_squared;
+    assert(pm.degree == 2 && pm.len() == 3, "degree 2, three coefficients");
+    assert(near(c0, 1.0, 0.000001) == 1 && near(c1, 2.0, 0.000001) == 1 && near(c2, 3.0, 0.000001) == 1
+        && near(pr2, 1.0, 0.000001) == 1, "recovered to 1e-6, R² 1");
+    var p5: f64 = pmn_predict_poly(&pm, 5.0);
+    assert(near(p5, 86.0, 0.0001) == 1, "predict_poly(5) = 86");
+    var pm2: PmnPolynomialModel;
+    assert_eq(PmnPolynomialModel_clone(&pm2, &pm), PMN_ERR_NONE, "clone");
+    assert(pm2.coefficients() != pm.coefficients(), "the clone owns its block");
+    store64(sb + 8, 0);
+    assert_eq(pm.to_json(sb), PMN_ERR_NONE, "to_json");
+    var pm3: PmnPolynomialModel;
+    assert_eq(PmnPolynomialModel_from_json(&pm3, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "from_json");
+    var same = 1;
+    for (var q = 0; q < 3; q = q + 1) {
+        if (load64(pm3.coefficients() + q * 8) != load64(pm.coefficients() + q * 8)) { same = 0; }
+    }
+    var r3: f64 = pm3.r_squared;
+    if (pm3.degree != 2 || r3 != pr2) { same = 0; }
+    assert(same == 1, "the model round-trips bit for bit");
+    PmnPolynomialModel_drop(&pm3);
+    PmnPolynomialModel_drop(&pm2);
+    PmnPolynomialModel_drop(&pm);
+    for (var k2 = 0; k2 < 5; k2 = k2 + 1) {
+        var xv: f64 = f64_from(k2 + 1);
+        put(x, k2, xv);
+        var sq: f64 = xv * xv;
+        put(y, k2, sq);
+    }
+    assert_eq(pmn_polynomial_regression(&pm, x, 5, y, 5, 2), PMN_ERR_NONE, "y = x²");
+    assert_eq(pmn_residuals_poly(&pm, x, 5, y, 5, o, 5), PMN_ERR_NONE, "its residuals");
+    var small = 1;
+    for (var k3 = 0; k3 < 5; k3 = k3 + 1) {
+        var rv: f64 = load64(o + k3 * 8);
+        if (near(rv, 0.0, 0.000001) == 0) { small = 0; }
+    }
+    assert(small == 1, "every residual below 1e-6");
+    PmnPolynomialModel_drop(&pm);
+    for (var k4 = 0; k4 < 11; k4 = k4 + 1) {
+        var xc: f64 = f64_from(k4 - 5);
+        put(x, k4, xc);
+        var cu: f64 = _pmn_powi(xc, 3);
+        put(y, k4, cu);
+    }
+    assert_eq(pmn_polynomial_regression(&pm, x, 11, y, 11, 3), PMN_ERR_NONE, "y = x³");
+    var c3: f64 = load64(pm.coefficients() + 24);
+    var cr2: f64 = pm.r_squared;
+    assert(near(cr2, 1.0, 0.000001) == 1 && near(c3, 1.0, 0.0001) == 1, "R² 1, a₃ = 1");
+    PmnPolynomialModel_drop(&pm);
+    assert_eq(pmn_polynomial_regression(&pm, x, 3, y, 3, 0), PMN_ERR_INVALID_PARAMETER, "degree 0");
+    assert_eq(pmn_polynomial_regression(&pm, x, 3, y, 3, 3), PMN_ERR_INVALID_SAMPLE, "degree 3 on 3 points");
+    assert_eq(pmn_polynomial_regression(&pm, x, 3, y, 2, 2), PMN_ERR_DIMENSION_MISMATCH, "lengths 3 and 2");
+    for (var k5 = 0; k5 < 4; k5 = k5 + 1) { put(x, k5, 1.0); }
+    assert_eq(pmn_polynomial_regression(&pm, x, 4, y, 4, 2), PMN_ERR_COMPUTATION_ERROR, "dependent columns");
+
+    test_group("1.3.0's logistic tests (1-D, 2-D, the probability's range, refusals, serde, the sigmoid)");
+    var lg: PmnLogisticModel;
+    var f1[112];
+    var l1[112];
+    put(&f1, 0, -3.0);
+    put(&f1, 1, -2.5);
+    put(&f1, 2, -2.0);
+    put(&f1, 3, -1.5);
+    put(&f1, 4, -1.0);
+    put(&f1, 5, -0.5);
+    put(&f1, 6, 0.5);
+    put(&f1, 7, 1.0);
+    put(&f1, 8, 1.5);
+    put(&f1, 9, 2.0);
+    put(&f1, 10, 2.5);
+    put(&f1, 11, 3.0);
+    put(&f1, 12, 0.1);
+    put(&f1, 13, -0.1);
+    for (var j = 0; j < 14; j = j + 1) { put(&l1, j, 0.0); }
+    for (var j2 = 6; j2 < 13; j2 = j2 + 1) { put(&l1, j2, 1.0); }
+    var recs[1024];
+    rows_of(&recs, &f1, 14, 1);
+    assert_eq(pmn_logistic_regression(&lg, &recs, 14, &l1, 14, 1.0, 100), PMN_ERR_NONE, "the 1-D fit");
+    var b1: f64 = load64(lg.coefficients() + 8);
+    var hi[8];
+    var lo[8];
+    put(&hi, 0, 10.0);
+    put(&lo, 0, -10.0);
+    assert(lg.converged == 1 && b1 > 0.0, "converged, β₁ > 0");
+    assert(pmn_predict_logistic_class(&lg, &hi, 1, 0.5) == 1 && pmn_predict_logistic_class(&lg, &lo, 1, 0.5) == 0,
+        "class 1 at 10, 0 at −10");
+    PmnLogisticModel_drop(&lg);
+    var f2[96];
+    var l2[96];
+    for (var j3 = 0; j3 < 11; j3 = j3 + 1) {
+        var fv: f64 = f64_from(j3 - 5);
+        put(&f2, j3, fv);
+        var lv: f64 = 0.0;
+        if (j3 >= 5) { lv = 1.0; }
+        put(&l2, j3, lv);
+    }
+    rows_of(&recs, &f2, 11, 1);
+    assert_eq(pmn_logistic_regression(&lg, &recs, 11, &l2, 11, 1.0, 100), PMN_ERR_NONE, "x = −5 … 5");
+    var inr = 1;
+    for (var ii = 0 - 20; ii <= 20; ii = ii + 1) {
+        var pf[8];
+        var iv: f64 = f64_from(ii);
+        put(&pf, 0, iv);
+        var pp: f64 = pmn_predict_logistic_proba(&lg, &pf, 1);
+        if ((pp >= 0.0 && pp <= 1.0) == 0) { inr = 0; }
+    }
+    assert(inr == 1, "every probability in [0, 1]");
+    var sb2 = str_builder_new();
+    assert_eq(lg.to_json(sb2), PMN_ERR_NONE, "to_json");
+    var lg2: PmnLogisticModel;
+    assert_eq(PmnLogisticModel_from_json(&lg2, load64(sb2), load64(sb2 + 8)), PMN_ERR_NONE, "from_json");
+    assert(lg2.len() == lg.len() && lg2.iterations == lg.iterations && lg2.converged == lg.converged,
+        "the model round-trips");
+    PmnLogisticModel_drop(&lg2);
+    PmnLogisticModel_drop(&lg);
+    var f3[192];
+    put(&f3, 0, 1.0);
+    put(&f3, 1, 1.0);
+    put(&f3, 2, 2.0);
+    put(&f3, 3, 1.0);
+    put(&f3, 4, 1.0);
+    put(&f3, 5, 2.0);
+    put(&f3, 6, -1.0);
+    put(&f3, 7, -1.0);
+    put(&f3, 8, -2.0);
+    put(&f3, 9, -1.0);
+    put(&f3, 10, -1.0);
+    put(&f3, 11, -2.0);
+    put(&f3, 12, 3.0);
+    put(&f3, 13, 0.0);
+    put(&f3, 14, 0.0);
+    put(&f3, 15, 3.0);
+    put(&f3, 16, -3.0);
+    put(&f3, 17, 0.0);
+    put(&f3, 18, 0.0);
+    put(&f3, 19, -3.0);
+    put(&f3, 20, 0.2);
+    put(&f3, 21, -0.2);
+    put(&f3, 22, -0.2);
+    put(&f3, 23, 0.2);
+    var l3[96];
+    put(&l3, 0, 1.0);
+    put(&l3, 1, 1.0);
+    put(&l3, 2, 1.0);
+    put(&l3, 3, 0.0);
+    put(&l3, 4, 0.0);
+    put(&l3, 5, 0.0);
+    put(&l3, 6, 1.0);
+    put(&l3, 7, 1.0);
+    put(&l3, 8, 0.0);
+    put(&l3, 9, 0.0);
+    put(&l3, 10, 1.0);
+    put(&l3, 11, 0.0);
+    rows_of(&recs, &f3, 12, 2);
+    assert_eq(pmn_logistic_regression(&lg, &recs, 12, &l3, 12, 1.0, 100), PMN_ERR_NONE, "the 2-D fit");
+    var g1: f64 = load64(lg.coefficients() + 8);
+    var g2: f64 = load64(lg.coefficients() + 16);
+    assert(lg.converged == 1 && g1 > 0.0 && g2 > 0.0, "converged, β₁, β₂ > 0");
+    PmnLogisticModel_drop(&lg);
+    var f4[16];
+    put(&f4, 0, 1.0);
+    put(&f4, 1, 2.0);
+    var l4[16];
+    put(&l4, 0, 0.0);
+    put(&l4, 1, 1.0);
+    rows_of(&recs, &f4, 2, 1);
+    assert_eq(pmn_logistic_regression(&lg, &recs, 2, &l4, 2, 1.0, 0), PMN_ERR_INVALID_PARAMETER, "max_iter 0");
+    assert_eq(pmn_logistic_regression(&lg, &recs, 2, &l4, 1, 1.0, 10), PMN_ERR_DIMENSION_MISMATCH, "2 rows, 1 label");
+    put(&l4, 1, 0.5);
+    assert_eq(pmn_logistic_regression(&lg, &recs, 2, &l4, 2, 1.0, 10), PMN_ERR_INVALID_SAMPLE, "a label 0.5");
+    assert_eq(pmn_logistic_regression(&lg, &recs, 1, &l4, 1, 1.0, 10), PMN_ERR_INVALID_SAMPLE, "one row");
+    var s0: f64 = _pmn_sigmoid(0.0);
+    var s100: f64 = _pmn_sigmoid(100.0);
+    var sm100: f64 = _pmn_sigmoid(-100.0);
+    assert(s0 == 0.5 && s100 > 0.999 && sm100 < 0.001, "σ(0) = ½, σ(100) > 0.999, σ(−100) < 0.001");
+    var sym = 1;
+    for (var sx = 0 - 5; sx <= 5; sx = sx + 1) {
+        var xs: f64 = f64_from(sx);
+        var nxs: f64 = -xs;
+        var sa: f64 = _pmn_sigmoid(xs);
+        var sbv: f64 = _pmn_sigmoid(nxs);
+        var ssum: f64 = sa + sbv;
+        if (near(ssum, 1.0, 0.0000000001) == 0) { sym = 0; }
+    }
+    assert(sym == 1, "σ(x) + σ(−x) = 1");
+    var empty: PmnLogisticModel;
+    var nb = _pmn_logit_fill(&empty, &f4, 0, 0, 0);
+    var pe: f64 = pmn_predict_logistic_proba(&empty, &f4, 1);
+    assert(nb == PMN_ERR_NONE && pe != pe, "an empty model predicts NaN without a panic");
+    PmnLogisticModel_drop(&empty);
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

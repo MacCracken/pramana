@@ -55,7 +55,8 @@
 > of 1.3.0, from `rust-old/src`", and where it says "Rust twin", read "the twin's recorded numbers"; new proofs are
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
 > parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
-> hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** M5 is next.
+> hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
+> begun:** part a, regression, is done.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1261,6 +1262,20 @@ a T1 function is recorded against T1:
   golden rows and measured (ANOVA's shortfalls on the higher-difficulty sets are D4's 2.1 candidates); the soak's M4
   group; `descriptive` and `hypothesis` ported in surface parity; every row at 0 ulp on three targets ✅. **M4 is
   complete.**
+
+**M5's parts** (set at its start, 2026-11-17, under ADR 010). 1.3.0's `regression.rs`, `timeseries.rs` and
+`bayesian.rs`, each function in Rust's operation order with its refusals, each type with its codec and Debug; golden
+rows in new modules `regression`, `timeseries` and `bayesian`:
+- **a:** `src/regression.cyr`: `linear_regression`, `predict`, `residuals`; `polynomial_regression` on hisab 1.4.0's
+  `least_squares_poly` (modified Gram–Schmidt on the raw Vandermonde matrix, transcribed in `src/linalg.cyr`, ledger
+  L5), `predict_poly`, `residuals_poly`; `logistic_regression` (Newton steps on hisab's Cholesky pair, l2),
+  `predict_logistic_proba`, `predict_logistic_class`; `LinearModel`, `PolynomialModel`, `LogisticModel`. A new golden
+  module, `regression` (562 rows), 264 codec and 48 Debug rows; every row passing at 0 ulp on three targets ✅;
+- **b:** `src/timeseries.cyr`: moving average, exponential smoothing, autocorrelation, `difference`/`integrate`, the
+  ARIMA fit (Yule–Walker on Cholesky) and forecast;
+- **c:** `src/bayesian.cyr`: Bayes' theorem, the conjugate updates and naive Bayes;
+- **d:** M5's gate: NIST StRD's regression sets (Norris, Pontius, Wampler1–5, Filip; class R, D4) and the
+  univariate sets' lag-1 autocorrelation, the soak, surface parity, the benchmark rows, three targets.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

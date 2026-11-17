@@ -804,6 +804,9 @@ JSON_STRUCTS = {
                     ("p_value", "f64"), ("reject_at_alpha", "f64"), ("reject", "bool")],
     "KsResult": [("statistic", "f64"), ("p_value", "f64"), ("reject_at_alpha", "f64"), ("reject", "bool")],
     "ConfidenceInterval": [("lower", "f64"), ("upper", "f64"), ("estimate", "f64"), ("confidence_level", "f64")],
+    "LinearModel": [("slope", "f64"), ("intercept", "f64"), ("r_squared", "f64")],
+    "PolynomialModel": [("coefficients", "Vec<f64>"), ("degree", "usize"), ("r_squared", "f64")],
+    "LogisticModel": [("coefficients", "Vec<f64>"), ("iterations", "usize"), ("converged", "bool")],
     "PcaResult": [("components", "Vec<Vec<f64>>"), ("eigenvalues", "Vec<f64>"), ("explained_variance_ratio", "Vec<f64>")],
     "Pair": [("mean", "f64"), ("std_dev", "f64")],
     "Shapes": [("x", "f64"), ("n", "u64"), ("k", "usize"), ("flag", "bool"), ("name", "String"), ("xs", "Vec<f64>"),
@@ -3681,14 +3684,17 @@ def debug_text(fn, ins):
         data, h, k = ins[1:1 + n], ins[1 + n], ins[2 + n].split(".", 1)[1]
         return debug_struct("KernelDensity", [("data", rust_debug_list([rust_debug_f64(x) for x in data], alt, 1)),
                                               ("bandwidth", rust_debug_f64(h)), ("kernel", k)], alt)
-    if fn in ("debug::TestResult", "debug::AnovaResult", "debug::KsResult", "debug::ConfidenceInterval"):
+    if fn in ("debug::TestResult", "debug::AnovaResult", "debug::KsResult", "debug::ConfidenceInterval",
+              "debug::LinearModel", "debug::PolynomialModel", "debug::LogisticModel"):
         ty = fn[len("debug::"):]
         alt = ins[-1] == 1
         vals = iter(ins[:-1])
         fields = []
         for name, kind in JSON_STRUCTS[ty]:
             x = next(vals)
-            if kind == "String":
+            if kind == "Vec<f64>":
+                text = rust_debug_list([rust_debug_f64(next(vals)) for _ in range(int(x[len("v:"):]))], alt, 1)
+            elif kind == "String":
                 text = rust_debug_str(urllib.parse.unquote_to_bytes(x[len("s:"):]))
             elif kind == "bool":
                 text = "true" if x == 1 else "false"
@@ -4479,6 +4485,222 @@ HYP_B2 = {
 }
 
 
+# ── regression (M5 part a): 1.3.0's regression.rs and hisab 1.4.0's least_squares_poly, in their operation order ──
+
+def rg_powi(x, n):
+    """compiler-rt's __powidf2 for a run-time exponent n ≥ 0: from 1, square-and-multiply (1·x is exact)."""
+    return 1.0 if n == 0 else powi(x, n)
+
+
+def rg_all_equal(xs):
+    return all(v == xs[0] for v in xs[1:]) if xs else True
+
+
+def rg_r2(y, ss_res, ss_tot):
+    return 1.0 if rg_all_equal(y) or ss_tot == 0.0 else 1.0 - ss_res / ss_tot
+
+
+def rg_linear(x, y):
+    if len(x) != len(y):
+        return "E:DimensionMismatch"
+    if len(x) < 2:
+        return "E:InvalidSample"
+    if rg_all_equal(x):
+        return "E:InvalidSample"
+    n = float(len(x))
+    mx, my = rsum(x) / n, rsum(y) / n
+    if not (math.isfinite(mx) and math.isfinite(my)):
+        return "E:InvalidSample"
+    sxx = sxy = 0.0
+    for xi, yi in zip(x, y):
+        dx = xi - mx
+        sxx += dx * dx
+        sxy += dx * (yi - my)
+    if not (sxx > 0.0 and math.isfinite(sxx)):
+        return "E:InvalidSample"
+    slope = sxy / sxx
+    icpt = my - slope * mx
+    ss_tot = rsum([powi(yi - my, 2) for yi in y])
+    ss_res = rsum([powi(yi - (slope * xi + icpt), 2) for xi, yi in zip(x, y)])
+    return [slope, icpt, rg_r2(y, ss_res, ss_tot)]
+
+
+def rg_lsq_poly(x, y, degree):
+    """hisab 1.4.0's least_squares_poly: the coefficients, or None for its InvalidInput (dependent columns)."""
+    m, n = len(x), degree + 1
+    if m != len(y) or m == 0 or m < n:
+        return None
+    q = [[rg_powi(xi, j) for xi in x] for j in range(n)]
+    r = [[0.0] * n for _ in range(n)]
+    for c in range(n):
+        for i in range(c):
+            dot = rsum([q[i][k] * q[c][k] for k in range(m)])
+            r[c][i] = dot
+            for k in range(m):
+                q[c][k] = q[c][k] - dot * q[i][k]
+        norm = r_sqrt(rsum([q[c][k] * q[c][k] for k in range(m)]))
+        if norm < 1e-12:
+            return None
+        r[c][c] = norm
+        for k in range(m):
+            q[c][k] = q[c][k] / norm
+    qty = [rsum([q[j][k] * y[k] for k in range(m)]) for j in range(n)]
+    coeffs = [0.0] * n
+    for i in reversed(range(n)):
+        s = qty[i]
+        for j in range(i + 1, n):
+            s = s - r[j][i] * coeffs[j]
+        coeffs[i] = s / r[i][i]
+    return coeffs
+
+
+def rg_eval(c, x):
+    r = 0.0
+    for ci in reversed(c):
+        r = r * x + ci
+    return r
+
+
+def rg_poly(x, y, degree):
+    if len(x) != len(y):
+        return "E:DimensionMismatch"
+    if degree == 0:
+        return "E:InvalidParameter"
+    if degree >= len(x):
+        return "E:InvalidSample"
+    if any(not math.isfinite(v) for v in x) or any(not math.isfinite(v) for v in y):
+        return "E:InvalidSample"
+    c = rg_lsq_poly(x, y, degree)
+    if c is None:
+        return "E:ComputationError"
+    my = rsum(y) / float(len(y))
+    ss_tot = rsum([powi(yi - my, 2) for yi in y])
+    ss_res = rsum([powi(yi - rg_eval(c, xi), 2) for xi, yi in zip(x, y)])
+    return c, degree, rg_r2(y, ss_res, ss_tot)
+
+
+def rg_sigmoid(L, x):
+    if x >= 0.0:
+        return 1.0 / (1.0 + L.exp(-x))
+    ex = L.exp(x)
+    return ex / (1.0 + ex)
+
+
+def rg_logistic(L, rows, labels, l2, max_iter):
+    n = len(rows)
+    if n != len(labels):
+        return "E:DimensionMismatch"
+    if n < 2:
+        return "E:InvalidSample"
+    if max_iter == 0:
+        return "E:InvalidParameter"
+    if not (math.isfinite(l2) and l2 >= 0.0):
+        return "E:InvalidParameter"
+    p = len(rows[0])
+    for row in rows:
+        if len(row) != p:
+            return "E:DimensionMismatch"
+        if any(not math.isfinite(v) for v in row):
+            return "E:InvalidSample"
+    if any(lb != 0.0 and lb != 1.0 for lb in labels):
+        return "E:InvalidSample"
+    dim = p + 1
+    xs = [[1.0] + list(row) for row in rows]
+    beta = [0.0] * dim
+    converged, it = False, 0
+    for _ in range(max_iter):
+        it += 1
+        probs = [rg_sigmoid(L, rsum([a * b for a, b in zip(xi, beta)])) for xi in xs]
+        grad = [0.0] * dim
+        for i, xi in enumerate(xs):
+            res = labels[i] - probs[i]
+            for j in range(dim):
+                grad[j] += xi[j] * res
+        for j in range(1, dim):
+            grad[j] -= l2 * beta[j]
+        h = [[0.0] * dim for _ in range(dim)]
+        for i, xi in enumerate(xs):
+            w = probs[i] * (1.0 - probs[i])
+            for j in range(dim):
+                for k in range(j, dim):
+                    val = xi[j] * w * xi[k]
+                    h[j][k] += val
+                    if k != j:
+                        h[k][j] += val
+        h[0][0] += 1e-10
+        for j in range(1, dim):
+            h[j][j] += l2 + 1e-10
+        lf = lin_cholesky(dim, [v for row in h for v in row])
+        if lf is None:
+            break
+        delta = lin_cholesky_solve(dim, lf, grad)
+        if any(not math.isfinite(d) for d in delta):
+            break
+        mc = 0.0
+        for j in range(dim):
+            beta[j] += delta[j]
+            mc = sp_max(mc, abs(delta[j]))
+        if mc < 1e-8:
+            converged = True
+            break
+    return beta, it, converged
+
+
+def rg_proba(L, coefs, feats):
+    if not coefs:
+        return math.nan
+    return rg_sigmoid(L, coefs[0] + rsum([b * x for b, x in zip(coefs[1:], feats)]))
+
+
+def rg_out_linear(L, sl, sc):
+    r = rg_linear(sl[0], sl[1])
+    return [r] if isinstance(r, str) else r
+
+
+def rg_out_poly(L, sl, sc):
+    r = rg_poly(sl[0], sl[1], sc[0])
+    if isinstance(r, str):
+        return [r]
+    c, d, r2 = r
+    return [f"v:{len(c)}"] + c + [d, r2]
+
+
+def rg_out_logistic(L, sl, sc):
+    r = rg_logistic(L, sl[:-1], sl[-1], sc[0], sc[1])
+    if isinstance(r, str):
+        return [r]
+    beta, it, conv = r
+    return [f"v:{len(beta)}"] + beta + [it, 1 if conv else 0]
+
+
+def rg_out_residuals(L, sl, sc):
+    slope, icpt = sc[0], sc[1]
+    x, y = sl[0], sl[1]
+    if len(x) != len(y):
+        return ["E:DimensionMismatch"]
+    return [f"v:{len(x)}"] + [yi - (slope * xi + icpt) for xi, yi in zip(x, y)]
+
+
+def rg_out_residuals_poly(L, sl, sc):
+    c, x, y = sl[0], sl[1], sl[2]
+    if len(x) != len(y):
+        return ["E:DimensionMismatch"]
+    return [f"v:{len(x)}"] + [yi - rg_eval(c, xi) for xi, yi in zip(x, y)]
+
+
+REG = {
+    "regression::linear_regression": rg_out_linear,
+    "regression::predict": lambda L, sl, sc: [sc[0] * sc[3] + sc[1]],
+    "regression::residuals": rg_out_residuals,
+    "regression::polynomial_regression": rg_out_poly,
+    "regression::predict_poly": lambda L, sl, sc: [rg_eval(sl[0], sc[0])],
+    "regression::residuals_poly": rg_out_residuals_poly,
+    "regression::logistic_regression": rg_out_logistic,
+    "regression::predict_logistic_proba": lambda L, sl, sc: [rg_proba(L, sl[0], sl[1])],
+    "regression::predict_logistic_class": lambda L, sl, sc: [1 if rg_proba(L, sl[0], sl[1]) >= sc[0] else 0],
+}
+
+
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
 STATS_T1 = {"hypothesis::t_test_one_sample": "incomplete beta", "hypothesis::t_test_two_sample": "incomplete beta",
             "hypothesis::chi_squared_test": "incomplete gamma", "hypothesis::one_way_anova": "incomplete beta",
@@ -4537,7 +4759,7 @@ def check_stats(root, module, table, rows):
     return failures, by_fn, crs, refs
 
 
-STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}}
+STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG}
 
 
 def main(argv):

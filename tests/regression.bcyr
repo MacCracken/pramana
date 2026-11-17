@@ -1,0 +1,102 @@
+# regression.bcyr — src/regression.cyr (M5 part a): ns per call, on 1.3.0's own criterion bodies
+# (rust-old/benches/benchmarks.rs), whose numbers are rust-old/benchmarks.md's (2026-11-14, this host; ADR 010):
+# - `regression/linear_1000`: y = 2.5x + 1.3 at x = 0 … 999 (3,656.5 ns in Rust);
+# - `regression/logistic_1d_43pts`: x = 0.5i for i = −20 … 20 labelled by sign, and two overlapping points; l2 = 1,
+#   50 steps at most (9,316.1 ns);
+# - `regression/polynomial_degree3_100pts`: 1 + 2x − 0.5x² + 0.1x³ at x = 0.1i, i < 100, degree 3 (3,272.4 ns).
+# Each row prints a result's bits. The record is docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+fn show(name, r: f64): i64 {
+    var x: f64 = r;
+    print("  ", 2);
+    print(name, strlen(name));
+    print(": ", 2);
+    fmt_hex(load64(&x));
+    println("");
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var x = alloc(1000 * 8);
+    var y = alloc(1000 * 8);
+    for (var i = 0; i < 1000; i = i + 1) {
+        var xi: f64 = f64_from(i);
+        store64(x + i * 8, xi);
+        var a: f64 = 2.5 * xi;
+        var yi: f64 = a + 1.3;
+        store64(y + i * 8, yi);
+    }
+    var lm: PmnLinearModel;
+    var b1 = bench_new("linear_1000");
+    bench_batch_start(b1);
+    for (var r = 0; r < 5000; r = r + 1) {
+        if (pmn_linear_regression(&lm, x, 1000, y, 1000) != PMN_ERR_NONE) { return 1; }
+    }
+    bench_batch_stop(b1, 5000);
+    show("slope", lm.slope);
+    bench_report(b1);
+
+    var f = alloc(43 * 8);
+    var l = alloc(43 * 8);
+    for (var k = 0; k < 41; k = k + 1) {
+        var kf: f64 = f64_from(k - 20);
+        var fv: f64 = kf * 0.5;
+        store64(f + k * 8, fv);
+        var lv: f64 = 0.0;
+        if (k >= 20) { lv = 1.0; }
+        store64(l + k * 8, lv);
+    }
+    store64(f + 41 * 8, 0.1);
+    store64(l + 41 * 8, 0.0);
+    store64(f + 42 * 8, -0.1);
+    store64(l + 42 * 8, 1.0);
+    var recs = alloc(43 * 16);
+    for (var j = 0; j < 43; j = j + 1) {
+        store64(recs + j * 16, f + j * 8);
+        store64(recs + j * 16 + 8, 1);
+    }
+    var lg: PmnLogisticModel;
+    var b2 = bench_new("logistic_1d_43pts");
+    bench_batch_start(b2);
+    for (var r2 = 0; r2 < 2000; r2 = r2 + 1) {
+        if (pmn_logistic_regression(&lg, recs, 43, l, 43, 1.0, 50) != PMN_ERR_NONE) { return 1; }
+        PmnLogisticModel_drop(&lg);
+    }
+    bench_batch_stop(b2, 2000);
+    if (pmn_logistic_regression(&lg, recs, 43, l, 43, 1.0, 50) != PMN_ERR_NONE) { return 1; }
+    var b1v: f64 = load64(lg.coefficients() + 8);
+    show("β₁", b1v);
+    PmnLogisticModel_drop(&lg);
+    bench_report(b2);
+
+    for (var q = 0; q < 100; q = q + 1) {
+        var qf: f64 = f64_from(q);
+        var xq: f64 = qf * 0.1;
+        store64(x + q * 8, xq);
+        var t1: f64 = 2.0 * xq;
+        var x2: f64 = xq * xq;
+        var t2: f64 = 0.5 * x2;
+        var x3: f64 = x2 * xq;
+        var t3: f64 = 0.1 * x3;
+        var s1: f64 = 1.0 + t1;
+        var s2: f64 = s1 - t2;
+        var yq: f64 = s2 + t3;
+        store64(y + q * 8, yq);
+    }
+    var pm: PmnPolynomialModel;
+    var b3 = bench_new("polynomial_degree3_100pts");
+    bench_batch_start(b3);
+    for (var r3 = 0; r3 < 5000; r3 = r3 + 1) {
+        if (pmn_polynomial_regression(&pm, x, 100, y, 100, 3) != PMN_ERR_NONE) { return 1; }
+        PmnPolynomialModel_drop(&pm);
+    }
+    bench_batch_stop(b3, 5000);
+    bench_report(b3);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

@@ -957,6 +957,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     taken (`tests/soak.tcyr`, 33 checks);
   - **surface parity:** `descriptive` and `hypothesis` are ported modules (255 items in seven modules, none pending);
   - **the harness** reads rows of up to 32,768 values (SmLs09's 18,009).
+- **M5 part a: regression** (port plan §7; `src/regression.cyr`, `src/linalg.cyr`). 1.3.0's `linear_regression`
+  (centered sums), `predict`, `residuals`; `polynomial_regression` on hisab 1.4.0's `least_squares_poly`, transcribed
+  term for term (the raw Vandermonde columns, modified Gram–Schmidt, back substitution; ledger L5), `predict_poly`,
+  `residuals_poly`; `logistic_regression` (Newton steps on hisab's Cholesky pair, l2, the stable sigmoid on the
+  correctly rounded exp), `predict_logistic_proba`, `predict_logistic_class`; `LinearModel` (caller storage),
+  `PolynomialModel` and `LogisticModel` (owned, `_drop`, Clone), their codecs and Debug. A new golden module,
+  `regression`, 562 rows (exact and noisy lines and polynomials, offset x, constant, dependent and non-finite inputs,
+  hisab's dependence threshold, separable and overlapping logistic data with one to four features), 264 codec rows and
+  48 Debug rows. Every row passes at 0 ulp on x86_64 ELF, PE and aarch64; `regression.cr.tsv` holds the one logistic
+  fit where glibc's exp misrounds. Five mutants fail 2 to 47 rows each (a sixth, the sums of squares from +0.0, is
+  equivalent). `tests/regression.tcyr` (46 checks) carries 1.3.0's tests over.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

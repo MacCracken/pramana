@@ -26,7 +26,7 @@ SRC = ROOT / "src"
 PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptive", "hypothesis"]   # M4's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {}
+PARTIAL = {"regression": "M5"}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
@@ -60,6 +60,33 @@ SURFACE = {
     "descriptive::KernelDensity.evaluate": ["method PmnKernelDensity.evaluate"],
     "descriptive::KernelDensity.evaluate_grid": ["method PmnKernelDensity.evaluate_grid"],
     "descriptive::correlation_matrix": ["fn pmn_correlation_matrix"],
+    # regression.rs (M5 part a; hisab's least_squares_poly, ledger L5)
+    "regression::LinearModel": ["struct PmnLinearModel"],
+    "regression::LinearModel#Clone": "a plain struct: copying it clones it",
+    "regression::LinearModel#Debug": ["method PmnLinearModel.debug"],
+    "regression::LinearModel#Serialize": ["method PmnLinearModel.to_json"],
+    "regression::LinearModel#Deserialize": ["fn PmnLinearModel_from_json"],
+    "regression::linear_regression": ["fn pmn_linear_regression"],
+    "regression::predict": ["fn pmn_predict"],
+    "regression::residuals": ["fn pmn_residuals"],
+    "regression::PolynomialModel": ["struct PmnPolynomialModel", "fn PmnPolynomialModel_drop",
+                                    "method PmnPolynomialModel.coefficients"],
+    "regression::PolynomialModel#Clone": ["fn PmnPolynomialModel_clone"],
+    "regression::PolynomialModel#Debug": ["method PmnPolynomialModel.debug"],
+    "regression::PolynomialModel#Serialize": ["method PmnPolynomialModel.to_json"],
+    "regression::PolynomialModel#Deserialize": ["fn PmnPolynomialModel_from_json"],
+    "regression::polynomial_regression": ["fn pmn_polynomial_regression", "fn _pmn_least_squares_poly"],
+    "regression::predict_poly": ["fn pmn_predict_poly"],
+    "regression::residuals_poly": ["fn pmn_residuals_poly"],
+    "regression::LogisticModel": ["struct PmnLogisticModel", "fn PmnLogisticModel_drop",
+                                  "method PmnLogisticModel.coefficients"],
+    "regression::LogisticModel#Clone": ["fn PmnLogisticModel_clone"],
+    "regression::LogisticModel#Debug": ["method PmnLogisticModel.debug"],
+    "regression::LogisticModel#Serialize": ["method PmnLogisticModel.to_json"],
+    "regression::LogisticModel#Deserialize": ["fn PmnLogisticModel_from_json"],
+    "regression::logistic_regression": ["fn pmn_logistic_regression", "fn _pmn_sigmoid"],
+    "regression::predict_logistic_proba": ["fn pmn_predict_logistic_proba"],
+    "regression::predict_logistic_class": ["fn pmn_predict_logistic_class"],
     # hypothesis.rs's tests (M4 part b1; D7's callback, ADR 007 rows 1, 14 and 15)
     "hypothesis::TestResult": ["struct PmnTestResult", "fn PmnTestResult_drop"],
     "hypothesis::TestResult#Clone": ["fn PmnTestResult_clone"],

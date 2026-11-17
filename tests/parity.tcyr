@@ -529,6 +529,32 @@ fn _par_json_write(fp, fl): i64 {
         var war: PmnAnovaResult;
         _par_json_k = _par_anova_from_toks(0, &war);
         e = war.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::LinearModel") == 1) {
+        var wlm: PmnLinearModel;
+        var wa: f64 = _par_in(0);
+        var wb: f64 = _par_in(1);
+        var wc: f64 = _par_in(2);
+        wlm.slope = wa;
+        wlm.intercept = wb;
+        wlm.r_squared = wc;
+        _par_json_k = 3;
+        e = wlm.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::PolynomialModel") == 1) {
+        if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+        var wpm: PmnPolynomialModel;
+        var wpk = _par_poly_from_toks(0, &wpm);
+        if (wpk < 0) { return 0 - 1; }
+        _par_json_k = wpk;
+        e = wpm.to_json(sb);
+        var wpd = PmnPolynomialModel_drop(&wpm);
+    } elif (_par_eq(fp, fl, "json::write::LogisticModel") == 1) {
+        if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+        var wgm: PmnLogisticModel;
+        var wgk = _par_logit_from_toks(0, &wgm);
+        if (wgk < 0) { return 0 - 1; }
+        _par_json_k = wgk;
+        e = wgm.to_json(sb);
+        var wgd = PmnLogisticModel_drop(&wgm);
     } elif (_par_eq(fp, fl, "json::write::ConfidenceInterval") == 1) {
         var wci: PmnConfidenceInterval;
         _par_json_k = _par_ci_from_toks(0, &wci);
@@ -826,6 +852,37 @@ fn _par_json_results(which): i64 {
     return 1;
 }
 
+# json::LinearModel (0), PolynomialModel (1) and LogisticModel (2) rows (M5 part a).
+fn _par_json_models(which): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var e = 0;
+    if (which == 0) {
+        var lm: PmnLinearModel;
+        e = PmnLinearModel_from_json(&lm, doc, n);
+        if (e == PMN_ERR_NONE) { return _par_got_linear(&lm); }
+    } elif (which == 1) {
+        var pm: PmnPolynomialModel;
+        e = PmnPolynomialModel_from_json(&pm, doc, n);
+        if (e == PMN_ERR_NONE) {
+            _par_got_poly(&pm);
+            PmnPolynomialModel_drop(&pm);
+            return 1;
+        }
+    } else {
+        var gm: PmnLogisticModel;
+        e = PmnLogisticModel_from_json(&gm, doc, n);
+        if (e == PMN_ERR_NONE) {
+            _par_got_logit(&gm);
+            PmnLogisticModel_drop(&gm);
+            return 1;
+        }
+    }
+    _par_got_err(e);
+    return 1;
+}
+
 # json::Kernel rows through the port's reader (M4 part a2).
 fn _par_json_kernel(): i64 {
     var n = 0;
@@ -894,6 +951,9 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::AnovaResult") == 1) { return _par_json_results(1); }
     if (_par_eq(fp, fl, "json::KsResult") == 1) { return _par_json_results(2); }
     if (_par_eq(fp, fl, "json::ConfidenceInterval") == 1) { return _par_json_results(3); }
+    if (_par_eq(fp, fl, "json::LinearModel") == 1) { return _par_json_models(0); }
+    if (_par_eq(fp, fl, "json::PolynomialModel") == 1) { return _par_json_models(1); }
+    if (_par_eq(fp, fl, "json::LogisticModel") == 1) { return _par_json_models(2); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -1090,6 +1150,43 @@ fn _par_debug(fp, fl): i64 {
         var dak = _par_anova_from_toks(0, &dar);
         if (dak + 1 != _par_in_n) { return 0 - 1; }
         e = dar.debug(sb, _par_in(dak));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::LinearModel") == 1) {
+        if (_par_in_n != 4) { return 0 - 1; }
+        var dlm: PmnLinearModel;
+        var da: f64 = _par_in(0);
+        var db: f64 = _par_in(1);
+        var dc: f64 = _par_in(2);
+        dlm.slope = da;
+        dlm.intercept = db;
+        dlm.r_squared = dc;
+        e = dlm.debug(sb, _par_in(3));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::PolynomialModel") == 1 || _par_eq(fp, fl, "debug::LogisticModel") == 1) {
+        if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+        var dk = 0 - 1;
+        var dpm: PmnPolynomialModel;
+        var dgm: PmnLogisticModel;
+        var poly = _par_eq(fp, fl, "debug::PolynomialModel");
+        if (poly == 1) {
+            dk = _par_poly_from_toks(0, &dpm);
+        } else {
+            dk = _par_logit_from_toks(0, &dgm);
+        }
+        if (dk < 0 || dk + 1 != _par_in_n) { return 0 - 1; }
+        if (poly == 1) {
+            e = dpm.debug(sb, _par_in(dk));
+            var dpd = PmnPolynomialModel_drop(&dpm);
+        } else {
+            e = dgm.debug(sb, _par_in(dk));
+            var dgd = PmnLogisticModel_drop(&dgm);
+        }
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -2311,6 +2408,178 @@ fn _par_ks_from_toks(k, r: *PmnKsResult): i64 {
     return k + 4;
 }
 
+# ── `regression` rows (M5 part a): src/regression.cyr. Slices, then scalars, as validate.py's REG reads them.
+
+fn _par_got_linear(r: *PmnLinearModel): i64 {
+    var a: f64 = r.slope;
+    var b: f64 = r.intercept;
+    var c: f64 = r.r_squared;
+    _par_got_f(a);
+    _par_got_f(b);
+    _par_got_f(c);
+    return 1;
+}
+
+fn _par_got_poly(r: *PmnPolynomialModel): i64 {
+    var n = r.len();
+    _par_got_seq(n);
+    for (var k = 0; k < n; k = k + 1) { _par_got_f(load64(r.coefficients() + k * 8)); }
+    _par_got_i(r.degree);
+    var c: f64 = r.r_squared;
+    _par_got_f(c);
+    return 1;
+}
+
+fn _par_got_logit(r: *PmnLogisticModel): i64 {
+    var n = r.len();
+    _par_got_seq(n);
+    for (var k = 0; k < n; k = k + 1) { _par_got_f(load64(r.coefficients() + k * 8)); }
+    _par_got_i(r.iterations);
+    _par_got_i(r.converged);
+    return 1;
+}
+
+# A PolynomialModel or LogisticModel built from golden tokens at k (`v:n`, the coefficients, then two words):
+# the next token, or -1.
+fn _par_poly_from_toks(k, r: *PmnPolynomialModel): i64 {
+    var n = _par_in(k);
+    if (n < 0 || n > _PAR_DS_CAP || k + n + 3 > _par_in_n) { return 0 - 1; }
+    _par_in_f64s(k, _par_ds_b);
+    var r2: f64 = _par_in(k + n + 2);
+    if (_pmn_poly_fill(r, _par_ds_b, n, _par_in(k + n + 1), r2) != PMN_ERR_NONE) { return 0 - 1; }
+    return k + n + 3;
+}
+
+fn _par_logit_from_toks(k, r: *PmnLogisticModel): i64 {
+    var n = _par_in(k);
+    if (n < 0 || n > _PAR_DS_CAP || k + n + 3 > _par_in_n) { return 0 - 1; }
+    _par_in_f64s(k, _par_ds_b);
+    if (_pmn_logit_fill(r, _par_ds_b, n, _par_in(k + n + 1), _par_in(k + n + 2)) != PMN_ERR_NONE) { return 0 - 1; }
+    return k + n + 3;
+}
+
+fn _par_regression(fp, fl): i64 {
+    if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_o == 0) { _par_ds_o = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_a == 0 || _par_ds_b == 0 || _par_ds_o == 0) { return 0 - 1; }
+    # the scalars before the slices (predict, residuals) and the slices (with their positions)
+    var recs[1024];
+    var sc[64];
+    var p = 0;
+    var ns = 0;
+    var k = 0;
+    var used = 0;
+    while (k < _par_in_n) {
+        if (load64(_par_in_k + k * 8) == 118) {
+            var n = _par_in(k);
+            if (p >= 64 || n < 0 || used + n > _PAR_DS_CAP) { return 0 - 1; }
+            _par_in_f64s(k, _par_ds_a + used * 8);
+            store64(&recs + p * 16, _par_ds_a + used * 8);
+            store64(&recs + p * 16 + 8, n);
+            used = used + n;
+            p = p + 1;
+            k = k + 1 + n;
+        } else {
+            if (ns >= 8) { return 0 - 1; }
+            store64(&sc + ns * 8, _par_in(k));
+            ns = ns + 1;
+            k = k + 1;
+        }
+    }
+    var e = 0;
+    if (_par_eq(fp, fl, "regression::linear_regression") == 1) {
+        var lm: PmnLinearModel;
+        e = pmn_linear_regression(&lm, load64(&recs), load64(&recs + 8), load64(&recs + 16), load64(&recs + 24));
+        if (e == PMN_ERR_NONE) { return _par_got_linear(&lm); }
+    } elif (_par_eq(fp, fl, "regression::predict") == 1) {
+        var pm: PmnLinearModel;
+        var s0: f64 = load64(&sc);
+        var s1: f64 = load64(&sc + 8);
+        var s2: f64 = load64(&sc + 16);
+        var s3: f64 = load64(&sc + 24);
+        pm.slope = s0;
+        pm.intercept = s1;
+        pm.r_squared = s2;
+        var pv: f64 = pmn_predict(&pm, s3);
+        _par_got_f(pv);
+        return 1;
+    } elif (_par_eq(fp, fl, "regression::residuals") == 1) {
+        var rm: PmnLinearModel;
+        var t0: f64 = load64(&sc);
+        var t1: f64 = load64(&sc + 8);
+        var t2: f64 = load64(&sc + 16);
+        rm.slope = t0;
+        rm.intercept = t1;
+        rm.r_squared = t2;
+        var nx = load64(&recs + 8);
+        e = pmn_residuals(&rm, load64(&recs), nx, load64(&recs + 16), load64(&recs + 24), _par_ds_o, _PAR_DS_CAP);
+        if (e == PMN_ERR_NONE) {
+            _par_got_seq(nx);
+            for (var j = 0; j < nx; j = j + 1) { _par_got_f(load64(_par_ds_o + j * 8)); }
+            return 1;
+        }
+    } elif (_par_eq(fp, fl, "regression::polynomial_regression") == 1) {
+        var py: PmnPolynomialModel;
+        e = pmn_polynomial_regression(&py, load64(&recs), load64(&recs + 8), load64(&recs + 16), load64(&recs + 24),
+            load64(&sc));
+        if (e == PMN_ERR_NONE) {
+            _par_got_poly(&py);
+            PmnPolynomialModel_drop(&py);
+            return 1;
+        }
+    } elif (_par_eq(fp, fl, "regression::predict_poly") == 1) {
+        var pp: PmnPolynomialModel;
+        if (_pmn_poly_fill(&pp, load64(&recs), load64(&recs + 8), 0, 0.0) != PMN_ERR_NONE) { return 0 - 1; }
+        var px: f64 = load64(&sc);
+        var pr: f64 = pmn_predict_poly(&pp, px);
+        _par_got_f(pr);
+        PmnPolynomialModel_drop(&pp);
+        return 1;
+    } elif (_par_eq(fp, fl, "regression::residuals_poly") == 1) {
+        var rp: PmnPolynomialModel;
+        if (_pmn_poly_fill(&rp, load64(&recs), load64(&recs + 8), 0, 0.0) != PMN_ERR_NONE) { return 0 - 1; }
+        var nx2 = load64(&recs + 24);
+        e = pmn_residuals_poly(&rp, load64(&recs + 16), nx2, load64(&recs + 32), load64(&recs + 40), _par_ds_o,
+            _PAR_DS_CAP);
+        PmnPolynomialModel_drop(&rp);
+        if (e == PMN_ERR_NONE) {
+            _par_got_seq(nx2);
+            for (var j2 = 0; j2 < nx2; j2 = j2 + 1) { _par_got_f(load64(_par_ds_o + j2 * 8)); }
+            return 1;
+        }
+    } elif (_par_eq(fp, fl, "regression::logistic_regression") == 1) {
+        var lg: PmnLogisticModel;
+        var l2: f64 = load64(&sc);
+        var lab = p - 1;
+        e = pmn_logistic_regression(&lg, &recs, lab, load64(&recs + lab * 16), load64(&recs + lab * 16 + 8), l2,
+            load64(&sc + 8));
+        if (e == PMN_ERR_NONE) {
+            _par_got_logit(&lg);
+            PmnLogisticModel_drop(&lg);
+            return 1;
+        }
+    } elif (_par_eq(fp, fl, "regression::predict_logistic_proba") == 1) {
+        var lp: PmnLogisticModel;
+        if (_pmn_logit_fill(&lp, load64(&recs), load64(&recs + 8), 0, 0) != PMN_ERR_NONE) { return 0 - 1; }
+        var pq: f64 = pmn_predict_logistic_proba(&lp, load64(&recs + 16), load64(&recs + 24));
+        _par_got_f(pq);
+        PmnLogisticModel_drop(&lp);
+        return 1;
+    } elif (_par_eq(fp, fl, "regression::predict_logistic_class") == 1) {
+        var lc: PmnLogisticModel;
+        if (_pmn_logit_fill(&lc, load64(&recs), load64(&recs + 8), 0, 0) != PMN_ERR_NONE) { return 0 - 1; }
+        var th: f64 = load64(&sc);
+        _par_got_i(pmn_predict_logistic_class(&lc, load64(&recs + 16), load64(&recs + 24), th));
+        PmnLogisticModel_drop(&lc);
+        return 1;
+    } else {
+        return 0;
+    }
+    _par_got_err(e);
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
@@ -2324,6 +2593,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
     if (_par_eq(mp, ml, "linalg") == 1) { return _par_linalg(fp, fl); }
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
+    if (_par_eq(mp, ml, "regression") == 1) { return _par_regression(fp, fl); }
     if (_par_eq(mp, ml, "rng") == 1) { return _par_rng(fp, fl); }
     if (_par_eq(mp, ml, "special") == 1) { return _par_special(fp, fl); }
     return 0;
@@ -2444,6 +2714,9 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "hypothesis::ci_mean") == 1) { return 0; }
     if (_par_eq(fp, fl, "hypothesis::ci_two_means") == 1) { return 0; }
     if (_par_eq(fp, fl, "hypothesis::ci_proportion") == 1) { return 0; }
+    if (_par_eq(fp, fl, "regression::logistic_regression") == 1) { return 0; }   # the sigmoid's exp (M5 part a)
+    if (_par_eq(fp, fl, "regression::predict_logistic_proba") == 1) { return 0; }
+    if (_par_eq(fp, fl, "regression::predict_logistic_class") == 1) { return 0; }
     if (_par_eq(fp, fl, "Normal::pdf") == 1) { return 0; }      # exp (M3 part a1)
     if (_par_eq(fp, fl, "Normal::cdf") == 1) { return 0; }      # downstream of the T1 Φ (ADR 009 as amended)
     if (_par_eq(fp, fl, "Normal::sample") == 1) { return 0; }   # Box–Muller: ln and cos

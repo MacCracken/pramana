@@ -1,0 +1,746 @@
+# regression.cyr — Rust 1.3.0's regression (src/regression.rs; port plan §4.1, D5, D11, D12; M5 part a): linear,
+# polynomial and logistic, their predictions and residuals, and `LinearModel`, `PolynomialModel` and `LogisticModel`
+# with their serde_json codecs and derived Debug.
+#
+# Every fit is 1.3.0's in its operation order: the linear fit on centered (two-pass) sums; the polynomial fit on hisab
+# 1.4.0's modified Gram–Schmidt (src/linalg.cyr, ledger L5); the logistic fit's Newton steps on hisab's Cholesky pair,
+# the probabilities through the stable sigmoid on the correctly rounded exp (ADR 009). `LinearModel` is a plain struct
+# in caller storage. The polynomial and logistic models own their coefficients (D11): one freelist block, freed by
+# `_drop`; their derives read any document of the right types, so a decoded model holds any number of coefficients.
+# Residuals go into a caller buffer (out, cap). A slice is a pointer and a count; the logistic fit's features are
+# 16-byte records (a pointer, then a count), Rust's `&[Vec<f64>]`, so rows of the wrong length are told apart as Rust
+# does (DimensionMismatch).
+
+# Rust's `require_finite`: PMN_ERR_INVALID_SAMPLE for a non-finite element.
+#must_use
+fn _pmn_reg_finite(p, n): i64 {
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(p + i * 8);
+        if (_pmn_is_finite(x) == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    }
+    return PMN_ERR_NONE;
+}
+
+# Rust's `all_equal`: 1 when every element equals the first (`==`: NaN never does, ±0 do); 1 for none.
+#must_use
+fn _pmn_reg_all_equal(p, n): i64 {
+    if (n == 0) { return 1; }
+    var first: f64 = load64(p);
+    for (var i = 1; i < n; i = i + 1) {
+        var x: f64 = load64(p + i * 8);
+        if (x != first) { return 0; }
+    }
+    return 1;
+}
+
+# Rust's `r_squared(y, ss_res, ss_tot)`: 1 for a constant response or ss_tot = 0, else 1 − ss_res/ss_tot.
+#must_use
+fn _pmn_reg_r2(y, n, ss_res: f64, ss_tot: f64): f64 {
+    if (_pmn_reg_all_equal(y, n) == 1 || ss_tot == 0.0) { return 1.0; }
+    var q: f64 = ss_res / ss_tot;
+    var r: f64 = 1.0 - q;
+    return r;
+}
+
+# 1 for a slice Rust could be given.
+#must_use
+#pure
+fn _pmn_reg_slice_ok(p, n): i64 {
+    if (n < 0 || (p == 0 && n > 0)) { return 0; }
+    return 1;
+}
+
+# ── LinearModel ───────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `LinearModel`: y = slope·x + intercept, and R².
+struct PmnLinearModel {
+    slope: f64;
+    intercept: f64;
+    r_squared: f64;
+}
+
+# Rust's `linear_regression(x, y)`: ordinary least squares on centered sums, into out (caller storage).
+# PMN_ERR_DIMENSION_MISMATCH for lengths that differ; PMN_ERR_INVALID_SAMPLE for fewer than 2 points, all x equal, a
+# non-finite mean of x or y, or a zero or unrepresentable Σ(x − x̄)², in Rust's order; PMN_ERR_INVALID_PARAMETER first
+# for a null out or an invalid slice.
+#must_use
+fn pmn_linear_regression(out: *PmnLinearModel, x, nx, y, ny): i64 {
+    if (out == 0 || _pmn_reg_slice_ok(x, nx) == 0 || _pmn_reg_slice_ok(y, ny) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (nx != ny) { return PMN_ERR_DIMENSION_MISMATCH; }
+    if (nx < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    if (_pmn_reg_all_equal(x, nx) == 1) { return PMN_ERR_INVALID_SAMPLE; }
+    var n: f64 = f64_from(nx);
+    var sx: f64 = pmn_sum(x, nx);
+    var sy: f64 = pmn_sum(y, ny);
+    var mx: f64 = sx / n;
+    var my: f64 = sy / n;
+    if ((_pmn_is_finite(mx) & _pmn_is_finite(my)) == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    var sxx: f64 = 0.0;
+    var sxy: f64 = 0.0;
+    for (var i = 0; i < nx; i = i + 1) {
+        var xi: f64 = load64(x + i * 8);
+        var yi: f64 = load64(y + i * 8);
+        var dx: f64 = xi - mx;
+        var dxx: f64 = dx * dx;
+        sxx = sxx + dxx;
+        var dy: f64 = yi - my;
+        var dxy: f64 = dx * dy;
+        sxy = sxy + dxy;
+    }
+    if ((_pmn_is_finite(sxx) & (sxx > 0.0)) == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    var slope: f64 = sxy / sxx;
+    var sm: f64 = slope * mx;
+    var icpt: f64 = my - sm;
+    var ss_tot: f64 = -0.0;
+    var ss_res: f64 = -0.0;
+    for (var j = 0; j < nx; j = j + 1) {
+        var yj: f64 = load64(y + j * 8);
+        var d1: f64 = yj - my;
+        var t1: f64 = _pmn_powi(d1, 2);
+        ss_tot = ss_tot + t1;
+    }
+    for (var k = 0; k < nx; k = k + 1) {
+        var xk: f64 = load64(x + k * 8);
+        var yk: f64 = load64(y + k * 8);
+        var px: f64 = slope * xk;
+        var pred: f64 = px + icpt;
+        var d2: f64 = yk - pred;
+        var t2: f64 = _pmn_powi(d2, 2);
+        ss_res = ss_res + t2;
+    }
+    var r2: f64 = _pmn_reg_r2(y, ny, ss_res, ss_tot);
+    out.slope = slope;
+    out.intercept = icpt;
+    out.r_squared = r2;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `predict(model, x)`: slope·x + intercept (NaN for a null model).
+#must_use
+fn pmn_predict(model: *PmnLinearModel, x: f64): f64 {
+    if (model == 0) {
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+    var s: f64 = model.slope;
+    var c: f64 = model.intercept;
+    var p: f64 = s * x;
+    var r: f64 = p + c;
+    return r;
+}
+
+# Rust's `residuals(model, x, y)`: yᵢ − predict(xᵢ), into out[0, n) (cap ≥ n, D11). PMN_ERR_DIMENSION_MISMATCH for
+# lengths that differ; PMN_ERR_INVALID_PARAMETER for a null model or buffer, an invalid slice or cap < n (out may be y
+# itself: each yᵢ is read before its slot is written).
+#must_use
+fn pmn_residuals(model: *PmnLinearModel, x, nx, y, ny, out, cap): i64 {
+    if (model == 0 || _pmn_reg_slice_ok(x, nx) == 0 || _pmn_reg_slice_ok(y, ny) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (nx != ny) { return PMN_ERR_DIMENSION_MISMATCH; }
+    if (cap < nx || (out == 0 && nx > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var i = 0; i < nx; i = i + 1) {
+        var xi: f64 = load64(x + i * 8);
+        var yi: f64 = load64(y + i * 8);
+        var p: f64 = pmn_predict(model, xi);
+        var r: f64 = yi - p;
+        store64(out + i * 8, r);
+    }
+    return PMN_ERR_NONE;
+}
+
+impl PmnLinearModel {
+    # Appends Rust's derived Debug (D12): `LinearModel { slope: .., intercept: .., r_squared: .. }`, or the pretty form.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "LinearModel", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "slope", 1, self.slope, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "intercept", 0, self.intercept, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "r_squared", 0, self.r_squared, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"slope":..,"intercept":..,"r_squared":..}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_f64_field(sb, "slope", 1, self.slope);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "intercept", 0, self.intercept); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "r_squared", 0, self.r_squared); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_linear_from_root(root, out: *PmnLinearModel): i64 {
+    var names[24];
+    store64(&names, "slope");
+    store64(&names + 8, "intercept");
+    store64(&names + 16, "r_squared");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var v[24];
+    if (_pmn_hyp_f64s(&sl, 0, 3, &v) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var a: f64 = load64(&v);
+    var b: f64 = load64(&v + 8);
+    var c: f64 = load64(&v + 16);
+    out.slope = a;
+    out.intercept = b;
+    out.r_squared = c;
+    return PMN_ERR_NONE;
+}
+
+# Reads a LinearModel document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any
+# document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY. The derive validates nothing.
+#must_use
+fn PmnLinearModel_from_json(out: *PmnLinearModel, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_linear_from_root, out);
+}
+
+# ── PolynomialModel ───────────────────────────────────────────────────────────────────────────────
+
+# Rust's `PolynomialModel`: n coefficients a₀ … in an owned block, the degree (a usize, the derive's: any) and R².
+struct PmnPolynomialModel {
+    n;
+    coef;
+    degree;
+    r_squared: f64;
+}
+
+# Fills out with a new block holding the n coefficients at src (n may be 0). PMN_ERR_OUT_OF_MEMORY when it can't be
+# had.
+#must_use
+fn _pmn_poly_fill(out: *PmnPolynomialModel, src, n, degree, r2: f64): i64 {
+    var blk = fl_alloc(n * 8 + 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    _pmn_copy_words(blk, src, n);
+    out.n = n;
+    out.coef = blk;
+    out.degree = degree;
+    out.r_squared = r2;
+    return PMN_ERR_NONE;
+}
+
+# Rust's private `eval_polynomial(coeffs, x)`: Horner's form from 0.0, the highest coefficient first.
+#must_use
+fn _pmn_eval_poly(c, n, x: f64): f64 {
+    var r: f64 = 0.0;
+    var i = n - 1;
+    while (i >= 0) {
+        var ci: f64 = load64(c + i * 8);
+        var rx: f64 = r * x;
+        r = rx + ci;
+        i = i - 1;
+    }
+    return r;
+}
+
+# Rust's `polynomial_regression(x, y, degree)`: the least-squares polynomial on hisab's QR, into out (caller storage,
+# owning a new block of degree + 1 coefficients: drop it), with R² by Horner's form. PMN_ERR_DIMENSION_MISMATCH for
+# lengths that differ; PMN_ERR_INVALID_PARAMETER for degree 0; PMN_ERR_INVALID_SAMPLE for degree ≥ the number of points
+# or a non-finite x, then y; PMN_ERR_COMPUTATION_ERROR when hisab refuses (dependent Vandermonde columns); in Rust's
+# order; PMN_ERR_INVALID_PARAMETER first for a null out, an invalid slice or a negative degree; PMN_ERR_OUT_OF_MEMORY
+# when the block or the scratch can't be had.
+#must_use
+fn pmn_polynomial_regression(out: *PmnPolynomialModel, x, nx, y, ny, degree): i64 {
+    if (out == 0 || degree < 0 || _pmn_reg_slice_ok(x, nx) == 0 || _pmn_reg_slice_ok(y, ny) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (nx != ny) { return PMN_ERR_DIMENSION_MISMATCH; }
+    if (degree == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (degree >= nx) { return PMN_ERR_INVALID_SAMPLE; }
+    if (_pmn_reg_finite(x, nx) != PMN_ERR_NONE) { return PMN_ERR_INVALID_SAMPLE; }
+    if (_pmn_reg_finite(y, ny) != PMN_ERR_NONE) { return PMN_ERR_INVALID_SAMPLE; }
+    var nc = degree + 1;
+    var s, slot = _pmn_scratch_take(nc * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var e = _pmn_least_squares_poly(x, y, nx, degree, s);
+    if (e != PMN_ERR_NONE) {
+        _pmn_scratch_give(s, slot);
+        if (e == PMN_ERR_OUT_OF_MEMORY) { return e; }
+        return PMN_ERR_COMPUTATION_ERROR;
+    }
+    var sy: f64 = pmn_sum(y, ny);
+    var nf: f64 = f64_from(ny);
+    var my: f64 = sy / nf;
+    var ss_tot: f64 = -0.0;
+    var ss_res: f64 = -0.0;
+    for (var i = 0; i < ny; i = i + 1) {
+        var yi: f64 = load64(y + i * 8);
+        var d1: f64 = yi - my;
+        var t1: f64 = _pmn_powi(d1, 2);
+        ss_tot = ss_tot + t1;
+    }
+    for (var j = 0; j < nx; j = j + 1) {
+        var xj: f64 = load64(x + j * 8);
+        var yj: f64 = load64(y + j * 8);
+        var pr: f64 = _pmn_eval_poly(s, nc, xj);
+        var d2: f64 = yj - pr;
+        var t2: f64 = _pmn_powi(d2, 2);
+        ss_res = ss_res + t2;
+    }
+    var r2: f64 = _pmn_reg_r2(y, ny, ss_res, ss_tot);
+    e = _pmn_poly_fill(out, s, nc, degree, r2);
+    _pmn_scratch_give(s, slot);
+    return e;
+}
+
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src;
+# PMN_ERR_OUT_OF_MEMORY when the block can't be had. Drop each one.
+#must_use
+fn PmnPolynomialModel_clone(out: *PmnPolynomialModel, src: *PmnPolynomialModel): i64 {
+    if (out == 0 || src == 0 || src.coef == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 32, src, 32) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var r2: f64 = src.r_squared;
+    return _pmn_poly_fill(out, src.coef, src.n, src.degree, r2);
+}
+
+# Frees m's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null m.
+fn PmnPolynomialModel_drop(m: *PmnPolynomialModel): i64 {
+    if (m == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (m.coef != 0) { fl_free(m.coef); }
+    m.coef = 0;
+    m.n = 0;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `predict_poly(model, x)`: Horner's form on the coefficients (0 for none; NaN for a dropped or null model).
+#must_use
+fn pmn_predict_poly(model: *PmnPolynomialModel, x: f64): f64 {
+    if (model == 0 || model.coef == 0) {
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+    var r: f64 = _pmn_eval_poly(model.coef, model.n, x);
+    return r;
+}
+
+# Rust's `residuals_poly(model, x, y)`: yᵢ − predict_poly(xᵢ), into out[0, n) (cap ≥ n). As `pmn_residuals`.
+#must_use
+fn pmn_residuals_poly(model: *PmnPolynomialModel, x, nx, y, ny, out, cap): i64 {
+    if (model == 0 || model.coef == 0 || _pmn_reg_slice_ok(x, nx) == 0 || _pmn_reg_slice_ok(y, ny) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (nx != ny) { return PMN_ERR_DIMENSION_MISMATCH; }
+    if (cap < nx || (out == 0 && nx > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var i = 0; i < nx; i = i + 1) {
+        var xi: f64 = load64(x + i * 8);
+        var yi: f64 = load64(y + i * 8);
+        var p: f64 = _pmn_eval_poly(model.coef, model.n, xi);
+        var r: f64 = yi - p;
+        store64(out + i * 8, r);
+    }
+    return PMN_ERR_NONE;
+}
+
+impl PmnPolynomialModel {
+    # The coefficients (borrowed), or 0 for a dropped one.
+    #must_use
+    fn coefficients(self): i64 {
+        if (self == 0) { return 0; }
+        return self.coef;
+    }
+
+    # The number of coefficients, or 0 for a dropped one.
+    #must_use
+    fn len(self): i64 {
+        if (self == 0 || self.coef == 0) { return 0; }
+        return self.n;
+    }
+
+    # Appends Rust's derived Debug (D12): `PolynomialModel { coefficients: [..], degree: d, r_squared: .. }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.coef == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "PolynomialModel", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "coefficients", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.coef, self.n, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "degree", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.degree); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "r_squared", 0, self.r_squared, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"coefficients":[..],"degree":d,"r_squared":..}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.coef == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_w_key(sb, "coefficients", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.coef, self.n); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "degree", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.degree); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "r_squared", 0, self.r_squared); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# Reads a Vec<f64> field node into a pool copy: (copy, slot, n), copy 0 with n the error code on a refusal.
+fn _pmn_reg_vec_node(v): (i64, i64, i64) {
+    var n = _pmn_json_arr_len(v);
+    if (n < 0) { return (0, 0 - 1, PMN_ERR_DESERIALIZE); }
+    var x[8];
+    for (var i = 0; i < n; i = i + 1) {
+        if (_pmn_json_f64(_pmn_json_arr_get(v, i), &x) != PMN_ERR_NONE) { return (0, 0 - 1, PMN_ERR_DESERIALIZE); }
+    }
+    var s, slot = _pmn_scratch_take(n * 8 + 8);
+    if (s == 0) { return (0, 0 - 1, PMN_ERR_OUT_OF_MEMORY); }
+    if (_pmn_json_vec_f64(v, s, n) != PMN_ERR_NONE) {
+        _pmn_scratch_give(s, slot);
+        return (0, 0 - 1, PMN_ERR_DESERIALIZE);
+    }
+    return (s, slot, n);
+}
+
+fn _pmn_poly_from_root(root, out: *PmnPolynomialModel): i64 {
+    var names[24];
+    store64(&names, "coefficients");
+    store64(&names + 8, "degree");
+    store64(&names + 16, "r_squared");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var c, slot, n = _pmn_reg_vec_node(load64(&sl));
+    if (c == 0) { return n; }
+    var d[8];
+    var r[8];
+    e = PMN_ERR_NONE;
+    if (_pmn_json_u64(load64(&sl + 8), &d) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    if (e == PMN_ERR_NONE && _pmn_json_f64(load64(&sl + 16), &r) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    var r2: f64 = load64(&r);
+    if (e == PMN_ERR_NONE) { e = _pmn_poly_fill(out, c, n, load64(&d), r2); }
+    _pmn_scratch_give(c, slot);
+    return e;
+}
+
+# Reads a PolynomialModel document, buf[0, len), into out (caller storage, owning a new block: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY. The derive validates nothing.
+#must_use
+fn PmnPolynomialModel_from_json(out: *PmnPolynomialModel, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_poly_from_root, out);
+}
+
+# ── LogisticModel ─────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `LogisticModel`: n coefficients [β₀, β₁, …] in an owned block, the Newton steps taken and whether they
+# converged.
+struct PmnLogisticModel {
+    n;
+    coef;
+    iterations;
+    converged;
+}
+
+#must_use
+fn _pmn_logit_fill(out: *PmnLogisticModel, src, n, iterations, converged): i64 {
+    var blk = fl_alloc(n * 8 + 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    _pmn_copy_words(blk, src, n);
+    out.n = n;
+    out.coef = blk;
+    out.iterations = iterations;
+    out.converged = converged;
+    return PMN_ERR_NONE;
+}
+
+# Rust's private `sigmoid(x)`: 1/(1 + e^(−x)) for x ≥ 0, else e^x/(1 + e^x), on the correctly rounded exp.
+#must_use
+fn _pmn_sigmoid(x: f64): f64 {
+    if (x >= 0.0) {
+        var nx: f64 = -x;
+        var e: f64 = _pmn_exp(nx);
+        var d: f64 = 1.0 + e;
+        var r: f64 = 1.0 / d;
+        return r;
+    }
+    var ex: f64 = _pmn_exp(x);
+    var d2: f64 = 1.0 + ex;
+    var r2: f64 = ex / d2;
+    return r2;
+}
+
+# Rust's `logistic_regression(features, labels, l2_reg, max_iter)`: rows n 16-byte records (a pointer, then a count),
+# labels[0, nl). Newton–Raphson from β = 0 on the design matrix [1, xᵢ]: the probabilities, the gradient (less l2·β
+# past the intercept), the negative Hessian (plus l2 + 1e-10 on its diagonal past the intercept, 1e-10 on the
+# intercept's), its Cholesky solve; stopping at a refused factor or a non-finite step (the last estimate kept), when the
+# largest |Δ| is below 1e-8 (converged), or after max_iter steps. Into out (caller storage, owning a new block: drop
+# it). PMN_ERR_DIMENSION_MISMATCH for n ≠ nl; PMN_ERR_INVALID_SAMPLE for fewer than 2 rows; PMN_ERR_INVALID_PARAMETER
+# for max_iter 0 or l2 negative or non-finite; PMN_ERR_DIMENSION_MISMATCH for a row of another length, or
+# PMN_ERR_INVALID_SAMPLE for a non-finite feature, row by row; PMN_ERR_INVALID_SAMPLE for a label not 0 or 1; in Rust's
+# order. PMN_ERR_INVALID_PARAMETER first for a null buffer or an invalid row; PMN_ERR_OUT_OF_MEMORY when the scratch
+# can't be had.
+#must_use
+fn pmn_logistic_regression(out: *PmnLogisticModel, rows, n, labels, nl, l2_reg: f64, max_iter): i64 {
+    if (out == 0 || n < 0 || nl < 0 || (rows == 0 && n > 0) || (labels == 0 && nl > 0) || max_iter < 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    for (var r0 = 0; r0 < n; r0 = r0 + 1) {
+        var rp = load64(rows + r0 * 16);
+        if (_pmn_reg_slice_ok(rp, load64(rows + r0 * 16 + 8)) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    }
+    if (n != nl) { return PMN_ERR_DIMENSION_MISMATCH; }
+    if (n < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    if (max_iter == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if ((_pmn_is_finite(l2_reg) & (l2_reg >= 0.0)) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var p = load64(rows + 8);
+    for (var i = 0; i < n; i = i + 1) {
+        if (load64(rows + i * 16 + 8) != p) { return PMN_ERR_DIMENSION_MISMATCH; }
+        if (_pmn_reg_finite(load64(rows + i * 16), p) != PMN_ERR_NONE) { return PMN_ERR_INVALID_SAMPLE; }
+    }
+    for (var j = 0; j < nl; j = j + 1) {
+        var lb: f64 = load64(labels + j * 8);
+        if (lb != 0.0 && lb != 1.0) { return PMN_ERR_INVALID_SAMPLE; }
+    }
+    var dim = p + 1;
+    var s, slot = _pmn_scratch_take((n + 5 * dim + 2 * dim * dim) * 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var probs = s;
+    var beta = probs + n * 8;
+    var grad = beta + dim * 8;
+    var delta = grad + dim * 8;
+    var hess = delta + dim * 8;
+    var lf = hess + dim * dim * 8;
+    for (var z = 0; z < dim; z = z + 1) { store64(beta + z * 8, 0); }
+    var tol: f64 = 0.00000001;
+    var eps: f64 = 0.0000000001;
+    var converged = 0;
+    var iter = 0;
+    var it = 0;
+    while (it < max_iter) {
+        it = it + 1;
+        iter = iter + 1;
+        for (var a = 0; a < n; a = a + 1) {
+            var xa = load64(rows + a * 16);
+            var b0: f64 = load64(beta);
+            var zsum: f64 = -0.0;
+            var t0: f64 = 1.0 * b0;
+            zsum = zsum + t0;
+            for (var c = 0; c < p; c = c + 1) {
+                var xc: f64 = load64(xa + c * 8);
+                var bc: f64 = load64(beta + (c + 1) * 8);
+                var tc: f64 = xc * bc;
+                zsum = zsum + tc;
+            }
+            var pa: f64 = _pmn_sigmoid(zsum);
+            store64(probs + a * 8, pa);
+        }
+        for (var g = 0; g < dim; g = g + 1) { store64(grad + g * 8, 0); }
+        for (var a2 = 0; a2 < n; a2 = a2 + 1) {
+            var xa2 = load64(rows + a2 * 16);
+            var la: f64 = load64(labels + a2 * 8);
+            var pv: f64 = load64(probs + a2 * 8);
+            var res: f64 = la - pv;
+            for (var c2 = 0; c2 < dim; c2 = c2 + 1) {
+                var xij: f64 = 1.0;
+                if (c2 > 0) { xij = load64(xa2 + (c2 - 1) * 8); }
+                var gv: f64 = load64(grad + c2 * 8);
+                var tg: f64 = xij * res;
+                var ng: f64 = gv + tg;
+                store64(grad + c2 * 8, ng);
+            }
+        }
+        for (var c3 = 1; c3 < dim; c3 = c3 + 1) {
+            var gv3: f64 = load64(grad + c3 * 8);
+            var bv3: f64 = load64(beta + c3 * 8);
+            var pen: f64 = l2_reg * bv3;
+            var ng3: f64 = gv3 - pen;
+            store64(grad + c3 * 8, ng3);
+        }
+        for (var h = 0; h < dim * dim; h = h + 1) { store64(hess + h * 8, 0); }
+        for (var a3 = 0; a3 < n; a3 = a3 + 1) {
+            var xa3 = load64(rows + a3 * 16);
+            var pw: f64 = load64(probs + a3 * 8);
+            var om: f64 = 1.0 - pw;
+            var w: f64 = pw * om;
+            for (var j1 = 0; j1 < dim; j1 = j1 + 1) {
+                var xj: f64 = 1.0;
+                if (j1 > 0) { xj = load64(xa3 + (j1 - 1) * 8); }
+                for (var k1 = j1; k1 < dim; k1 = k1 + 1) {
+                    var xk: f64 = 1.0;
+                    if (k1 > 0) { xk = load64(xa3 + (k1 - 1) * 8); }
+                    var xw: f64 = xj * w;
+                    var val: f64 = xw * xk;
+                    var hjk: f64 = load64(hess + (j1 * dim + k1) * 8);
+                    var njk: f64 = hjk + val;
+                    store64(hess + (j1 * dim + k1) * 8, njk);
+                    if (k1 != j1) {
+                        var hkj: f64 = load64(hess + (k1 * dim + j1) * 8);
+                        var nkj: f64 = hkj + val;
+                        store64(hess + (k1 * dim + j1) * 8, nkj);
+                    }
+                }
+            }
+        }
+        var h00: f64 = load64(hess);
+        var n00: f64 = h00 + eps;
+        store64(hess, n00);
+        var dg: f64 = l2_reg + eps;
+        for (var j2 = 1; j2 < dim; j2 = j2 + 1) {
+            var hjj: f64 = load64(hess + (j2 * dim + j2) * 8);
+            var njj: f64 = hjj + dg;
+            store64(hess + (j2 * dim + j2) * 8, njj);
+        }
+        # A refused factor or solve, or a non-finite step, ends the loop with the last estimate (Rust's `break`).
+        var stop = 0;
+        if (_pmn_cholesky(hess, dim, lf) != PMN_ERR_NONE) { stop = 1; }
+        if (stop == 0 && _pmn_cholesky_solve(lf, dim, grad, delta) != PMN_ERR_NONE) { stop = 1; }
+        if (stop == 0) {
+            for (var d1 = 0; d1 < dim; d1 = d1 + 1) {
+                var dv: f64 = load64(delta + d1 * 8);
+                if (_pmn_is_finite(dv) == 0) { stop = 1; }
+            }
+        }
+        if (stop == 0) {
+            var mc: f64 = 0.0;
+            for (var d2 = 0; d2 < dim; d2 = d2 + 1) {
+                var bv: f64 = load64(beta + d2 * 8);
+                var dv2: f64 = load64(delta + d2 * 8);
+                var nb: f64 = bv + dv2;
+                store64(beta + d2 * 8, nb);
+                var ad: f64 = f64_abs(dv2);
+                mc = _pmn_max(mc, ad);
+            }
+            if (mc < tol) {
+                converged = 1;
+                stop = 1;
+            }
+        }
+        if (stop == 1) { it = max_iter; }
+    }
+    var e = _pmn_logit_fill(out, beta, dim, iter, converged);
+    _pmn_scratch_give(s, slot);
+    return e;
+}
+
+# Rust's `predict_logistic_proba(model, features)`: σ(β₀ + Σ βⱼ₊₁·xⱼ) over the shorter of the weights and features[0,
+# nf), the sum from −0.0; NaN for a model with no coefficients (or a dropped or null one).
+#must_use
+fn pmn_predict_logistic_proba(model: *PmnLogisticModel, features, nf): f64 {
+    var nan: f64 = _PMN_F64_NAN;
+    if (model == 0 || model.coef == 0 || model.n == 0 || nf < 0 || (features == 0 && nf > 0)) { return nan; }
+    var b0: f64 = load64(model.coef);
+    var m = model.n - 1;
+    if (nf < m) { m = nf; }
+    var s: f64 = -0.0;
+    for (var i = 0; i < m; i = i + 1) {
+        var b: f64 = load64(model.coef + (i + 1) * 8);
+        var x: f64 = load64(features + i * 8);
+        var t: f64 = b * x;
+        s = s + t;
+    }
+    var z: f64 = b0 + s;
+    var r: f64 = _pmn_sigmoid(z);
+    return r;
+}
+
+# Rust's `predict_logistic_class(model, features, threshold)`: 1 when the probability is at least the threshold, else
+# 0 (a NaN probability or threshold gives 0).
+#must_use
+fn pmn_predict_logistic_class(model: *PmnLogisticModel, features, nf, threshold: f64): i64 {
+    var p: f64 = pmn_predict_logistic_proba(model, features, nf);
+    if (p >= threshold) { return 1; }
+    return 0;
+}
+
+# Rust's derived Clone. As PmnPolynomialModel_clone.
+#must_use
+fn PmnLogisticModel_clone(out: *PmnLogisticModel, src: *PmnLogisticModel): i64 {
+    if (out == 0 || src == 0 || src.coef == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 32, src, 32) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_logit_fill(out, src.coef, src.n, src.iterations, src.converged);
+}
+
+# Frees m's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null m.
+fn PmnLogisticModel_drop(m: *PmnLogisticModel): i64 {
+    if (m == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (m.coef != 0) { fl_free(m.coef); }
+    m.coef = 0;
+    m.n = 0;
+    return PMN_ERR_NONE;
+}
+
+impl PmnLogisticModel {
+    # The coefficients (borrowed), or 0 for a dropped one.
+    #must_use
+    fn coefficients(self): i64 {
+        if (self == 0) { return 0; }
+        return self.coef;
+    }
+
+    # The number of coefficients, or 0 for a dropped one.
+    #must_use
+    fn len(self): i64 {
+        if (self == 0 || self.coef == 0) { return 0; }
+        return self.n;
+    }
+
+    # Appends Rust's derived Debug (D12): `LogisticModel { coefficients: [..], iterations: k, converged: true }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.coef == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "LogisticModel", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "coefficients", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.coef, self.n, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "iterations", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.iterations); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "converged", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_w_bool(sb, self.converged); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"coefficients":[..],"iterations":k,"converged":true}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.coef == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_w_key(sb, "coefficients", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.coef, self.n); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "iterations", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.iterations); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "converged", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_w_bool(sb, self.converged); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_logit_from_root(root, out: *PmnLogisticModel): i64 {
+    var names[24];
+    store64(&names, "coefficients");
+    store64(&names + 8, "iterations");
+    store64(&names + 16, "converged");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var c, slot, n = _pmn_reg_vec_node(load64(&sl));
+    if (c == 0) { return n; }
+    var k[8];
+    var b[8];
+    e = PMN_ERR_NONE;
+    if (_pmn_json_u64(load64(&sl + 8), &k) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    if (e == PMN_ERR_NONE && _pmn_json_bool(load64(&sl + 16), &b) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    if (e == PMN_ERR_NONE) { e = _pmn_logit_fill(out, c, n, load64(&k), load64(&b)); }
+    _pmn_scratch_give(c, slot);
+    return e;
+}
+
+# Reads a LogisticModel document, buf[0, len), into out (caller storage, owning a new block: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY. The derive validates nothing.
+#must_use
+fn PmnLogisticModel_from_json(out: *PmnLogisticModel, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_logit_from_root, out);
+}

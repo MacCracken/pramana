@@ -117,4 +117,11 @@ def emit():
                                     i(g4.word())] + [f(g4.log_uniform(-5.0, 5.0)) for _ in range(5)] + [i(k % 2)])
         both("debug::KsResult", [f(g4.unit()), f(g4.unit()), f(g4.unit()), i(k % 2)])
         both("debug::ConfidenceInterval", [f(g4.signed_log_uniform(-20.0, 20.0)) for _ in range(3)] + [f(g4.unit())])
+    # M5 part a: the regression models
+    g5 = Rng(0x0801F2E2858EFC16)
+    for k in range(8):
+        both("debug::LinearModel", [f(g5.signed_log_uniform(-20.0, 20.0)) for _ in range(2)] + [f(g5.unit())])
+        cs = [g5.signed_log_uniform(-10.0, 10.0) for _ in range(k % 4)]
+        both("debug::PolynomialModel", [v(len(cs))] + [f(c) for c in cs] + [i(g5.int(0, 9)), f(g5.unit())])
+        both("debug::LogisticModel", [v(len(cs))] + [f(c) for c in cs] + [i(g5.int(0, 100)), i(k % 2)])
     return m

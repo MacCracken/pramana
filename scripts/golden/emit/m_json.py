@@ -666,6 +666,7 @@ def emit():
     kernel_density(m, Rng(0x3C6EF372FE94F82B))
     pca_result(m, Rng(0xA54FF53A5F1D36F1))
     test_results(m, Rng(0x13198A2E03707344))
+    regression_models(m, Rng(0x299F31D0082EFA98))
     return m
 
 def kde_toks(data, h, k):
@@ -759,4 +760,24 @@ def test_results(m, g):
                         [nums, nums, nums, nums])
     for d in cdocs:
         read(m, "json::ConfidenceInterval", d)
+
+
+def regression_models(m, g):
+    """M5 part a: LinearModel, PolynomialModel and LogisticModel, plain derives (no validation)."""
+    nums = B("1.5", "0", "-0.0", "1e309", "null", '"1"', "true")
+    vecs = B("[1.0,2.0]", "[]", "[1,null]", "null", "[[1]]", "[1e309]", "1", "[1,]")
+    usz = B("1", "0", "-1", "1.0", "18446744073709551615", "18446744073709551616", "null")
+    bools = B("false", "true", "0", "null")
+    for d in struct_docs([("slope", b"2.0"), ("intercept", b"1.0"), ("r_squared", b"0.99")], [nums, nums, nums]):
+        read(m, "json::LinearModel", d)
+    for d in struct_docs([("coefficients", b"[1.0,2.0]"), ("degree", b"1"), ("r_squared", b"0.99")], [vecs, usz, nums]):
+        read(m, "json::PolynomialModel", d)
+    for d in struct_docs([("coefficients", b"[0.5,1.2]"), ("iterations", b"7"), ("converged", b"true")],
+                         [vecs, usz, bools]):
+        read(m, "json::LogisticModel", d)
+    for k in range(12):
+        write(m, "LinearModel", [f(finite(g)), f(finite(g)), f(g.unit())])
+        cs = [finite(g) for _ in range(k % 5)]
+        write(m, "PolynomialModel", [v(len(cs))] + [f(c) for c in cs] + [i(g.int(0, 9)), f(g.unit())])
+        write(m, "LogisticModel", [v(len(cs))] + [f(c) for c in cs] + [i(g.int(0, 100)), i(k % 2)])
 
