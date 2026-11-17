@@ -25,13 +25,14 @@ fn _pmn_is_nan(x: f64): i64 {
     return 0;
 }
 
-# 1 when x is neither infinite nor NaN (x − x is 0 only then). Mirrors `f64::is_finite`.
+# 1 when x is neither infinite nor NaN (x − x is 0 only then). Mirrors `f64::is_finite`. One expression, so `#inline`
+# takes it: the compiler declines a body with control flow or a `var` (M3's gate measured the inlined checks at 1–8 ns
+# off a constructor's call, the same bits).
 #must_use
 #pure
+#inline
 fn _pmn_is_finite(x: f64): i64 {
-    var d: f64 = x - x;
-    if (d == 0.0) { return 1; }
-    return 0;
+    return x - x == 0.0;
 }
 
 # The smaller of x and y, ignoring a NaN operand (NaN only when both are). Equal operands, +0 and −0 included, give

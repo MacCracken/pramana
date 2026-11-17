@@ -44,8 +44,8 @@
 > Bernoulli, is committed (`5b76636`), part a3, Cauchy and Weibull, is committed (`a636914`), part b1, Gamma,
 > ChiSquared and Marsaglia–Tsang, is committed (`ded8c4b`), part b2, Beta, StudentT and FDistribution, is committed
 > (`97abf28`), part c1, Poisson, is committed (`6a3da1b`), part c2, Binomial, is committed (`f7c9bef`), part d1,
-> the Cholesky factor and solve, is committed (`f7b9fb9`), and part d2, MultivariateNormal, is done and not
-> committed.
+> the Cholesky factor and solve, is committed (`f7b9fb9`), part d2, MultivariateNormal, is committed (`db91663`),
+> and part e, M3's gate, is done and not committed: with it, M3 is complete.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1212,7 +1212,11 @@ T1 function is recorded against T1 from the start (ADR 009 as amended):
   buffer (D11), its decode recomputing the factor. 3,575 more `dist` rows (the constructor's shapes, entries, symmetry
   edges and a NaN pivot; the densities; 24 streams), 127 codec rows and 24 Debug rows; `dist.cr.tsv` 12 more rows;
   every row passing at 0 ulp on three targets ✅;
-- **e:** M3's gate.
+- **e:** M3's gate: the grid's minimum met (10⁴-draw streams for the four sampling algorithms that lacked them), the
+  audit of M3's sources (`#pure` on the seven value-only helpers), the parameter checks inlined and ln 2π held as a
+  proven constant (measured: up to 20% off a simple constructor row, 24–28% off a 3-D density, the same bits), the
+  soak of the thirteen caller-storage distributions, `distribution` in surface parity's ported modules, and the
+  ledger re-read; every row passing at 0 ulp on three targets ✅. **M3 is complete.**
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream

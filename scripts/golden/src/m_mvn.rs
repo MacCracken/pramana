@@ -11,7 +11,7 @@
 //!   points around the mean and far from it, with a NaN or ±∞ element, and with a point of the wrong length (the
 //!   error). Past d = 8 only the mean, one seeded point and a far one, and the pdf at the mean. Class C: glibc's ln
 //!   and exp.
-//! - `MultivariateNormal::sample`: 2,000 draws of 1.3.0's own test case and 256 of each other fixed case, from three
+//! - `MultivariateNormal::sample`: 10^4 draws of 1.3.0's own test case and 256 of each other fixed case, from three
 //!   seeds, the vectors' elements in order. Class C: Box–Muller's ln, cos and sin.
 //!
 //! Inputs: d, the mean as `v:d`, the covariance's rows and columns, its entries as `v:rows·cols` row-major; then the
@@ -268,7 +268,7 @@ pub fn emit(m: &mut Module, g: &mut Seeds) {
             density_rows(m, &cases[*k], mvn, x, d <= 8 || j == 0);
         }
     }
-    // The draws: 1.3.0's own test case first (2,000 vectors a seed), then 256 of each other.
+    // The draws: 1.3.0's own test case first (10^4 vectors a seed, M3's gate), then 256 of each other.
     let draw_cases = [
         Case::of(&[1.0, -2.0], &[vec![1.0, 0.3], vec![0.3, 2.0]]),
         Case::of(&[2.0], &[vec![4.0]]),
@@ -281,7 +281,7 @@ pub fn emit(m: &mut Module, g: &mut Seeds) {
     ];
     for &seed in &SEEDS {
         for (k, c) in draw_cases.iter().enumerate() {
-            let count = if k == 0 { 2000 } else { 256 };
+            let count = if k == 0 { 10_000 } else { 256 };
             let mvn = c.build().expect("a valid case");
             let mut r = SimpleRng::new(seed);
             let xs: Vec<f64> = (0..count).flat_map(|_| mvn.sample(&mut r)).collect();

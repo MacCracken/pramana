@@ -810,3 +810,63 @@ block comes from the freelist. Pinned to core 5, interleaved, each round started
   (M1 part d1's finding, ledger L10), and Normal's round trip, two f64s, is 44× (part a1): this is the codec's cost.
 
 These are findings to measure against, not changes for this part.
+
+## M3 part e: M3's gate (2026-11-16)
+
+**Two changes, measured before adoption.** Each gives the same bits; they are port-parity §9.10's.
+- **The parameter checks inlined** (part a2's finding): `#inline` is declined for a body with control flow or a
+  `var`, so the three checks and `_pmn_is_finite` are now one expression each, on 0/1 comparisons.
+- **ln 2π held as a constant** (part d2's finding): `_PMN_MVN_LN_2PI`, proven by `scripts/crverify/consts.py`.
+
+The A/B used the rows they touch, from `tests/dist.bcyr`: interleaved, pinned to core 5, three rounds each way. All 26
+sums and digests are the same both ways.
+
+| Row | Before | After | Change |
+|---|---|---|---|
+| `Uniform::cdf`, U(−1, 5) | 40 ns | 32 ns | −20% |
+| `Cauchy::pdf`, Cauchy(0, 1) | 45 ns | 37 ns | −18% |
+| `Normal::pdf`, N(0, 1) | 90–91 ns | 83 ns | −8% |
+| `Exponential::cdf`, Exp(2.5) | 81 ns | 76 ns | −6% |
+| `Bernoulli::cdf`, p = 0.3 | 30–31 ns | 29 ns | −4% |
+| `Weibull::cdf`, `Gamma::pdf`, `Poisson::pdf` | 234–373 ns | 226–366 ns | −2% to −4% |
+| `Beta::pdf`, `Binomial::pdf` | 689–786 ns | 681–787 ns | under 1% |
+| `MultivariateNormal::pdf`, 3-D | 310–313 ns | 236–239 ns | −24% |
+| `MultivariateNormal::log_pdf`, 3-D | 246–249 ns | 176–178 ns | −28% |
+| `MultivariateNormal::new` and drop, 3-D | 742–756 ns | 716–726 ns | −4% |
+
+An inlined check saves about 4 ns, so a constructor of two parameters saves about 8 ns: a fifth of the cheapest rows,
+whose method is a few ns.
+
+**The re-measure.** All 48 rows of `tests/dist.bcyr` and its twin, pinned and interleaved, each round started under a
+load average of 3.
+- **The rounds:** round 2 (load 2.96) ran eight rows slow, all six MultivariateNormal rows among them, so a fourth
+  round (load 2.59) replaced it. The record is rounds 1, 3 and 4 (loads 2.68, 2.94, 2.59).
+- **The spread:** two earlier rows stay wide, each slow in one round only: StudentT's draw in round 3 (791 against
+  about 490 ns) and Binomial's cdf in round 1. Every row this gate changed is within 8%.
+- **The sums and digests** are the same in all four rounds, and equal part d2's: the changes moved no bit.
+
+| Group | Rows | Cyrius / Rust |
+|---|---|---|
+| densities and cdfs without a T1 function | 18 | 3.1–9.9×, median 6.2× |
+| draws | 16 | 2.6–10×, median 7.7× |
+| cdfs on a T1 function | 9 | 22–115×, median 81× |
+| Weibull's mean (T1 lnΓ), MultivariateNormal's construction | 2 | 4.4–4.5× |
+| JSON and Debug | 3 | 24–42× |
+| **all** | **48** | **median 8.0×** |
+
+**Against the plan** (§9): the median is inside the expected 5–9×. The densities and draws without a T1 function are at
+or under the predicted 6–15× and 5–15×. The T1 cdfs are far over: §9 predicted 1–4 correctly rounded primitives a
+call, and T1's double-double series and fractions cost far more, which ADR 009 accepts. The cheapest rows now cost:
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `Normal::pdf`, N(0, 1) | 23.8–24.0 ns | 83–84 ns | 3.5× |
+| `Cauchy::pdf`, Cauchy(0, 1) | 7.7–7.8 ns | 37–38 ns | 4.8× |
+| `Uniform::cdf`, U(−1, 5) | 5.4–6.6 ns | 32 ns | 5.5× |
+| `Bernoulli::cdf`, p = 0.3 | 4.5–4.8 ns | 29 ns | 6.3× |
+| `MultivariateNormal::log_pdf`, 3-D, built once | 55.2–57.4 ns | 169–177 ns | 3.1× |
+| `MultivariateNormal::pdf`, 3-D, built once | 64.1–65.1 ns | 228–237 ns | 3.6× |
+| `MultivariateNormal::log_pdf`, d = 16, built once | 334.5–338.6 ns | 1.12–1.16 µs | 3.4× |
+
+What is left is the call itself (Rust inlines the constructor and the method into one body), the correctly rounded
+primitives' cost over glibc's, and the compiler's register use in loops (part d1).

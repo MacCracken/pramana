@@ -867,9 +867,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** built once, 314–319 ns a 3-D pdf (4.9× Rust), 250–253 ns a log_pdf (4.4×) and 559–570 ns a draw
     (6.2×); 761–788 ns a construction and drop (4.7×); 1.27–1.31 µs a d = 16 log_pdf (3.8×); 40–43 µs a JSON round
     trip (27×, the codec's cost); every bench digest is explained by the models.
+- **M3 part e: M3's gate** (port plan §7; results in `docs/development/port-parity.md` §9.10). **M3 is complete:**
+  1.3.0's fourteen distributions are ported. Every one of their 166,631 `dist` rows, 2,993 codec rows, 452 Debug rows
+  and 682 `linalg` rows passes at 0 ulp on x86_64 ELF, PE and aarch64.
+  - **the grid's minimum:** 10⁴-draw streams at three seeds for the four sampling algorithms that lacked them
+    (Gamma's boost below α = 1, PTRS, Beta splitting, MultivariateNormal's vectors). Twelve rows change, and
+    `dist.cr.tsv` gains one (1,283);
+  - **the audit** of M3's sources against CLAUDE.md's library rules: no aborts, allocation only in
+    MultivariateNormal's freed block and pool scratch, every transcendental correctly rounded. `#pure` is now on the
+    seven value-only helpers; the library is byte-identical before and after;
+  - **the soak** gains 10⁴ rounds of every call of the thirteen caller-storage distributions, which take nothing
+    (`tests/soak.tcyr`, 28 checks); `distribution` joins surface parity's ported modules (191 items, none pending);
+  - **the ledger:** all 21 upstream requests are still open, so nothing converts. The parts' accuracy findings, bound by
+    parity, are now the roadmap's.
 
 ### Performance
 
+- **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one
+  expression, which `#inline` accepts: 4–8 ns off a constructor's call, with the same bits. Measured A/B, three
+  pinned interleaved rounds each way: Uniform's cdf 40 → 32 ns (now 5.5× Rust), Cauchy's pdf 45 → 37 ns, Normal's
+  pdf 90 → 83 ns.
+- **MultivariateNormal's ln 2π held as a constant** (`src/dist_mvn.cyr`; M3 part d2's finding), where it was computed
+  on every density call. `scripts/crverify/consts.py` proves it, and its bits are unchanged. A 3-D log_pdf goes from
+  246–249 to 176–178 ns (3.1× Rust) and a pdf from 310–313 to 236–239 ns.
 - **The u128 division's fast path:** `combinations(60, 30)` falls from 28.5 µs to 1.14 µs (pinned, the same run),
   and is 8.4× Rust's 131 ns. The other counting rows are 4–24× Rust (`tests/combinatorics.bcyr` and its twin).
 - **The pool's release** is a compare-and-swap rather than kimiya's full fence and plain store: a claim and its release

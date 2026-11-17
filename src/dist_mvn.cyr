@@ -26,6 +26,10 @@ struct PmnMultivariateNormal {
     log_det: f64;
 }
 
+# ln 2π as the port computes it, the correctly rounded ln of the double 2π (Rust's `(2.0 * PI).ln()`), held as its bit
+# pattern: scripts/crverify/consts.py proves it, and tests/dist_mvn.tcyr checks it against `_pmn_ln`.
+var _PMN_MVN_LN_2PI: f64 = 0x3FFD67F1C864BEB4;
+
 # The block's bytes for dimension d: the mean, the covariance and the factor.
 #must_use
 #pure
@@ -186,8 +190,7 @@ impl PmnMultivariateNormal {
         _pmn_scratch_give(s, slot);
         if (e != PMN_ERR_NONE) { return Err(PMN_ERR_COMPUTATION_ERROR); }   # Rust's map of a solve error: unreachable
         var df: f64 = f64_from(d);
-        var tp: f64 = 2.0 * _PMN_F64_PI;
-        var lt: f64 = _pmn_ln(tp);
+        var lt: f64 = _PMN_MVN_LN_2PI;
         var t1: f64 = df * lt;
         var ld: f64 = self.log_det;
         var t2: f64 = t1 + ld;

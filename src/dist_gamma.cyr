@@ -419,6 +419,7 @@ fn PmnBeta_from_json(out: *PmnBeta, buf, len): i64 {
 # y = 1/(1 + df/t²), both formed without cancellation, on the T1 incomplete beta; clamped to [0, 1]. NaN when t or df
 # is. The hypothesis tests (M4) share it.
 #must_use
+#pure
 fn _pmn_student_t_two_tailed(t: f64, df: f64): f64 {
     if (t != t || df != df) {
         var nan: f64 = _PMN_F64_NAN;
@@ -439,6 +440,7 @@ fn _pmn_student_t_two_tailed(t: f64, df: f64): f64 {
 
 # Rust's `student_t_cdf`: 1 − ½·P(|T| ≥ |t|) for t ≥ 0, ½·P(|T| ≥ |t|) below, so each tail keeps its accuracy.
 #must_use
+#pure
 fn _pmn_student_t_cdf(t: f64, df: f64): f64 {
     var tt: f64 = _pmn_student_t_two_tailed(t, df);
     var h: f64 = 0.5 * tt;
@@ -603,6 +605,7 @@ fn PmnStudentT_from_json(out: *PmnStudentT, buf, len): i64 {
 # beta's (I_u, 1 − I_u) at u = d1x/(d1x + d2) and its complement v = d2/(d1x + d2), each formed directly. (NaN, NaN)
 # at NaN, (0, 1) at and below 0. The hypothesis tests (M4) share it.
 #must_use
+#pure
 fn _pmn_f_cdf_sf(x: f64, d1: f64, d2: f64): (f64, f64) {
     if (x != x) {
         var nan: f64 = _PMN_F64_NAN;

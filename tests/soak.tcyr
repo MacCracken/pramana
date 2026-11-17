@@ -7,7 +7,8 @@
 # pool's claimed slots must all be where they were: nothing an M1 call took stays taken. M2's special functions
 # (M2 part c, its gate) take nothing at all: 10^4 rounds of each of the fourteen, across their branches, leave the same
 # four measures where they were. So does M3 part d1's linalg: 10^4 factorizations and solves on caller buffers, where
-# hisab's return a fresh Vec each call and ganita's solve leaves 8n bytes (ledger L4). And M3 part d2's
+# hisab's return a fresh Vec each call and ganita's solve leaves 8n bytes (ledger L4). M3's gate (part e) adds the
+# thirteen caller-storage distributions: 10^4 rounds of every call of each, codecs and Debug included. And M3 part d2's
 # MultivariateNormal, the one owned distribution: 10^4 rounds of its constructor, both densities, a draw, a clone and
 # its JSON both ways, each block freed by its drop, a tenth of them at d = 32 (a block over 4 KB, mapped and
 # unmapped).
@@ -188,6 +189,240 @@ fn mvn_round(r, mean, cov, x, out, sb): f64 {
     return lp;
 }
 
+# M3's gate: the thirteen caller-storage distributions, every call of each. g_sink folds the means, variances and
+# draws by their bits (Cauchy's mean is NaN by definition, so they are not summed).
+var g_sink = 0;
+
+# The five trait methods of d at x, one draw from g: pdf(x) + cdf(x), which the caller checks is finite.
+fn trait_round<D: PmnDistribution>(d: *D, x: f64, g: *PmnSimpleRng): f64 {
+    var p: f64 = d.pdf(x);
+    var c: f64 = d.cdf(x);
+    var m: f64 = d.mean();
+    var v: f64 = d.variance();
+    var s: f64 = d.sample(g);
+    g_sink = g_sink ^ load64(&m) ^ load64(&v) ^ load64(&s);
+    return p + c;
+}
+
+# Each distribution's JSON written and read back, and its Debug in both forms, into sb: the codes summed.
+fn codec_normal(d: *PmnNormal, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnNormal;
+    e = e + PmnNormal_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_uniform(d: *PmnUniform, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnUniform;
+    e = e + PmnUniform_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_exponential(d: *PmnExponential, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnExponential;
+    e = e + PmnExponential_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_bernoulli(d: *PmnBernoulli, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnBernoulli;
+    e = e + PmnBernoulli_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_cauchy(d: *PmnCauchy, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnCauchy;
+    e = e + PmnCauchy_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_weibull(d: *PmnWeibull, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnWeibull;
+    e = e + PmnWeibull_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_gamma(d: *PmnGamma, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnGamma;
+    e = e + PmnGamma_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_chisquared(d: *PmnChiSquared, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnChiSquared;
+    e = e + PmnChiSquared_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_beta(d: *PmnBeta, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnBeta;
+    e = e + PmnBeta_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_studentt(d: *PmnStudentT, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnStudentT;
+    e = e + PmnStudentT_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_fdistribution(d: *PmnFDistribution, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnFDistribution;
+    e = e + PmnFDistribution_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_poisson(d: *PmnPoisson, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnPoisson;
+    e = e + PmnPoisson_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+fn codec_binomial(d: *PmnBinomial, sb): i64 {
+    store64(sb + 8, 0);
+    var e = d.to_json(sb);
+    var back: PmnBinomial;
+    e = e + PmnBinomial_from_json(&back, load64(sb), load64(sb + 8));
+    store64(sb + 8, 0);
+    e = e + d.debug(sb, 0) + d.debug(sb, 1);
+    return e;
+}
+
+# One round of the thirteen: the parameters moved by r mod 7 (so a warm-up of 70 rounds meets every text size the
+# builder holds), each one's constructor, five methods, codec both ways and Debug. The sum of the pdfs and cdfs, or NaN
+# when a constructor or codec refuses.
+fn dists_round(r, sb, g: *PmnSimpleRng): f64 {
+    var k = r % 7;
+    var kf: f64 = f64_from(k);
+    var a: f64 = 0.5 + kf;
+    var hk: f64 = 0.5 * kf;
+    var b: f64 = 1.25 + hk;
+    var xk: f64 = 0.375 * kf;
+    var x: f64 = xk + 0.1;
+    var pk: f64 = 0.1 * kf;
+    var p: f64 = pk + 0.1;
+    var nint = 10 + k;
+    var s: f64 = 0.0;
+    var e = 0;
+    var d_normal: PmnNormal;
+    e = e + PmnNormal_new(&d_normal, x, b);
+    var t_normal: f64 = trait_round(&d_normal, x, g);
+    s = s + t_normal;
+    e = e + codec_normal(&d_normal, sb);
+    var d_uniform: PmnUniform;
+    e = e + PmnUniform_new(&d_uniform, x, x + b);
+    var t_uniform: f64 = trait_round(&d_uniform, x, g);
+    s = s + t_uniform;
+    e = e + codec_uniform(&d_uniform, sb);
+    var d_exponential: PmnExponential;
+    e = e + PmnExponential_new(&d_exponential, b);
+    var t_exponential: f64 = trait_round(&d_exponential, x, g);
+    s = s + t_exponential;
+    e = e + codec_exponential(&d_exponential, sb);
+    var d_bernoulli: PmnBernoulli;
+    e = e + PmnBernoulli_new(&d_bernoulli, p);
+    var t_bernoulli: f64 = trait_round(&d_bernoulli, x, g);
+    s = s + t_bernoulli;
+    e = e + codec_bernoulli(&d_bernoulli, sb);
+    var d_cauchy: PmnCauchy;
+    e = e + PmnCauchy_new(&d_cauchy, x, b);
+    var t_cauchy: f64 = trait_round(&d_cauchy, x, g);
+    s = s + t_cauchy;
+    e = e + codec_cauchy(&d_cauchy, sb);
+    var d_weibull: PmnWeibull;
+    e = e + PmnWeibull_new(&d_weibull, a, b);
+    var t_weibull: f64 = trait_round(&d_weibull, x, g);
+    s = s + t_weibull;
+    e = e + codec_weibull(&d_weibull, sb);
+    var d_gamma: PmnGamma;
+    e = e + PmnGamma_new(&d_gamma, a, b);
+    var t_gamma: f64 = trait_round(&d_gamma, x, g);
+    s = s + t_gamma;
+    e = e + codec_gamma(&d_gamma, sb);
+    var d_chisquared: PmnChiSquared;
+    e = e + PmnChiSquared_new(&d_chisquared, a);
+    var t_chisquared: f64 = trait_round(&d_chisquared, x, g);
+    s = s + t_chisquared;
+    e = e + codec_chisquared(&d_chisquared, sb);
+    var d_beta: PmnBeta;
+    e = e + PmnBeta_new(&d_beta, a, b);
+    var t_beta: f64 = trait_round(&d_beta, x, g);
+    s = s + t_beta;
+    e = e + codec_beta(&d_beta, sb);
+    var d_studentt: PmnStudentT;
+    e = e + PmnStudentT_new(&d_studentt, a);
+    var t_studentt: f64 = trait_round(&d_studentt, x, g);
+    s = s + t_studentt;
+    e = e + codec_studentt(&d_studentt, sb);
+    var d_fdistribution: PmnFDistribution;
+    e = e + PmnFDistribution_new(&d_fdistribution, a, b);
+    var t_fdistribution: f64 = trait_round(&d_fdistribution, x, g);
+    s = s + t_fdistribution;
+    e = e + codec_fdistribution(&d_fdistribution, sb);
+    var d_poisson: PmnPoisson;
+    e = e + PmnPoisson_new(&d_poisson, b);
+    var t_poisson: f64 = trait_round(&d_poisson, x, g);
+    s = s + t_poisson;
+    e = e + codec_poisson(&d_poisson, sb);
+    var d_binomial: PmnBinomial;
+    e = e + PmnBinomial_new(&d_binomial, nint, p);
+    var t_binomial: f64 = trait_round(&d_binomial, x, g);
+    s = s + t_binomial;
+    e = e + codec_binomial(&d_binomial, sb);
+    if (e != PMN_ERR_NONE) {
+        var nan: f64 = 0x7FF8000000000000;
+        return nan;
+    }
+    return s;
+}
+
 # One round of M2's fourteen special functions, the arguments moved by r so the rounds cross their branches: erf and
 # erfc either side of 0.84375 and in the tail, lnΓ reflected, the incomplete gamma's series, fraction, small-shape Q
 # and Wilson–Hilferty form, and the incomplete beta's fraction, power series and Rust's form past 1e9. The sum of the
@@ -337,6 +572,35 @@ fn main() {
     var nv1 = vm_kb();
     if (nv0 >= 0) {
         assert_eq(nv1 - nv0, 0, "the mapped size: unchanged");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing claimed");
+
+    test_group("10^4 rounds of the thirteen caller-storage distributions, every call (M3 part e): nothing taken");
+    var dsb = str_builder_new();
+    var dg: PmnSimpleRng;
+    var edg = PmnSimpleRng_new(&dg, 7);
+    var dw: f64 = 0.0;
+    for (var r6 = 0; r6 < 70; r6 = r6 + 1) {
+        var w6: f64 = dists_round(r6, dsb, &dg);
+        dw = dw + w6;
+    }
+    var qb0 = alloc_used();
+    var qf0 = _fl_arena_pos;
+    var qv0 = vm_kb();
+    var dacc: f64 = dw;
+    for (var r7 = 0; r7 < 10000; r7 = r7 + 1) {
+        var v7: f64 = dists_round(r7, dsb, &dg);
+        dacc = dacc + v7;
+    }
+    assert(_pmn_is_finite(dacc) == 1 && edg == PMN_ERR_NONE,
+      "every constructor and codec succeeds, every pdf and cdf finite");
+    assert_eq(alloc_used() - qb0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - qf0, 0, "the freelist's arena: 0 bytes carved");
+    var qv1 = vm_kb();
+    if (qv0 >= 0) {
+        assert_eq(qv1 - qv0, 0, "the mapped size: unchanged");
     } else {
         println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
     }

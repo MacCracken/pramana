@@ -556,6 +556,7 @@ fn PmnWeibull_new(out: *PmnWeibull, k: f64, lambda: f64): i64 {
 # Γ(1 + j/k) as Rust computes it, exp(lnΓ(1 + j/k)), on the T1 lnΓ and the correctly rounded exp: the Weibull
 # moments' factor.
 #must_use
+#pure
 fn _pmn_weibull_g(j: f64, k: f64): f64 {
     var q: f64 = j / k;
     var a: f64 = 1.0 + q;

@@ -4232,3 +4232,121 @@ module moves to the ported list at M3's gate.
 (4.4×) and 559–570 ns a draw (6.2×); 761–788 ns a 3-D construction and drop (4.7×); 1.27–1.31 µs a d = 16 log_pdf
 (3.8×); 40–43 µs a JSON round trip (27×, the codec's cost, as Normal's). The bench's 48 digests are all explained by
 the models.
+
+### 9.10 Part e: M3's gate (2026-11-16)
+
+Every part ran the per-part gates: build; test and test --bounds, warning-free; bench, recorded against Rust; vet,
+lint and fmt --check; distlib; deps --locked; audit; the ledger, surface parity, the vendor and constant checks; and
+the three targets. The plan's §7 adds what M3's gate covers across its parts:
+- its golden grid's minimum;
+- the gates every milestone ends with: surface parity, the soak for anything that allocates, the JSON and Debug rows,
+  and the ledger.
+
+M2's gate (§8.10) adds the audit of the milestone's sources. This gate also weighed the findings the parts left for
+it.
+
+**The grid's minimum** (plan §7, M3's row), against the corpus:
+
+| The plan asks | The corpus |
+|---|---|
+| pdf, cdf, mean and variance over each parameter range and its edges | all thirteen distributions' four methods, and MultivariateNormal's two densities: grids across the support and beyond, every edge with its neighbours, the specials, seeded points (parts a1–d2) |
+| 10⁴-draw streams per sampler at three seeds | each distribution's first case; and now each further algorithm's (below) |
+| every constructor refusal | 3,153 constructor rows, 2,125 of them refusals, on every parameter's specials and its checks' edges |
+| JSON with invalid parameters refused | 2,437 documents for the fourteen types, 1,285 refused: invalid parameters, wrong types, syntax faults |
+
+- **Four samplers had no 10⁴-draw stream:** Gamma's Ahrens–Dieter boost below α = 1 and PTRS had 256 draws a seed,
+  Beta splitting 256, and MultivariateNormal's draws 2,000 vectors.
+- **The gate gives each 10⁴:** Gamma(0.5, 1), Poisson(100), Binomial(1000, 0.5), and N([1, −2], [[1, 0.3],
+  [0.3, 2]]) as vectors, from the three seeds. Twelve rows change, and the replay stays at 0 ulp.
+- **`dist.cr.tsv` gains a row (1,283):** the longer Gamma and MultivariateNormal streams meet more glibc misrounds,
+  moving up to 8 and 32 ulp where a sum cancels.
+- **The PTRS and splitting streams** equal 1.3.0's draw for draw, even on T1's lnΓ.
+
+**The audit of M3's sources** (`dist.cyr`, `dist_cont.cyr`, `dist_gamma.cyr`, `dist_disc.cyr`, `dist_mvn.cyr`,
+`linalg.cyr`, and `debug.cyr`'s list writers), against CLAUDE.md's library rules:
+- **No aborts:** no `+?`, `-?` or `*?`, no `assert_fatal`, `panic` or `result_unwrap`, no `vec_get`, no
+  `alloc_reset`.
+- **Allocation in one place:** MultivariateNormal's block, on the freelist and freed by its drop, and pool scratch
+  for its densities and its decoder. Everything else writes caller storage.
+- **Every transcendental correctly rounded:** none of the stdlib's or ganita's plain transcendentals. The only stdlib
+  float functions are `f64_sqrt`, `f64_floor`, `f64_abs` and the conversions.
+- **Constants generated or proven:** no hex in a `const`. The one inline word, ln 2π, is proven (below).
+- **Names:** every top-level name carries the pmn prefix.
+- **`#must_use`** is on every function that returns a value, but the JSON decoders passed by pointer (as M1's are)
+  and the drop.
+- **`#pure`** is now on the seven value-only helpers: the three parameter checks, Weibull's g, and the t and F tails.
+  The compiler checks that a `#pure` function calls nothing `#io` or `#alloc`. The library, built with dead-code
+  elimination off, is byte-identical before and after (1,214,784 bytes).
+- **Null and aliasing:** every function with an error channel checks its pointers. The methods that return a bare f64
+  (`pdf`, `cdf`, `mean`, `variance`, `sample`, as M1's `next_f64`) take a non-null object, as Rust's references are.
+
+**The findings the parts left for the gate.**
+- **The constructors' checks (part a2):** they were calls, about 24 ns of a simple row. `#inline` is the fix, but the
+  compiler declines a body with control flow or a `var`. So the three checks and `_pmn_is_finite` are now one
+  expression each, on 0/1 comparisons.
+- **ln 2π (part d2):** MultivariateNormal's densities computed a correctly rounded ln on every call, where LLVM folds
+  Rust's `(2.0 * PI).ln()`. It is now `_PMN_MVN_LN_2PI`, the ln of the double 2π. `scripts/crverify/consts.py`
+  proves it from a 90-digit definition, MPFR agrees, and `tests/dist_mvn.tcyr` checks it against `_pmn_ln`.
+
+Both were measured before adoption: the rows they touch, interleaved, pinned to core 5, three rounds each way. All 26
+sums and digests are the same both ways.
+
+| Row | Before | After | Change |
+|---|---|---|---|
+| `Uniform::cdf`, U(−1, 5) | 40 ns | 32 ns | −20% |
+| `Cauchy::pdf`, Cauchy(0, 1) | 45 ns | 37 ns | −18% |
+| `Normal::pdf`, N(0, 1) | 90–91 ns | 83 ns | −8% |
+| `Exponential::cdf`, Exp(2.5) | 81 ns | 76 ns | −6% |
+| `Bernoulli::cdf`, p = 0.3 | 30–31 ns | 29 ns | −4% |
+| `Weibull::cdf`, `Gamma::pdf`, `Poisson::pdf` | 234–373 ns | 226–366 ns | −2% to −4% |
+| `Beta::pdf`, `Binomial::pdf` | 689–786 ns | 681–787 ns | under 1% |
+| `MultivariateNormal::pdf`, 3-D | 310–313 ns | 236–239 ns | −24% |
+| `MultivariateNormal::log_pdf`, 3-D | 246–249 ns | 176–178 ns | −28% |
+| `MultivariateNormal::new` and drop, 3-D | 742–756 ns | 716–726 ns | −4% |
+
+Five mutants check the change (`build/handoff/mut_e.py`, the replay of `dist` and `json`, and `tests/dist.tcyr`). All
+fail:
+- `_pmn_is_finite` testing only for NaN: 202 rows and 15 checks;
+- `_pmn_require_positive` with `|` for `&`: 1,679 and 46; with v ≥ 0: 278 and 20;
+- `_pmn_require_probability` with v < 1: 288 and 6;
+- the held ln 2π one ulp up: 402 rows, and `consts.py`.
+
+**The other findings** stay findings:
+- **The accuracy ones** are bound by parity in 2.0.0, so they are now the roadmap's (Numerical improvements): Weibull's
+  variance (a3), Gamma's pdf (b1), Poisson's pmf at k ≫ λ (c1), Binomial's pmf at p = 5e-324 (c2), and
+  MultivariateNormal's ill-conditioned densities (d2).
+- **The performance ones** are another project's or another ADR's: the solve's per-term cost is the compiler's
+  register use (d1); the JSON round trip is `fmtf.cyr`'s exact digit search (ledger L10); and T1's cost is ADR 009's.
+
+**The soak.** `tests/soak.tcyr` gains a group: 10⁴ rounds of the thirteen caller-storage distributions, each one's
+constructor, five methods, JSON both ways and Debug in both forms, the parameters moved round by round. The bump heap,
+the freelist's arena, the mapped size and the pool are unchanged, and every pdf and cdf is finite, on x86_64 ELF, PE
+and aarch64. With parts d1 and d2's groups, everything M3 ports is soaked. `tests/soak.tcyr` has 28 checks.
+
+**Surface and Debug.** `distribution` moves to surface parity's ported modules: its 161 items are all mapped (191 in
+five modules, none pending). Every one of the fourteen types has its Debug rows and both codec directions.
+
+**The ledger.** 14 rows and 21 notes in `src/`. Every one of the 21 upstream requests is still open (re-read
+2026-11-16), so nothing converts.
+
+**M3's result.** The fourteen distributions of 1.3.0's `distribution.rs` are ported, with hisab's Cholesky factor
+and solve:
+- **The corpus:** `dist`, 166,631 rows for the fourteen types and three oracle hooks; 2,993 codec rows and 452 Debug
+  rows for them; `linalg`, 682 rows. Every row passes at 0 ulp, against 1.3.0's bits, its correction where glibc
+  misrounds (`dist.cr.tsv`, 1,283 rows), or Rust's formula on the T1 functions (`dist.ref.tsv`, 31,437 rows).
+- **The replay:** eleven modules, 275,753 rows ok and 53,678 accepted (53,508 under ADR 9, 170 under ADR 7),
+  warning-free, on x86_64 ELF, PE (wine) and aarch64 (qemu), with every result line identical on the three.
+- **Accuracy, against MPFR:**
+  - every cdf on a T1 function is within 1 ulp on its measured rows, and never less accurate than 1.3.0: Gamma's and
+    χ²'s, Beta's, StudentT's and F's, Poisson's and Binomial's (parts b1–c2), and Normal's on Φ (a1);
+  - Weibull's mean is within 433 ulp (1.3.0: 1,268), on T1's lnΓ;
+  - the pdfs keep Rust's formulas, so their errors are 1.3.0's but for the last-ulp moves of the correctly rounded
+    primitives. The worst are now the roadmap's.
+- **Tests:** `tests/dist.tcyr` (550 checks), `tests/dist_mvn.tcyr` (68), `tests/linalg.tcyr` (43); `tests/soak.tcyr`
+  (28) soaks all of M3.
+- **Cost** (`docs/benchmarks-rust-v-cyrius.md`, the gate's re-measure of `tests/dist.bcyr`'s 48 rows): a median of
+  8.0× Rust, inside §9's expected 5–9×.
+  - **Without a T1 function,** densities run 3.1–9.9× and draws 2.6–10×, at or under §9's predicted 6–15× and 5–15×.
+  - **The T1 cdfs** run 22–115× (median 81×): the double-double incomplete gamma and beta, whose cost ADR 009
+    accepts.
+  - **The codec rows** run 24–42×: `fmtf.cyr`'s digit search (ledger L10).

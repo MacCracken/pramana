@@ -50,6 +50,9 @@
 //!
 //! Part d2, `MultivariateNormal`: its rows come from `m_mvn.rs`, which says what they are.
 //!
+//! M3's gate (part e): 10^4 draws also for the first case of each further sampling algorithm, from the three seeds:
+//! Gamma's Ahrens–Dieter boost for α < 1 (Gamma(0.5, 1)), PTRS (Poisson(100)) and Beta splitting (Binomial(1000, 0.5)).
+//!
 //! Inputs: the parameters, then x (or the seed and the count). Outputs: the value, or the draws as a sequence.
 
 use std::hint::black_box;
@@ -165,11 +168,17 @@ fn around(x: f64) -> [f64; 3] {
 }
 
 /// The streams: 10^4 draws of the first case and 256 of the others, from each seed.
-#[allow(clippy::cast_possible_wrap)]
 fn streams<D: Distribution>(m: &mut Module, func: &str, class: Class, cases: &[(Vec<f64>, D)]) {
+    streams_long(m, func, class, cases, |_| false);
+}
+
+/// As `streams`, with 10^4 draws also for the cases `long` picks: the first case of each further sampling algorithm
+/// (M3's gate, the plan's 10^4-draw stream per sampler at three seeds).
+#[allow(clippy::cast_possible_wrap)]
+fn streams_long<D: Distribution>(m: &mut Module, func: &str, class: Class, cases: &[(Vec<f64>, D)], long: impl Fn(&[f64]) -> bool) {
     for &seed in &SEEDS {
         for (k, (ins, d)) in cases.iter().enumerate() {
-            let count = if k == 0 { 10_000 } else { 256 };
+            let count = if k == 0 || long(ins) { 10_000 } else { 256 };
             let mut r = SimpleRng::new(seed);
             let xs: Vec<f64> = (0..count).map(|_| d.sample(&mut r)).collect();
             let mut toks: Vec<Tok> = ins.iter().map(|&v| f(v)).collect();
@@ -529,7 +538,8 @@ fn gamma(m: &mut Module, g: &mut Seeds) {
     }
     let cases: Vec<(Vec<f64>, Gamma)> =
         fixed.iter().map(|&(a, b)| (vec![a, b], Gamma::new(a, b).expect("valid"))).collect();
-    streams(m, "Gamma::sample", Class::C, &cases);
+    // Gamma(0.5, 1): the Ahrens–Dieter boost for α < 1, the second algorithm.
+    streams_long(m, "Gamma::sample", Class::C, &cases, |p| p == [0.5, 1.0]);
 }
 
 fn chi_squared(m: &mut Module, g: &mut Seeds) {
@@ -882,7 +892,8 @@ fn poisson(m: &mut Module, g: &mut Seeds) {
     }
     let cases: Vec<(Vec<f64>, Poisson)> =
         fixed.iter().map(|&l| (vec![l], Poisson::new(l).expect("valid"))).collect();
-    streams(m, "Poisson::sample", Class::C, &cases);
+    // Poisson(100): PTRS, past the switch at λ = 30.
+    streams_long(m, "Poisson::sample", Class::C, &cases, |p| p == [100.0]);
 }
 
 /// The oracle's PTRS hook at rates from its 10 up, past the sampler's switch, to 1e15.
@@ -970,7 +981,8 @@ fn binomial(m: &mut Module, g: &mut Seeds) {
     }
     for &seed in &SEEDS {
         for (k, &(n, p)) in fixed.iter().enumerate() {
-            let count = if k == 0 { 10_000 } else { 256 };
+            // Binomial(1000, 0.5): Beta splitting, past 64 trials.
+            let count = if k == 0 || (n, p) == (1000, 0.5) { 10_000 } else { 256 };
             let d = Binomial::new(n, p).expect("valid parameters");
             let mut r = SimpleRng::new(seed);
             let xs: Vec<f64> = (0..count).map(|_| d.sample(&mut r)).collect();

@@ -386,6 +386,8 @@ fn density_tests(mean, cov, x): i64 {
     var w2: f64 = w1 + 0.0;
     var want: f64 = -0.5 * w2;
     assert_eq(bits(lp), bits(want), "at the mean of N(0, I₂): −½(2·ln 2π + 0 + 0), bit for bit");
+    var held: f64 = _PMN_MVN_LN_2PI;
+    assert_eq(bits(held), bits(lt), "the held ln 2π is the correctly rounded ln of the double 2π (M3's gate)");
     z = put(x, 0, 0.75) + put(x, 1, -2.5);
     var t1, v1 = m.log_pdf(x, 2);
     var t2, v2 = m.pdf(x, 2);

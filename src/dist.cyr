@@ -27,25 +27,32 @@ trait PmnDistribution {
     fn sample<R: PmnRng>(self, rng: *R): f64;
 }
 
+# The three checks every constructor makes. Each is one expression on 0/1 comparisons (PMN_ERR_NONE is 0), so `#inline`
+# takes it: the compiler declines a body with control flow or a `var`. Inlined, they cut 1–8 ns from a constructor's
+# call, the same bits (M3's gate, part a2's finding).
+
 # Rust's `require_finite`: PMN_ERR_NONE when v is finite, else PMN_ERR_INVALID_PARAMETER.
 #must_use
+#pure
+#inline
 fn _pmn_require_finite(v: f64): i64 {
-    if (_pmn_is_finite(v) == 1) { return PMN_ERR_NONE; }
-    return PMN_ERR_INVALID_PARAMETER;
+    return (1 - _pmn_is_finite(v)) * PMN_ERR_INVALID_PARAMETER;
 }
 
 # Rust's `require_positive`: PMN_ERR_NONE when v is finite and strictly positive, else PMN_ERR_INVALID_PARAMETER.
 #must_use
+#pure
+#inline
 fn _pmn_require_positive(v: f64): i64 {
-    if (_pmn_is_finite(v) == 1 && v > 0.0) { return PMN_ERR_NONE; }
-    return PMN_ERR_INVALID_PARAMETER;
+    return (1 - (_pmn_is_finite(v) & (v > 0.0))) * PMN_ERR_INVALID_PARAMETER;
 }
 
 # Rust's `require_probability`: PMN_ERR_NONE when 0 ≤ v ≤ 1 (so never for NaN), else PMN_ERR_INVALID_PARAMETER.
 #must_use
+#pure
+#inline
 fn _pmn_require_probability(v: f64): i64 {
-    if (v >= 0.0 && v <= 1.0) { return PMN_ERR_NONE; }
-    return PMN_ERR_INVALID_PARAMETER;
+    return (1 - ((v >= 0.0) & (v <= 1.0))) * PMN_ERR_INVALID_PARAMETER;
 }
 
 # Rust's `standard_normal`: one N(0, 1) variate by Box–Muller's cosine branch, from two uniforms,
