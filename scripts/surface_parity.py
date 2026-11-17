@@ -195,6 +195,18 @@ SURFACE = {
     "distribution::FDistribution#Clone": "a struct of two f64s: copying it clones it",
     "distribution::FDistribution#Serialize": ["method PmnFDistribution.to_json"],
     "distribution::FDistribution#Deserialize": ["fn PmnFDistribution_from_json"],
+    # Part c1: Poisson.
+    "distribution::Poisson": ["struct PmnPoisson"],
+    "distribution::Poisson.new": ["fn PmnPoisson_new"],
+    "distribution::Poisson.pdf": ["method PmnPoisson.pdf"],
+    "distribution::Poisson.cdf": ["method PmnPoisson.cdf"],
+    "distribution::Poisson.mean": ["method PmnPoisson.mean"],
+    "distribution::Poisson.variance": ["method PmnPoisson.variance"],
+    "distribution::Poisson.sample": ["method PmnPoisson.sample"],
+    "distribution::Poisson#Debug": ["method PmnPoisson.debug"],
+    "distribution::Poisson#Clone": "a struct of one f64: copying it clones it",
+    "distribution::Poisson#Serialize": ["method PmnPoisson.to_json"],
+    "distribution::Poisson#Deserialize": ["fn PmnPoisson_from_json"],
 }
 
 DERIVES = {"Debug", "Clone", "Serialize", "Deserialize", "Error"}

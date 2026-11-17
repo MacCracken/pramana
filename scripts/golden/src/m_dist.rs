@@ -37,6 +37,11 @@
 //! but the constructors, means and variances: the pdfs take glibc's ln, ln_1p and exp and 1.3.0's lnΓ or ln B, the
 //! cdfs 1.3.0's incomplete beta, and the draws Marsaglia–Tsang's.
 //!
+//! Part c1, `Poisson`: the pmf and cdf at the integers, off them and around the mean, the draws either side of the
+//! sampler's switch at λ = 30 (Knuth's multiplication, then PTRS), and `sample_poisson_ptrs`, the oracle's PTRS
+//! hook, 1,024 draws at nine rates from three seeds. Class C but the constructor, mean and variance: the pmf takes
+//! glibc's ln and exp and 1.3.0's lnΓ, the cdf 1.3.0's incomplete gamma, and the draws glibc's exp and ln.
+//!
 //! Inputs: the parameters, then x (or the seed and the count). Outputs: the value, or the draws as a sequence.
 
 use std::hint::black_box;
@@ -44,8 +49,8 @@ use std::hint::black_box;
 use crate::grids::{Rng as Seeds, specials};
 use crate::tsv::{Class, Module, Tok, err, f, i};
 use pramana::distribution::{
-    Bernoulli, Beta, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, StudentT, Uniform,
-    Weibull,
+    Bernoulli, Beta, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT,
+    Uniform, Weibull,
 };
 use pramana::{SimpleRng, oracle};
 
@@ -809,6 +814,82 @@ fn tails(m: &mut Module, g: &mut Seeds) {
     }
 }
 
+fn poisson(m: &mut Module, g: &mut Seeds) {
+    for &l in &param_grid() {
+        match Poisson::new(black_box(l)) {
+            Ok(d) => m.row("Poisson::new", Class::A, &[f(l)], &[f(d.lambda)]),
+            Err(e) => m.row("Poisson::new", Class::A, &[f(l)], &[err(&e)]),
+        }
+    }
+    let fixed: Vec<f64> = vec![
+        2.5,
+        1.0,
+        0.5,
+        3.5,
+        10.0,
+        29.999_999_999_999_996,
+        30.0,
+        31.0,
+        100.0,
+        1e3,
+        1e6,
+        1e12,
+        1e-3,
+        1e-300,
+        f64::from_bits(1),
+        f64::MAX,
+    ];
+    let seeded: Vec<f64> = (0..40).map(|_| g.log_uniform(-2.0, 4.0)).collect();
+    let point = |m: &mut Module, l: f64, x: f64| {
+        let d = Poisson::new(l).expect("valid parameters");
+        m.row("Poisson::pdf", Class::C, &[f(l), f(x)], &[f(d.pdf(black_box(x)))]);
+        m.row("Poisson::cdf", Class::C, &[f(l), f(x)], &[f(d.cdf(black_box(x)))]);
+    };
+    for &l in &fixed {
+        let sd = l.sqrt();
+        let mut xs: Vec<f64> = (0..=60).map(f64::from).collect();
+        xs.extend((-24..=24).map(|j| (l + sd * (f64::from(j) / 2.0)).floor()));
+        xs.extend([0.5, 2.5, 3.000_000_000_000_000_4, 2.999_999_999_999_999_6, -0.5, -1.0, -0.0]);
+        xs.extend([l, l.floor(), l + 0.5, 1e15, 9_007_199_254_740_992.0, 1e300]);
+        xs.extend(specials());
+        for x in xs {
+            point(m, l, x);
+        }
+    }
+    for &l in &seeded {
+        let sd = l.sqrt();
+        for j in -12..=12 {
+            point(m, l, (l + sd * (f64::from(j) / 2.0)).floor());
+        }
+    }
+    for k in 0..1000 {
+        let l = g.log_uniform(-2.0, 5.0);
+        let x = (l * g.log_uniform(-2.0, 0.5)).floor();
+        point(m, l, if k % 10 == 0 { x + 0.25 } else { x });
+    }
+    for &l in fixed.iter().chain(&seeded) {
+        let d = Poisson::new(l).expect("valid parameters");
+        m.row("Poisson::mean", Class::A, &[f(l)], &[f(d.mean())]);
+        m.row("Poisson::variance", Class::A, &[f(l)], &[f(d.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, Poisson)> =
+        fixed.iter().map(|&l| (vec![l], Poisson::new(l).expect("valid"))).collect();
+    streams(m, "Poisson::sample", Class::C, &cases);
+}
+
+/// The oracle's PTRS hook at rates from its 10 up, past the sampler's switch, to 1e15.
+#[allow(clippy::cast_possible_wrap)]
+fn poisson_ptrs(m: &mut Module) {
+    let rates = [10.0, 15.0, 30.0, 31.0, 100.0, 1e4, 1e8, 1e12, 1e15];
+    for seed in [1u64, 42, u64::MAX] {
+        for &l in &rates {
+            let mut r = SimpleRng::new(seed);
+            let xs: Vec<f64> = (0..1024).map(|_| oracle::sample_poisson_ptrs(l, &mut r)).collect();
+            m.row("sample_poisson_ptrs", Class::C, &[f(l), i(seed as i64), i(1024)], &draws(&xs));
+        }
+    }
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("dist");
     let mut g = Seeds::new(0x510e_527f_ade6_82d1);
@@ -825,5 +906,7 @@ pub fn emit() -> Module {
     student_t(&mut m, &mut g);
     f_distribution(&mut m, &mut g);
     tails(&mut m, &mut g);
+    poisson(&mut m, &mut g);
+    poisson_ptrs(&mut m);
     m
 }

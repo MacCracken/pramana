@@ -3804,3 +3804,101 @@ is exact on 2,014. 1.3.0's far misses are its edges: NaN at x = 5e-324 for large
 **Cost** (`docs/benchmarks-rust-v-cyrius.md`): 430–893 ns a pdf (6.2–8.2× Rust), 3.6 µs a Beta cdf and 17.7–21.9 µs
 a t or F cdf (23–114×: the T1 incomplete beta), and 490–562 ns a draw (6.9–7.7×). The bench's 34 digests are all
 explained by the models.
+
+### 9.6 Part c1: Poisson, Knuth's sampler and PTRS (2026-11-16)
+
+**The modules.** `src/dist_disc.cyr` gains `PmnPoisson { lambda }`, with the methods, codec and Debug of the others,
+and `_pmn_sample_poisson_ptrs`, Rust's `sample_poisson_ptrs`:
+- **the pmf:** NaN at NaN (Rust's quiet `f64::NAN`, whatever the argument's payload); 0 below 0, off the integers by
+  an exact `fract` test, and at ∞; e^-λ at 0; else exp(ln_gamma_kernel(k + 1, λ) − ln λ), Loader's form, O(1) in k;
+- **the cdf:** Q(⌊x⌋ + 1, λ) on the T1 upper incomplete gamma, O(√λ) at worst, never O(x);
+- **the draws:** Knuth's multiplication up to λ = 30 (a draw of k takes k + 1 uniforms), and above it Hörmann's PTRS
+  (1993), transformed rejection with a squeeze, in Rust's operation order on the correctly rounded ln and the
+  kernel. Two uniforms a try.
+
+**The golden rows.**
+- **`dist`, 8,463 more rows (154,986 in all):**
+  - the constructor on the 20-value grid; class A;
+  - `Poisson::pdf` (the pmf) and `Poisson::cdf`, 4,128 rows each: sixteen fixed rates (5e-324 to f64::MAX, with 30, 31
+    and the double below 30 at the sampler's switch, 1e12 among them) at k = 0 … 60, at ⌊λ ± j·√λ/2⌋ for |j| ≤ 24, off
+    the integers (2.5, 3 ± an ulp), at −1, −0.0, λ and ⌊λ⌋, at 1e15, 2⁵³ and 1e300, and at the specials; 40 seeded rates
+    around their means; 1,000 seeded pairs, a tenth of them off the integers. Class C;
+  - the mean and variance, class A;
+  - 48 streams: 10⁴ draws of Poisson(2.5) from three seeds and 256 of each other fixed rate, Knuth's and PTRS's;
+    and `sample_poisson_ptrs`, the oracle's hook, 1,024 draws at nine rates from 10 to 1e15 from three seeds.
+    Class C.
+- **`json`,** 207 more rows (9,039 in all), and **`debug`,** 32 more (25,656), as part a2's.
+
+**The models.** `validate.py` models every row in Rust's operation order, Knuth's loop and PTRS included, on 1.3.0's
+kernel and incomplete gamma through glibc and on correctly rounded primitives, or on the T1 functions as the port
+computes them.
+- **`dist.cr.tsv`** gains 81 rows where glibc misrounds: 77 pmf values and 4 cdf values (1,135 rows in all).
+- **`dist.ref.tsv`** gains 1,493 rows that the T1 functions move: 246 pmf values (lnΓ, inside the kernel below
+  k + 1 = 10) and 1,247 cdf values (the incomplete gamma). It has 29,695 rows in all.
+- Ten documents serde_json reads only by skipping a member unchecked join `json.map.tsv` (150 rows).
+
+**The result.** Every row passed on the first replay. The replay is ten modules: 264,927 rows ok and 51,768 accepted
+(51,618 under ADR 9, 150 under ADR 7), warning-free. Every c1 row is at 0 ulp, against 1.3.0's bits, its correction
+or Rust's formula on the T1 functions. All 75 streams equal 1.3.0's bit for bit: neither sampler met a glibc
+misround that changed a draw.
+
+**The pmf and cdf against MPFR** (the golden rows at integer k with λ and k + 1 ≤ 10⁵; λ^k e^-λ/k! at 1,024 bits, and
+Q(k + 1, λ) by `mpfr_ref.gamma_pq`):
+
+| Rows | 1.3.0 | The port |
+|---|---|---|
+| the cdf (2,937) | 1,832 exact, max 1,525 ulp | 2,935 exact, all within 1 ulp |
+| the pmf (2,937) | 1,101 exact, max 1.96×10⁶ ulp | 1,142 exact, max 1.96×10⁶ ulp |
+
+- **The cdf** inherits T1's incomplete gamma: within 1 ulp everywhere, never less accurate than 1.3.0.
+- **The pmf** keeps Rust's form. The port is closer on 270 rows and further off on 47. Both versions' worst rows
+  (68 over 1,000 ulp) are at λ = 10⁻³ and k from 40 to 57, where Loader's kernel forms u = (λ − a)/a for a = k + 1:
+  1 + u ≈ λ/a is tiny, so ln_1p(u) loses about 16 bits before the product with a. The kernel is M2's
+  `ln_gamma_kernel`, Rust's form: a finding for 2.1, where the direct form a·ln λ − λ − lnΓ(a) does not cancel.
+
+**Mutation checks** (`build/handoff/mut_c1.py`: the replay and `tests/dist.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| Poisson: lambda only finite | 58 | 4 |
+| the pmf not refusing off-integers | 157 | 1 |
+| the pmf without its e^-λ arm at 0 | 294 | 0 |
+| the pmf's kernel at k for k + 1 | 2,027 | 3 |
+| the cdf unfloored, Q(x + 1, λ) | 115 | 1 |
+| the cdf as 1 − P | 1,005 | 0 |
+| PTRS from λ = 30 | 3 | 1 |
+| Knuth's count k for k − 1 | 30 | 2 |
+| PTRS's b = 0.93 + 2.53√λ | 17 | 0 |
+| PTRS's k = ⌊… + 0.5⌋ | 42 | 0 |
+| PTRS's lhs without ln(1/α) | 42 | 0 |
+| PTRS's quick accept from us = 0.05 (looser) | 19 | 0 |
+| PTRS's early reject below us = 0.05 (wider) | 42 | 1 |
+| the refusal decoded as `INVALID_PARAMETER` | 51 | 1 |
+| Debug named `Poison` | 32 | 2 |
+| Knuth stopping on p < e^-λ | 0 | 0 |
+| PTRS's quick accept from us = 0.08 (tighter) | 0 | 0 |
+| PTRS without its early reject | 0 | 0 |
+
+- **All 15 non-equivalent mutants fail.**
+- **The last three are equivalent.** Knuth's product never lands exactly on e^-λ. PTRS's two shortcuts sit inside
+  the full test's accept and reject regions: a tighter quick accept, or no early reject, only sends points to the full
+  test, which decides them the same way. A looser quick accept, or a wider early reject, changes draws, and the
+  streams catch both.
+
+**Tests.** `tests/dist.tcyr` has 490 checks, 50 of them new:
+- 1.3.0's tests: `poisson_pmf`, `poisson_pmf_and_cdf_reference` (the 50-digit references), `serde_roundtrip_poisson`,
+  `poisson_large_lambda_sample`, `poisson_huge_arguments_are_fast_and_bounded` (cdf(1e18), the 1e12 rate in O(1)),
+  `poisson_ptrs_sampling_moments`, and Poisson's lines of `constructors_reject_non_finite_parameters` and
+  `deserialize_rejects_invalid_parameters`;
+- the oracle's wiring test: above λ = 30 a draw is `sample_poisson_ptrs`', bit for bit and draw for draw;
+- Knuth's draw count (a draw of k takes k + 1 uniforms), λ = 5e-324 drawing 0, the constructor's refusals;
+- the pmf's and cdf's edges: −0.0, off the integers by an ulp, ∞, a negative NaN returning Rust's quiet `f64::NAN`,
+  and the cdf constant between the integers;
+- the codec's text and refusal, and Debug's two forms.
+
+**Surface parity.** 11 more items are mapped (138 of `distribution`'s 161), and 23 are pending: Binomial (c2) and
+MultivariateNormal (d2).
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 364–370 ns a pmf (8.5× Rust), 2.55–2.62 µs a cdf (29×: the T1
+incomplete gamma), 225–230 ns a Knuth draw (4.2×) and 298–306 ns a PTRS draw (8.5×). The bench's 38 digests are all
+explained by the models.

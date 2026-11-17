@@ -815,6 +815,7 @@ JSON_VALIDATED = {
     "Beta": ([("alpha", "f64"), ("beta", "f64")], lambda a, b: d_positive(a) and d_positive(b)),
     "StudentT": ([("df", "f64")], lambda df: d_positive(df)),
     "FDistribution": ([("d1", "f64"), ("d2", "f64")], lambda a, b: d_positive(a) and d_positive(b)),
+    "Poisson": ([("lambda", "f64")], lambda la: d_positive(la)),
 }
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
@@ -2913,6 +2914,67 @@ def d_beta_sample(L, a, b, u):
     return fdiv(gx, gx + gy)
 
 
+def d_floor(x):
+    """f64::floor: exact, ±0 and the non-finite kept."""
+    if not math.isfinite(x) or x == 0.0:
+        return x
+    return float(math.floor(x))
+
+
+def d_poisson_pdf(L, la, x):
+    if math.isnan(x):
+        return math.nan
+    if x < 0.0 or math.isinf(x) or x - math.trunc(x) != 0.0:
+        return 0.0
+    if x == 0.0:
+        return L.exp(-la)
+    return L.exp(sp_kernel(L.K, L, x + 1.0, la) - L.ln(la))
+
+
+def d_poisson_cdf(L, la, x):
+    if math.isnan(x):
+        return math.nan
+    if x < 0.0:
+        return 0.0
+    return (L.gamma or sp_gamma_inc)(L.K, L, d_floor(x) + 1.0, la)[1]
+
+
+def d_poisson_ptrs(L, la, u):
+    """1.3.0's sample_poisson_ptrs: Hörmann's PTRS, in Rust's operation order on L's ln and 1.3.0's kernel."""
+    slam = math.sqrt(la)
+    loglam = L.ln(la)
+    b = 0.931 + 2.53 * slam
+    a = -0.059 + 0.02483 * b
+    inv_alpha = 1.1239 + 1.1328 / (b - 3.4)
+    vr = 0.9277 - 3.6224 / (b - 2.0)
+    while True:
+        uu = next(u) - 0.5
+        v = next(u)
+        us = 0.5 - abs(uu)
+        k = d_floor((fdiv(2.0 * a, us) + b) * uu + la + 0.43)
+        if us >= 0.07 and v <= vr:
+            return k
+        if k < 0.0 or not math.isfinite(k) or (us < 0.013 and v > us):
+            continue
+        lhs = L.ln(v) + L.ln(inv_alpha) - L.ln(fdiv(a, us * us) + b)
+        rhs = -la if k == 0.0 else sp_kernel(L.K, L, k + 1.0, la) - loglam
+        if lhs <= rhs:
+            return k
+
+
+def d_poisson_sample(L, la, u):
+    if la > 30.0:
+        return d_poisson_ptrs(L, la, u)
+    lim = L.exp(-la)
+    k, p = 0, 1.0
+    while True:
+        k += 1
+        p *= next(u)
+        if p <= lim:
+            break
+    return float(k - 1)
+
+
 def d_new(ok, fields):
     return fields if ok else ["E:InvalidParameter"]
 
@@ -3010,13 +3072,25 @@ DIST = {  # name: model(L, *inputs) -> outputs (a list)
     "student_t_two_tailed": lambda L, t, df: [d_t_two_tailed(L, t, df)],
     "student_t_cdf": lambda L, t, df: [d_t_cdf(L, t, df)],
     "f_cdf_sf": lambda L, x, d1, d2: d_f_cdf_sf(L, x, d1, d2),
+    # part c1
+    "Poisson::new": lambda L, la: d_new(d_positive(la), [la]),
+    "Poisson::pdf": lambda L, la, x: [d_poisson_pdf(L, la, x)],
+    "Poisson::cdf": lambda L, la, x: [d_poisson_cdf(L, la, x)],
+    "Poisson::mean": lambda L, la: [la],
+    "Poisson::variance": lambda L, la: [la],
+    "Poisson::sample": lambda L, la, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_poisson_sample(L, la, u), seed, n),
+    "sample_poisson_ptrs": lambda L, la, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_poisson_ptrs(L, la, u), seed, n),
 }
 DIST_T1 = {"Normal::cdf": "Φ", "Weibull::mean": "lnΓ", "Weibull::variance": "lnΓ", "Gamma::pdf": "lnΓ",
            "Gamma::cdf": "incomplete gamma", "ChiSquared::pdf": "lnΓ", "ChiSquared::cdf": "incomplete gamma",
            "Beta::pdf": "lnΓ (ln B)", "Beta::cdf": "incomplete beta", "StudentT::pdf": "lnΓ (ln B)",
            "StudentT::cdf": "incomplete beta", "FDistribution::pdf": "lnΓ (ln B)",
            "FDistribution::cdf": "incomplete beta", "student_t_two_tailed": "incomplete beta",
-           "student_t_cdf": "incomplete beta", "f_cdf_sf": "incomplete beta"}   # rows downstream of a T1 function (ADR 009 as amended)
+           "student_t_cdf": "incomplete beta", "f_cdf_sf": "incomplete beta", "Poisson::pdf": "lnΓ (the kernel)",
+           "Poisson::cdf": "incomplete gamma", "Poisson::sample": "lnΓ (the kernel)",
+           "sample_poisson_ptrs": "lnΓ (the kernel)"}   # rows downstream of a T1 function (ADR 009 as amended)
 
 
 def dist_prims(root):
@@ -3207,6 +3281,8 @@ def debug_text(fn, ins):
     if fn in ("debug::Beta", "debug::FDistribution"):
         name, (fa, fb) = (("Beta", ("alpha", "beta")) if fn == "debug::Beta" else ("FDistribution", ("d1", "d2")))
         return debug_struct(name, [(fa, rust_debug_f64(ins[0])), (fb, rust_debug_f64(ins[1]))], ins[2] == 1)
+    if fn == "debug::Poisson":
+        return debug_struct("Poisson", [("lambda", rust_debug_f64(ins[0]))], ins[1] == 1)
     if fn == "debug::StudentT":
         return debug_struct("StudentT", [("df", rust_debug_f64(ins[0]))], ins[1] == 1)
     if fn == "debug::PramanaError":

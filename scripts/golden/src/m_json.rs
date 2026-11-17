@@ -11,7 +11,7 @@
 //! - 1.3.0's `SimpleRng` (e1), read through its repr and `new`, so a state of 0 reads as 1.
 //! - 1.3.0's `Normal` (M3 part a1), read through `NormalRepr` and `Normal::new`, so a std_dev it refuses is an error;
 //!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2), `Cauchy` and `Weibull` (a3), `Gamma` and
-//!   `ChiSquared` (b1), and `Beta`, `StudentT` and `FDistribution` (b2), the same way.
+//!   `ChiSquared` (b1), `Beta`, `StudentT` and `FDistribution` (b2), and `Poisson` (c1), the same way.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -46,7 +46,8 @@
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
 use pramana::distribution::{
-    Bernoulli, Beta, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, StudentT, Uniform, Weibull,
+    Bernoulli, Beta, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT, Uniform,
+    Weibull,
 };
 use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
@@ -606,6 +607,7 @@ pub fn emit() -> Module {
     beta(&mut m, &mut g);
     student_t(&mut m, &mut g);
     f_distribution(&mut m, &mut g);
+    poisson(&mut m, &mut g);
     m
 }
 
@@ -853,6 +855,27 @@ fn student_t(m: &mut Module, g: &mut Rng) {
     for &df in &dfs {
         let x = StudentT::new(df).expect("valid parameters");
         m.row("json::write::StudentT", Class::A, &[f(df)], &[text(&x)]);
+    }
+}
+
+// ── M3 c1: Poisson's codec ──
+
+fn poisson(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Poisson::new(3.5).expect("valid")).expect("a Poisson");
+    let mut docs = struct_docs(&base, &["lambda"], &[f64_forms()]);
+    docs.extend(bytes(&["[3.5]", "[]", "[3.5,1]", "[-3.5]", r#"{"lambda":-3.0}"#]));
+    let mut ls: Vec<f64> = vec![1.0, 30.0, f64::from_bits(1), f64::MAX];
+    ls.extend((0..40).map(|_| g.log_uniform(-20.0, 20.0)));
+    for &l in &ls {
+        docs.push(format!("{{\"lambda\":{}}}", ryu_like(l)).into_bytes());
+        docs.push(format!("{{\"lambda\":{}}}", ryu_like(-l)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Poisson", d, serde_json::from_slice::<Poisson>(d), |x| vec![f(x.lambda)]);
+    }
+    for &l in &ls {
+        let x = Poisson::new(l).expect("valid parameters");
+        m.row("json::write::Poisson", Class::A, &[f(l)], &[text(&x)]);
     }
 }
 

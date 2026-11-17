@@ -59,7 +59,7 @@ files. This README records what is specific to pramana.
   digits (`repr`, ties to even as serde_json's zmij), and 62 of the inputs are exact ties.
 - **`json.tsv`** (M1 parts d3a, d3b and d4, `src/m_json.rs`; from M3 part a1, Normal's codec, from part a2,
   Uniform's, Exponential's and Bernoulli's, from a3, Cauchy's and Weibull's, from b1, Gamma's and ChiSquared's, and
-  from b2, Beta's, StudentT's and FDistribution's), 8,832 rows. The reading rows are
+  from b2, Beta's, StudentT's and FDistribution's, and from c1, Poisson's), 9,039 rows. The reading rows are
   `serde_json::from_slice::<T>`, with `float_roundtrip` on, on 4,725 documents. T is one of:
   - each value type 1.3.0's serialized types are made of (`f64`, `u64`, `usize`, `bool`, `String`, `Vec<f64>`,
     `Vec<u64>`, `Vec<String>`, `Vec<Vec<f64>>`);
@@ -83,7 +83,8 @@ files. This README records what is specific to pramana.
   message; from M3 part a1, `Normal` at 24 parameter pairs, and `debug::f64`, Rust's `{:?}` of `fmt.tsv`'s 25,200
   doubles (an f64 field's form); from part a2, `Uniform`, `Exponential` and `Bernoulli` at up to 16 parameters
   each; from a3, `Cauchy` and `Weibull` at 16 each; from b1, `Gamma` and `ChiSquared` at 16 each; from b2, `Beta`,
-  `StudentT` and `FDistribution` at 16 each. The last input is 0 for `{:?}` and 1 for `{:#?}`.
+  `StudentT` and `FDistribution` at 16 each; from c1, `Poisson` at 16 rates. The last input is 0 for `{:?}` and 1 for
+  `{:#?}`.
   `validate.py` models the derive's struct and tuple text, and an f64's from Python's shortest digits, with an exact
   tie, which `repr` breaks to even, redone with Rust's upper choice.
 - **`dist.tsv`** (M3, `src/m_dist.rs`): 1.3.0's distributions, named by Rust's path (`Normal::pdf`), and the oracle's
@@ -101,8 +102,10 @@ files. This README records what is specific to pramana.
   4e9 past T1's 10⁹), and `sample_gamma_standard`, the oracle's Marsaglia–Tsang hook. Class C but the constructors,
   means and variances. Part b2, 36,081 rows: `Beta`, `StudentT` and `FDistribution` the same way, and the oracle's
   Student-t and F tails (`student_t_two_tailed`, `student_t_cdf`, `f_cdf_sf`, both of the last's values) on their own
-  grids. Class C but the constructors, means and variances. `validate.py` models every row three ways, as
-  `special`'s, and writes `dist.cr.tsv` (a glibc primitive's misround) and `dist.ref.tsv` (Normal's cdf on the T1 Φ;
+  grids. Class C but the constructors, means and variances. Part c1, 8,463 rows: `Poisson` the same way, the pmf and
+  cdf at the integers, off them and around the mean, streams either side of the sampler's switch at λ = 30, and
+  `sample_poisson_ptrs`, the oracle's PTRS hook. `validate.py` models every row three ways, as `special`'s, and
+  writes `dist.cr.tsv` (a glibc primitive's misround) and `dist.ref.tsv` (Normal's cdf on the T1 Φ;
   Weibull's moments and the gamma family's pdfs on the T1 lnΓ or ln B; their cdfs and the tails on the T1 incomplete
   gamma or beta).
 - **`bridge.tsv`** (M1 part e3, `src/m_bridge.rs`): the eleven bridges on special-value grids, the 1e-15 floors and
@@ -196,11 +199,11 @@ files. This README records what is specific to pramana.
 | `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
 | `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
-| `json` | M1 d3a–d4, e1, M3 a1–b2 | 8,832 | `src/m_json.rs` | `json.map.tsv`, 140 rows (ADR 007 row 16) |
+| `json` | M1 d3a–d4, e1, M3 a1–c1 | 9,039 | `src/m_json.rs` | `json.map.tsv`, 150 rows (ADR 007 row 16) |
 | `rng` | M1 e1 | 46 | `src/m_rng.rs` | — |
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
-| `debug` | M1 f, M3 a1–b2 | 25,624 | `src/m_debug.rs` | — |
-| `dist` | M3 a1–b2 | 146,523 | `src/m_dist.rs` | `dist.cr.tsv`, 1,054 rows (glibc's exp, expm1, ln, ln_1p, cos, tan or pow misrounded in a pdf or cdf value, a moment or a draw); `dist.ref.tsv`, 28,202 rows (Normal's cdf on the T1 Φ, 2,699; Weibull's moments on the T1 lnΓ, 1,100; the gamma family's pdfs on the T1 lnΓ or ln B, 9,340; their cdfs and the Student-t and F tails on the T1 incomplete gamma or beta, 15,063) |
+| `debug` | M1 f, M3 a1–c1 | 25,656 | `src/m_debug.rs` | — |
+| `dist` | M3 a1–c1 | 154,986 | `src/m_dist.rs` | `dist.cr.tsv`, 1,135 rows (glibc's exp, expm1, ln, ln_1p, cos, tan or pow misrounded in a pdf or cdf value, a moment or a draw); `dist.ref.tsv`, 29,695 rows (Normal's cdf on the T1 Φ, 2,699; Weibull's moments on the T1 lnΓ, 1,100; the gamma family's and Poisson's pdfs on the T1 lnΓ or ln B, 9,586; their cdfs and the Student-t and F tails on the T1 incomplete gamma or beta, 16,310) |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
 | `special` | M2 a1–a4, b1–b5 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 20,621 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; b5: the incomplete beta's I and 1 − I at theirs, 4,834; and the rows downstream of them on T1's values, 3,029, among them gamma_inc's 510 Wilson–Hilferty rows and the three wrappers' 777); `special.cr.tsv`, 91 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel and ln B, 87; two `beta_inc` rows whose true value is Rust's form on correctly rounded primitives; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
 

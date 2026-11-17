@@ -791,6 +791,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     clamp is a guard no input reaches); surface parity maps 33 more items (34 pending);
   - **cost:** 430–893 ns a pdf (6.2–8.2× Rust), 3.6 µs a Beta cdf and 17.7–21.9 µs a t or F cdf
     (23–114×: the T1 incomplete beta), 490–562 ns a draw (6.9–7.7×); every bench digest is explained by the models.
+- **M3 part c1: Poisson, Knuth's sampler and PTRS** (`src/dist_disc.cyr`; port plan §7; D5, D7 as amended, D11, D12;
+  results in `docs/development/port-parity.md` §9.6):
+  - **`PmnPoisson`:** the constructor refuses as 1.3.0 does, writing nothing; the pmf by Loader's kernel on the T1 lnΓ
+    and the cdf Q(⌊x⌋ + 1, λ) on the T1 incomplete gamma, both O(1) or O(√λ) in k; Knuth's sampler up to λ = 30 and
+    Hörmann's PTRS above it, `_pmn_sample_poisson_ptrs`, in Rust's operation order; serde_json's text byte for byte,
+    read through the constructor; the derived Debug;
+  - **golden rows:** 8,463 more `dist` rows (154,986: the constructor's grid, the pmf and cdf at the integers, off them
+    and around the mean, 48 streams either side of the switch, and 27 of the oracle's `sample_poisson_ptrs` hook), 207
+    codec rows and 32 Debug rows. `validate.py` models every one; `dist.ref.tsv` gains 1,493 rows that the T1
+    functions move, and `dist.cr.tsv` 81. Every row passes on the first replay, at 0 ulp, warning-free, on x86_64
+    ELF, PE and aarch64, and every stream equals 1.3.0's;
+  - **accuracy:** against MPFR, the cdf is within 1 ulp on all 2,937 golden rows with λ and k ≤ 10⁵ (1.3.0: up to
+    1,525 ulp); the pmf keeps Loader's kernel, which loses about 16 bits at k ≫ λ (1.96×10⁶ ulp at λ = 10⁻³, k = 57,
+    in both): a finding for 2.1;
+  - **tests and checks:** `tests/dist.tcyr`, 490 checks (50 new); all 15 non-equivalent mutants fail (three are
+    equivalent: Knuth's `<` and PTRS's shortcuts, which the full test agrees with); surface parity maps 11 more items
+    (23 pending);
+  - **cost:** 364–370 ns a pmf (8.5× Rust), 2.55–2.62 µs a cdf (29×: the T1 incomplete gamma),
+    225–230 ns a Knuth draw (4.2×) and 298–306 ns a PTRS draw (8.5×); every bench digest is explained by the models.
 
 ### Performance
 

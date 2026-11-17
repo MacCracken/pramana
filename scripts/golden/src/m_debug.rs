@@ -14,6 +14,7 @@
 //!   forms.
 //! - `debug::Beta`, `debug::StudentT`, `debug::FDistribution` (M3 part b2): each at 16 parameters, the special ones
 //!   among them, in both forms.
+//! - `debug::Poisson` (M3 part c1): at 16 rates, the special ones among them, in both forms.
 //! - `debug::f64` (M3 part a1): an f64 field's form, `{:?}`, on `fmt.tsv`'s 25,200 doubles. `{:#?}` prints an f64
 //!   the same way.
 //!
@@ -24,7 +25,8 @@ use crate::grids::Rng as Seeds;
 use crate::tsv::{Class, Module, Tok, i, s};
 use crate::tsv::f;
 use pramana::distribution::{
-    Bernoulli, Beta, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, StudentT, Uniform, Weibull,
+    Bernoulli, Beta, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT, Uniform,
+    Weibull,
 };
 use pramana::{PramanaError, SimpleRng};
 
@@ -161,6 +163,14 @@ pub fn emit() -> Module {
         let d = StudentT::new(df).expect("valid parameters");
         for (alt, text) in both(&d).iter().enumerate() {
             m.row("debug::StudentT", Class::A, &[f(df), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    let mut rates: Vec<f64> = vec![3.5, 30.0, 1e-4, 9.999_999_999_999_999e-5, f64::MAX, f64::from_bits(1)];
+    rates.extend((0..10).map(|_| g.log_uniform(-20.0, 20.0)));
+    for &l in &rates {
+        let d = Poisson::new(l).expect("valid parameters");
+        for (alt, text) in both(&d).iter().enumerate() {
+            m.row("debug::Poisson", Class::A, &[f(l), i(alt as i64)], &[s(text.clone())]);
         }
     }
     for x in crate::m_fmt::inputs() {

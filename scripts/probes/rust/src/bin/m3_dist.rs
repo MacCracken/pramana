@@ -8,8 +8,8 @@
 
 use pramana::SimpleRng;
 use pramana::distribution::{
-    Bernoulli, Beta, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, StudentT, Uniform,
-    Weibull,
+    Bernoulli, Beta, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT,
+    Uniform, Weibull,
 };
 use std::hint::black_box;
 use std::time::Instant;
@@ -115,4 +115,9 @@ fn main() {
     row(&mut r, "StudentT::sample, df in [1, 30)", |_, y, g| StudentT::new(y).unwrap().sample(g), u, (1.0, 30.0));
     row(&mut r, "FDistribution::cdf, F(4, 9), x in [0, 10)", |x, _, _| FDistribution::new(4.0, 9.0).unwrap().cdf(x), (0.0, 10.0), u);
     row(&mut r, "FDistribution::sample, d1 = d2 in [1, 30)", |_, y, g| FDistribution::new(y, y).unwrap().sample(g), u, (1.0, 30.0));
+    // part c1
+    row(&mut r, "Poisson::pdf, Poisson(4.5), k = floor(x), x in [0, 20)", |x, _, _| Poisson::new(4.5).unwrap().pdf(x.floor()), (0.0, 20.0), u);
+    row(&mut r, "Poisson::cdf, Poisson(4.5), x in [0, 20)", |x, _, _| Poisson::new(4.5).unwrap().cdf(x), (0.0, 20.0), u);
+    row(&mut r, "Poisson::sample, Knuth, lambda in [1, 30)", |_, y, g| Poisson::new(y).unwrap().sample(g), u, (1.0, 30.0));
+    row(&mut r, "Poisson::sample, PTRS, lambda in [31, 1000)", |_, y, g| Poisson::new(y).unwrap().sample(g), u, (31.0, 1000.0));
 }

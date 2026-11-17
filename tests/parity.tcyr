@@ -488,6 +488,12 @@ fn _par_json_write(fp, fl): i64 {
         if (PmnStudentT_new(&wst, wsd) != PMN_ERR_NONE) { return 0 - 1; }
         _par_json_k = 1;
         e = wst.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::Poisson") == 1) {
+        var wpo: PmnPoisson;
+        var wpl: f64 = _par_in(0);
+        if (PmnPoisson_new(&wpo, wpl) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 1;
+        e = wpo.to_json(sb);
     } elif (_par_eq(fp, fl, "json::write::Bernoulli") == 1) {
         var wb: PmnBernoulli;
         var wp: f64 = _par_in(0);
@@ -570,8 +576,8 @@ fn _par_json_normal(): i64 {
 }
 
 # json::Uniform, json::Exponential and json::Bernoulli rows (M3 part a2), json::Cauchy and json::Weibull (a3),
-# json::Gamma and json::ChiSquared (b1), json::Beta, json::StudentT and json::FDistribution (b2): each one's from_json,
-# the fields it holds.
+# json::Gamma and json::ChiSquared (b1), json::Beta, json::StudentT and json::FDistribution (b2), json::Poisson (c1):
+# each one's from_json, the fields it holds.
 fn _par_json_dist(fp, fl): i64 {
     var n = 0;
     var doc = _par_in_bytes(0, &n);
@@ -628,6 +634,10 @@ fn _par_json_dist(fp, fl): i64 {
         var st: PmnStudentT;
         e = PmnStudentT_from_json(&st, doc, n);
         a = st.df;
+    } elif (_par_eq(fp, fl, "json::Poisson") == 1) {
+        var po: PmnPoisson;
+        e = PmnPoisson_from_json(&po, doc, n);
+        a = po.lambda;
     } elif (_par_eq(fp, fl, "json::Bernoulli") == 1) {
         var y: PmnBernoulli;
         e = PmnBernoulli_from_json(&y, doc, n);
@@ -812,7 +822,12 @@ fn _par_debug(fp, fl): i64 {
     }
     if (_par_in_n != 2) { return 0 - 1; }
     var alt = _par_in(1);
-    if (_par_eq(fp, fl, "debug::StudentT") == 1) {
+    if (_par_eq(fp, fl, "debug::Poisson") == 1) {
+        var dpo: PmnPoisson;
+        var dpl: f64 = _par_in(0);
+        if (PmnPoisson_new(&dpo, dpl) != PMN_ERR_NONE) { return 0 - 1; }
+        e = dpo.debug(sb, alt);
+    } elif (_par_eq(fp, fl, "debug::StudentT") == 1) {
         var dst: PmnStudentT;
         var dsd: f64 = _par_in(0);
         if (PmnStudentT_new(&dst, dsd) != PMN_ERR_NONE) { return 0 - 1; }
@@ -1101,9 +1116,15 @@ fn _par_special(fp, fl): i64 {
 # `dist` rows (M3): src/dist.cyr, src/dist_cont.cyr and src/dist_disc.cyr, each distribution built by its constructor
 # from the row's parameters. Part a1: Normal, and Box–Muller's `standard_normal` through a bounded generic; part a2:
 # Uniform, Exponential and Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma, ChiSquared and the oracle's
-# `sample_gamma_standard`; part b2: Beta, StudentT, FDistribution and the oracle's Student-t and F tails.
+# `sample_gamma_standard`; part b2: Beta, StudentT, FDistribution and the oracle's Student-t and F tails; part c1:
+# Poisson and the oracle's `sample_poisson_ptrs`.
 fn _par_std_normal<R: PmnRng>(g: *R): f64 {
     var z: f64 = _pmn_standard_normal(g);
+    return z;
+}
+
+fn _par_poisson_ptrs<R: PmnRng>(l: f64, g: *R): f64 {
+    var z: f64 = _pmn_sample_poisson_ptrs(l, g);
     return z;
 }
 
@@ -1208,6 +1229,19 @@ fn _par_dist(fp, fl): i64 {
             tr = _pmn_student_t_cdf(tt, tdf);
         }
         _par_got_f(tr);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "sample_poisson_ptrs") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var pl: f64 = _par_in(0);
+        var pg: PmnSimpleRng;
+        if (PmnSimpleRng_new(&pg, _par_in(1)) != PMN_ERR_NONE) { return 0 - 1; }
+        var pn = _par_in(2);
+        _par_got_seq(pn);
+        for (var pk = 0; pk < pn; pk = pk + 1) {
+            var pz: f64 = _par_poisson_ptrs(pl, &pg);
+            _par_got_f(pz);
+        }
         return 1;
     }
     if (_par_eq(fp, fl, "f_cdf_sf") == 1) {
@@ -1316,6 +1350,15 @@ fn _par_dist(fp, fl): i64 {
         if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(efd, &dfd, 2); }
         if (efd != PMN_ERR_NONE) { return 0 - 1; }
         return _par_dist_call(&dfd, fp + px, fl - px, 2);
+    }
+    px = _par_dist_prefix(fp, fl, "Poisson");
+    if (px > 0) {
+        var plam: f64 = _par_in(0);
+        var dpo: PmnPoisson;
+        var epo = PmnPoisson_new(&dpo, plam);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(epo, &dpo, 1); }
+        if (epo != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&dpo, fp + px, fl - px, 1);
     }
     px = _par_dist_prefix(fp, fl, "Bernoulli");
     if (px > 0) {
@@ -1478,6 +1521,10 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "student_t_two_tailed") == 1) { return 0; }
     if (_par_eq(fp, fl, "student_t_cdf") == 1) { return 0; }
     if (_par_eq(fp, fl, "f_cdf_sf") == 1) { return 0; }
+    if (_par_eq(fp, fl, "Poisson::pdf") == 1) { return 0; }          # ln and exp; the kernel on the T1 lnΓ (part c1)
+    if (_par_eq(fp, fl, "Poisson::cdf") == 1) { return 0; }          # downstream of the T1 incomplete gamma
+    if (_par_eq(fp, fl, "Poisson::sample") == 1) { return 0; }       # Knuth's exp, PTRS's ln and kernel
+    if (_par_eq(fp, fl, "sample_poisson_ptrs") == 1) { return 0; }
     return 0 - 1;
 }
 

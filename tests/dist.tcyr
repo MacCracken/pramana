@@ -5,7 +5,7 @@
 # constructor's refusals, the identities each method keeps bit for bit, a consumer's own generator through the trait,
 # and the codecs' and Debug's exact text. Part a1: Normal, Box–Muller and Debug's f64 form; part a2: Uniform,
 # Exponential and Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma, ChiSquared and Marsaglia–Tsang; part b2:
-# Beta, StudentT and FDistribution, with Rust's Student-t and F tails.
+# Beta, StudentT and FDistribution, with Rust's Student-t and F tails; part c1: Poisson, Knuth's sampler and PTRS.
 
 include "tests/lib.cyr"
 
@@ -1304,6 +1304,173 @@ fn main() {
     store64(sb + 8, 0);
     assert_eq(fdd.debug(sb, 1), PMN_ERR_NONE, "FDistribution {:#?}");
     assert(text_is(sb, "FDistribution {\n    d1: 5.0,\n    d2: 10.0,\n}") == 1, "one field a line");
+
+    test_group("1.3.0's Poisson tests (poisson_pmf, _pmf_and_cdf_reference, _huge_arguments_are_fast_and_bounded)");
+    var po: PmnPoisson;
+    assert_eq(PmnPoisson_new(&po, 2.0), PMN_ERR_NONE, "Poisson(2)");
+    var pe: f64 = of_bits(0x4005BF0A8B145769);
+    var pe2: f64 = _pmn_powf(pe, -2.0);
+    var pw3: f64 = 8.0 * pe2;
+    pw3 = pw3 / 6.0;
+    var pp3: f64 = po.pdf(3.0);
+    assert(f64_abs(pp3 - pw3) < 0.0000000001, "pmf(3; 2) = 8e⁻²/6 within 1e-10");
+    assert_eq(PmnPoisson_new(&po, 2.5), PMN_ERR_NONE, "Poisson(2.5)");
+    var pq3: f64 = po.pdf(3.0);
+    assert(rel_ok(pq3, 0.21376301724973645, 0.00000000000001) == 1, "pmf(3; 2.5) within 1e-14");
+    var psum: f64 = 0.0;
+    for (var pk = 0; pk <= 6; pk = pk + 1) {
+        var pkf: f64 = f64_from(pk);
+        var pkv: f64 = po.pdf(pkf);
+        psum = psum + pkv;
+    }
+    var pc6: f64 = po.cdf(6.0);
+    assert(rel_ok(pc6, psum, 0.00000000000001) == 1, "cdf(6; 2.5) is the pmf's sum within 1e-14");
+    var p100: PmnPoisson;
+    assert_eq(PmnPoisson_new(&p100, 100.0), PMN_ERR_NONE, "Poisson(100)");
+    var pc120: f64 = p100.cdf(120.0);
+    assert(rel_ok(pc120, 0.9773306709216473, 0.0000000000001) == 1, "cdf(120; 100) within 1e-13");
+    var p1e4: PmnPoisson;
+    assert_eq(PmnPoisson_new(&p1e4, 10000.0), PMN_ERR_NONE, "Poisson(1e4)");
+    var pc1e4: f64 = p1e4.cdf(10000.0);
+    assert(rel_ok(pc1e4, 0.5026595812190076, 0.000000000001) == 1, "cdf(1e4; 1e4) within 1e-12");
+    assert_eq(PmnPoisson_new(&po, 3.0), PMN_ERR_NONE, "Poisson(3)");
+    var pbig: f64 = po.cdf(1000000000000000000.0);
+    var pinf: f64 = po.cdf(inf);
+    var ppbig: f64 = po.pdf(1000000000000000.0);
+    var pcnan: f64 = po.cdf(nan);
+    assert(pbig == 1.0 && pinf == 1.0 && ppbig == 0.0 && pcnan != pcnan, "cdf(1e18) = cdf(∞) = 1, pmf(1e15) = 0, NaN");
+    var p12: PmnPoisson;
+    assert_eq(PmnPoisson_new(&p12, 1000000000000.0), PMN_ERR_NONE, "Poisson(1e12)");
+    var p12c: f64 = p12.cdf(1000000000000.0);
+    var p12p: f64 = p12.pdf(1000000000000.0);
+    assert(f64_abs(p12c - 0.5) < 0.001 && p12p > 0.0, "λ = 1e12: cdf(λ) within 1e-3 of ½, pmf(λ) > 0, in O(1)");
+
+    test_group("1.3.0's Poisson sampling tests (poisson_large_lambda_sample, poisson_ptrs_sampling_moments)");
+    assert_eq(PmnPoisson_new(&po, 100.0), PMN_ERR_NONE, "Poisson(100)");
+    PmnSimpleRng_new(&g, 42);
+    var ps_ok = 1;
+    var pssum: f64 = 0.0;
+    for (var pi1 = 0; pi1 < 10000; pi1 = pi1 + 1) {
+        var psd: f64 = po.sample(&g);
+        if (psd < 0.0 || _pmn_is_finite(psd) == 0) { ps_ok = 0; }
+        pssum = pssum + psd;
+    }
+    var psavg: f64 = pssum / 10000.0;
+    assert(ps_ok == 1 && f64_abs(psavg - 100.0) < 5.0, "10,000 draws of Poisson(100) from seed 42: ≥ 0, mean within 5");
+    var pm_ok = 1;
+    for (var pl = 0; pl < 3; pl = pl + 1) {
+        var lam: f64 = 31.0;
+        if (pl == 1) { lam = 100.0; }
+        if (pl == 2) { lam = 1000000.0; }
+        assert_eq(PmnPoisson_new(&po, lam), PMN_ERR_NONE, "Poisson(λ)");
+        PmnSimpleRng_new(&g, 2024);
+        var smean: f64 = 0.0;
+        var ssq: f64 = 0.0;
+        for (var pj = 0; pj < 20000; pj = pj + 1) {
+            var pd: f64 = po.sample(&g);
+            var pfr: f64 = _pmn_fract(pd);
+            if (pd < 0.0 || pfr != 0.0) { pm_ok = 0; }
+            smean = smean + pd;
+            ssq = ssq + pd * pd;
+        }
+        var mn: f64 = smean / 20000.0;
+        var m2: f64 = mn * mn;
+        m2 = m2 * 20000.0;
+        var vr: f64 = ssq - m2;
+        vr = vr / 19999.0;
+        var se: f64 = lam / 20000.0;
+        se = f64_sqrt(se);
+        se = 5.0 * se;
+        var vq: f64 = vr / lam;
+        vq = vq - 1.0;
+        if (f64_abs(mn - lam) >= se || f64_abs(vq) >= 0.06) { pm_ok = 0; }
+    }
+    assert_eq(pm_ok, 1, "PTRS at λ = 31, 100, 1e6: 20,000 integer draws, mean within 5 standard errors, variance 6%");
+
+    test_group("the oracle's PTRS wiring test, Knuth's draw count, and the constructor (D11)");
+    var pt_ok = 1;
+    for (var pt = 0; pt < 4; pt = pt + 1) {
+        var tl: f64 = 31.0;
+        if (pt == 1) { tl = 100.0; }
+        if (pt == 2) { tl = 10000.0; }
+        if (pt == 3) { tl = 100000000.0; }
+        assert_eq(PmnPoisson_new(&po, tl), PMN_ERR_NONE, "Poisson(λ)");
+        PmnSimpleRng_new(&cg1, 11);
+        PmnSimpleRng_new(&cg2, 11);
+        ct1.g = &cg1;
+        ct1.calls = 0;
+        ct2.g = &cg2;
+        ct2.calls = 0;
+        for (var tki = 0; tki < 5000; tki = tki + 1) {
+            var ta: f64 = po.sample(&ct1);
+            var tb: f64 = _pmn_sample_poisson_ptrs(tl, &ct2);
+            if (bits(ta) != bits(tb)) { pt_ok = 0; }
+        }
+        if (ct1.calls != ct2.calls) { pt_ok = 0; }
+    }
+    assert_eq(pt_ok, 1, "above λ = 30 a draw is sample_poisson_ptrs', bit for bit and draw for draw");
+    assert_eq(PmnPoisson_new(&po, 30.0), PMN_ERR_NONE, "Poisson(30), Knuth's last rate");
+    PmnSimpleRng_new(&cg1, 5);
+    ct1.g = &cg1;
+    ct1.calls = 0;
+    var ksum = 0;
+    for (var kk = 0; kk < 1000; kk = kk + 1) {
+        var kd: f64 = po.sample(&ct1);
+        ksum = ksum + f64_to(kd);
+    }
+    assert_eq(ct1.calls, ksum + 1000, "Knuth: a draw of k takes k + 1 uniforms");
+    assert_eq(PmnPoisson_new(&po, tiny), PMN_ERR_NONE, "Poisson(5e-324)");
+    var kz: f64 = po.sample(&g);
+    assert(bits(kz) == 0, "e^-λ = 1: the first product is ≤ 1, so the draw is 0");
+    var bpo: PmnPoisson;
+    assert_eq(PmnPoisson_new(&bpo, nan), PMN_ERR_INVALID_PARAMETER, "a NaN lambda");
+    assert_eq(PmnPoisson_new(&bpo, inf), PMN_ERR_INVALID_PARAMETER, "an infinite lambda");
+    assert_eq(PmnPoisson_new(&bpo, 0.0), PMN_ERR_INVALID_PARAMETER, "lambda 0");
+    assert_eq(PmnPoisson_new(0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    bpo.lambda = 7.0;
+    assert_eq(PmnPoisson_new(&bpo, -1.0), PMN_ERR_INVALID_PARAMETER, "lambda −1");
+    var bpl: f64 = bpo.lambda;
+    assert(bpl == 7.0, "a refusal writes nothing");
+
+    test_group("the pmf's and cdf's edges");
+    assert_eq(PmnPoisson_new(&po, 2.5), PMN_ERR_NONE, "Poisson(2.5)");
+    var pz0: f64 = po.pdf(mz);
+    var e25: f64 = _pmn_exp(-2.5);
+    assert(bits(pz0) == bits(e25), "pmf(−0.0) = e^-λ, bit for bit");
+    var pf1: f64 = po.pdf(2.5);
+    var pf2: f64 = po.pdf(of_bits(0x4008000000000001));
+    var pf3: f64 = po.pdf(-1.0);
+    var pf4: f64 = po.pdf(inf);
+    assert(pf1 == 0.0 && pf2 == 0.0 && pf3 == 0.0 && pf4 == 0.0, "0 off the integers (3 + ulp too), below 0, at ∞");
+    var nneg: f64 = of_bits(0xFFF8000000000000);
+    var pfn: f64 = po.pdf(nneg);
+    var pcn: f64 = po.cdf(nneg);
+    assert(bits(pfn) == 0x7FF8000000000000 && bits(pcn) == 0x7FF8000000000000, "NaN in, Rust's quiet f64::NAN out");
+    var pcm: f64 = po.cdf(-0.5);
+    var pc27: f64 = po.cdf(2.7);
+    var pc2: f64 = po.cdf(2.0);
+    assert(pcm == 0.0 && bits(pc27) == bits(pc2), "cdf 0 below 0, and constant between the integers");
+    var pmn: f64 = po.mean();
+    var pvr: f64 = po.variance();
+    assert(pmn == 2.5 && pvr == 2.5, "mean and variance λ");
+
+    test_group("JSON and Debug (serde_roundtrip_poisson, deserialize_rejects; D5, D12)");
+    store64(sb + 8, 0);
+    assert_eq(po.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"lambda\":2.5}") == 1, "as serde_json writes it");
+    var rpo: PmnPoisson;
+    assert_eq(PmnPoisson_from_json(&rpo, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rpl: f64 = rpo.lambda;
+    assert(rpl == 2.5, "the same lambda");
+    var jp = "{\"lambda\":-3.0}";
+    assert_eq(PmnPoisson_from_json(&rpo, jp, strlen(jp)), PMN_ERR_DESERIALIZE, "lambda −3");
+    assert_eq(PmnPoisson_from_json(0, jp, strlen(jp)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    store64(sb + 8, 0);
+    assert_eq(po.debug(sb, 0), PMN_ERR_NONE, "Poisson {:?}");
+    assert(text_is(sb, "Poisson { lambda: 2.5 }") == 1, "Poisson { lambda: 2.5 }");
+    store64(sb + 8, 0);
+    assert_eq(po.debug(sb, 1), PMN_ERR_NONE, "Poisson {:#?}");
+    assert(text_is(sb, "Poisson {\n    lambda: 2.5,\n}") == 1, "one field a line");
 
     return assert_summary();
 }

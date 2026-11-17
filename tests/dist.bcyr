@@ -5,7 +5,7 @@
 # primitives. Each side prints the row's sum and an FNV-1a digest of its 4,096 results' bits; they differ where a
 # glibc primitive misrounds or a T1 function (here Φ, M2 part b2) moves a value. The record is
 # docs/benchmarks-rust-v-cyrius.md. Part a1: Normal; part a2: Uniform, Exponential and Bernoulli; part a3: Cauchy and
-# Weibull; part b1: Gamma and ChiSquared; part b2: Beta, StudentT and FDistribution.
+# Weibull; part b1: Gamma and ChiSquared; part b2: Beta, StudentT and FDistribution; part c1: Poisson.
 
 include "tests/lib.cyr"
 
@@ -34,6 +34,7 @@ fn unit(): f64 {
 # `which`: 0 N(0, 1)'s pdf at x, 1 N(0, 1)'s cdf at x, 2 one draw of N(x, y), 3 N(x, y) to JSON and back (the mean
 # read back), 4 N(x, y)'s Debug (the text's length); 5 and up, part a2's rows (eval_a2).
 fn eval(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    if (which >= 32) { return eval_c1(which, x, y, g); }
     if (which >= 24) { return eval_b2(which, x, y, g); }
     if (which >= 19) { return eval_b1(which, x, y, g); }
     if (which >= 12) { return eval_a3(which, x, y, g); }
@@ -159,6 +160,22 @@ fn eval_b2(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
     return r;
 }
 
+# Part c1's rows: 32 Poisson(4.5)'s pmf at ⌊x⌋, 33 its cdf at x, 34 one draw of Poisson(y), Knuth's (y ≤ 30), 35 one
+# draw of Poisson(y), PTRS's (y > 30).
+fn eval_c1(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    var r: f64 = 0.0;
+    var d: PmnPoisson;
+    if (which == 32) {
+        var fx: f64 = f64_floor(x);
+        if (PmnPoisson_new(&d, 4.5) == PMN_ERR_NONE) { r = d.pdf(fx); }
+    } elif (which == 33) {
+        if (PmnPoisson_new(&d, 4.5) == PMN_ERR_NONE) { r = d.cdf(x); }
+    } elif (which >= 34) {
+        if (PmnPoisson_new(&d, y) == PMN_ERR_NONE) { r = d.sample(g); }
+    }
+    return r;
+}
+
 fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
     for (var j = 0; j < 4096; j = j + 1) {
         var w: f64 = hi - lo;
@@ -247,6 +264,10 @@ fn main(): i64 {
     row("StudentT::sample, df in [1, 30)", 29, 0.0, 1.0, 1.0, 30.0);
     row("FDistribution::cdf, F(4, 9), x in [0, 10)", 30, 0.0, 10.0, 0.0, 1.0);
     row("FDistribution::sample, d1 = d2 in [1, 30)", 31, 0.0, 1.0, 1.0, 30.0);
+    row("Poisson::pdf, Poisson(4.5), k = floor(x), x in [0, 20)", 32, 0.0, 20.0, 0.0, 1.0);
+    row("Poisson::cdf, Poisson(4.5), x in [0, 20)", 33, 0.0, 20.0, 0.0, 1.0);
+    row("Poisson::sample, Knuth, lambda in [1, 30)", 34, 0.0, 1.0, 1.0, 30.0);
+    row("Poisson::sample, PTRS, lambda in [31, 1000)", 35, 0.0, 1.0, 31.0, 1000.0);
     return 0;
 }
 

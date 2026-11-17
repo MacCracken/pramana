@@ -685,3 +685,35 @@ rounds 2–4 (loads 2.84, 2.90, 2.94). Every row's sum is the same in all four r
 
 These are findings to measure against, not changes for this part. The incomplete beta's cost is T1's, which ADR 009
 accepts.
+
+## M3 part c1: Poisson (2026-11-16)
+
+**Bodies.** `tests/dist.bcyr` and its twin `m3_dist.rs` gain four rows, with part a1's loop. Each row builds its
+distribution on every call, as the twin does. Pinned to core 5, interleaved, each round started under a load average
+of 3. The third round (load 1.59) was disturbed in its later rows: the Rust rows up to 2× and the Cyrius ones 15%
+over rounds 1 and 2. It was replaced by a fourth round (load 2.83). The record is rounds 1, 2 and 4. Every row's sum
+is the same in all four rounds.
+- **The digests:** all 38 are explained by `validate.py`'s models (`build/handoff/bench_digests_dist.py`). The pmf
+  differs from 1.3.0's on 1,666 of 4,096 values and the cdf on 1,593 (the T1 lnΓ and incomplete gamma). The draws
+  don't differ at all.
+- **The earlier rows,** re-measured: within 6% of their records, but for a blip in round 1's first rows (Normal's
+  draw 281 ns against 226–234).
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `Poisson::pdf`, Poisson(4.5), k = ⌊x⌋, x in [0, 20) | 42.6–44.3 ns | 364–370 ns | 8.5× |
+| `Poisson::cdf`, Poisson(4.5), x in [0, 20) | 87.7–91.5 ns | 2.55–2.62 µs | 29× |
+| `Poisson::sample`, Knuth, λ in [1, 30) | 52.9–55.7 ns | 225–230 ns | 4.2× |
+| `Poisson::sample`, PTRS, λ in [31, 1000) | 35.1–36.7 ns | 298–306 ns | 8.5× |
+
+**Where the time goes.**
+- **The pmf** is the kernel, on the T1 lnΓ below k + 1 = 10 and on Stirling's remainder above, with a correctly
+  rounded ln and exp.
+- **The cdf** is T1's upper incomplete gamma at integer shapes up to 20 against λ = 4.5, cheaper than part b1's
+  fixed shape near its mode (12.9 µs).
+- **Knuth's draw** is one correctly rounded exp and λ + 1 uniforms on average, so its ratio is the lowest here: the
+  uniforms cost the same on both sides.
+- **PTRS** is two uniforms and, outside the squeeze, three correctly rounded lns and the kernel per try.
+
+These are findings to measure against, not changes for this part. The incomplete gamma's cost is T1's, which ADR 009
+accepts.
