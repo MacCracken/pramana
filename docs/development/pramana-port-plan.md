@@ -43,7 +43,7 @@
 > Box–Muller and Normal, with Debug's f64 form, is committed (`7e1ca00`), part a2, Uniform, Exponential and
 > Bernoulli, is committed (`5b76636`), part a3, Cauchy and Weibull, is committed (`a636914`), part b1, Gamma,
 > ChiSquared and Marsaglia–Tsang, is committed (`ded8c4b`), part b2, Beta, StudentT and FDistribution, is committed
-> (`97abf28`), and part c1, Poisson, is done and not committed.
+> (`97abf28`), part c1, Poisson, is committed (`6a3da1b`), and part c2, Binomial, is done and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1198,7 +1198,10 @@ T1 function is recorded against T1 from the start (ADR 009 as amended):
   T1 incomplete gamma. 8,463 more `dist` rows (the pmf and cdf at and off the integers, 48 streams either side of the
   switch at λ = 30, the oracle's PTRS hook), 207 codec rows and 32 Debug rows; `dist.ref.tsv` 1,493 more rows; every
   row passing on the first replay, at 0 ulp, on three targets ✅;
-- **c2:** `Binomial` (the saddle-point pdf, the `beta_inc` CDF, Beta splitting);
+- **c2:** `Binomial` (the saddle-point pdf, the `beta_inc` CDF, Beta splitting) in `src/dist_disc.cyr`, n a u64 to
+  u64::MAX. 8,070 more `dist` rows (the pmf and cdf for n from 1 to u64::MAX, 51 streams either side of 64 trials),
+  226 codec rows and 32 Debug rows; `dist.ref.tsv` 1,742 more rows; every row passing on the first replay, at 0 ulp,
+  on three targets ✅;
 - **d1:** `src/linalg.cyr`: hisab 1.4.0's Cholesky and solve, transcribed allocation-free (ledger L4);
 - **d2:** `MultivariateNormal` in `src/dist_mvn.cyr`: owned, freelist-allocated with `_drop`, its sample into a caller
   buffer (D11), its decode recomputing the factor;

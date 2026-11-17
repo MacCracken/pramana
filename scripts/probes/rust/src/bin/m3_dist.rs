@@ -8,8 +8,8 @@
 
 use pramana::SimpleRng;
 use pramana::distribution::{
-    Bernoulli, Beta, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT,
-    Uniform, Weibull,
+    Bernoulli, Beta, Binomial, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, Poisson,
+    StudentT, Uniform, Weibull,
 };
 use std::hint::black_box;
 use std::time::Instant;
@@ -120,4 +120,9 @@ fn main() {
     row(&mut r, "Poisson::cdf, Poisson(4.5), x in [0, 20)", |x, _, _| Poisson::new(4.5).unwrap().cdf(x), (0.0, 20.0), u);
     row(&mut r, "Poisson::sample, Knuth, lambda in [1, 30)", |_, y, g| Poisson::new(y).unwrap().sample(g), u, (1.0, 30.0));
     row(&mut r, "Poisson::sample, PTRS, lambda in [31, 1000)", |_, y, g| Poisson::new(y).unwrap().sample(g), u, (31.0, 1000.0));
+    // part c2
+    row(&mut r, "Binomial::pdf, Binomial(20, 0.3), k = floor(x), x in [0, 21)", |x, _, _| Binomial::new(20, 0.3).unwrap().pdf(x.floor()), (0.0, 21.0), u);
+    row(&mut r, "Binomial::cdf, Binomial(20, 0.3), x in [0, 20)", |x, _, _| Binomial::new(20, 0.3).unwrap().cdf(x), (0.0, 20.0), u);
+    row(&mut r, "Binomial::sample, simulated, n = 50, p in [0, 1)", |_, y, g| Binomial::new(50, y).unwrap().sample(g), u, u);
+    row(&mut r, "Binomial::sample, Beta-split, n = 1e6, p in [0, 1)", |_, y, g| Binomial::new(1_000_000, y).unwrap().sample(g), u, u);
 }

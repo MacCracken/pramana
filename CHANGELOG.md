@@ -810,6 +810,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     (23 pending);
   - **cost:** 364–370 ns a pmf (8.5× Rust), 2.55–2.62 µs a cdf (29×: the T1 incomplete gamma),
     225–230 ns a Knuth draw (4.2×) and 298–306 ns a PTRS draw (8.5×); every bench digest is explained by the models.
+- **M3 part c2: Binomial** (`src/dist_disc.cyr`; port plan §7; D5, D7 as amended, D11, D12; results in
+  `docs/development/port-parity.md` §9.7):
+  - **`PmnBinomial`:** n a u64 held as its word, every comparison, halving and conversion of it unsigned, so
+    u64::MAX trials work end to end; the constructor refuses as 1.3.0 does, writing nothing; Loader's saddle-point pmf,
+    the cdf I_(1−p)(n − k, k + 1) on the T1 incomplete beta with both arguments exact, and exact draws, simulated up
+    to 64 trials and Beta-split in O(log n) above, all in Rust's operation order; serde_json's text byte for byte, n
+    an integer, read through the constructor; the derived Debug;
+  - **golden rows:** 8,070 more `dist` rows (163,056: the constructor on eleven n by 23 p, the pmf and cdf for n from 1
+    to u64::MAX, 51 streams), 226 codec rows and 32 Debug rows. `validate.py` models every one; `dist.ref.tsv` gains
+    1,742 rows that the T1 functions move, and `dist.cr.tsv` 135. Every row passes on the first replay, at 0 ulp,
+    warning-free, on x86_64 ELF, PE and aarch64, and every stream equals 1.3.0's;
+  - **accuracy:** against MPFR, the cdf is within 1 ulp on all 2,363 golden rows with n ≤ 10⁵ (1.3.0: NaN on 13
+    where it is 1); the pmf keeps Rust's saddle point, up to 4,877 ulp in the tails, and 1.3.0's NaN at p = 5e-324
+    (bd0's u overflows): a finding for 2.1;
+  - **tests and checks:** `tests/dist.tcyr`, 550 checks (60 new); all 21 mutants fail (two only at exact ties, which
+    unit tests force with consumer generators); surface parity maps 11 more items (12 pending, MultivariateNormal's);
+  - **cost:** 681–708 ns a pmf (8.3× Rust), 7.15–7.28 µs a cdf (39×: the T1 incomplete beta), 605–622 ns
+    a simulated draw of 50 trials (2.6×) and 7.9–8.1 µs a Beta-split draw of 10⁶ (5.9×); every bench digest is explained
+    by the models.
 
 ### Performance
 

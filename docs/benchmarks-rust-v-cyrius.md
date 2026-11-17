@@ -717,3 +717,33 @@ is the same in all four rounds.
 
 These are findings to measure against, not changes for this part. The incomplete gamma's cost is T1's, which ADR 009
 accepts.
+
+## M3 part c2: Binomial (2026-11-16)
+
+**Bodies.** `tests/dist.bcyr` and its twin `m3_dist.rs` gain four rows, with part a1's loop. Each row builds its
+distribution on every call, as the twin does. Pinned to core 5, interleaved, each round started under a load average
+of 3. The third round (load 2.70) ran its Cyrius side about 2× slow through every row but the last four, so it was
+replaced by a fourth (load 2.79). The record is rounds 1, 2 and 4 (loads 2.93, 2.35, 2.79). Every row's sum is the
+same in all four rounds.
+- **The digests:** all 42 are explained by `validate.py`'s models (`build/handoff/bench_digests_dist.py`). The pmf
+  differs from 1.3.0's on 2,534 of 4,096 values and the cdf on 1,804 (the T1 lnΓ and incomplete beta). The draws
+  don't differ at all.
+- **The earlier rows,** re-measured: within 19% between rounds, and within their records.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `Binomial::pdf`, Binomial(20, 0.3), k = ⌊x⌋, x in [0, 21) | 82.7–85.0 ns | 681–708 ns | 8.3× |
+| `Binomial::cdf`, Binomial(20, 0.3), x in [0, 20) | 182.1–187.2 ns | 7.15–7.28 µs | 39× |
+| `Binomial::sample`, simulated, n = 50, p in [0, 1) | 228.7–235.6 ns | 605–622 ns | 2.6× |
+| `Binomial::sample`, Beta-split, n = 10⁶, p in [0, 1) | 1.36–1.38 µs | 7.89–8.12 µs | 5.9× |
+
+**Where the time goes.**
+- **The pmf** is three Stirling remainders (each a T1 lnΓ below 10, at 153–179 ns), two deviances and a correctly
+  rounded ln, ln_1p and exp.
+- **The cdf** is T1's incomplete beta at the integer shapes (n − k, k + 1).
+- **A simulated draw** is 50 uniforms and compares: the generator dominates on both sides, so the ratio is the
+  lowest in M3.
+- **A Beta-split draw** is about 14 splits, each two Marsaglia–Tsang variates, then at most 64 trials.
+
+These are findings to measure against, not changes for this part. The incomplete beta's cost is T1's, which ADR 009
+accepts.

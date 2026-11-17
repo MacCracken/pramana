@@ -3902,3 +3902,113 @@ MultivariateNormal (d2).
 **Cost** (`docs/benchmarks-rust-v-cyrius.md`): 364–370 ns a pmf (8.5× Rust), 2.55–2.62 µs a cdf (29×: the T1
 incomplete gamma), 225–230 ns a Knuth draw (4.2×) and 298–306 ns a PTRS draw (8.5×). The bench's 38 digests are all
 explained by the models.
+
+### 9.7 Part c2: Binomial (2026-11-16)
+
+**The module.** `src/dist_disc.cyr` gains `PmnBinomial { n, p }`, with the methods, codec and Debug of the others. n is
+a u64, held as its 64-bit word, so every comparison, halving and conversion of it is unsigned (`_pmn_u64_lt`, `>>`,
+`_pmn_u64_to_f64`, M1's helpers). n = u64::MAX works end to end.
+- **The pmf:** NaN at NaN; 0 below 0, off the integers and above n; the point masses at p = 0 and 1; (1 − p)^n and
+  p^n at the ends; else Loader's saddle point, exp(lc − ½·ln(2πk(n − k)/n)) with lc of three Stirling remainders and
+  two deviances (bd0), O(1) in n, in Rust's order.
+- **The cdf:** I_(1−p)(n − k, k + 1) at k = ⌊x⌋, on the T1 incomplete beta with both arguments exact (1 − p and p),
+  no O(n) sum; 0 below 0, 1 from n, and the point masses' at p = 0 and 1.
+- **The draws:** above 64 trials, Knuth's Beta splitting halves them in O(log n). The a-th smallest of the trials'
+  uniforms, a = 1 + ⌊trials/2⌋, is Beta(a, trials − a + 1), drawn as a ratio of two Marsaglia–Tsang variates, and
+  the successes lie below it, or all a of them are counted and the rest lie above. The last trials are simulated, a
+  success when a uniform is below p.
+
+**The golden rows.**
+- **`dist`, 8,070 more rows (163,056 in all):**
+  - the constructor on eleven n (0, 1, 2, 10, 64, 65, 1000, 2⁵³, 2⁵³ + 1, 2⁶³ and u64::MAX) by 23 p (the 20-value
+    grid, 1 − 2⁻⁵³, 1 + ε and 0.3); class A. n is an `i:` token holding the word, so u64::MAX is `i:-1`;
+  - `Binomial::pdf` and `Binomial::cdf`, 3,826 rows each: seventeen fixed (n, p) (n from 1 to u64::MAX either side of
+    64 trials, p = 0, 1, 1 − 2⁻⁵³, 1e-300 and 5e-324 among them) at k = 0 … 40 and n − k for k ≤ 10, at the mean
+    ± up to 12 standard deviations, at n and n + 1, off the integers, at −1, −0.0 and the specials; 40 seeded pairs
+    around their means; 1,000 seeded triples, a tenth off the integers. Class C;
+  - the mean and variance, class A;
+  - 51 streams: 10⁴ draws of Binomial(10, 0.3) from three seeds and 256 of each other fixed pair, simulated and
+    Beta-split, u64::MAX trials among them. Class C.
+- **`json`,** 226 more rows (9,265 in all): `struct_docs`'s variants on the u64 field's 14 integer forms (0, −1, 1.0,
+  2⁶³, 2⁶⁴ and non-numbers among them) and the f64 field's 25, the sequence forms, and seeded documents; and the
+  writes. **`debug`,** 32 more (25,688), n printed as its unsigned decimal.
+
+**The models.** `validate.py` models every row in Rust's operation order, with n as a Python integer modulo 2⁶⁴:
+the saddle point on 1.3.0's Stirling remainders and bd0, the cdf on 1.3.0's incomplete beta or T1's, and the
+splitting sampler.
+- **`dist.cr.tsv`** gains 135 rows where glibc misrounds: 129 pmf values and 6 cdf values (1,270 rows in all).
+- **`dist.ref.tsv`** gains 1,742 rows that the T1 functions move: 361 pmf values (lnΓ, inside Stirling's remainder
+  below 10) and 1,381 cdf values (the incomplete beta). It has 31,437 rows in all.
+- Ten documents serde_json reads only by skipping a member unchecked join `json.map.tsv` (160 rows).
+
+**The result.** Every row passed on the first replay. The replay is ten modules: 271,368 rows ok and 53,655 accepted
+(53,495 under ADR 9, 160 under ADR 7), warning-free. Every c2 row is at 0 ulp, against 1.3.0's bits, its correction
+or Rust's formula on the T1 functions. All 51 streams equal 1.3.0's bit for bit, the u64::MAX ones included.
+
+**The pmf and cdf against MPFR** (the golden rows with n ≤ 10⁵, 0 < p < 1 and integer k; C(n, k)·p^k·(1 − p)^(n−k)
+at 1,024 bits, and I_(1−p)(n − k, k + 1) by `mpfr_ref.beta_ic`):
+
+| Rows | 1.3.0 | The port |
+|---|---|---|
+| the cdf (2,363) | 1,088 exact; NaN on 13 rows where it is 1 | 2,360 exact, all within 1 ulp |
+| the pmf, finite (2,435) | 616 exact, max 4,117 ulp | 618 exact, max 4,877 ulp |
+| the pmf at p = 5e-324, k ≥ 1 (40) | NaN | NaN |
+
+- **The cdf** inherits T1's incomplete beta: within 1 ulp everywhere, never less accurate than 1.3.0. 1.3.0's far
+  misses are Binomial(30, 5e-324) at k ≥ 9, NaN where the cdf is 1; the port gives 1.
+- **The pmf** keeps Rust's saddle point. Its error is exp amplifying lc's rounding in the tails. The port is closer
+  on 318 rows and further off on 160: the correctly rounded primitives move a last-ulp rounding either way.
+- **At p = 5e-324,** 1.3.0's pmf is NaN for k ≥ 1, where the true value is a tiny subnormal, and the port's is too,
+  as parity requires: in bd0(k, n·p) at n·p = 1.5e-322, u = (k − n·p)/(n·p) overflows to ∞, and
+  (1 + u)·ln_1p(u) − u is ∞ − ∞. A finding for 2.1.
+
+**Mutation checks** (`build/handoff/mut_c2.py`: the replay and `tests/dist.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| Binomial: n = 0 accepted | 13 | 2 |
+| the pmf with n converted signed | 91 | 0 |
+| the pmf without the p = 0 arm | 19 | 1 |
+| the pmf without the k = 0 arm | 212 | 2 |
+| the pmf with ln(1 − k/n) for ln_1p(−k/n) | 14 | 0 |
+| the pmf's lc − (bd0 + bd0) | 323 | 0 |
+| the pmf with ln(2π) for 2·ln √(2π) | 186 | 0 |
+| the cdf's 1 only past n | 185 | 2 |
+| the cdf with y = 1 − (1 − p) | 83 | 1 |
+| the cdf with k unfloored | 76 | 1 |
+| the variance as n·(p·(1 − p)) | 11 | 1 |
+| the draw simulated only to 63 trials | 3 | 2 |
+| the split loop's test signed | 3 | 1 |
+| a = ⌊trials/2⌋ | 21 | 1 |
+| p − x unscaled after a split | 18 | 2 |
+| a trial succeeding on u ≤ p | 0 | 2 |
+| x > p for the lower half | 0 | 1 |
+| the JSON names read swapped | 69 | 5 |
+| n written as an f64 | 43 | 4 |
+| the refusal decoded as `INVALID_PARAMETER` | 55 | 2 |
+| Debug named `Binomia` | 32 | 2 |
+
+- **All 21 fail.** The unsigned handling holds both ways: a signed conversion of n, or a signed test in the split
+  loop, fails the u64::MAX and 2⁶³ rows.
+- **Two fail through unit tests only:** they differ only at an exact tie, a uniform equal to p or a split at x = p,
+  which no seeded stream draws. A consumer's generator of eighths gives the first (u = 0 at p = 0, u = ½ at p = ½).
+  A generator of period 3 gives the second: both gamma variates take the same three uniforms, so x is exactly ½, and
+  Rust keeps the 32 trials below it at p/x = 1, where the mutant counts 33.
+
+**Tests.** `tests/dist.tcyr` has 550 checks, 60 of them new:
+- 1.3.0's tests: `binomial_mean_and_variance`, `binomial_degenerate_p`,
+  `binomial_pmf_matches_exact_and_cdf_matches_sum` (against `pmn_combinations` and powi), `serde_roundtrip_binomial`,
+  `binomial_large_n_is_fast_and_accurate` (the symmetric cdf, the central pmf, u64::MAX trials in O(log n)),
+  `binomial_large_n_sampling_moments`, and Binomial's lines of `constructors_reject_non_finite_parameters` and
+  `deserialize_rejects_invalid_parameters`;
+- the constructor's refusals, n = 2⁶³ (a negative word) and its unsigned mean;
+- the draws: 64 trials simulated with 64 uniforms and bit for bit; one split at 65 with fewer than 65; the two ties;
+- the pmf's and cdf's edges, and the cdf as `beta_inc(n − k, k + 1, 1 − p, p)` bit for bit;
+- the codec (n an integer, u64::MAX read and written back unsigned, a float n refused) and Debug's two forms.
+
+**Surface parity.** 11 more items are mapped (149 of `distribution`'s 161), and 12 are pending: MultivariateNormal's
+(d2).
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 681–708 ns a pmf (8.3× Rust), 7.15–7.28 µs a cdf (39×: the T1
+incomplete beta), 605–622 ns a simulated draw of 50 trials (2.6×) and 7.9–8.1 µs a Beta-split draw of 10⁶ (5.9×). The
+bench's 42 digests are all explained by the models.

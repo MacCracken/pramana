@@ -11,7 +11,7 @@
 //! - 1.3.0's `SimpleRng` (e1), read through its repr and `new`, so a state of 0 reads as 1.
 //! - 1.3.0's `Normal` (M3 part a1), read through `NormalRepr` and `Normal::new`, so a std_dev it refuses is an error;
 //!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2), `Cauchy` and `Weibull` (a3), `Gamma` and
-//!   `ChiSquared` (b1), `Beta`, `StudentT` and `FDistribution` (b2), and `Poisson` (c1), the same way.
+//!   `ChiSquared` (b1), `Beta`, `StudentT` and `FDistribution` (b2), `Poisson` (c1) and `Binomial` (c2), the same way.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -46,8 +46,8 @@
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
 use pramana::distribution::{
-    Bernoulli, Beta, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT, Uniform,
-    Weibull,
+    Bernoulli, Beta, Binomial, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT,
+    Uniform, Weibull,
 };
 use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
@@ -608,6 +608,7 @@ pub fn emit() -> Module {
     student_t(&mut m, &mut g);
     f_distribution(&mut m, &mut g);
     poisson(&mut m, &mut g);
+    binomial(&mut m, &mut g);
     m
 }
 
@@ -876,6 +877,39 @@ fn poisson(m: &mut Module, g: &mut Rng) {
     for &l in &ls {
         let x = Poisson::new(l).expect("valid parameters");
         m.row("json::write::Poisson", Class::A, &[f(l)], &[text(&x)]);
+    }
+}
+
+// ── M3 c2: Binomial's codec ──
+
+/// The integer forms a u64 field gets: valid ones, 0 (which `Binomial::new` refuses), and non-integers.
+fn u64_forms() -> Vec<Vec<u8>> {
+    bytes(&[
+        "0", "1", "10", "-1", "1.0", "1e3", "9223372036854775807", "9223372036854775808", "18446744073709551615",
+        "18446744073709551616", "\"10\"", "true", "null", "[]",
+    ])
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn binomial(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Binomial::new(10, 0.3).expect("valid")).expect("a Binomial");
+    let mut forms = f64_forms();
+    forms.extend(bytes(&["0.9999999999999999", "1.0000000000000002", "0.5"]));
+    let mut docs = struct_docs(&base, &["n", "p"], &[u64_forms(), forms]);
+    docs.extend(bytes(&["[10,0.3]", "[10]", "[0,0.3]", "[10,1.5]", "[10,0.3,1]", r#"{"n":0,"p":0.5}"#, r#"{"n":5,"p":1.5}"#]));
+    let mut pairs: Vec<(u64, f64)> = vec![(1, 0.0), (u64::MAX, 1.0), (1 << 63, 0.5)];
+    pairs.extend((0..40).map(|k| (g.word() >> (k % 64), g.unit())));
+    pairs.retain(|&(n, _)| n != 0);
+    for &(n, p) in &pairs {
+        docs.push(format!("{{\"n\":{n},\"p\":{}}}", ryu_like(p)).into_bytes());
+        docs.push(format!("{{\"n\":{n},\"p\":{}}}", ryu_like(p + 1.0)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Binomial", d, serde_json::from_slice::<Binomial>(d), |x| vec![i(x.n as i64), f(x.p)]);
+    }
+    for &(n, p) in &pairs {
+        let x = Binomial::new(n, p).expect("valid parameters");
+        m.row("json::write::Binomial", Class::A, &[i(n as i64), f(p)], &[text(&x)]);
     }
 }
 

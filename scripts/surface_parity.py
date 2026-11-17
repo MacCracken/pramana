@@ -207,6 +207,18 @@ SURFACE = {
     "distribution::Poisson#Clone": "a struct of one f64: copying it clones it",
     "distribution::Poisson#Serialize": ["method PmnPoisson.to_json"],
     "distribution::Poisson#Deserialize": ["fn PmnPoisson_from_json"],
+    # Part c2: Binomial.
+    "distribution::Binomial": ["struct PmnBinomial"],
+    "distribution::Binomial.new": ["fn PmnBinomial_new"],
+    "distribution::Binomial.pdf": ["method PmnBinomial.pdf"],
+    "distribution::Binomial.cdf": ["method PmnBinomial.cdf"],
+    "distribution::Binomial.mean": ["method PmnBinomial.mean"],
+    "distribution::Binomial.variance": ["method PmnBinomial.variance"],
+    "distribution::Binomial.sample": ["method PmnBinomial.sample"],
+    "distribution::Binomial#Debug": ["method PmnBinomial.debug"],
+    "distribution::Binomial#Clone": "a struct of a u64 word and an f64: copying it clones it",
+    "distribution::Binomial#Serialize": ["method PmnBinomial.to_json"],
+    "distribution::Binomial#Deserialize": ["fn PmnBinomial_from_json"],
 }
 
 DERIVES = {"Debug", "Clone", "Serialize", "Deserialize", "Error"}

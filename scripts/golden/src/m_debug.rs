@@ -15,6 +15,7 @@
 //! - `debug::Beta`, `debug::StudentT`, `debug::FDistribution` (M3 part b2): each at 16 parameters, the special ones
 //!   among them, in both forms.
 //! - `debug::Poisson` (M3 part c1): at 16 rates, the special ones among them, in both forms.
+//! - `debug::Binomial` (M3 part c2): at 16 (n, p), u64::MAX among them, in both forms.
 //! - `debug::f64` (M3 part a1): an f64 field's form, `{:?}`, on `fmt.tsv`'s 25,200 doubles. `{:#?}` prints an f64
 //!   the same way.
 //!
@@ -25,8 +26,8 @@ use crate::grids::Rng as Seeds;
 use crate::tsv::{Class, Module, Tok, i, s};
 use crate::tsv::f;
 use pramana::distribution::{
-    Bernoulli, Beta, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT, Uniform,
-    Weibull,
+    Bernoulli, Beta, Binomial, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT,
+    Uniform, Weibull,
 };
 use pramana::{PramanaError, SimpleRng};
 
@@ -171,6 +172,14 @@ pub fn emit() -> Module {
         let d = Poisson::new(l).expect("valid parameters");
         for (alt, text) in both(&d).iter().enumerate() {
             m.row("debug::Poisson", Class::A, &[f(l), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    let mut bins: Vec<(u64, f64)> = vec![(10, 0.3), (1, 0.0), (u64::MAX, 1.0), (1 << 63, 1e-300), (64, 0.5), (5, 1e-4)];
+    bins.extend((0..10).map(|k| ((g.word() >> (k % 64)) | 1, g.unit())));
+    for &(n, p) in &bins {
+        let d = Binomial::new(n, p).expect("valid parameters");
+        for (alt, text) in both(&d).iter().enumerate() {
+            m.row("debug::Binomial", Class::A, &[i(n as i64), f(p), i(alt as i64)], &[s(text.clone())]);
         }
     }
     for x in crate::m_fmt::inputs() {

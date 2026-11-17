@@ -816,6 +816,7 @@ JSON_VALIDATED = {
     "StudentT": ([("df", "f64")], lambda df: d_positive(df)),
     "FDistribution": ([("d1", "f64"), ("d2", "f64")], lambda a, b: d_positive(a) and d_positive(b)),
     "Poisson": ([("lambda", "f64")], lambda la: d_positive(la)),
+    "Binomial": ([("n", "u64"), ("p", "f64")], lambda n, p: n % (1 << 64) != 0 and 0.0 <= p <= 1.0),
 }
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
@@ -2975,6 +2976,73 @@ def d_poisson_sample(L, la, u):
     return float(k - 1)
 
 
+def d_binomial_pdf(L, n, p, x):
+    if math.isnan(x):
+        return math.nan
+    nf = float(n % (1 << 64))
+    if x < 0.0 or math.isinf(x) or x - math.trunc(x) != 0.0 or x > nf:
+        return 0.0
+    q = 1.0 - p
+    if p == 0.0:
+        return 1.0 if x == 0.0 else 0.0
+    if p == 1.0:
+        return 1.0 if x == nf else 0.0
+    if x == 0.0:
+        return L.exp(nf * L.ln1p(-p))
+    if x == nf:
+        return L.exp(nf * L.ln(p))
+    K = L.K
+    nmx = nf - x
+    lc = (sp_stirling(K, L, nf) - sp_stirling(K, L, x) - sp_stirling(K, L, nmx) - sp_bd0(K, L, x, nf * p)
+          - sp_bd0(K, L, nmx, nf * q))
+    lf = 2.0 * K["LS"] + L.ln(x) + L.ln1p(fdiv(-x, nf))
+    return L.exp(lc - 0.5 * lf)
+
+
+def d_binomial_cdf(L, n, p, x):
+    if math.isnan(x):
+        return math.nan
+    if x < 0.0:
+        return 0.0
+    nf = float(n % (1 << 64))
+    if x >= nf:
+        return 1.0
+    if p == 0.0:
+        return 1.0
+    if p == 1.0:
+        return 0.0
+    k = d_floor(x)
+    return d_beta_inc(L, nf - k, k + 1.0, 1.0 - p, p)[0]
+
+
+def d_clamp01(v):
+    return 0.0 if v < 0.0 else 1.0 if v > 1.0 else v
+
+
+def d_binomial_sample(L, n, p, u):
+    """1.3.0's Binomial::sample: Beta splitting above 64 trials, then the trials simulated; u64 arithmetic."""
+    trials, succ = n % (1 << 64), 0
+    while trials > 64:
+        if p <= 0.0:
+            return float(succ)
+        if p >= 1.0:
+            return float(succ + trials)
+        a = 1 + trials // 2
+        b = trials - a + 1
+        ga = d_gamma_standard(L, float(a), u)
+        gb = d_gamma_standard(L, float(b), u)
+        x = ga / (ga + gb) if ga + gb > 0.0 else 0.5
+        if x >= p:
+            trials, p = a - 1, d_clamp01(fdiv(p, x))
+        else:
+            succ += a
+            trials, p = b - 1, d_clamp01(fdiv(p - x, 1.0 - x))
+    for _ in range(trials):
+        if next(u) < p:
+            succ += 1
+    return float(succ)
+
+
 def d_new(ok, fields):
     return fields if ok else ["E:InvalidParameter"]
 
@@ -3082,6 +3150,14 @@ DIST = {  # name: model(L, *inputs) -> outputs (a list)
         L, lambda L, u: d_poisson_sample(L, la, u), seed, n),
     "sample_poisson_ptrs": lambda L, la, seed, n: [f"v:{n}"] + d_sample(
         L, lambda L, u: d_poisson_ptrs(L, la, u), seed, n),
+    # part c2
+    "Binomial::new": lambda L, n, p: d_new(n % (1 << 64) != 0 and 0.0 <= p <= 1.0, [n, p]),
+    "Binomial::pdf": lambda L, n, p, x: [d_binomial_pdf(L, n, p, x)],
+    "Binomial::cdf": lambda L, n, p, x: [d_binomial_cdf(L, n, p, x)],
+    "Binomial::mean": lambda L, n, p: [float(n % (1 << 64)) * p],
+    "Binomial::variance": lambda L, n, p: [float(n % (1 << 64)) * p * (1.0 - p)],
+    "Binomial::sample": lambda L, n, p, seed, c: [f"v:{c}"] + d_sample(
+        L, lambda L, u: d_binomial_sample(L, n, p, u), seed, c),
 }
 DIST_T1 = {"Normal::cdf": "Φ", "Weibull::mean": "lnΓ", "Weibull::variance": "lnΓ", "Gamma::pdf": "lnΓ",
            "Gamma::cdf": "incomplete gamma", "ChiSquared::pdf": "lnΓ", "ChiSquared::cdf": "incomplete gamma",
@@ -3090,7 +3166,8 @@ DIST_T1 = {"Normal::cdf": "Φ", "Weibull::mean": "lnΓ", "Weibull::variance": "l
            "FDistribution::cdf": "incomplete beta", "student_t_two_tailed": "incomplete beta",
            "student_t_cdf": "incomplete beta", "f_cdf_sf": "incomplete beta", "Poisson::pdf": "lnΓ (the kernel)",
            "Poisson::cdf": "incomplete gamma", "Poisson::sample": "lnΓ (the kernel)",
-           "sample_poisson_ptrs": "lnΓ (the kernel)"}   # rows downstream of a T1 function (ADR 009 as amended)
+           "sample_poisson_ptrs": "lnΓ (the kernel)", "Binomial::pdf": "lnΓ (Stirling's remainder)",
+           "Binomial::cdf": "incomplete beta"}   # rows downstream of a T1 function (ADR 009 as amended)
 
 
 def dist_prims(root):
@@ -3281,6 +3358,8 @@ def debug_text(fn, ins):
     if fn in ("debug::Beta", "debug::FDistribution"):
         name, (fa, fb) = (("Beta", ("alpha", "beta")) if fn == "debug::Beta" else ("FDistribution", ("d1", "d2")))
         return debug_struct(name, [(fa, rust_debug_f64(ins[0])), (fb, rust_debug_f64(ins[1]))], ins[2] == 1)
+    if fn == "debug::Binomial":
+        return debug_struct("Binomial", [("n", str(ins[0] % (1 << 64))), ("p", rust_debug_f64(ins[1]))], ins[2] == 1)
     if fn == "debug::Poisson":
         return debug_struct("Poisson", [("lambda", rust_debug_f64(ins[0]))], ins[1] == 1)
     if fn == "debug::StudentT":

@@ -488,6 +488,12 @@ fn _par_json_write(fp, fl): i64 {
         if (PmnStudentT_new(&wst, wsd) != PMN_ERR_NONE) { return 0 - 1; }
         _par_json_k = 1;
         e = wst.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::Binomial") == 1) {
+        var wbi: PmnBinomial;
+        var wbp: f64 = _par_in(1);
+        if (PmnBinomial_new(&wbi, _par_in(0), wbp) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 2;
+        e = wbi.to_json(sb);
     } elif (_par_eq(fp, fl, "json::write::Poisson") == 1) {
         var wpo: PmnPoisson;
         var wpl: f64 = _par_in(0);
@@ -654,6 +660,23 @@ fn _par_json_dist(fp, fl): i64 {
     return 1;
 }
 
+# json::Binomial rows (M3 part c2): PmnBinomial_from_json, its u64 n and f64 p.
+fn _par_json_binomial(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var d: PmnBinomial;
+    var e = PmnBinomial_from_json(&d, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_i(d.n);
+    var p: f64 = d.p;
+    _par_got_f(p);
+    return 1;
+}
+
 fn _par_json_value(fp, fl, root): i64 {
     if (_par_eq(fp, fl, "json::Pair") == 1) { return _par_json_pair(root); }
     if (_par_eq(fp, fl, "json::Shapes") == 1) { return _par_json_shapes(root); }
@@ -669,6 +692,7 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::PramanaError::code") == 1) { return _par_json_err_code(); }
     if (_par_eq(fp, fl, "json::SimpleRng") == 1) { return _par_json_simple_rng(); }
     if (_par_eq(fp, fl, "json::Normal") == 1) { return _par_json_normal(); }
+    if (_par_eq(fp, fl, "json::Binomial") == 1) { return _par_json_binomial(); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -816,6 +840,16 @@ fn _par_debug(fp, fl): i64 {
         var df2: f64 = _par_in(1);
         if (PmnFDistribution_new(&dfd, df1, df2) != PMN_ERR_NONE) { return 0 - 1; }
         e = dfd.debug(sb, _par_in(2));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::Binomial") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var dbi: PmnBinomial;
+        var dbp: f64 = _par_in(1);
+        if (PmnBinomial_new(&dbi, _par_in(0), dbp) != PMN_ERR_NONE) { return 0 - 1; }
+        e = dbi.debug(sb, _par_in(2));
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -1117,7 +1151,7 @@ fn _par_special(fp, fl): i64 {
 # from the row's parameters. Part a1: Normal, and Box–Muller's `standard_normal` through a bounded generic; part a2:
 # Uniform, Exponential and Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma, ChiSquared and the oracle's
 # `sample_gamma_standard`; part b2: Beta, StudentT, FDistribution and the oracle's Student-t and F tails; part c1:
-# Poisson and the oracle's `sample_poisson_ptrs`.
+# Poisson and the oracle's `sample_poisson_ptrs`; part c2: Binomial, whose n is an integer token.
 fn _par_std_normal<R: PmnRng>(g: *R): f64 {
     var z: f64 = _pmn_standard_normal(g);
     return z;
@@ -1360,6 +1394,25 @@ fn _par_dist(fp, fl): i64 {
         if (epo != PMN_ERR_NONE) { return 0 - 1; }
         return _par_dist_call(&dpo, fp + px, fl - px, 1);
     }
+    px = _par_dist_prefix(fp, fl, "Binomial");
+    if (px > 0) {
+        var bn = _par_in(0);
+        var bnp: f64 = _par_in(1);
+        var dbn: PmnBinomial;
+        var ebn = PmnBinomial_new(&dbn, bn, bnp);
+        if (_par_eq(fp + px, fl - px, "new") == 1) {
+            if (ebn != PMN_ERR_NONE) {
+                _par_got_err(ebn);
+                return 1;
+            }
+            _par_got_i(dbn.n);
+            var bnq: f64 = dbn.p;
+            _par_got_f(bnq);
+            return 1;
+        }
+        if (ebn != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&dbn, fp + px, fl - px, 2);
+    }
     px = _par_dist_prefix(fp, fl, "Bernoulli");
     if (px > 0) {
         var p: f64 = _par_in(0);
@@ -1525,6 +1578,9 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "Poisson::cdf") == 1) { return 0; }          # downstream of the T1 incomplete gamma
     if (_par_eq(fp, fl, "Poisson::sample") == 1) { return 0; }       # Knuth's exp, PTRS's ln and kernel
     if (_par_eq(fp, fl, "sample_poisson_ptrs") == 1) { return 0; }
+    if (_par_eq(fp, fl, "Binomial::pdf") == 1) { return 0; }         # ln, ln_1p and exp; Stirling on T1 lnΓ (c2)
+    if (_par_eq(fp, fl, "Binomial::cdf") == 1) { return 0; }         # downstream of the T1 incomplete beta
+    if (_par_eq(fp, fl, "Binomial::sample") == 1) { return 0; }      # Marsaglia–Tsang
     return 0 - 1;
 }
 

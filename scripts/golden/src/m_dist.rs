@@ -42,6 +42,12 @@
 //! hook, 1,024 draws at nine rates from three seeds. Class C but the constructor, mean and variance: the pmf takes
 //! glibc's ln and exp and 1.3.0's lnΓ, the cdf 1.3.0's incomplete gamma, and the draws glibc's exp and ln.
 //!
+//! Part c2, `Binomial`: n is a u64 (an `i:` token holding its 64-bit word, so u64::MAX is `i:-1`). The pmf and cdf at
+//! the integers, off them, around the mean and at both ends, for n from 1 to u64::MAX, and the draws either side of
+//! the direct simulation's 64 trials (Beta splitting above). Class C but the constructor, mean and variance: the pmf
+//! takes glibc's ln, ln_1p and exp and 1.3.0's lnΓ (Stirling's remainder below 10), the cdf 1.3.0's incomplete beta,
+//! and the draws Marsaglia–Tsang's.
+//!
 //! Inputs: the parameters, then x (or the seed and the count). Outputs: the value, or the draws as a sequence.
 
 use std::hint::black_box;
@@ -49,8 +55,8 @@ use std::hint::black_box;
 use crate::grids::{Rng as Seeds, specials};
 use crate::tsv::{Class, Module, Tok, err, f, i};
 use pramana::distribution::{
-    Bernoulli, Beta, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT,
-    Uniform, Weibull,
+    Bernoulli, Beta, Binomial, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, Poisson,
+    StudentT, Uniform, Weibull,
 };
 use pramana::{SimpleRng, oracle};
 
@@ -890,6 +896,87 @@ fn poisson_ptrs(m: &mut Module) {
     }
 }
 
+#[allow(clippy::cast_possible_wrap, clippy::cast_precision_loss)]
+fn binomial(m: &mut Module, g: &mut Seeds) {
+    let ns: [u64; 11] = [0, 1, 2, 10, 64, 65, 1000, 1 << 53, (1 << 53) + 1, 1 << 63, u64::MAX];
+    let eps = f64::EPSILON;
+    let mut ps = param_grid();
+    ps.extend([1.0 - eps / 2.0, 1.0 + eps, 0.3]);
+    for &n in &ns {
+        for &p in &ps {
+            match Binomial::new(black_box(n), black_box(p)) {
+                Ok(d) => m.row("Binomial::new", Class::A, &[i(n as i64), f(p)], &[i(d.n as i64), f(d.p)]),
+                Err(e) => m.row("Binomial::new", Class::A, &[i(n as i64), f(p)], &[err(&e)]),
+            }
+        }
+    }
+    let fixed: Vec<(u64, f64)> = vec![
+        (10, 0.3),
+        (1, 0.5),
+        (2, 0.5),
+        (20, 0.4),
+        (64, 0.5),
+        (65, 0.5),
+        (100, 0.01),
+        (1000, 0.5),
+        (1_000_000, 0.3),
+        (1_000_000_000_000, 0.5),
+        ((1 << 53) + 1, 0.5),
+        (u64::MAX, 0.5),
+        (10, 0.0),
+        (10, 1.0),
+        (50, 1e-300),
+        (50, 1.0 - eps / 2.0),
+        (30, f64::from_bits(1)),
+    ];
+    let seeded: Vec<(u64, f64)> = (0..40).map(|_| (g.log_uniform(0.0, 4.0) as u64 + 1, g.unit())).collect();
+    let point = |m: &mut Module, n: u64, p: f64, x: f64| {
+        let d = Binomial::new(n, p).expect("valid parameters");
+        m.row("Binomial::pdf", Class::C, &[i(n as i64), f(p), f(x)], &[f(d.pdf(black_box(x)))]);
+        m.row("Binomial::cdf", Class::C, &[i(n as i64), f(p), f(x)], &[f(d.cdf(black_box(x)))]);
+    };
+    for &(n, p) in &fixed {
+        let nf = n as f64;
+        let mean = nf * p;
+        let sd = (nf * p * (1.0 - p)).sqrt();
+        let mut xs: Vec<f64> = (0..=40).map(f64::from).filter(|&k| k <= nf).collect();
+        xs.extend((0..=10).map(|k| nf - f64::from(k)).filter(|&k| k >= 0.0));
+        xs.extend((-24..=24).map(|j| (mean + sd * (f64::from(j) / 2.0)).floor()));
+        xs.extend([nf, nf + 1.0, 0.5, 2.5, 3.000_000_000_000_000_4, -1.0, -0.0, mean, 1e300]);
+        xs.extend(specials());
+        for x in xs {
+            point(m, n, p, x);
+        }
+    }
+    for &(n, p) in &seeded {
+        let nf = n as f64;
+        let sd = (nf * p * (1.0 - p)).sqrt();
+        for j in -12..=12 {
+            point(m, n, p, (nf * p + sd * (f64::from(j) / 2.0)).floor());
+        }
+    }
+    for k in 0..1000 {
+        let n = g.log_uniform(0.0, 5.0) as u64 + 1;
+        let p = g.unit();
+        let x = (n as f64 * g.unit()).floor();
+        point(m, n, p, if k % 10 == 0 { x + 0.5 } else { x });
+    }
+    for &(n, p) in fixed.iter().chain(&seeded) {
+        let d = Binomial::new(n, p).expect("valid parameters");
+        m.row("Binomial::mean", Class::A, &[i(n as i64), f(p)], &[f(d.mean())]);
+        m.row("Binomial::variance", Class::A, &[i(n as i64), f(p)], &[f(d.variance())]);
+    }
+    for &seed in &SEEDS {
+        for (k, &(n, p)) in fixed.iter().enumerate() {
+            let count = if k == 0 { 10_000 } else { 256 };
+            let d = Binomial::new(n, p).expect("valid parameters");
+            let mut r = SimpleRng::new(seed);
+            let xs: Vec<f64> = (0..count).map(|_| d.sample(&mut r)).collect();
+            m.row("Binomial::sample", Class::C, &[i(n as i64), f(p), i(seed as i64), i(count as i64)], &draws(&xs));
+        }
+    }
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("dist");
     let mut g = Seeds::new(0x510e_527f_ade6_82d1);
@@ -908,5 +995,6 @@ pub fn emit() -> Module {
     tails(&mut m, &mut g);
     poisson(&mut m, &mut g);
     poisson_ptrs(&mut m);
+    binomial(&mut m, &mut g);
     m
 }

@@ -5,7 +5,8 @@
 # constructor's refusals, the identities each method keeps bit for bit, a consumer's own generator through the trait,
 # and the codecs' and Debug's exact text. Part a1: Normal, Box–Muller and Debug's f64 form; part a2: Uniform,
 # Exponential and Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma, ChiSquared and Marsaglia–Tsang; part b2:
-# Beta, StudentT and FDistribution, with Rust's Student-t and F tails; part c1: Poisson, Knuth's sampler and PTRS.
+# Beta, StudentT and FDistribution, with Rust's Student-t and F tails; part c1: Poisson, Knuth's sampler and PTRS;
+# part c2: Binomial, its u64 n and Beta splitting.
 
 include "tests/lib.cyr"
 
@@ -58,6 +59,23 @@ impl PmnRng for Counted {
         self.calls = self.calls + 1;
         var x: f64 = r.next_f64();
         return x;
+    }
+}
+
+# A consumer's generator of period 3, 0.3, 0.6, 0.5 in turn: two Marsaglia–Tsang variates at the same shape each take
+# exactly three uniforms (accepted at once by the squeeze), so they come out equal, and their Beta ratio is exactly ½.
+struct Cycle3 {
+    k;
+}
+
+impl PmnRng for Cycle3 {
+    fn next_f64(self): f64 {
+        var r: f64 = 0.3;
+        if (self.k == 1) { r = 0.6; }
+        if (self.k == 2) { r = 0.5; }
+        self.k = self.k + 1;
+        if (self.k == 3) { self.k = 0; }
+        return r;
     }
 }
 
@@ -1471,6 +1489,221 @@ fn main() {
     store64(sb + 8, 0);
     assert_eq(po.debug(sb, 1), PMN_ERR_NONE, "Poisson {:#?}");
     assert(text_is(sb, "Poisson {\n    lambda: 2.5,\n}") == 1, "one field a line");
+
+    test_group("1.3.0's Binomial tests (mean_and_variance, degenerate_p, pmf_matches_exact_and_cdf_matches_sum)");
+    var bnm: PmnBinomial;
+    assert_eq(PmnBinomial_new(&bnm, 10, 0.3), PMN_ERR_NONE, "Binomial(10, 0.3)");
+    var bim: f64 = bnm.mean();
+    var biv: f64 = bnm.variance();
+    var w3v: f64 = 10.0 * 0.3;
+    var w21: f64 = w3v * 0.7;
+    assert(bits(bim) == bits(w3v) && bits(biv) == bits(w21), "mean n·p and variance n·p·(1 − p), bit for bit");
+    assert(f64_abs(bim - 3.0) < 0.0000000001 && f64_abs(biv - 2.1) < 0.0000000001, "3 and 2.1 within 1e-10");
+    var b0d: PmnBinomial;
+    assert_eq(PmnBinomial_new(&b0d, 10, 0.0), PMN_ERR_NONE, "Binomial(10, 0)");
+    var dg1: f64 = b0d.pdf(0.0);
+    var dg2: f64 = b0d.pdf(3.0);
+    var dg3: f64 = b0d.cdf(0.0);
+    assert(dg1 == 1.0 && dg2 == 0.0 && dg3 == 1.0, "p = 0: all the mass at 0");
+    var b1d: PmnBinomial;
+    assert_eq(PmnBinomial_new(&b1d, 10, 1.0), PMN_ERR_NONE, "Binomial(10, 1)");
+    var dg4: f64 = b1d.pdf(10.0);
+    var dg5: f64 = b1d.pdf(9.0);
+    var dg6: f64 = b1d.cdf(9.0);
+    var dg7: f64 = b1d.cdf(10.0);
+    assert(dg4 == 1.0 && dg5 == 0.0 && dg6 == 0.0 && dg7 == 1.0, "p = 1: all the mass at n");
+    PmnSimpleRng_new(&g, 1);
+    assert_eq(PmnBinomial_new(&bnm, 1000, 1.0), PMN_ERR_NONE, "Binomial(1000, 1)");
+    var dg8: f64 = bnm.sample(&g);
+    assert_eq(PmnBinomial_new(&bnm, 1000, 0.0), PMN_ERR_NONE, "Binomial(1000, 0)");
+    var dg9: f64 = bnm.sample(&g);
+    assert(dg8 == 1000.0 && dg9 == 0.0, "draws of 1000 and 0");
+    assert_eq(PmnBinomial_new(&bnm, 20, 0.3), PMN_ERR_NONE, "Binomial(20, 0.3)");
+    var cum: f64 = 0.0;
+    var ex_ok = 1;
+    var cb: PmnU128;
+    for (var bkk = 0; bkk <= 20; bkk = bkk + 1) {
+        if (pmn_combinations(20, bkk, &cb) != PMN_ERR_NONE) { ex_ok = 0; }
+        var ccf: f64 = f64_from(cb.lo);
+        var ppk: f64 = _pmn_powi(0.3, bkk);
+        var qk: f64 = _pmn_powi(0.7, 20 - bkk);
+        var exact: f64 = ccf * ppk;
+        exact = exact * qk;
+        var bkf: f64 = f64_from(bkk);
+        var pmf: f64 = bnm.pdf(bkf);
+        if (rel_ok(pmf, exact, 0.0000000000001) == 0) { ex_ok = 0; }
+        cum = cum + exact;
+        if (bkk < 20) {
+            var cdv: f64 = bnm.cdf(bkf);
+            if (rel_ok(cdv, cum, 0.000000000001) == 0) { ex_ok = 0; }
+        }
+    }
+    assert_eq(ex_ok, 1, "the pmf is C(20, k)·0.3^k·0.7^(20−k) within 1e-13, the cdf its running sum within 1e-12");
+
+    test_group("1.3.0's large-n tests (binomial_large_n_is_fast_and_accurate, _large_n_sampling_moments)");
+    assert_eq(PmnBinomial_new(&bnm, 1000000, 0.5), PMN_ERR_NONE, "Binomial(1e6, 0.5)");
+    var hv: f64 = 500000.0;
+    var bch: f64 = bnm.cdf(hv);
+    var bph: f64 = bnm.pdf(hv);
+    var hpv: f64 = 0.5 * bph;
+    var wch: f64 = 0.5 + hpv;
+    assert(rel_ok(bch, wch, 0.000000000001) == 1, "the symmetric cdf: P(X ≤ n/2) = ½ + P(X = n/2)/2 within 1e-12");
+    var pih: f64 = pi * hv;
+    var sph: f64 = f64_sqrt(pih);
+    var iph: f64 = 1.0 / sph;
+    var c4n: f64 = 1.0 / 4000000.0;
+    var c4: f64 = 1.0 - c4n;
+    var wph: f64 = iph * c4;
+    assert(rel_ok(bph, wph, 0.000000001) == 1, "the central pmf ≈ (1 − 1/4n)/√(πn/2) within 1e-9");
+    var bmx: PmnBinomial;
+    assert_eq(PmnBinomial_new(&bmx, 0 - 1, 0.25), PMN_ERR_NONE, "Binomial(u64::MAX, 0.25)");
+    PmnSimpleRng_new(&g, 77);
+    var bsm: f64 = bmx.sample(&g);
+    var umx: f64 = _pmn_u64_to_f64(0 - 1);
+    var bfr: f64 = bsm / umx;
+    assert(f64_abs(bfr - 0.25) < 0.000001, "u64::MAX trials: a draw within 1e-6 of a quarter, in O(log n)");
+    assert_eq(PmnBinomial_new(&bnm, 10000, 0.3), PMN_ERR_NONE, "Binomial(1e4, 0.3)");
+    PmnSimpleRng_new(&g, 31337);
+    var lsum: f64 = 0.0;
+    var lsq: f64 = 0.0;
+    var l_ok = 1;
+    for (var li = 0; li < 20000; li = li + 1) {
+        var ld: f64 = bnm.sample(&g);
+        var lfr: f64 = _pmn_fract(ld);
+        if (ld < 0.0 || ld > 10000.0 || lfr != 0.0) { l_ok = 0; }
+        lsum = lsum + ld;
+        lsq = lsq + ld * ld;
+    }
+    var lmn: f64 = lsum / 20000.0;
+    var lm2: f64 = lmn * lmn;
+    lm2 = lm2 * 20000.0;
+    var lvr: f64 = lsq - lm2;
+    lvr = lvr / 19999.0;
+    var lse: f64 = 2100.0 / 20000.0;
+    lse = f64_sqrt(lse);
+    lse = 5.0 * lse;
+    var lvq: f64 = lvr / 2100.0;
+    lvq = lvq - 1.0;
+    assert(l_ok == 1 && f64_abs(lmn - 3000.0) < lse && f64_abs(lvq) < 0.06,
+      "20,000 Beta-split draws: integers in [0, n], mean within 5 standard errors, variance 6%");
+
+    test_group("the constructor, the unsigned n and the draws (D11)");
+    var bbi: PmnBinomial;
+    assert_eq(PmnBinomial_new(&bbi, 0, 0.5), PMN_ERR_INVALID_PARAMETER, "n = 0");
+    assert_eq(PmnBinomial_new(&bbi, 10, nan), PMN_ERR_INVALID_PARAMETER, "a NaN p");
+    assert_eq(PmnBinomial_new(&bbi, 10, 1.5), PMN_ERR_INVALID_PARAMETER, "p = 1.5");
+    assert_eq(PmnBinomial_new(0, 10, 0.5), PMN_ERR_INVALID_PARAMETER, "a null out");
+    bbi.n = 7;
+    bbi.p = 0.25;
+    assert_eq(PmnBinomial_new(&bbi, 5, -0.1), PMN_ERR_INVALID_PARAMETER, "p = −0.1");
+    var bbp: f64 = bbi.p;
+    assert(bbi.n == 7 && bbp == 0.25, "a refusal writes nothing");
+    var h63 = 0x8000000000000000;
+    assert_eq(PmnBinomial_new(&bbi, h63, 0.5), PMN_ERR_NONE, "n = 2^63: its word is negative as an i64");
+    var h63m: f64 = bbi.mean();
+    var w62: f64 = of_bits(0x43D0000000000000);
+    assert(h63m == w62, "the mean is 2^62: n converts unsigned");
+    var h63c: f64 = bbi.cdf(inf);
+    var h63p: f64 = bbi.pdf(-1.0);
+    assert(h63c == 1.0 && h63p == 0.0, "cdf 1 at ∞, pmf 0 below 0");
+    assert_eq(PmnBinomial_new(&bnm, 64, 0.5), PMN_ERR_NONE, "Binomial(64, 0.5): simulated directly");
+    ct1.g = &cg1;
+    PmnSimpleRng_new(&cg1, 3);
+    ct1.calls = 0;
+    var d64: f64 = bnm.sample(&ct1);
+    assert(ct1.calls == 64 && d64 >= 0.0 && d64 <= 64.0, "64 trials: 64 uniforms, one a trial");
+    PmnSimpleRng_new(&cg1, 3);
+    PmnSimpleRng_new(&h, 3);
+    var dsim = 0;
+    for (var di = 0; di < 64; di = di + 1) {
+        var du: f64 = h.next_f64();
+        if (du < 0.5) { dsim = dsim + 1; }
+    }
+    var d64b: f64 = bnm.sample(&cg1);
+    assert(d64b == f64_from(dsim), "the direct draw counts the uniforms below p, bit for bit");
+    assert_eq(PmnBinomial_new(&bnm, 65, 0.5), PMN_ERR_NONE, "Binomial(65, 0.5): one Beta split first");
+    PmnSimpleRng_new(&cg1, 3);
+    ct1.calls = 0;
+    var d65: f64 = bnm.sample(&ct1);
+    assert(ct1.calls >= 38 && ct1.calls < 65 && d65 >= 0.0 && d65 <= 65.0,
+      "65 trials: one split (two gamma variates, 3 uniforms each at least), then 32 trials: fewer than 65 uniforms");
+
+    assert_eq(PmnBinomial_new(&bnm, 10, 0.0), PMN_ERR_NONE, "Binomial(10, 0)");
+    e8.k = 0;
+    var tz0: f64 = bnm.sample(&e8);
+    assert(tz0 == 0.0, "a trial succeeds on u < p: a u of 0 is no success at p = 0");
+    assert_eq(PmnBinomial_new(&bnm, 8, 0.5), PMN_ERR_NONE, "Binomial(8, 0.5)");
+    e8.k = 0;
+    var tz8: f64 = bnm.sample(&e8);
+    assert(tz8 == 4.0, "the eighths 0 … 7/8: four below ½, the one at ½ no success");
+    assert_eq(PmnBinomial_new(&bnm, 65, 0.5), PMN_ERR_NONE, "Binomial(65, 0.5)");
+    var cy: Cycle3;
+    cy.k = 0;
+    var tsx: f64 = bnm.sample(&cy);
+    assert(tsx == 32.0, "a split at x = p exactly keeps the a − 1 = 32 trials below, now at p/x = 1: 32 successes");
+
+    test_group("the pmf's and cdf's edges");
+    assert_eq(PmnBinomial_new(&bnm, 20, 0.3), PMN_ERR_NONE, "Binomial(20, 0.3)");
+    var e0b: f64 = bnm.pdf(mz);
+    var e0w: f64 = _pmn_ln_1p(-0.3);
+    e0w = 20.0 * e0w;
+    e0w = _pmn_exp(e0w);
+    var enb: f64 = bnm.pdf(20.0);
+    var enw: f64 = _pmn_ln(0.3);
+    enw = 20.0 * enw;
+    enw = _pmn_exp(enw);
+    assert(bits(e0b) == bits(e0w) && bits(enb) == bits(enw),
+      "(1 − p)^n at 0 (−0.0 included) and p^n at n, bit for bit");
+    var ef1: f64 = bnm.pdf(2.5);
+    var ef2: f64 = bnm.pdf(21.0);
+    var ef3: f64 = bnm.pdf(inf);
+    var ef4: f64 = bnm.pdf(nneg);
+    assert(ef1 == 0.0 && ef2 == 0.0 && ef3 == 0.0 && bits(ef4) == 0x7FF8000000000000, "0 off the support, NaN at NaN");
+    var ec1: f64 = bnm.cdf(-0.5);
+    var ec2: f64 = bnm.cdf(7.9);
+    var ec3: f64 = bnm.cdf(7.0);
+    var ec4: f64 = bnm.cdf(20.0);
+    var ec5: f64 = bnm.cdf(nneg);
+    assert(ec1 == 0.0 && bits(ec2) == bits(ec3) && ec4 == 1.0 && bits(ec5) == 0x7FF8000000000000,
+      "cdf 0 below 0, constant between the integers, 1 at n, NaN at NaN");
+    var bc_ok = 1;
+    for (var bcc = 0; bcc < 20; bcc = bcc + 1) {
+        var bcf: f64 = f64_from(bcc);
+        var bcv: f64 = bnm.cdf(bcf);
+        var bna: f64 = 20.0 - bcf;
+        var bkb: f64 = bcf + 1.0;
+        var bii, bic = _pmn_beta_inc(bna, bkb, 0.7, 0.3);
+        if (bits(bcv) != bits(bii)) { bc_ok = 0; }
+    }
+    assert_eq(bc_ok, 1, "the cdf is beta_inc(n − k, k + 1, 1 − p, p)'s first value, bit for bit");
+
+    test_group("JSON and Debug (serde_roundtrip_binomial, deserialize_rejects; D5, D12)");
+    assert_eq(PmnBinomial_new(&bnm, 20, 0.4), PMN_ERR_NONE, "Binomial(20, 0.4)");
+    store64(sb + 8, 0);
+    assert_eq(bnm.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"n\":20,\"p\":0.4}") == 1, "as serde_json writes it, n an integer");
+    var rbi: PmnBinomial;
+    assert_eq(PmnBinomial_from_json(&rbi, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rbp: f64 = rbi.p;
+    assert(rbi.n == 20 && rbp == 0.4, "the same n and p");
+    var jb0 = "{\"n\":0,\"p\":0.5}";
+    var jb1 = "{\"n\":5,\"p\":1.5}";
+    var jb2 = "{\"n\":5.0,\"p\":0.5}";
+    var jb3 = "{\"n\":18446744073709551615,\"p\":0.5}";
+    assert_eq(PmnBinomial_from_json(&rbi, jb0, strlen(jb0)), PMN_ERR_DESERIALIZE, "n = 0");
+    assert_eq(PmnBinomial_from_json(&rbi, jb1, strlen(jb1)), PMN_ERR_DESERIALIZE, "p = 1.5");
+    assert_eq(PmnBinomial_from_json(&rbi, jb2, strlen(jb2)), PMN_ERR_DESERIALIZE, "n written as a float");
+    assert_eq(PmnBinomial_from_json(&rbi, jb3, strlen(jb3)), PMN_ERR_NONE, "n = u64::MAX");
+    assert(rbi.n == 0 - 1, "read as its word");
+    store64(sb + 8, 0);
+    assert_eq(rbi.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"n\":18446744073709551615,\"p\":0.5}") == 1, "and written back as unsigned");
+    store64(sb + 8, 0);
+    assert_eq(bnm.debug(sb, 0), PMN_ERR_NONE, "Binomial {:?}");
+    assert(text_is(sb, "Binomial { n: 20, p: 0.4 }") == 1, "Binomial { n: 20, p: 0.4 }");
+    store64(sb + 8, 0);
+    assert_eq(bnm.debug(sb, 1), PMN_ERR_NONE, "Binomial {:#?}");
+    assert(text_is(sb, "Binomial {\n    n: 20,\n    p: 0.4,\n}") == 1, "one field a line");
 
     return assert_summary();
 }
