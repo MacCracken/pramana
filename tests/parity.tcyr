@@ -547,6 +547,14 @@ fn _par_json_write(fp, fl): i64 {
         _par_json_k = wpk;
         e = wpm.to_json(sb);
         var wpd = PmnPolynomialModel_drop(&wpm);
+    } elif (_par_eq(fp, fl, "json::write::BayesianUpdate") == 1) {
+        var wbu: PmnBayesianUpdate;
+        var wbp: f64 = _par_in(0);
+        var wbl: f64 = _par_in(1);
+        var wbe: f64 = _par_in(2);
+        if (PmnBayesianUpdate_new(&wbu, wbp, wbl, wbe) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 3;
+        e = wbu.to_json(sb);
     } elif (_par_eq(fp, fl, "json::write::ArimaModel") == 1) {
         if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
         var wam: PmnArimaModel;
@@ -899,6 +907,26 @@ fn _par_json_models(which): i64 {
     return 1;
 }
 
+# json::BayesianUpdate rows (M5 part c): the decoded fields, or the error.
+fn _par_json_bayes(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var u: PmnBayesianUpdate;
+    var e = PmnBayesianUpdate_from_json(&u, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    var a: f64 = u.prior;
+    var b: f64 = u.likelihood;
+    var c: f64 = u.evidence;
+    _par_got_f(a);
+    _par_got_f(b);
+    _par_got_f(c);
+    return 1;
+}
+
 # json::Kernel rows through the port's reader (M4 part a2).
 fn _par_json_kernel(): i64 {
     var n = 0;
@@ -971,6 +999,7 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::PolynomialModel") == 1) { return _par_json_models(1); }
     if (_par_eq(fp, fl, "json::LogisticModel") == 1) { return _par_json_models(2); }
     if (_par_eq(fp, fl, "json::ArimaModel") == 1) { return _par_json_models(3); }
+    if (_par_eq(fp, fl, "json::BayesianUpdate") == 1) { return _par_json_bayes(); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -1167,6 +1196,18 @@ fn _par_debug(fp, fl): i64 {
         var dak = _par_anova_from_toks(0, &dar);
         if (dak + 1 != _par_in_n) { return 0 - 1; }
         e = dar.debug(sb, _par_in(dak));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::BayesianUpdate") == 1) {
+        if (_par_in_n != 4) { return 0 - 1; }
+        var dbu: PmnBayesianUpdate;
+        var dbp: f64 = _par_in(0);
+        var dbl: f64 = _par_in(1);
+        var dbe: f64 = _par_in(2);
+        if (PmnBayesianUpdate_new(&dbu, dbp, dbl, dbe) != PMN_ERR_NONE) { return 0 - 1; }
+        e = dbu.debug(sb, _par_in(3));
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -2714,8 +2755,60 @@ fn _par_timeseries(fp, fl): i64 {
     return 0;
 }
 
+# ── `bayesian` rows (M5 part c): src/bayesian.cyr.
+
+fn _par_bayesian(fp, fl): i64 {
+    if (_par_eq(fp, fl, "BayesianUpdate::new") == 1 || _par_eq(fp, fl, "bayesian::bayes_theorem") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var p: f64 = _par_in(0);
+        var l: f64 = _par_in(1);
+        var e: f64 = _par_in(2);
+        if (_par_eq(fp, fl, "bayesian::bayes_theorem") == 1) {
+            var t, v = pmn_bayes_theorem(p, l, e);
+            if (t == Err) {
+                _par_got_err(v);
+            } else {
+                _par_got_f(v);
+            }
+            return 1;
+        }
+        var u: PmnBayesianUpdate;
+        var ce = PmnBayesianUpdate_new(&u, p, l, e);
+        if (ce != PMN_ERR_NONE) {
+            _par_got_err(ce);
+            return 1;
+        }
+        var a: f64 = u.prior;
+        var b: f64 = u.likelihood;
+        var c: f64 = u.evidence;
+        var post: f64 = u.posterior();
+        _par_got_f(a);
+        _par_got_f(b);
+        _par_got_f(c);
+        _par_got_f(post);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "bayesian::naive_bayes_classify") == 1) {
+        if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+        if (_par_ds_a == 0) { return 0 - 1; }
+        var recs[1024];
+        var np = _par_vars(&recs);
+        if (np < 2) { return 0 - 1; }
+        var t2, v2 = pmn_naive_bayes_classify(load64(&recs), load64(&recs + 8), load64(&recs + 16),
+            load64(&recs + 24), &recs + 32, np - 2);
+        if (t2 == Err) {
+            _par_got_err(v2);
+        } else {
+            _par_got_i(v2);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
+    if (_par_eq(mp, ml, "bayesian") == 1) { return _par_bayesian(fp, fl); }
     if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
     if (_par_eq(mp, ml, "combinatorics") == 1) { return _par_combinatorics(fp, fl); }
     if (_par_eq(mp, ml, "constants") == 1) { return _par_constants(fp, fl); }
@@ -2849,6 +2942,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "hypothesis::ci_mean") == 1) { return 0; }
     if (_par_eq(fp, fl, "hypothesis::ci_two_means") == 1) { return 0; }
     if (_par_eq(fp, fl, "hypothesis::ci_proportion") == 1) { return 0; }
+    if (_par_eq(fp, fl, "bayesian::naive_bayes_classify") == 1) { return 0; }    # ln (M5 part c)
     if (_par_eq(fp, fl, "regression::logistic_regression") == 1) { return 0; }   # the sigmoid's exp (M5 part a)
     if (_par_eq(fp, fl, "regression::predict_logistic_proba") == 1) { return 0; }
     if (_par_eq(fp, fl, "regression::predict_logistic_class") == 1) { return 0; }

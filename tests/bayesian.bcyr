@@ -1,0 +1,40 @@
+# bayesian.bcyr — src/bayesian.cyr (M5 part c): ns per call, on 1.3.0's own criterion body
+# (rust-old/benches/benchmarks.rs), whose number is rust-old/benchmarks.md's (2026-11-14, this host; ADR 010):
+# `bayesian/naive_bayes_4class_10feat`, four classes of prior ¼ and ten likelihoods 0.1·(c + 1). The record is
+# docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+fn main(): i64 {
+    alloc_init();
+    var feats = alloc(10 * 8);
+    var pri = alloc(4 * 8);
+    var lk = alloc(40 * 8);
+    var rows = alloc(4 * 16);
+    for (var i = 0; i < 10; i = i + 1) { store64(feats + i * 8, 0.5); }
+    for (var c = 0; c < 4; c = c + 1) {
+        store64(pri + c * 8, 0.25);
+        var cf: f64 = f64_from(c + 1);
+        var lv: f64 = 0.1 * cf;
+        for (var j = 0; j < 10; j = j + 1) { store64(lk + (c * 10 + j) * 8, lv); }
+        store64(rows + c * 16, lk + c * 80);
+        store64(rows + c * 16 + 8, 10);
+    }
+    var b1 = bench_new("naive_bayes_4class_10feat");
+    var best = 0;
+    bench_batch_start(b1);
+    for (var r = 0; r < 100000; r = r + 1) {
+        var t, v = pmn_naive_bayes_classify(feats, 10, pri, 4, rows, 4);
+        if (t == Err) { return 1; }
+        best = v;
+    }
+    bench_batch_stop(b1, 100000);
+    print("  the class: ", 13);
+    fmt_int(best);
+    println("");
+    bench_report(b1);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

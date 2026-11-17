@@ -56,7 +56,7 @@
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
 > parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
-> begun:** parts a (regression) and b (time series) are done.
+> begun:** parts a (regression), b (time series) and c (Bayesian) are done; d, the gate, is next.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1274,7 +1274,8 @@ rows in new modules `regression`, `timeseries` and `bayesian`:
 - **b:** `src/timeseries.cyr`: moving average, exponential smoothing, autocorrelation, `difference`/`integrate`, the
   ARIMA fit (Yule–Walker on Cholesky) and forecast. A new golden module, `timeseries` (1,322 rows), 97 codec and 16
   Debug rows; every row passing on the first replay, at 0 ulp, on three targets ✅;
-- **c:** `src/bayesian.cyr`: Bayes' theorem, the conjugate updates and naive Bayes;
+- **c:** `src/bayesian.cyr`: Bayes' theorem, the update and naive Bayes. A new golden module, `bayesian` (2,005
+  rows), 97 codec and 10 Debug rows; every row passing on the first replay, at 0 ulp, on three targets ✅;
 - **d:** M5's gate: NIST StRD's regression sets (Norris, Pontius, Wampler1–5, Filip; class R, D4) and the
   univariate sets' lag-1 autocorrelation, the soak, surface parity, the benchmark rows, three targets.
 

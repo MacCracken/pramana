@@ -948,3 +948,12 @@ come in at 5×.
 `tests/timeseries.bcyr`, three pinned runs. One pass over 10⁴ points with a running sum: the loop Rust can't
 vectorize either (each sum depends on the last), so the ratio is the codegen's plain cost.
 
+## M5 part c: naive Bayes (2026-11-17)
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `bayesian/naive_bayes_4class_10feat` | 0.173 µs | 2.97–3.04 µs | 17× |
+
+`tests/bayesian.bcyr`, three pinned runs. The call is 44 logarithms: at the correctly rounded ln's 54–55 ns against
+glibc's 5.3–5.4 ns (M1 part b1's record), they are 2.4 µs of the 3.0. ADR 009's price.
+

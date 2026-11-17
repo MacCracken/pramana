@@ -976,6 +976,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   forecasts, c(0)'s 1e-30 floor), 97 codec and 16 Debug rows. Every row passes on the first replay, at 0 ulp, on
   x86_64 ELF, PE and aarch64. Five mutants fail 3 to 97 rows each. `tests/timeseries.tcyr` (45 checks) carries 1.3.0's
   tests over. `moving_average` refuses an output overlapping its input (its slide re-reads the window's first value).
+- **M5 part c: Bayesian inference** (port plan §7; `src/bayesian.cyr`). 1.3.0's `BayesianUpdate` (validated: its
+  codec through the constructor; `posterior`), `bayes_theorem` and `naive_bayes_classify` (log-posteriors on the
+  correctly rounded ln, the 1e-300 floor held as a proven word). A new golden module, `bayesian`, 2,005 rows (the
+  probability grid, the coherence bound at, below and above 1 + 1e-12, seeded and degenerate naive Bayes problems),
+  97 codec and 10 Debug rows. Every row passes on the first replay, at 0 ulp, on x86_64 ELF, PE and aarch64. Two
+  mutants (the coherence test and the winner's tie) fail 2 rows each. `tests/bayesian.tcyr` (19 checks).
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

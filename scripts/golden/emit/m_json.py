@@ -668,6 +668,7 @@ def emit():
     test_results(m, Rng(0x13198A2E03707344))
     regression_models(m, Rng(0x299F31D0082EFA98))
     arima_models(m, Rng(0xEC4E6C89452821E6))
+    bayesian_update(m, Rng(0x5F6F7E8D9CABBACD))
     return m
 
 def kde_toks(data, h, k):
@@ -794,4 +795,19 @@ def arima_models(m, g):
     for k in range(12):
         cs = [finite(g) for _ in range(k % 4)]
         write(m, "ArimaModel", [v(len(cs))] + [f(c) for c in cs] + [i(g.int(0, 3)), f(finite(g)), f(g.unit())])
+
+
+
+
+def bayesian_update(m, g):
+    """M5 part c: BayesianUpdate's codec through `BayesianUpdate::new` (serde's try_from)."""
+    nums = B("0.5", "0", "-0.0", "1e309", "null", '"1"', "true", "1.5", "-0.1")
+    docs = struct_docs([("prior", b"0.3"), ("likelihood", b"0.7"), ("evidence", b"0.4")], [nums, nums, nums])
+    docs += B('{"prior":0.5,"likelihood":0.5,"evidence":0.0}', '{"prior":1.5,"likelihood":0.5,"evidence":0.9}',
+              '{"prior":0.3,"likelihood":0.8,"evidence":0.5}', '{"prior":0.5,"likelihood":0.9,"evidence":0.2}')
+    for d in docs:
+        read(m, "json::BayesianUpdate", d)
+    for _ in range(12):
+        p, l = g.unit(), g.unit()
+        write(m, "BayesianUpdate", [f(p), f(l), f(min(1.0, p * l + 0.25))])
 

@@ -1,0 +1,166 @@
+# bayesian.cyr — Rust 1.3.0's Bayesian inference (src/bayesian.rs; port plan §4.1, D5, D12; M5 part c):
+# `BayesianUpdate` (validated: its codec goes through the constructor), `bayes_theorem` and `naive_bayes_classify`.
+#
+# In Rust's operation order: the posterior P(B|A)·P(A)/P(B); naive Bayes' log-posteriors ln P(c) + Σ ln P(xᵢ|c) on
+# the correctly rounded ln (ADR 009), a non-positive likelihood counted as ln 1e-300 and a non-positive prior skipped,
+# the first class with the largest log-posterior winning. The likelihood rows are 16-byte records (a pointer, then a
+# count), Rust's `&[Vec<f64>]`.
+
+# 1e-300, the floor naive Bayes takes the log of for a non-positive likelihood (Rust's `1e-300_f64.ln()`), held as its
+# bit pattern (no exponent form in a Cyrius literal); scripts/crverify/consts.py proves it.
+var _PMN_BAYES_FLOOR: f64 = 0x01A56E1FC2F8F359;
+
+# Rust's `BayesianUpdate`: P(A), P(B|A) and P(B).
+struct PmnBayesianUpdate {
+    prior: f64;
+    likelihood: f64;
+    evidence: f64;
+}
+
+# 1 when 0 ≤ x ≤ 1 (Rust's `(0.0..=1.0).contains(&x)`: NaN is outside).
+#must_use
+#pure
+fn _pmn_bayes_unit(x: f64): i64 {
+    if (x >= 0.0 && x <= 1.0) { return 1; }
+    return 0;
+}
+
+# Rust's `BayesianUpdate::new(prior, likelihood, evidence)`, into out (caller storage). PMN_ERR_INVALID_PARAMETER, in
+# Rust's order, for evidence 0, a prior, likelihood or evidence outside [0, 1], or incoherent inputs
+# (likelihood·prior > evidence·(1 + 1e-12)); and for a null out. On a refusal out is untouched.
+#must_use
+fn PmnBayesianUpdate_new(out: *PmnBayesianUpdate, prior: f64, likelihood: f64, evidence: f64): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (evidence == 0.0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_bayes_unit(prior) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_bayes_unit(likelihood) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_bayes_unit(evidence) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var tol: f64 = _PMN_BAYESIAN_COHERENCE_TOL;
+    var lp: f64 = likelihood * prior;
+    var st: f64 = 1.0 + tol;
+    var lim: f64 = evidence * st;
+    if (lp > lim) { return PMN_ERR_INVALID_PARAMETER; }
+    out.prior = prior;
+    out.likelihood = likelihood;
+    out.evidence = evidence;
+    return PMN_ERR_NONE;
+}
+
+impl PmnBayesianUpdate {
+    # Rust's `posterior()`: P(B|A)·P(A)/P(B).
+    #must_use
+    fn posterior(self): f64 {
+        var l: f64 = self.likelihood;
+        var p: f64 = self.prior;
+        var e: f64 = self.evidence;
+        var lp: f64 = l * p;
+        var r: f64 = lp / e;
+        return r;
+    }
+
+    # Appends Rust's derived Debug (D12): `BayesianUpdate { prior: .., likelihood: .., evidence: .. }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "BayesianUpdate", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "prior", 1, self.prior, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "likelihood", 0, self.likelihood, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "evidence", 0, self.evidence, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"prior":..,"likelihood":..,"evidence":..}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_f64_field(sb, "prior", 1, self.prior);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "likelihood", 0, self.likelihood); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "evidence", 0, self.evidence); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder: BayesianUpdateRepr's three f64 fields, then `BayesianUpdate::new` (serde's try_from), whose refusal is
+# PMN_ERR_DESERIALIZE.
+fn _pmn_bayes_from_root(root, out: *PmnBayesianUpdate): i64 {
+    var names[24];
+    store64(&names, "prior");
+    store64(&names + 8, "likelihood");
+    store64(&names + 16, "evidence");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var v[24];
+    if (_pmn_hyp_f64s(&sl, 0, 3, &v) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var p: f64 = load64(&v);
+    var l: f64 = load64(&v + 8);
+    var ev: f64 = load64(&v + 16);
+    if (PmnBayesianUpdate_new(out, p, l, ev) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a BayesianUpdate document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any
+# document serde_json refuses (one `BayesianUpdate::new` refuses included), or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnBayesianUpdate_from_json(out: *PmnBayesianUpdate, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_bayes_from_root, out);
+}
+
+# Rust's `bayes_theorem(prior, likelihood, evidence)`: Ok(P(B|A)·P(A)/P(B)); Err(PMN_ERR_INVALID_PARAMETER) for
+# evidence 0. The raw formula: nothing else is checked.
+#must_use
+fn pmn_bayes_theorem(prior: f64, likelihood: f64, evidence: f64): Result {
+    if (evidence == 0.0) { return Err(PMN_ERR_INVALID_PARAMETER); }
+    var lp: f64 = likelihood * prior;
+    var r: f64 = lp / evidence;
+    return Ok(r);
+}
+
+# Rust's `naive_bayes_classify(features, class_priors, class_likelihoods)`: Ok(the index of the class with the largest
+# log-posterior), 0 when none has a positive prior. PMN_ERR_INVALID_SAMPLE for no classes; PMN_ERR_DIMENSION_MISMATCH
+# for as many likelihood rows as classes, or a row of other than nf likelihoods; in Rust's order.
+# PMN_ERR_INVALID_PARAMETER first for an invalid slice or row. The features' values are not read, as Rust's.
+#must_use
+fn pmn_naive_bayes_classify(features, nf, priors, nc, rows, nr): Result {
+    if (nf < 0 || nc < 0 || nr < 0 || (features == 0 && nf > 0) || (priors == 0 && nc > 0) || (rows == 0 && nr > 0)) {
+        return Err(PMN_ERR_INVALID_PARAMETER);
+    }
+    for (var r0 = 0; r0 < nr; r0 = r0 + 1) {
+        var rp = load64(rows + r0 * 16);
+        var rn = load64(rows + r0 * 16 + 8);
+        if (rn < 0 || (rp == 0 && rn > 0)) { return Err(PMN_ERR_INVALID_PARAMETER); }
+    }
+    if (nc == 0) { return Err(PMN_ERR_INVALID_SAMPLE); }
+    if (nc != nr) { return Err(PMN_ERR_DIMENSION_MISMATCH); }
+    for (var i = 0; i < nr; i = i + 1) {
+        if (load64(rows + i * 16 + 8) != nf) { return Err(PMN_ERR_DIMENSION_MISMATCH); }
+    }
+    var best = 0;
+    var bl: f64 = _PMN_F64_NEG_INFINITY;
+    var tiny: f64 = _PMN_BAYES_FLOOR;
+    var lt: f64 = _pmn_ln(tiny);
+    for (var c = 0; c < nc; c = c + 1) {
+        var pr: f64 = load64(priors + c * 8);
+        if (pr > 0.0) {      # Rust skips prior ≤ 0; a NaN prior, which it doesn't skip, can't win (NaN > best is false)
+            var lpst: f64 = _pmn_ln(pr);
+            var row = load64(rows + c * 16);
+            for (var j = 0; j < nf; j = j + 1) {
+                var lk: f64 = load64(row + j * 8);
+                if (lk <= 0.0) {
+                    lpst = lpst + lt;
+                } else {
+                    var ll: f64 = _pmn_ln(lk);
+                    lpst = lpst + ll;
+                }
+            }
+            if (lpst > bl) {
+                bl = lpst;
+                best = c;
+            }
+        }
+    }
+    return Ok(best);
+}

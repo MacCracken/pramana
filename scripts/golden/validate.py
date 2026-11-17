@@ -834,6 +834,7 @@ JSON_VALIDATED = {
                            lambda *vals: mvn_json_accepts(*vals)),
     "KernelDensity": ([("data", "Vec<f64>"), ("bandwidth", "f64"), ("kernel", "Kernel")],
                       lambda *vals: kde_json_accepts(*vals)),
+    "BayesianUpdate": ([("prior", "f64"), ("likelihood", "f64"), ("evidence", "f64")], lambda p, l, e: by_new(p, l, e)),
 }
 
 
@@ -3674,6 +3675,9 @@ def debug_text(fn, ins):
         return debug_struct("MultivariateNormal", [("mean", vec(mean, 1)), ("covariance", mat(rows)),
                                                    ("cholesky_l", mat(lrows)), ("log_det", rust_debug_f64(ld)),
                                                    ("dim", str(len(mean)))], alt)
+    if fn == "debug::BayesianUpdate":
+        return debug_struct("BayesianUpdate", [("prior", rust_debug_f64(ins[0])), ("likelihood", rust_debug_f64(ins[1])),
+                                               ("evidence", rust_debug_f64(ins[2]))], ins[3] == 1)
     if fn == "debug::Kernel":
         name = ins[0].split(".", 1)[1]
         if name not in KERNEL_NAMES:
@@ -4861,6 +4865,55 @@ TS = {
 }
 
 
+# ── bayesian (M5 part c): 1.3.0's bayesian.rs ──
+
+def by_new(p, l, e):
+    if e == 0.0:
+        return False
+    if not (0.0 <= p <= 1.0) or not (0.0 <= l <= 1.0) or not (0.0 <= e <= 1.0):
+        return False
+    return not (l * p > e * (1.0 + 1e-12))
+
+
+def by_update(L, sl, sc):
+    p, l, e = sc
+    return [p, l, e, l * p / e] if by_new(p, l, e) else ["E:InvalidParameter"]
+
+
+def by_theorem(L, sl, sc):
+    p, l, e = sc
+    return ["E:InvalidParameter"] if e == 0.0 else [fdiv(l * p, e)]
+
+
+def by_naive(L, sl, sc):
+    """Inputs: the features, the priors, then one slice per class of likelihoods."""
+    feats, priors, rows = sl[0], sl[1], sl[2:]
+    if not priors:
+        return ["E:InvalidSample"]
+    if len(priors) != len(rows):
+        return ["E:DimensionMismatch"]
+    if any(len(r) != len(feats) for r in rows):
+        return ["E:DimensionMismatch"]
+    best, bl = 0, -math.inf
+    lt = L.ln(1e-300)
+    for c, pr in enumerate(priors):
+        if pr <= 0.0:
+            continue
+        lp = L.ln(pr)
+        for lk in rows[c]:
+            lp += lt if lk <= 0.0 else L.ln(lk)
+        if lp > bl:
+            bl, best = lp, c
+    return [best]
+
+
+BAYES = {
+    "BayesianUpdate::new": by_update,
+    "bayesian::bayes_theorem": by_theorem,
+    "bayesian::naive_bayes_classify": by_naive,
+}
+
+
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
 STATS_T1 = {"hypothesis::t_test_one_sample": "incomplete beta", "hypothesis::t_test_two_sample": "incomplete beta",
             "hypothesis::chi_squared_test": "incomplete gamma", "hypothesis::one_way_anova": "incomplete beta",
@@ -4919,7 +4972,7 @@ def check_stats(root, module, table, rows):
     return failures, by_fn, crs, refs
 
 
-STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG, "timeseries": TS}
+STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG, "timeseries": TS, "bayesian": BAYES}
 
 
 def main(argv):

@@ -26,7 +26,7 @@ SRC = ROOT / "src"
 PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptive", "hypothesis"]   # M4's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {"regression": "M5", "timeseries": "M5"}
+PARTIAL = {"regression": "M5", "timeseries": "M5", "bayesian": "M5"}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
@@ -60,6 +60,16 @@ SURFACE = {
     "descriptive::KernelDensity.evaluate": ["method PmnKernelDensity.evaluate"],
     "descriptive::KernelDensity.evaluate_grid": ["method PmnKernelDensity.evaluate_grid"],
     "descriptive::correlation_matrix": ["fn pmn_correlation_matrix"],
+    # bayesian.rs (M5 part c)
+    "bayesian::BayesianUpdate": ["struct PmnBayesianUpdate"],
+    "bayesian::BayesianUpdate#Clone": "a plain struct: copying it clones it",
+    "bayesian::BayesianUpdate#Debug": ["method PmnBayesianUpdate.debug"],
+    "bayesian::BayesianUpdate#Serialize": ["method PmnBayesianUpdate.to_json"],
+    "bayesian::BayesianUpdate#Deserialize": ["fn PmnBayesianUpdate_from_json"],
+    "bayesian::BayesianUpdate.new": ["fn PmnBayesianUpdate_new"],
+    "bayesian::BayesianUpdate.posterior": ["method PmnBayesianUpdate.posterior"],
+    "bayesian::bayes_theorem": ["fn pmn_bayes_theorem"],
+    "bayesian::naive_bayes_classify": ["fn pmn_naive_bayes_classify"],
     # timeseries.rs (M5 part b; D11's caller buffers)
     "timeseries::moving_average": ["fn pmn_moving_average"],
     "timeseries::exponential_smoothing": ["fn pmn_exponential_smoothing"],

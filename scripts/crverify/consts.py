@@ -45,6 +45,8 @@ CONSTANTS = {  # name: (file, parts, words)
     # ln 2π as the port computes it: the correctly rounded ln of the double 2π, 2·RN(π), as Rust's `(2.0 * PI).ln()`
     # gives it, not RN(ln 2π) of the real 2π (MultivariateNormal's log density, M3 part e)
     "_PMN_MVN_LN_2PI": ("src/dist_mvn.cyr", "", single((2 * Decimal(math.pi)).ln())),
+    # 1e-300, naive Bayes' floor (M5 part c): the double nearest the literal, as rustc reads `1e-300_f64`
+    "_PMN_BAYES_FLOOR": ("src/bayesian.cyr", "", single(Decimal("1e-300"))),
 }
 
 
