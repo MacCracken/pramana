@@ -65,4 +65,5 @@ modules = [
     "src/dist_cont.cyr",
     "src/dist_gamma.cyr",
     "src/dist_disc.cyr",
+    "src/dist_mvn.cyr",
 ]

@@ -219,6 +219,19 @@ SURFACE = {
     "distribution::Binomial#Clone": "a struct of a u64 word and an f64: copying it clones it",
     "distribution::Binomial#Serialize": ["method PmnBinomial.to_json"],
     "distribution::Binomial#Deserialize": ["fn PmnBinomial_from_json"],
+    # Part d2: MultivariateNormal, the one owned distribution (D11): a freelist block, freed by its drop.
+    "distribution::MultivariateNormal": ["struct PmnMultivariateNormal", "fn PmnMultivariateNormal_drop"],
+    "distribution::MultivariateNormal.new": ["fn PmnMultivariateNormal_new"],
+    "distribution::MultivariateNormal.dim": ["method PmnMultivariateNormal.dim"],
+    "distribution::MultivariateNormal.pdf": ["method PmnMultivariateNormal.pdf"],
+    "distribution::MultivariateNormal.log_pdf": ["method PmnMultivariateNormal.log_pdf"],
+    "distribution::MultivariateNormal.sample": ["method PmnMultivariateNormal.sample"],
+    "distribution::MultivariateNormal.mean_vec": ["method PmnMultivariateNormal.mean_vec"],
+    "distribution::MultivariateNormal.covariance_matrix": ["method PmnMultivariateNormal.covariance_matrix"],
+    "distribution::MultivariateNormal#Debug": ["method PmnMultivariateNormal.debug"],
+    "distribution::MultivariateNormal#Clone": ["fn PmnMultivariateNormal_clone"],
+    "distribution::MultivariateNormal#Serialize": ["method PmnMultivariateNormal.to_json"],
+    "distribution::MultivariateNormal#Deserialize": ["fn PmnMultivariateNormal_from_json"],
 }
 
 DERIVES = {"Debug", "Clone", "Serialize", "Deserialize", "Error"}

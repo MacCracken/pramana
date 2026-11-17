@@ -774,3 +774,39 @@ Rust makes are a larger share of its time, so the ratio is lower.
 
 These are findings to measure against, not changes for this part. The order of the sums is fixed by parity, so the
 loop cannot be reassociated or vectorized; a gain would come from the compiler's register use.
+
+## M3 part d2: MultivariateNormal (2026-11-16)
+
+**Bodies.** `tests/dist.bcyr` and its twin `m3_dist.rs` gain six rows, with part a1's loop. Five use 1.3.0's own
+criterion case (rust-old/benches: the mean 0 and the covariance [[1, 0.3, 0.1], [0.3, 2, 0.5], [0.1, 0.5, 3]]),
+three of them built once as criterion builds it; the d = 16 row's covariance is 1/(1 + |i − j|) plus 16 on the
+diagonal. Rust's draws return a fresh `Vec` and its constructions take `Vec`s; the port's fill caller buffers and its
+block comes from the freelist. Pinned to core 5, interleaved, each round started under a load average of 3 (loads
+1.76, 2.97 and 2.90).
+- **The rounds:** round 1 ran four earlier parts' rows 10–55% slow, and round 3 one, from another process's load. This
+  part's rows are within 6% in every round, so none was replaced. Every row's sum and digest is the same in all three.
+- **The digests:** all 48 are explained by `validate.py`'s models (`build/handoff/bench_digests_dist.py`). Where the
+  two sides differ, glibc misrounds: 1 of 4,096 densities, 6 draws and 2 log dets.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `MultivariateNormal::pdf`, 3-D, built once, at (x, y, 0.5) | 63.2–66.6 ns | 314–319 ns | 4.9× |
+| `MultivariateNormal::log_pdf`, 3-D, built once, the same points | 55.2–57.4 ns | 250–253 ns | 4.4× |
+| `MultivariateNormal::sample`, 3-D, built once | 88.9–91.3 ns | 559–570 ns | 6.2× |
+| `MultivariateNormal::new` and drop, 3-D, the covariance times y in [0.1, 10) | 155.4–169.8 ns | 761–788 ns | 4.7× |
+| `MultivariateNormal::log_pdf`, d = 16, built once | 341.3–345.0 ns | 1.27–1.31 µs | 3.8× |
+| `MultivariateNormal`, to JSON and back, 3-D | 1.51–1.61 µs | 40.1–42.5 µs | 27× |
+
+**Where the time goes.**
+- **A 3-D density** is a pool claim and release, the solve's nine terms, and two correctly rounded primitives: ln 2π,
+  which the port computes on every call where LLVM folds Rust's `(2.0 * PI).ln()`, and exp for `pdf`. A constant
+  would save the ln with the same bits: a finding for M3's gate.
+- **A 3-D draw** is two Box–Muller pairs: four uniforms, two ln, two √, two cos and a sin, all correctly rounded. Rust
+  also allocates its `Vec`.
+- **A construction** is the checks, a freelist block, the copies, the 3×3 factor and three ln; its drop frees the
+  block.
+- **At d = 16** the solve's 256 terms dominate, as in part d1's (3.1× at n = 16).
+- **The JSON round trip** writes and reads 21 f64s in serde_json's form. Writing is `fmtf.cyr`'s exact digit search
+  (M1 part d1's finding, ledger L10), and Normal's round trip, two f64s, is 44× (part a1): this is the codec's cost.
+
+These are findings to measure against, not changes for this part.

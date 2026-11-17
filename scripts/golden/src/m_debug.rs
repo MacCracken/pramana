@@ -16,6 +16,8 @@
 //!   among them, in both forms.
 //! - `debug::Poisson` (M3 part c1): at 16 rates, the special ones among them, in both forms.
 //! - `debug::Binomial` (M3 part c2): at 16 (n, p), u64::MAX among them, in both forms.
+//! - `debug::MultivariateNormal` (M3 part d2): the codec rows' 12 cases (`m_json::mvn_cases`), in both forms; the
+//!   inputs are the mean and covariance as the codec rows give them.
 //! - `debug::f64` (M3 part a1): an f64 field's form, `{:?}`, on `fmt.tsv`'s 25,200 doubles. `{:#?}` prints an f64
 //!   the same way.
 //!
@@ -180,6 +182,13 @@ pub fn emit() -> Module {
         let d = Binomial::new(n, p).expect("valid parameters");
         for (alt, text) in both(&d).iter().enumerate() {
             m.row("debug::Binomial", Class::A, &[i(n as i64), f(p), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    for c in &crate::m_json::mvn_cases(&mut g) {
+        for (alt, text) in both(c).iter().enumerate() {
+            let mut ins = crate::m_json::mvn_toks(c);
+            ins.push(i(alt as i64));
+            m.row("debug::MultivariateNormal", Class::A, &ins, &[s(text.clone())]);
         }
     }
     for x in crate::m_fmt::inputs() {

@@ -1,0 +1,489 @@
+# dist_mvn.tcyr — MultivariateNormal (M3 part d2; port plan D5, D7 as amended, D11, D12).
+#
+# tests/parity.tcyr replays 1.3.0's own values (tests/golden/dist.tsv), documents (json.tsv) and Debug text
+# (debug.tsv). These tests carry 1.3.0's own MultivariateNormal tests over (distribution.rs) and pin what a replay
+# doesn't: the buffer rules, a refusal writing nothing, the owned block's life (clone, drop, every call refused after
+# it), the draw's use of the generator, the pool left unclaimed, and the codec's and Debug's exact text.
+
+include "tests/lib.cyr"
+
+fn bits(x: f64): i64 {
+    return load64(&x);
+}
+
+fn of_bits(b): f64 {
+    var x: f64 = 0.0;
+    store64(&x, b);
+    return x;
+}
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn at(buf, k): f64 {
+    var x: f64 = load64(buf + k * 8);
+    return x;
+}
+
+fn text_is(sb, want: cstring): i64 {
+    if (load64(sb + 8) != strlen(want)) { return 0; }
+    return memeq(load64(sb), want, strlen(want));
+}
+
+# A long text in parts, each line of the source under the limit: the builder holding them joined.
+fn joined(parts, n): i64 {
+    var w = str_builder_new();
+    for (var k = 0; k < n; k = k + 1) { str_builder_add_cstr(w, load64(parts + k * 8)); }
+    return w;
+}
+
+# sb's text equals w's.
+fn same_text(sb, w): i64 {
+    if (load64(sb + 8) != load64(w + 8)) { return 0; }
+    return memeq(load64(sb), load64(w), load64(w + 8));
+}
+
+# The 2 × 2 covariance [[a, b], [c, e]] into cov.
+fn cov2(cov, a: f64, b: f64, c: f64, e: f64): i64 {
+    var z = put(cov, 0, a) + put(cov, 1, b) + put(cov, 2, c) + put(cov, 3, e);
+    return z;
+}
+
+# The d × d identity scaled by s into cov.
+fn ident(cov, d, s: f64): i64 {
+    for (var k = 0; k < d * d; k = k + 1) {
+        var v: f64 = 0.0;
+        if (k / d == k % d) { v = s; }
+        store64(cov + k * 8, v);
+    }
+    return 0;
+}
+
+# A consumer's own generator, as Rust users implemented `Rng`: it counts up in steps of 1/8 from 0, then wraps.
+struct Eighths {
+    k;
+    calls;
+}
+
+impl PmnRng for Eighths {
+    fn next_f64(self): f64 {
+        var a: f64 = f64_from(self.k);
+        var d: f64 = 8.0;
+        self.k = (self.k + 1) & 7;
+        self.calls = self.calls + 1;
+        return a / d;
+    }
+}
+
+fn rust_tests(mean, cov, x): i64 {
+    test_group("1.3.0's tests (distribution.rs)");
+    var m: PmnMultivariateNormal;
+    # mvn_1d_matches_univariate
+    var z = put(mean, 0, 2.0) + put(cov, 0, 4.0) + put(x, 0, 3.0);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 1, cov, 1, 1), PMN_ERR_NONE, "N([2], [[4]]) constructs");
+    var t1, v1 = m.pdf(x, 1);
+    var p1: f64 = v1;
+    var n: PmnNormal;
+    var en = PmnNormal_new(&n, 2.0, 2.0);
+    var q1: f64 = n.pdf(3.0);
+    var d1: f64 = p1 - q1;
+    assert(is_ok(t1) == 1 && f64_abs(d1) < 0.0000000001, "mvn_1d_matches_univariate: the pdf is Normal(2, 2)'s");
+    var e = PmnMultivariateNormal_drop(&m);
+    # mvn_2d_pdf_at_mean
+    z = put(mean, 0, 0.0) + put(mean, 1, 0.0) + ident(cov, 2, 1.0);
+    e = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    var t2, v2 = m.pdf(mean, 2);
+    var p2: f64 = v2;
+    var tp: f64 = 2.0 * _PMN_F64_PI;
+    var w2: f64 = 1.0 / tp;
+    var d2: f64 = p2 - w2;
+    assert(e == PMN_ERR_NONE && is_ok(t2) == 1 && f64_abs(d2) < 0.0000000001, "mvn_2d_pdf_at_mean: 1/(2π)");
+    # mvn_dimension_mismatch_pdf
+    var t3, v3 = m.pdf(x, 1);
+    assert(t3 == Err && v3 == PMN_ERR_DIMENSION_MISMATCH, "mvn_dimension_mismatch_pdf: a point of 1 in 2-D");
+    var t4, v4 = m.pdf(x, 3);
+    assert(t4 == Err && v4 == PMN_ERR_DIMENSION_MISMATCH, "mvn_dimension_mismatch_pdf: a point of 3 in 2-D");
+    e = PmnMultivariateNormal_drop(&m);
+    # mvn_sample_mean_convergence
+    z = put(mean, 0, 1.0) + put(mean, 1, -2.0) + cov2(cov, 1.0, 0.3, 0.3, 2.0);
+    e = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    var g: PmnSimpleRng;
+    var eg = PmnSimpleRng_new(&g, 42);
+    var s0: f64 = 0.0;
+    var s1: f64 = 0.0;
+    var ok = 1;
+    for (var k = 0; k < 50000; k = k + 1) {
+        if (m.sample(&g, x, 2) != PMN_ERR_NONE) { ok = 0; }
+        var a0: f64 = at(x, 0);
+        var a1: f64 = at(x, 1);
+        s0 = s0 + a0;
+        s1 = s1 + a1;
+    }
+    var cnt: f64 = 50000.0;
+    var m0: f64 = s0 / cnt;
+    var m1: f64 = s1 / cnt;
+    var dm0: f64 = m0 - 1.0;
+    var dm1: f64 = m1 + 2.0;
+    assert(ok == 1 && f64_abs(dm0) < 0.1 && f64_abs(dm1) < 0.1, "mvn_sample_mean_convergence: 50,000 draws, seed 42");
+    e = PmnMultivariateNormal_drop(&m);
+    # mvn_invalid_params
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 0, cov, 0, 0), PMN_ERR_INVALID_PARAMETER,
+      "mvn_invalid_params: empty");
+    z = put(mean, 0, 0.0) + put(cov, 0, 1.0) + put(cov, 1, 0.0);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 1, cov, 1, 2), PMN_ERR_DIMENSION_MISMATCH,
+      "mvn_invalid_params: [0] with [[1, 0]] is a DimensionMismatch");
+    z = put(mean, 1, 0.0) + cov2(cov, 1.0, 0.5, 0.0, 1.0);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2), PMN_ERR_INVALID_PARAMETER,
+      "mvn_invalid_params: not symmetric");
+    z = cov2(cov, 1.0, 2.0, 2.0, 1.0);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2), PMN_ERR_INVALID_PARAMETER,
+      "mvn_invalid_params: not positive-definite");
+    # mvn_log_pdf_consistency
+    z = put(mean, 0, 1.0) + put(mean, 1, -1.0) + cov2(cov, 2.0, 0.5, 0.5, 3.0) + put(x, 0, 2.0) + put(x, 1, 0.0);
+    e = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    var t5, v5 = m.log_pdf(x, 2);
+    var t6, v6 = m.pdf(x, 2);
+    var lp: f64 = v5;
+    var pp: f64 = v6;
+    var lnp: f64 = _pmn_ln(pp);
+    var d5: f64 = lp - lnp;
+    assert(is_ok(t5) == 1 && is_ok(t6) == 1 && f64_abs(d5) < 0.0000000001, "mvn_log_pdf_consistency");
+    e = PmnMultivariateNormal_drop(&m);
+    # constructors_reject_non_finite_parameters
+    var nan: f64 = _PMN_F64_NAN;
+    var inf: f64 = _PMN_F64_INFINITY;
+    z = put(mean, 0, nan) + put(cov, 0, 1.0);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 1, cov, 1, 1), PMN_ERR_INVALID_PARAMETER, "a NaN mean element");
+    z = put(mean, 0, 0.0) + put(cov, 0, nan);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 1, cov, 1, 1), PMN_ERR_INVALID_PARAMETER, "a NaN covariance");
+    z = put(cov, 0, inf);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 1, cov, 1, 1), PMN_ERR_INVALID_PARAMETER, "an infinite covariance");
+    # mvn_symmetry_check_is_scale_relative
+    var big: f64 = 1000000000000.0;
+    var hb: f64 = 0.5 * big;
+    var hb2: f64 = hb + 0.001;
+    z = put(mean, 0, 0.0) + put(mean, 1, 0.0) + cov2(cov, big, hb, hb2, big);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2), PMN_ERR_NONE,
+      "mvn_symmetry_check_is_scale_relative: 1e12 scale, 1e-3 apart, accepted");
+    e = PmnMultivariateNormal_drop(&m);
+    z = cov2(cov, 0.000001, 0.0000001, 0.0000002, 0.000001);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2), PMN_ERR_INVALID_PARAMETER,
+      "mvn_symmetry_check_is_scale_relative: 1e-6 scale, 1e-7 apart, refused");
+    return z + en + eg;
+}
+
+fn codec_tests(mean, cov): i64 {
+    test_group("serde_json's codec (serde_roundtrip_mvn, the cached factor recomputed, the refusals)");
+    var sb = str_builder_new();
+    var m: PmnMultivariateNormal;
+    var z = put(mean, 0, 1.0) + put(mean, 1, 2.0) + cov2(cov, 4.0, 1.0, 1.0, 9.0);
+    var e = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    e = m.to_json(sb);
+    var jp[24];
+    store64(&jp, "{\"mean\":[1.0,2.0],\"covariance\":[[4.0,1.0],[1.0,9.0]],");
+    store64(&jp + 8, "\"cholesky_l\":[[2.0,0.0],[0.5,2.958039891549808]],");
+    store64(&jp + 16, "\"log_det\":3.555348061489414,\"dim\":2}");
+    assert(e == PMN_ERR_NONE && same_text(sb, joined(&jp, 3)) == 1, "the text: every field, the cached ones included");
+    var b: PmnMultivariateNormal;
+    e = PmnMultivariateNormal_from_json(&b, load64(sb), load64(sb + 8));
+    var same = 0;
+    if (e == PMN_ERR_NONE && b.dim() == 2) {
+        same = 1;
+        for (var k = 0; k < 2 + 2 * 4; k = k + 1) {
+            if (load64(m.buf + k * 8) != load64(b.buf + k * 8)) { same = 0; }
+        }
+    }
+    var l0: f64 = m.log_det;
+    var l1: f64 = b.log_det;
+    assert(e == PMN_ERR_NONE && same == 1 && bits(l0) == bits(l1) && b.dim() == 2,
+      "serde_roundtrip_mvn: the mean, covariance, factor and log det, bit for bit");
+    var d1 = PmnMultivariateNormal_drop(&b);
+    var tp[16];
+    store64(&tp, "{\"mean\":[0,0,0],\"covariance\":[[1,0,0],[0,1,0],[0,0,1]],");
+    store64(&tp + 8, "\"cholesky_l\":[[1]],\"log_det\":5.0,\"dim\":1}");
+    var tw = joined(&tp, 2);
+    e = PmnMultivariateNormal_from_json(&b, load64(tw), load64(tw + 8));
+    var lt: f64 = b.log_det;
+    var g: PmnSimpleRng;
+    var eg = PmnSimpleRng_new(&g, 9);
+    var out[24];
+    assert(e == PMN_ERR_NONE && b.dim() == 3 && f64_abs(lt) < 0.000000000001 && b.sample(&g, &out, 3) == PMN_ERR_NONE,
+      "mvn_deserialize_recomputes_cached_factor: dim 3, log det 0, a draw of 3");
+    d1 = PmnMultivariateNormal_drop(&b);
+    var seq = "[[1,2],[[4,1],[1,9]]]";
+    e = PmnMultivariateNormal_from_json(&b, seq, strlen(seq));
+    var l2: f64 = b.log_det;
+    assert(e == PMN_ERR_NONE && bits(l2) == bits(l0), "the sequence form, [mean, covariance]");
+    d1 = PmnMultivariateNormal_drop(&b);
+    var notpd = "{\"mean\":[0,0],\"covariance\":[[1,2],[2,1]]}";
+    assert_eq(PmnMultivariateNormal_from_json(&b, notpd, strlen(notpd)), PMN_ERR_DESERIALIZE,
+      "deserialize_rejects_invalid_parameters: not positive-definite");
+    var ragged = "{\"mean\":[1,2],\"covariance\":[[4,1],[1]]}";
+    assert_eq(PmnMultivariateNormal_from_json(&b, ragged, strlen(ragged)), PMN_ERR_DESERIALIZE,
+      "a ragged covariance (Rust's DimensionMismatch)");
+    var wide = "{\"mean\":[1,2,3],\"covariance\":[[4,1],[1,9]]}";
+    assert_eq(PmnMultivariateNormal_from_json(&b, wide, strlen(wide)), PMN_ERR_DESERIALIZE, "a mean of 3, 2 × 2");
+    var nomean = "{\"covariance\":[[4,1],[1,9]]}";
+    assert_eq(PmnMultivariateNormal_from_json(&b, nomean, strlen(nomean)), PMN_ERR_DESERIALIZE, "no mean");
+    assert_eq(PmnMultivariateNormal_from_json(0, seq, strlen(seq)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing left claimed");
+
+    test_group("Debug, both forms");
+    store64(sb + 8, 0);
+    e = m.debug(sb, 0);
+    var dp[24];
+    store64(&dp, "MultivariateNormal { mean: [1.0, 2.0], covariance: [[4.0, 1.0], [1.0, 9.0]], ");
+    store64(&dp + 8, "cholesky_l: [[2.0, 0.0], [0.5, 2.958039891549808]], ");
+    store64(&dp + 16, "log_det: 3.555348061489414, dim: 2 }");
+    assert(e == PMN_ERR_NONE && same_text(sb, joined(&dp, 3)) == 1, "{:?}");
+    store64(sb + 8, 0);
+    e = m.debug(sb, 1);
+    var pp[48];
+    store64(&pp, "MultivariateNormal {\n    mean: [\n        1.0,\n        2.0,\n    ],\n");
+    store64(&pp + 8, "    covariance: [\n        [\n            4.0,\n            1.0,\n        ],\n");
+    store64(&pp + 16, "        [\n            1.0,\n            9.0,\n        ],\n    ],\n");
+    store64(&pp + 24, "    cholesky_l: [\n        [\n            2.0,\n            0.0,\n        ],\n");
+    store64(&pp + 32, "        [\n            0.5,\n            2.958039891549808,\n        ],\n    ],\n");
+    store64(&pp + 40, "    log_det: 3.555348061489414,\n    dim: 2,\n}");
+    assert(e == PMN_ERR_NONE && same_text(sb, joined(&pp, 6)) == 1,
+      "{:#?}: each list one entry a line, indented by depth");
+    store64(sb + 8, 0);
+    assert(_pmn_dbg_vec_f64(sb, 0, 0, 1, 1) == PMN_ERR_NONE && text_is(sb, "[]") == 1, "an empty list: [] in both");
+    d1 = PmnMultivariateNormal_drop(&m);
+    return z + d1 + eg;
+}
+
+fn constructor_tests(mean, cov, x): i64 {
+    test_group("the constructor: its order, the buffer rules, a refusal writing nothing");
+    var m: PmnMultivariateNormal;
+    var nan: f64 = _PMN_F64_NAN;
+    var z = put(mean, 0, 1.0) + put(mean, 1, 2.0) + cov2(cov, 4.0, 1.0, 1.0, 9.0);
+    assert_eq(PmnMultivariateNormal_new(0, mean, 2, cov, 2, 2), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnMultivariateNormal_new(&m, 0, 2, cov, 2, 2), PMN_ERR_INVALID_PARAMETER, "a null mean");
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, 0, 2, 2), PMN_ERR_INVALID_PARAMETER, "a null covariance");
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 0 - 1, cov, 2, 2), PMN_ERR_INVALID_PARAMETER, "d < 0");
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 0 - 2, 2), PMN_ERR_INVALID_PARAMETER, "rows < 0");
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 3), PMN_ERR_DIMENSION_MISMATCH, "2 × 3 for d = 2");
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 3, 2), PMN_ERR_DIMENSION_MISMATCH, "3 × 2 for d = 2");
+    z = put(mean, 0, nan);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 1, 1), PMN_ERR_INVALID_PARAMETER,
+      "the mean's check before the shape's");
+    z = put(mean, 0, 1.0) + put(cov, 0, nan);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 2, cov, 3, 3), PMN_ERR_DIMENSION_MISMATCH,
+      "the shape's check before the entries'");
+    var sentinel = 0x5A5A5A5A5A5A5A5A;
+    store64(&m, sentinel);
+    store64(&m + 8, sentinel);
+    store64(&m + 16, sentinel);
+    var r1 = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    z = put(cov, 0, 1.0) + put(cov, 1, 2.0) + put(cov, 2, 2.0) + put(cov, 3, 1.0);
+    var r2 = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    var r3 = PmnMultivariateNormal_new(&m, mean, 2, cov, 3, 3);
+    assert(r1 == PMN_ERR_INVALID_PARAMETER && r2 == PMN_ERR_INVALID_PARAMETER && r3 == PMN_ERR_DIMENSION_MISMATCH,
+      "a NaN entry, a non-positive-definite matrix, a wrong shape: each refused");
+    assert(load64(&m) == sentinel && load64(&m + 8) == sentinel && load64(&m + 16) == sentinel,
+      "and out untouched by each");
+    # [[5e-324, 0, 1e200], [0, 1, 0], [1e200, 0, 1]]: hisab factors it with a NaN pivot, log det NaN.
+    var tiny: f64 = of_bits(1);
+    var huge: f64 = 1.0;
+    for (var k = 0; k < 200; k = k + 1) { huge = huge * 10.0; }
+    z = ident(cov, 3, 1.0) + put(cov, 0, tiny) + put(cov, 2, huge) + put(cov, 6, huge) + put(mean, 2, 0.0);
+    assert_eq(PmnMultivariateNormal_new(&m, mean, 3, cov, 3, 3), PMN_ERR_INVALID_PARAMETER,
+      "the degenerate determinant: a NaN pivot hisab keeps");
+
+    test_group("the stored values: the factor, log det, and the covariance as given");
+    var m4: f64 = 4.0;
+    var just: f64 = 1.000000000001;
+    z = put(mean, 0, 1.0) + put(mean, 1, -0.0) + cov2(cov, m4, 1.0, just, 9.0);
+    var e = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    var l[32];
+    var el = _pmn_cholesky(cov, 2, &l);
+    var fsame = 1;
+    for (var k2 = 0; k2 < 4; k2 = k2 + 1) {
+        if (load64(m.buf + (2 + 4 + k2) * 8) != load64(&l + k2 * 8)) { fsame = 0; }
+    }
+    assert(e == PMN_ERR_NONE && el == PMN_ERR_NONE && fsame == 1,
+      "within the tolerance, asymmetric: the factor is hisab's, from the lower triangle");
+    var c = m.covariance_matrix();
+    var mu = m.mean_vec();
+    assert(load64(c + 8) == bits(1.0) && load64(c + 16) == bits(just) && load64(mu + 8) == bits(-0.0) && m.dim() == 2,
+      "covariance_matrix and mean_vec: as given, the asymmetry and −0.0 kept");
+    var l00: f64 = load64(&l);
+    var l11: f64 = load64(&l + 24);
+    var g0: f64 = _pmn_ln(l00);
+    var g1: f64 = _pmn_ln(l11);
+    var s: f64 = -0.0;
+    s = s + g0;
+    s = s + g1;
+    var ld: f64 = s * 2.0;
+    var mld: f64 = m.log_det;
+    assert_eq(bits(mld), bits(ld), "log det Σ: 2·(ln L00 + ln L11), summed from −0.0");
+    e = PmnMultivariateNormal_drop(&m);
+    # out over the mean: it is written last, after the mean is copied.
+    z = put(x, 0, 7.0) + put(x, 1, 8.0) + put(x, 2, 9.0) + ident(cov, 3, 2.0);
+    e = PmnMultivariateNormal_new(x, x, 3, cov, 3, 3);
+    var om = load64(x + 8);
+    assert(e == PMN_ERR_NONE && load64(x) == 3 && load64(om) == bits(7.0) && load64(om + 16) == bits(9.0),
+      "out over the mean: the mean copied before out is written");
+    e = PmnMultivariateNormal_drop(x);
+    return z;
+}
+
+fn life_tests(mean, cov, x): i64 {
+    test_group("the owned block: clone, drop, and every call refused after the drop");
+    var m: PmnMultivariateNormal;
+    var c: PmnMultivariateNormal;
+    var z = put(mean, 0, 1.0) + put(mean, 1, 2.0) + cov2(cov, 4.0, 1.0, 1.0, 9.0) + put(x, 0, 0.5) + put(x, 1, 3.0);
+    var e = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    var t0, v0 = m.log_pdf(x, 2);
+    var w0: f64 = v0;
+    assert_eq(PmnMultivariateNormal_clone(&c, &m), PMN_ERR_NONE, "a clone");
+    var same = 1;
+    for (var k = 0; k < 10; k = k + 1) {
+        if (load64(m.buf + k * 8) != load64(c.buf + k * 8)) { same = 0; }
+    }
+    assert(same == 1 && c.buf != m.buf && c.dim() == 2, "a block of its own, the same bits");
+    assert_eq(PmnMultivariateNormal_clone(&m, &m), PMN_ERR_INVALID_PARAMETER, "a clone into its source: refused");
+    assert_eq(PmnMultivariateNormal_clone(0, &m), PMN_ERR_INVALID_PARAMETER, "a null out");
+    e = PmnMultivariateNormal_drop(&m);
+    var t1, v1 = c.log_pdf(x, 2);
+    var w1: f64 = v1;
+    assert(is_ok(t1) == 1 && bits(w1) == bits(w0), "the clone outlives its source, the same log density");
+    assert_eq(PmnMultivariateNormal_clone(&m, &m), PMN_ERR_INVALID_PARAMETER, "a clone of a dropped one: refused");
+    assert(e == PMN_ERR_NONE && m.buf == 0 && m.dim() == 0, "the drop: the block freed, dim 0");
+    assert_eq(PmnMultivariateNormal_drop(&m), PMN_ERR_NONE, "a second drop: nothing to do");
+    assert_eq(PmnMultivariateNormal_drop(0), PMN_ERR_INVALID_PARAMETER, "a null drop");
+    var t2, v2 = m.log_pdf(x, 2);
+    var t3, v3 = m.pdf(x, 2);
+    assert(t2 == Err && v2 == PMN_ERR_INVALID_PARAMETER && t3 == Err && v3 == PMN_ERR_INVALID_PARAMETER,
+      "log_pdf and pdf of a dropped one: refused");
+    var g: PmnSimpleRng;
+    var eg = PmnSimpleRng_new(&g, 1);
+    var sb = str_builder_new();
+    assert(m.sample(&g, x, 2) == PMN_ERR_INVALID_PARAMETER && m.debug(sb, 0) == PMN_ERR_INVALID_PARAMETER
+      && m.to_json(sb) == PMN_ERR_INVALID_PARAMETER && m.covariance_matrix() == 0 && m.mean_vec() == 0,
+      "sample, debug, to_json and the borrows of a dropped one: refused");
+    e = PmnMultivariateNormal_drop(&c);
+    return z + eg;
+}
+
+fn density_tests(mean, cov, x): i64 {
+    test_group("log_pdf and pdf");
+    var m: PmnMultivariateNormal;
+    var nan: f64 = _PMN_F64_NAN;
+    var big: f64 = 1.0;
+    for (var k = 0; k < 200; k = k + 1) { big = big * 10.0; }
+    var z = put(mean, 0, 0.0) + put(mean, 1, 0.0) + ident(cov, 2, 1.0);
+    var e = PmnMultivariateNormal_new(&m, mean, 2, cov, 2, 2);
+    var t0, v0 = m.log_pdf(mean, 2);
+    var lp: f64 = v0;
+    var tp: f64 = 2.0 * _PMN_F64_PI;
+    var lt: f64 = _pmn_ln(tp);
+    var w: f64 = 2.0 * lt;
+    var w1: f64 = w + 0.0;
+    var w2: f64 = w1 + 0.0;
+    var want: f64 = -0.5 * w2;
+    assert_eq(bits(lp), bits(want), "at the mean of N(0, I₂): −½(2·ln 2π + 0 + 0), bit for bit");
+    z = put(x, 0, 0.75) + put(x, 1, -2.5);
+    var t1, v1 = m.log_pdf(x, 2);
+    var t2, v2 = m.pdf(x, 2);
+    var l1: f64 = v1;
+    var p2: f64 = v2;
+    var ex: f64 = _pmn_exp(l1);
+    assert_eq(bits(p2), bits(ex), "pdf is exp(log_pdf), bit for bit");
+    var t3, v3 = m.log_pdf(0, 2);
+    assert(t3 == Err && v3 == PMN_ERR_INVALID_PARAMETER, "a null point: refused");
+    var t4, v4 = m.log_pdf(0, 3);
+    assert(t4 == Err && v4 == PMN_ERR_DIMENSION_MISMATCH, "a point of the wrong length: DimensionMismatch first");
+    z = put(x, 0, big);
+    var t5, v5 = m.log_pdf(x, 2);
+    var t6, v6 = m.pdf(x, 2);
+    var l5: f64 = v5;
+    var p6: f64 = v6;
+    assert(is_ok(t5) == 1 && bits(l5) == bits(_PMN_F64_NEG_INFINITY) && is_ok(t6) == 1 && bits(p6) == 0,
+      "far out (1e200): the Mahalanobis term overflows, log density −∞, density +0");
+    z = put(x, 1, nan);
+    var t7, v7 = m.log_pdf(x, 2);
+    var l7: f64 = v7;
+    assert(is_ok(t7) == 1 && l7 != l7, "a NaN element: NaN");
+    for (var k2 = 0; k2 < 100; k2 = k2 + 1) {
+        var t8, v8 = m.pdf(mean, 2);
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: its scratch given back every call");
+    e = PmnMultivariateNormal_drop(&m);
+    return z + t0 + t1 + t2;
+}
+
+fn sample_tests(mean, cov, x): i64 {
+    test_group("sample: Box–Muller's pairs, the buffer rules");
+    var m: PmnMultivariateNormal;
+    var g: PmnSimpleRng;
+    var h: PmnSimpleRng;
+    var z = put(mean, 0, 0.0) + ident(cov, 1, 1.0);
+    var e = PmnMultivariateNormal_new(&m, mean, 1, cov, 1, 1);
+    var eg = PmnSimpleRng_new(&g, 7);
+    var eh = PmnSimpleRng_new(&h, 7);
+    var same = 1;
+    for (var k = 0; k < 200; k = k + 1) {
+        if (m.sample(&g, x, 1) != PMN_ERR_NONE) { same = 0; }
+        var a: f64 = at(x, 0);
+        var b: f64 = _pmn_standard_normal(&h);
+        if (bits(a) != bits(b)) { same = 0; }
+    }
+    assert_eq(same, 1, "N([0], [[1]]): 200 draws, each standard_normal's from the same uniforms, bit for bit");
+    e = PmnMultivariateNormal_drop(&m);
+    z = put(mean, 1, 0.0) + put(mean, 2, 0.0) + ident(cov, 3, 1.0);
+    e = PmnMultivariateNormal_new(&m, mean, 3, cov, 3, 3);
+    eg = PmnSimpleRng_new(&g, 11);
+    eh = PmnSimpleRng_new(&h, 11);
+    var z0: f64 = _pmn_standard_normal(&h);
+    e = m.sample(&g, x, 3);
+    var x0: f64 = at(x, 0);
+    for (var k2 = 0; k2 < 2; k2 = k2 + 1) { var u: f64 = h.next_f64(); }
+    var gn: f64 = g.next_f64();
+    var hn: f64 = h.next_f64();
+    assert(e == PMN_ERR_NONE && bits(x0) == bits(z0) && bits(gn) == bits(hn),
+      "d = 3: the first element the pair's cosine, and two pairs drawn (4 uniforms)");
+    eg = PmnSimpleRng_new(&g, 11);
+    eh = PmnSimpleRng_new(&h, 11);
+    var r1 = m.sample(&g, x, 2);
+    var r2 = m.sample(&g, 0, 3);
+    var nr: *PmnSimpleRng = 0;
+    var r3 = m.sample(nr, x, 3);
+    var mb: *PmnMultivariateNormal = &m;
+    var r4 = m.sample(&g, mb.buf + 8, 3);
+    var gn2: f64 = g.next_f64();
+    var hn2: f64 = h.next_f64();
+    assert(r1 == PMN_ERR_INVALID_PARAMETER && r2 == PMN_ERR_INVALID_PARAMETER && r3 == PMN_ERR_INVALID_PARAMETER
+      && r4 == PMN_ERR_INVALID_PARAMETER && bits(gn2) == bits(hn2),
+      "cap < d, a null out or rng, out over the block: refused, nothing drawn");
+    var ei: Eighths;
+    ei.k = 0;
+    ei.calls = 0;
+    e = m.sample(&ei, x, 3);
+    var y0: f64 = at(x, 0);
+    assert(e == PMN_ERR_NONE && _pmn_is_finite(y0) == 1 && ei.calls == 4,
+      "a consumer's generator whose first draw is 0: u1 kept at MIN_POSITIVE, finite; 4 uniforms for d = 3");
+    e = PmnMultivariateNormal_drop(&m);
+    return z + eg + eh;
+}
+
+fn main() {
+    alloc_init();
+    var mean = alloc(64 * 8);
+    var cov = alloc(64 * 64 * 8);
+    var x = alloc(64 * 8);
+    var z = rust_tests(mean, cov, x);
+    z = codec_tests(mean, cov);
+    z = constructor_tests(mean, cov, x);
+    z = life_tests(mean, cov, x);
+    z = density_tests(mean, cov, x);
+    z = sample_tests(mean, cov, x);
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

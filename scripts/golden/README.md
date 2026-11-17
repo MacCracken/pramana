@@ -59,7 +59,8 @@ files. This README records what is specific to pramana.
   digits (`repr`, ties to even as serde_json's zmij), and 62 of the inputs are exact ties.
 - **`json.tsv`** (M1 parts d3a, d3b and d4, `src/m_json.rs`; from M3 part a1, Normal's codec, from part a2, Uniform's,
   Exponential's and Bernoulli's, from a3, Cauchy's and Weibull's, from b1, Gamma's and ChiSquared's, from b2, Beta's,
-  StudentT's and FDistribution's, from c1, Poisson's, and from c2, Binomial's), 9,265 rows. The reading rows are
+  StudentT's and FDistribution's, from c1, Poisson's, from c2, Binomial's, and from d2, MultivariateNormal's, written
+  with its cached fields and read without them), 9,392 rows. The reading rows are
   `serde_json::from_slice::<T>`, with `float_roundtrip` on, on 4,725 documents. T is one of:
   - each value type 1.3.0's serialized types are made of (`f64`, `u64`, `usize`, `bool`, `String`, `Vec<f64>`,
     `Vec<u64>`, `Vec<String>`, `Vec<Vec<f64>>`);
@@ -83,8 +84,8 @@ files. This README records what is specific to pramana.
   message; from M3 part a1, `Normal` at 24 parameter pairs, and `debug::f64`, Rust's `{:?}` of `fmt.tsv`'s 25,200
   doubles (an f64 field's form); from part a2, `Uniform`, `Exponential` and `Bernoulli` at up to 16 parameters
   each; from a3, `Cauchy` and `Weibull` at 16 each; from b1, `Gamma` and `ChiSquared` at 16 each; from b2, `Beta`,
-  `StudentT` and `FDistribution` at 16 each; from c1, `Poisson` at 16 rates; from c2, `Binomial` at 16 (n, p). The last
-  input is 0 for `{:?}` and 1 for `{:#?}`.
+  `StudentT` and `FDistribution` at 16 each; from c1, `Poisson` at 16 rates; from c2, `Binomial` at 16 (n, p); from d2,
+  `MultivariateNormal` at the codec's 12 cases, its lists nested. The last input is 0 for `{:?}` and 1 for `{:#?}`.
   `validate.py` models the derive's struct and tuple text, and an f64's from Python's shortest digits, with an exact
   tie, which `repr` breaks to even, redone with Rust's upper choice.
 - **`dist.tsv`** (M3, `src/m_dist.rs`): 1.3.0's distributions, named by Rust's path (`Normal::pdf`), and the oracle's
@@ -105,7 +106,10 @@ files. This README records what is specific to pramana.
   constructors, means and variances. Part c1, 8,463 rows: `Poisson` the same way, the pmf and cdf at the integers, off
   them and around the mean, streams either side of the sampler's switch at λ = 30, and `sample_poisson_ptrs`, the
   oracle's PTRS hook. Part c2, 8,070 rows: `Binomial` the same way, n an `i:` token holding its u64 word (u64::MAX is
-  `i:-1`), for n from 1 to u64::MAX, and streams either side of 64 trials. `validate.py` models every row three ways, as
+  `i:-1`), for n from 1 to u64::MAX, and streams either side of 64 trials. Part d2, 3,575 rows (`src/m_mvn.rs`):
+  `MultivariateNormal`'s constructor (L and log det Σ through the oracle's `mvn_factor`, or the error), `log_pdf`,
+  `pdf` and draws, the inputs `i:d`, the mean as `v:d`, the covariance's rows and columns as `i:` tokens and its
+  entries as `v:rows·cols`, row-major. `validate.py` models every row three ways, as
   `special`'s, and writes `dist.cr.tsv` (a glibc primitive's misround) and `dist.ref.tsv` (Normal's cdf on the T1 Φ;
   Weibull's moments and the gamma family's pdfs on the T1 lnΓ or ln B; their cdfs and the tails on the T1 incomplete
   gamma or beta).
@@ -207,11 +211,11 @@ files. This README records what is specific to pramana.
 | `constants` | M0 | 112 | `src/m_constants.rs` (from `src/consts.rs`, proven by `src/p_constants.rs`) | `src/constants.cyr` and the harness's lookup `tests/constants_rows.cyr` (`src/t_constants.rs`) |
 | `math` | M0 | 35,597 | `src/m_math.rs` | `math.cr.tsv`, 76 rows |
 | `fmt` | M1 d1 | 25,200 | `src/m_fmt.rs` | — |
-| `json` | M1 d3a–d4, e1, M3 a1–c2 | 9,265 | `src/m_json.rs` | `json.map.tsv`, 160 rows (ADR 007 row 16) |
+| `json` | M1 d3a–d4, e1, M3 a1–d2 | 9,392 | `src/m_json.rs` | `json.map.tsv`, 170 rows (ADR 007 row 16) |
 | `rng` | M1 e1 | 46 | `src/m_rng.rs` | — |
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
-| `debug` | M1 f, M3 a1–c2 | 25,688 | `src/m_debug.rs` | — |
-| `dist` | M3 a1–c2 | 163,056 | `src/m_dist.rs` | `dist.cr.tsv`, 1,270 rows (glibc's exp, expm1, ln, ln_1p, cos, tan or pow misrounded in a pdf or cdf value, a moment or a draw); `dist.ref.tsv`, 31,437 rows (Normal's cdf on the T1 Φ, 2,699; Weibull's moments on the T1 lnΓ, 1,100; the gamma family's and the discrete distributions' pdfs on the T1 lnΓ or ln B, 9,947; their cdfs and the Student-t and F tails on the T1 incomplete gamma or beta, 17,691) |
+| `debug` | M1 f, M3 a1–d2 | 25,712 | `src/m_debug.rs` | — |
+| `dist` | M3 a1–d2 | 166,631 | `src/m_dist.rs`, `src/m_mvn.rs` | `dist.cr.tsv`, 1,282 rows (glibc's exp, expm1, ln, ln_1p, cos, tan or pow misrounded in a pdf or cdf value, a moment or a draw); `dist.ref.tsv`, 31,437 rows (Normal's cdf on the T1 Φ, 2,699; Weibull's moments on the T1 lnΓ, 1,100; the gamma family's and the discrete distributions' pdfs on the T1 lnΓ or ln B, 9,947; their cdfs and the Student-t and F tails on the T1 incomplete gamma or beta, 17,691) |
 | `linalg` | M3 d1 | 682 | `src/m_linalg.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
 | `special` | M2 a1–a4, b1–b5 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 20,621 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; b5: the incomplete beta's I and 1 − I at theirs, 4,834; and the rows downstream of them on T1's values, 3,029, among them gamma_inc's 510 Wilson–Hilferty rows and the three wrappers' 777); `special.cr.tsv`, 91 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel and ln B, 87; two `beta_inc` rows whose true value is Rust's form on correctly rounded primitives; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |

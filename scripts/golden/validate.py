@@ -817,6 +817,8 @@ JSON_VALIDATED = {
     "FDistribution": ([("d1", "f64"), ("d2", "f64")], lambda a, b: d_positive(a) and d_positive(b)),
     "Poisson": ([("lambda", "f64")], lambda la: d_positive(la)),
     "Binomial": ([("n", "u64"), ("p", "f64")], lambda n, p: n % (1 << 64) != 0 and 0.0 <= p <= 1.0),
+    "MultivariateNormal": ([("mean", "Vec<f64>"), ("covariance", "Vec<Vec<f64>>")],
+                           lambda *vals: mvn_json_accepts(*vals)),
 }
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
@@ -930,6 +932,44 @@ def serde_escape(x: bytes) -> bytes:
     return bytes(out + b'"')
 
 
+def mvn_codec_value(toks):
+    """A MultivariateNormal from the codec's and Debug's tokens (`v:d`, the mean, then the matrix's rows): the mean,
+    the rows, hisab's factor and log det Σ through glibc's ln (1.3.0's). Raises when the correctly rounded ln gives
+    another log det: the port's text would then differ from 1.3.0's (ADR 009), and the case should change."""
+    d = int(next(toks)[len("v:"):])
+    mean = [next(toks) for _ in range(d)]
+    rows = []
+    for _ in range(int(next(toks)[len("v:"):])):
+        rows.append([next(toks) for _ in range(int(next(toks)[len("v:"):]))])
+    lf = d_mvn_checks(d, mean, len(rows), d, [x for r in rows for x in r])
+    if isinstance(lf, str) or any(len(r) != d for r in rows):
+        raise ValueError("a MultivariateNormal case its constructor refuses")
+    lg, lc = -0.0, -0.0
+    for i in range(d):
+        lg += _libm.log(lf[i * d + i])
+        lc += mpfr_ref.cr("log", lf[i * d + i])
+    if bits(lg * 2.0) != bits(lc * 2.0):
+        raise ValueError(f"glibc's ln misrounds this case's log det ({lg * 2.0!r}): pick another")
+    return mean, rows, [lf[i * d:(i + 1) * d] for i in range(d)], lg * 2.0
+
+
+def mvn_json_accepts(*vals):
+    """MultivariateNormalRepr's fields as tokens, then `MultivariateNormal::new`'s verdict (a finite log det included:
+    a NaN pivot hisab keeps makes it NaN)."""
+    it = iter(vals)
+    d = int(next(it)[len("v:"):])
+    mean = [next(it) for _ in range(d)]
+    rows = []
+    for _ in range(int(next(it)[len("v:"):])):
+        rows.append([next(it) for _ in range(int(next(it)[len("v:"):]))])
+    if d == 0 or not all(math.isfinite(v) for v in mean) or len(rows) != d or any(len(r) != d for r in rows):
+        return False
+    lf = d_mvn_checks(d, mean, d, d, [x for r in rows for x in r])
+    if isinstance(lf, str):
+        return False
+    return all(lf[i * d + i] == lf[i * d + i] for i in range(d))
+
+
 def serde_write(ty: str, toks) -> bytes:
     """serde_json::to_vec of the value whose golden tokens `toks` (an iterator) hold, for the shape ty."""
     if ty == "f64":
@@ -943,6 +983,15 @@ def serde_write(ty: str, toks) -> bytes:
     if ty == "SimpleRng":
         seed = next(toks) % (1 << 64)
         return b'{"state":' + str(seed if seed != 0 else 1).encode() + b"}"
+    if ty == "MultivariateNormal":
+        mean, rows, lrows, ld = mvn_codec_value(toks)
+
+        def vec(xs):
+            return b"[" + b",".join(json_f64_text(x).encode() for x in xs) + b"]"
+
+        return (b'{"mean":' + vec(mean) + b',"covariance":[' + b",".join(vec(r) for r in rows) + b'],"cholesky_l":['
+                + b",".join(vec(r) for r in lrows) + b'],"log_det":' + json_f64_text(ld).encode() + b',"dim":'
+                + str(len(mean)).encode() + b"}")
     if ty in JSON_STRUCTS or ty in JSON_VALIDATED:
         fields = JSON_STRUCTS[ty] if ty in JSON_STRUCTS else JSON_VALIDATED[ty][0]
         return b"{" + b",".join(b'"' + name.encode() + b'":' + serde_write(t, toks)
@@ -3123,6 +3172,132 @@ def d_sample(L, draw, seed, n):
     return [draw(L, u) for _ in range(n)]
 
 
+# ── part d2: MultivariateNormal, on hisab's factor and solve (lin_cholesky, lin_cholesky_solve) ──
+
+def mvn_parse(ins):
+    """A MultivariateNormal row's inputs: d, the mean, the covariance's rows and columns and its entries (row-major),
+    and the rest (the point, or the seed and the count)."""
+    it = iter(ins)
+    d = next(it)
+    if next(it) != f"v:{d}":
+        raise ValueError("a malformed mean")
+    mean = [next(it) for _ in range(d)]
+    rows, cols = next(it), next(it)
+    if next(it) != f"v:{rows * cols}":
+        raise ValueError("a malformed covariance")
+    cov = [next(it) for _ in range(rows * cols)]
+    return d, mean, rows, cols, cov, list(it)
+
+
+def d_ln_any(L, x):
+    """ln through the model's primitive, NaN kept (glibc's log and MPFR agree that ln NaN is NaN)."""
+    return x if x != x else L.ln(x)
+
+
+def d_exp_any(L, x):
+    """exp through the model's primitive, its non-finite arguments as IEEE's exp gives them."""
+    if x != x:
+        return x
+    if math.isinf(x):
+        return math.inf if x > 0 else 0.0
+    return L.exp(x)
+
+
+MVN_SYMMETRY_TOL = 1e-10    # 1.3.0's MVN_SYMMETRY_TOL; dist_prims checks it against the source
+
+
+def d_mvn_checks(d, mean, rows, cols, cov):
+    """1.3.0's `MultivariateNormal::new` up to its log det: hisab's factor, or the error's name, in Rust's order."""
+    if d == 0 or not all(math.isfinite(v) for v in mean):
+        return "InvalidParameter"
+    if rows != d or cols != d:
+        return "DimensionMismatch"
+    if not all(math.isfinite(v) for v in cov):
+        return "InvalidParameter"
+    tol = MVN_SYMMETRY_TOL
+    for i in range(d):
+        for j in range(i + 1, d):
+            a, b = cov[i * d + j], cov[j * d + i]
+            scale = max(max(abs(a), abs(b)), MIN_POSITIVE)
+            if abs(a - b) > tol * scale:
+                return "InvalidParameter"
+    lf = lin_cholesky(d, cov)
+    if lf is None:
+        return "InvalidParameter"
+    return lf
+
+
+def d_mvn_new(L, d, mean, rows, cols, cov):
+    """1.3.0's `MultivariateNormal::new`: (L, log det Σ) on hisab's factor, or the error's name, in Rust's order."""
+    lf = d_mvn_checks(d, mean, rows, cols, cov)
+    if isinstance(lf, str):
+        return lf
+    s = -0.0
+    for i in range(d):
+        s += d_ln_any(L, lf[i * d + i])
+    ld = s * 2.0
+    if not math.isfinite(ld):
+        return "InvalidParameter"
+    return lf, ld
+
+
+def d_mvn_log_pdf(L, d, mean, lf, ld, x):
+    """1.3.0's `log_pdf`: −½·(d·ln 2π + log det Σ + Σ (x − μ)_i·w_i), w by hisab's solve, the sum from −0.0."""
+    if len(x) != d:
+        return "E:DimensionMismatch"
+    diff = [xi - mi for xi, mi in zip(x, mean)]
+    w = lin_cholesky_solve(d, lf, diff)
+    m = -0.0
+    for a, b in zip(diff, w):
+        m += a * b
+    return -0.5 * ((float(d) * L.ln(2.0 * math.pi) + ld) + m)
+
+
+def d_mvn_density(L, ins, log):
+    d, mean, rows, cols, cov, rest = mvn_parse(ins)
+    built = d_mvn_new(L, d, mean, rows, cols, cov)
+    if isinstance(built, str):
+        raise ValueError("a density row on a refused case")
+    n = int(rest[0][len("v:"):])
+    lp = d_mvn_log_pdf(L, d, mean, built[0], built[1], rest[1:1 + n])
+    if isinstance(lp, str):
+        return [lp]
+    return [lp if log else d_exp_any(L, lp)]
+
+
+def d_mvn_sample(L, ins):
+    """`sample`'s vectors, flattened: μ + L·z, z from Box–Muller's cosine then sine branch, each row's sum from −0.0."""
+    d, mean, rows, cols, cov, rest = mvn_parse(ins)
+    lf, _ld = d_mvn_new(L, d, mean, rows, cols, cov)
+    seed, count = rest
+    u = d_uniforms(seed % (1 << 64))
+    out = []
+    for _ in range(count):
+        z = []
+        while len(z) < d:
+            u1 = max(next(u), MIN_POSITIVE)
+            u2 = next(u)
+            r = math.sqrt(-2.0 * L.ln(u1))
+            th = (2.0 * math.pi) * u2
+            z.append(r * L.cos(th))
+            if len(z) < d:
+                z.append(r * L.sin(th))
+        for i in range(d):
+            s = -0.0
+            for k in range(i + 1):
+                s += lf[i * d + k] * z[k]
+            out.append(mean[i] + s)
+    return [f"v:{len(out)}"] + out
+
+
+def d_mvn_new_row(L, ins):
+    d, mean, rows, cols, cov, _rest = mvn_parse(ins)
+    built = d_mvn_new(L, d, mean, rows, cols, cov)
+    if isinstance(built, str):
+        return ["E:" + built]
+    return [f"v:{d * d}"] + built[0] + [built[1]]
+
+
 DIST = {  # name: model(L, *inputs) -> outputs (a list)
     "Normal::new": lambda L, mu, sd: [mu, sd] if d_normal_new(mu, sd) else ["E:InvalidParameter"],
     "Normal::pdf": lambda L, mu, sd, x: [d_normal_pdf(L, mu, sd, x)],
@@ -3229,6 +3404,11 @@ DIST = {  # name: model(L, *inputs) -> outputs (a list)
     "Binomial::variance": lambda L, n, p: [float(n % (1 << 64)) * p * (1.0 - p)],
     "Binomial::sample": lambda L, n, p, seed, c: [f"v:{c}"] + d_sample(
         L, lambda L, u: d_binomial_sample(L, n, p, u), seed, c),
+    # part d2
+    "MultivariateNormal::new": lambda L, *ins: d_mvn_new_row(L, ins),
+    "MultivariateNormal::log_pdf": lambda L, *ins: d_mvn_density(L, ins, True),
+    "MultivariateNormal::pdf": lambda L, *ins: d_mvn_density(L, ins, False),
+    "MultivariateNormal::sample": lambda L, *ins: d_mvn_sample(L, ins),
 }
 DIST_T1 = {"Normal::cdf": "Φ", "Weibull::mean": "lnΓ", "Weibull::variance": "lnΓ", "Gamma::pdf": "lnΓ",
            "Gamma::cdf": "incomplete gamma", "ChiSquared::pdf": "lnΓ", "ChiSquared::cdf": "incomplete gamma",
@@ -3256,6 +3436,8 @@ def dist_prims(root):
         "MAXIT": consts["math::MAX_ITERATIONS"],
         "WH": consts["math::GAMMA_WILSON_HILFERTY_SHAPE"],
     }
+    if consts["distribution::MVN_SYMMETRY_TOL"] != MVN_SYMMETRY_TOL:
+        raise SystemExit("MVN_SYMMETRY_TOL in rust-old/src is not the models' 1e-10")
     out = Prims("glibc", F), Prims("cr", F), Prims("ref", F)
     for P in out:
         P.K = K
@@ -3396,6 +3578,15 @@ def debug_struct(name, fields, alt):
     return name + " { " + ", ".join(f"{f}: {v}" for f, v in fields) + " }"
 
 
+def rust_debug_list(items, alt, depth):
+    """The derive's text of a list whose entries are already text: `[a, b]`, or one entry a line, indented by depth."""
+    if not items:
+        return "[]"
+    if alt:
+        return "[\n" + "".join("    " * (depth + 1) + t + ",\n" for t in items) + "    " * depth + "]"
+    return "[" + ", ".join(items) + "]"
+
+
 def debug_text(fn, ins):
     """The derive's text: a struct `Name { f: v }` / `Name {\\n    f: v,\\n}`, a tuple `Name(v)` / `Name(\\n    v,\\n)`."""
     if fn == "debug::f64":
@@ -3435,6 +3626,19 @@ def debug_text(fn, ins):
         return debug_struct("Poisson", [("lambda", rust_debug_f64(ins[0]))], ins[1] == 1)
     if fn == "debug::StudentT":
         return debug_struct("StudentT", [("df", rust_debug_f64(ins[0]))], ins[1] == 1)
+    if fn == "debug::MultivariateNormal":
+        alt = ins[-1] == 1
+        mean, rows, lrows, ld = mvn_codec_value(iter(ins[:-1]))
+
+        def vec(xs, depth):
+            return rust_debug_list([rust_debug_f64(x) for x in xs], alt, depth)
+
+        def mat(rs):
+            return rust_debug_list([vec(r, 2) for r in rs], alt, 1)
+
+        return debug_struct("MultivariateNormal", [("mean", vec(mean, 1)), ("covariance", mat(rows)),
+                                                   ("cholesky_l", mat(lrows)), ("log_det", rust_debug_f64(ld)),
+                                                   ("dim", str(len(mean)))], alt)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:

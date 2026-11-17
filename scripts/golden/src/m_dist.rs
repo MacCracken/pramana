@@ -48,6 +48,8 @@
 //! takes glibc's ln, ln_1p and exp and 1.3.0's lnΓ (Stirling's remainder below 10), the cdf 1.3.0's incomplete beta,
 //! and the draws Marsaglia–Tsang's.
 //!
+//! Part d2, `MultivariateNormal`: its rows come from `m_mvn.rs`, which says what they are.
+//!
 //! Inputs: the parameters, then x (or the seed and the count). Outputs: the value, or the draws as a sequence.
 
 use std::hint::black_box;
@@ -996,5 +998,6 @@ pub fn emit() -> Module {
     poisson(&mut m, &mut g);
     poisson_ptrs(&mut m);
     binomial(&mut m, &mut g);
+    crate::m_mvn::emit(&mut m, &mut g);
     m
 }

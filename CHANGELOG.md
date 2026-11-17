@@ -845,6 +845,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     reciprocal, only through the golden rows; three, the buffer rules, only through unit tests);
   - **cost:** 145 ns, 3.7 µs and 181–182 µs a factor at n = 4, 16 and 64 (1.6–5.3× Rust), and 108 ns, 980 ns and
     13.8–13.9 µs a solve (1.9–4.3×); the bench's sums and digests are 1.4.0's, bit for bit.
+- **M3 part d2: MultivariateNormal** (`src/dist_mvn.cyr`; port plan §7, §8.3; D5, D7 as amended, D11, D12; ADR 007
+  rows 1 and 3; results in `docs/development/port-parity.md` §9.9):
+  - **`PmnMultivariateNormal`:** the one owned distribution. The struct lives in caller storage, and the mean,
+    covariance and factor in one freelist block that `PmnMultivariateNormal_drop` frees; Clone is
+    `PmnMultivariateNormal_clone`. The covariance is a flat array with its rows and columns, so the constructor keeps
+    1.3.0's checks and their order (InvalidParameter, DimensionMismatch). The factor is part d1's hisab transcription,
+    log det Σ is summed from −0.0, and `pdf` and `log_pdf` return a value-form Result with their scratch from the pool.
+    A draw fills a caller buffer, in place. serde_json's text carries the cached fields, and reading recomputes them
+    through the constructor. Debug nests lists, through two new writers in `src/debug.cyr`;
+  - **golden rows:** 3,575 more `dist` rows (166,631: the constructor on 139 cases, among them the wrong shapes, every
+    non-finite entry, the symmetry tolerance's edges and a NaN pivot; the densities at 1,720 points; 24 streams), 127
+    codec rows and 24 Debug rows. `validate.py` models every one; `dist.cr.tsv` gains 12 draws and `json.map.tsv` 10
+    documents. Every row passes at 0 ulp, warning-free, on x86_64 ELF, PE and aarch64;
+  - **accuracy:** the densities are 1.3.0's bit for bit. Against exact values, log_pdf is within 25 ulp where κ ≤ 100
+    (853 rows, 473 exact); the error grows with the condition number, to 2×10⁻⁸ relative at κ = 1.8×10⁸, the factor's
+    own;
+  - **tests and checks:** `tests/dist_mvn.tcyr`, 67 checks (1.3.0's nine MVN tests and its two shared ones);
+    `tests/soak.tcyr`'s 10⁴ rounds of every call free every block (23 checks); all 26 non-equivalent mutants fail
+    (three equivalent ones survive); surface parity maps the last 12 items of `distribution`;
+  - **cost:** built once, 314–319 ns a 3-D pdf (4.9× Rust), 250–253 ns a log_pdf (4.4×) and 559–570 ns a draw
+    (6.2×); 761–788 ns a construction and drop (4.7×); 1.27–1.31 µs a d = 16 log_pdf (3.8×); 40–43 µs a JSON round
+    trip (27×, the codec's cost); every bench digest is explained by the models.
 
 ### Performance
 

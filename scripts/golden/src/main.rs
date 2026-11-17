@@ -38,6 +38,7 @@ mod m_fmt;
 mod m_json;
 mod m_linalg;
 mod m_math;
+mod m_mvn;
 mod m_rng;
 mod m_special;
 mod p_constants;

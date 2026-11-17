@@ -4092,3 +4092,143 @@ carry (port plan §4.2).
 **Cost** (`docs/benchmarks-rust-v-cyrius.md`): 145 ns, 3.7 µs and 181–182 µs a factor at n = 4, 16 and 64 (1.6×, 3.6×
 and 5.3× Rust), and 108 ns, 980 ns and 13.8–13.9 µs a solve (1.9×, 3.1× and 4.3×). The bench's 12 sums and digests
 are 1.4.0's, bit for bit.
+
+### 9.9 Part d2: MultivariateNormal (2026-11-16)
+
+**The module.** `src/dist_mvn.cyr` holds `PmnMultivariateNormal`, with Rust's `new`, `dim`, `pdf`, `log_pdf`, `sample`,
+`mean_vec` and `covariance_matrix`, Clone, the codec and Debug. It is the one owned distribution (D11).
+- **The storage:** the struct lives in caller storage, and its buffers in one freelist block sized at construction: the
+  mean, the covariance and the lower factor L. `PmnMultivariateNormal_drop` frees the block, and a dropped one refuses
+  every call. Clone is `PmnMultivariateNormal_clone`, a block of its own.
+- **The covariance:** Rust's `Vec<Vec<f64>>` is a flat row-major array with its rows and columns (port plan §8.3), so
+  the constructor still tells a covariance of the wrong shape (DimensionMismatch) from a bad one (InvalidParameter), in
+  Rust's order. Only a JSON document can be ragged, and it reads as PMN_ERR_DESERIALIZE, as in Rust.
+- **The values:** the factor is part d1's, hisab's bit for bit. log det Σ is 2·Σ ln L_ii, summed from −0.0. The
+  densities solve L·Lᵀ·w = x − μ with hisab's solve. A draw is μ + L·z, with z from Box–Muller's cosine and sine
+  branches; an odd d draws the last pair whole and keeps its cosine. All are in Rust's operation order, on the
+  correctly rounded ln, exp, cos and sin.
+- **The calls:** `pdf` and `log_pdf` return a value-form Result (ADR 007 row 1), Ok holding the f64. Their scratch, 2d
+  f64s, comes from the work-table pool. A draw fills a caller buffer of d f64s (ADR 007 row 3), computed in place,
+  rows from the last up, so each row reads only z values not yet replaced.
+- **The codec:** serde_json's text carries the cached fields, as 1.3.0 writes them. Reading takes the two-field repr
+  and the constructor, which recomputes the factor, as Rust's `try_from` does: a document's cached fields are ignored.
+- **Debug** nests lists, so `src/debug.cyr` gains `_pmn_dbg_vec_f64` and `_pmn_dbg_mat_f64`. Their pretty form
+  indents each level by four spaces, as Rust's PadAdapter does.
+
+**The golden rows** (`scripts/golden/src/m_mvn.rs`, through the oracle's `mvn_factor` for L and log det Σ):
+- **`dist`, 3,575 more rows (166,631 in all):**
+  - `MultivariateNormal::new`, 139 rows: the empty mean; a 1×1 covariance at every pivot class and a mean at every
+    special; the wrong shapes, the mean's check first; a NaN or ±∞ at each entry; asymmetries either side of the
+    tolerance, at its MIN_POSITIVE floor, at a pair the larger magnitude decides, and on 1.3.0's test matrices;
+    matrices hisab refuses, and one it factors with a NaN pivot (the degenerate determinant); seeded SPD matrices for
+    d from 1 to 32, scaled by 1e300, 1e-300, 5e-324 and f64::MAX, the Hilbert matrices to 14 and Lehmer's. 84 factor,
+    44 are InvalidParameter and 11 DimensionMismatch;
+  - `log_pdf` and `pdf`, 1,720 and 1,692 rows: each valid case at its mean, along each axis, at seeded points near and
+    far, with a NaN or ±∞ element, and at points of the wrong length (140 DimensionMismatch each). Past d = 8 only the
+    mean, one seeded point and a far one, and the pdf at the mean: each row carries the d² covariance;
+  - `sample`, 24 rows: 2,000 draws of 1.3.0's own test case and 256 of seven others (d = 1 to 8, −0.0 and f64::MAX
+    means, scales of 1e300 and 1e-300), from three seeds.
+
+  All class C: log det Σ and the densities take glibc's ln and exp, the draws its ln, cos and sin.
+- **`json`,** 127 more rows (9,392 in all): `struct_docs`'s variants of the two-field repr, the mean in 15 forms and
+  the covariance in 22 (ragged, asymmetric, not positive-definite, non-numbers among them), documents with the cached
+  fields true, tampered and of the wrong type, the sequence forms, and 12 documents serde_json wrote; 64 are refused.
+  And 12 writes. **`debug`,** 24 more (25,712): the codec's 12 cases in both forms.
+
+**The models.** `validate.py` recomputes every row in Rust's order on part d1's `lin_cholesky` and
+`lin_cholesky_solve`: the constructor's checks, log det Σ, the densities and the draws, on glibc's primitives and on
+correctly rounded ones. The codec's model reads the repr and judges it by the constructor; its writes and Debug compute
+the factor and log det Σ, and stop if glibc's ln and the correctly rounded one disagree on a case (none does).
+- **`dist.cr.tsv`** gains 12 rows: draws where glibc's ln, cos or sin misrounds (1,282 in all). 7 move by 1 ulp, 3 by
+  2, and 2 by 128 and 512, where μ_i + Σ L_ik·z_k cancels.
+- **`dist.ref.tsv`** is unchanged: no T1 function is involved.
+- **`json.map.tsv`** gains 10 rows: the documents serde_json reads only by skipping an unread member (ADR 007 row 16).
+
+**The result.** Every row passes at 0 ulp, against 1.3.0's bits or their correctly rounded value, warning-free, on
+x86_64 ELF, PE and aarch64. The replay is eleven modules: 275,754 rows ok and 53,677 accepted (53,507 under ADR 9,
+170 under ADR 7). All 24 streams equal 1.3.0's but where glibc misrounds.
+
+**The densities against exact values** (the 1,266 finite log-density rows and 939 density rows with d ≤ 8: q and
+det Σ in exact rationals, Σ the symmetric matrix of the lower triangle hisab factors, then the logarithms and exp in
+MPFR at 4,096 bits; κ is the largest squared pivot of L over the smallest, a proxy for the condition number):
+
+| Rows | log_pdf | pdf |
+|---|---|---|
+| κ ≤ 100 | 853: 473 exact, 780 within 1 ulp, max 25 | 759: 100 exact, max 8,275 |
+| 100 < κ ≤ 10⁴ | 66: max 400 | 33: max 141,787 |
+| κ > 10⁴ (B·Bᵀ + 10⁻³·I) | 56: max 1.6×10⁸ (relative 2×10⁻⁸, κ = 1.8×10⁸) | 12: max 3.1×10⁹ |
+
+- **The port's values are 1.3.0's** on every density row (no `dist.cr.tsv` row for them), so the table is both's.
+- **The error is the factor's:** Cholesky is backward stable, so the Mahalanobis term's error grows with κ. The
+  density's is exp amplifying the log density's absolute error.
+- **Not a finding against the port:** parity fixes the method. A better-conditioned route, such as a refined solve,
+  would be 2.1's to propose.
+
+**Mutation checks** (`build/handoff/mut_d2.py`: the replay of `dist`, `json` and `debug`, and `tests/dist_mvn.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| new: the shape's check before the mean's | 1 | 1 |
+| new: the columns unchecked | 3 | 2 |
+| new: asymmetry refused at the tolerance itself | 102 | 0 |
+| new: no MIN_POSITIVE floor on the scale | 357 | 0 |
+| new: the scale the smaller magnitude | 102 | 0 |
+| new: a non-finite log det accepted | 2 | 1 |
+| log_pdf: (log det + Mahalanobis) first | 304 | 0 |
+| log_pdf: d·ln 2π summed term by term | 83 | 0 |
+| log_pdf: no length check | 280 | 3 |
+| log_pdf: the solve in place | 2,338 | 2 |
+| log_pdf: the dot product with x, not x − μ | 756 | 1 |
+| pdf: the log density returned | 1,373 | 5 |
+| sample: u1 not kept from 0 | 0 | 1 |
+| sample: sine first | 24 | 2 |
+| sample: rows from the first down (z overwritten) | 15 | 1 |
+| sample: L read transposed | 15 | 0 |
+| sample: no cap check | 0 | 1 |
+| sample: no overlap check | 0 | 1 |
+| debug: a nested list at its parent's depth | 12 | 1 |
+| debug: log_det before cholesky_l | 24 | 2 |
+| to_json: dim written as an f64 | 12 | 1 |
+| from_json: the constructor's code passed through | 18 | 2 |
+| from_json: the cached factor's names read as fields | 37 | 2 |
+| clone: only the mean copied | 0 | 2 |
+| drop: the block kept on the struct | 0 | 3 |
+
+- **All 26 non-equivalent mutants fail.** Three more are equivalent, and survive:
+  - log det as Σ 2·ln L_ii: doubling is exact, so fl(2a + 2b) = 2·fl(a + b);
+  - the factor from the input rather than its copy: the same bits;
+  - ln 2π as 2·ln √(2π): the same bits, as is ln 2 + ln π, for this one constant.
+- **The scale of the smaller magnitude** was a survivor until a case was found for it. The verdicts differ only when
+  |a − b| lies between 1e-10·|b| and 1e-10·|a|, a window about 10⁻²⁰ wide that about one double in 10⁵ meets. A search
+  found (1.7117351981710087, 1.7117351979998352), which Rust accepts, and both orientations are now golden rows.
+- **Five fail through unit tests only:** the draw's two buffer rules, the clone and the drop, and u1 = 0, which no
+  seeded stream draws and a consumer's generator of eighths does. **Six fail through the replay only:** the symmetry
+  check's three, two orders of the log density's sum, and L read transposed, which move bits that tolerance-based tests
+  can't see.
+
+**Tests.** `tests/dist_mvn.tcyr` has 67 checks:
+- 1.3.0's tests: `mvn_1d_matches_univariate`, `mvn_2d_pdf_at_mean`, `mvn_sample_mean_convergence` (50,000 draws),
+  `mvn_invalid_params`, `mvn_dimension_mismatch_pdf`, `mvn_log_pdf_consistency`, `serde_roundtrip_mvn`,
+  `mvn_deserialize_recomputes_cached_factor`, `mvn_symmetry_check_is_scale_relative`, and MultivariateNormal's lines
+  of `constructors_reject_non_finite_parameters` and `deserialize_rejects_invalid_parameters`;
+- the constructor's order and buffer rules, a refusal leaving out untouched, the degenerate determinant, the factor
+  from the lower triangle, the covariance and mean kept as given, and out over the mean;
+- the block's life: a clone with a block of its own outliving its source, and every call on a dropped one refused;
+- the densities: −½·2·ln 2π at N(0, I₂)'s mean bit for bit, pdf as exp(log_pdf) bit for bit, the far point's −∞, NaN,
+  the refusals, and the pool left unclaimed;
+- the draws: N(0, 1)'s stream equal to `standard_normal`'s, two pairs for d = 3, the buffer rules drawing nothing, and
+  a consumer's generator whose first uniform is 0;
+- the codec's and Debug's exact text, the tampered cache, the sequence form and the refusals.
+
+`tests/soak.tcyr` (23 checks) adds 10⁴ rounds of the constructor, both densities, a draw, a clone and the codec both
+ways, a tenth of them at d = 32, whose block is over 4 KB, mapped and unmapped. Nothing is taken: the bump heap, the
+freelist arena, the mapped size and the pool are unchanged, once a warm-up has grown the pool's slots to the largest
+document.
+
+**Surface parity.** The 12 pending items are mapped: `distribution`'s 161 are all ported (191 items in all), and the
+module moves to the ported list at M3's gate.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): built once, 314–319 ns a 3-D pdf (4.9× Rust), 250–253 ns a log_pdf
+(4.4×) and 559–570 ns a draw (6.2×); 761–788 ns a 3-D construction and drop (4.7×); 1.27–1.31 µs a d = 16 log_pdf
+(3.8×); 40–43 µs a JSON round trip (27×, the codec's cost, as Normal's). The bench's 48 digests are all explained by
+the models.

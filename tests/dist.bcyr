@@ -6,7 +6,8 @@
 # glibc primitive misrounds or a T1 function (here Φ, M2 part b2) moves a value. The record is
 # docs/benchmarks-rust-v-cyrius.md. Part a1: Normal; part a2: Uniform, Exponential and Bernoulli; part a3: Cauchy and
 # Weibull; part b1: Gamma and ChiSquared; part b2: Beta, StudentT and FDistribution; part c1: Poisson; part c2:
-# Binomial.
+# Binomial; part d2: MultivariateNormal, mostly built once (1.3.0's own criterion benches do), its density and draws
+# then a call each.
 
 include "tests/lib.cyr"
 
@@ -14,6 +15,10 @@ var g_rng = 0x2545F4914F6CDD1D;
 var g_xs = 0;
 var g_ys = 0;
 var g_sb = 0;
+var g_m3 = 0;     # criterion's 3-D MultivariateNormal (rust-old/benches), built once
+var g_m16 = 0;    # a d = 16 one, built once
+var g_pt = 0;     # a point, a draw or a mean: 16 f64s
+var g_cv = 0;     # a covariance: 16 × 16 f64s
 
 fn next(): i64 {
     var x = g_rng;
@@ -35,6 +40,7 @@ fn unit(): f64 {
 # `which`: 0 N(0, 1)'s pdf at x, 1 N(0, 1)'s cdf at x, 2 one draw of N(x, y), 3 N(x, y) to JSON and back (the mean
 # read back), 4 N(x, y)'s Debug (the text's length); 5 and up, part a2's rows (eval_a2).
 fn eval(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    if (which >= 40) { return eval_d2(which, x, y, g); }
     if (which >= 36) { return eval_c2(which, x, y, g); }
     if (which >= 32) { return eval_c1(which, x, y, g); }
     if (which >= 24) { return eval_b2(which, x, y, g); }
@@ -196,6 +202,95 @@ fn eval_c2(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
     return r;
 }
 
+# Criterion's 3-D covariance [[1, 0.3, 0.1], [0.3, 2, 0.5], [0.1, 0.5, 3]], each entry times s, into cov.
+fn cov3(cov, s: f64): i64 {
+    var c: f64 = 0.0;
+    for (var k = 0; k < 9; k = k + 1) {
+        if (k == 0) { c = 1.0; }
+        if (k == 1 || k == 3) { c = 0.3; }
+        if (k == 2 || k == 6) { c = 0.1; }
+        if (k == 4) { c = 2.0; }
+        if (k == 5 || k == 7) { c = 0.5; }
+        if (k == 8) { c = 3.0; }
+        var v: f64 = c * s;
+        store64(cov + k * 8, v);
+    }
+    return 0;
+}
+
+fn log_density(m: *PmnMultivariateNormal, p, n): f64 {
+    var t, v = m.log_pdf(p, n);
+    var r: f64 = v;
+    return r;
+}
+
+fn density(m: *PmnMultivariateNormal, p, n): f64 {
+    var t, v = m.pdf(p, n);
+    var r: f64 = v;
+    return r;
+}
+
+fn draw_sum(m: *PmnMultivariateNormal, g: *PmnSimpleRng): f64 {
+    var e = m.sample(g, g_pt, 3);
+    var a: f64 = load64(g_pt);
+    var b: f64 = load64(g_pt + 8);
+    var c: f64 = load64(g_pt + 16);
+    var ab: f64 = a + b;
+    return ab + c;
+}
+
+# Part d2's rows: 40 criterion's 3-D MultivariateNormal's pdf at (x, y, 0.5), 41 its log_pdf there, 42 one draw (the
+# sum of its elements, in order), 43 a 3-D one, the covariance times y, constructed and dropped (log det Σ), 44 the
+# d = 16 one's log_pdf at (x, y, x, y, …), 45 a 3-D one with mean (x, y, 0) to JSON and back (x, read back; the factor
+# recomputed).
+fn eval_d2(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    var r: f64 = 0.0;
+    if (which == 40 || which == 41) {
+        store64(g_pt, x);
+        store64(g_pt + 8, y);
+        var h: f64 = 0.5;
+        store64(g_pt + 16, h);
+        if (which == 40) { return density(g_m3, g_pt, 3); }
+        return log_density(g_m3, g_pt, 3);
+    }
+    if (which == 42) { return draw_sum(g_m3, g); }
+    var m: PmnMultivariateNormal;
+    var zero: f64 = 0.0;
+    if (which == 43) {
+        var z0 = cov3(g_cv, y);
+        for (var k = 0; k < 3; k = k + 1) { store64(g_pt + k * 8, zero); }
+        if (PmnMultivariateNormal_new(&m, g_pt, 3, g_cv, 3, 3) == PMN_ERR_NONE) {
+            r = m.log_det;
+            var e0 = PmnMultivariateNormal_drop(&m);
+        }
+    } elif (which == 44) {
+        for (var i = 0; i < 16; i = i + 1) {
+            if (i % 2 == 0) {
+                store64(g_pt + i * 8, x);
+            } else {
+                store64(g_pt + i * 8, y);
+            }
+        }
+        r = log_density(g_m16, g_pt, 16);
+    } elif (which == 45) {
+        var z1 = cov3(g_cv, 1.0);
+        store64(g_pt, x);
+        store64(g_pt + 8, y);
+        store64(g_pt + 16, zero);
+        if (PmnMultivariateNormal_new(&m, g_pt, 3, g_cv, 3, 3) == PMN_ERR_NONE) {
+            store64(g_sb + 8, 0);
+            var b: PmnMultivariateNormal;
+            if (m.to_json(g_sb) == PMN_ERR_NONE && PmnMultivariateNormal_from_json(&b, load64(g_sb), load64(g_sb + 8))
+                == PMN_ERR_NONE) {
+                r = load64(b.mean_vec());
+                var e1 = PmnMultivariateNormal_drop(&b);
+            }
+            var e2 = PmnMultivariateNormal_drop(&m);
+        }
+    }
+    return r;
+}
+
 fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
     for (var j = 0; j < 4096; j = j + 1) {
         var w: f64 = hi - lo;
@@ -250,6 +345,26 @@ fn main(): i64 {
     g_xs = alloc(4096 * 8);
     g_ys = alloc(4096 * 8);
     g_sb = str_builder_new();
+    g_m3 = alloc(24);
+    g_m16 = alloc(24);
+    g_pt = alloc(16 * 8);
+    g_cv = alloc(16 * 16 * 8);
+    var c3 = cov3(g_cv, 1.0);
+    var zero: f64 = 0.0;
+    for (var k = 0; k < 16; k = k + 1) { store64(g_pt + k * 8, zero); }
+    if (PmnMultivariateNormal_new(g_m3, g_pt, 3, g_cv, 3, 3) != PMN_ERR_NONE) { return 1; }
+    # d = 16: 1/(1 + |i − j|), plus 16 on the diagonal (dominant, so positive-definite).
+    for (var i = 0; i < 16; i = i + 1) {
+        for (var j = 0; j < 16; j = j + 1) {
+            var dij = i - j;
+            if (dij < 0) { dij = 0 - dij; }
+            var den: f64 = f64_from(1 + dij);
+            var c: f64 = 1.0 / den;
+            if (i == j) { c = c + 16.0; }
+            store64(g_cv + (i * 16 + j) * 8, c);
+        }
+    }
+    if (PmnMultivariateNormal_new(g_m16, g_pt, 16, g_cv, 16, 16) != PMN_ERR_NONE) { return 1; }
     row("Normal::pdf, N(0, 1), x in [-10, 10)", 0, -10.0, 10.0, 0.0, 1.0);
     row("Normal::cdf, N(0, 1), x in [-10, 10)", 1, -10.0, 10.0, 0.0, 1.0);
     row("Normal::cdf, N(0, 1), x in [-38, -1.2)", 1, -38.0, -1.2, 0.0, 1.0);
@@ -292,6 +407,13 @@ fn main(): i64 {
     row("Binomial::cdf, Binomial(20, 0.3), x in [0, 20)", 37, 0.0, 20.0, 0.0, 1.0);
     row("Binomial::sample, simulated, n = 50, p in [0, 1)", 38, 0.0, 1.0, 0.0, 1.0);
     row("Binomial::sample, Beta-split, n = 1e6, p in [0, 1)", 39, 0.0, 1.0, 0.0, 1.0);
+    row("MultivariateNormal::pdf, 3-D, built once, at (x, y, 0.5), x in [0, 10), y in [-1, 1)", 40, 0.0, 10.0, -1.0,
+        1.0);
+    row("MultivariateNormal::log_pdf, 3-D, built once, the same points", 41, 0.0, 10.0, -1.0, 1.0);
+    row("MultivariateNormal::sample, 3-D, built once (the sum of a draw)", 42, 0.0, 1.0, 0.0, 1.0);
+    row("MultivariateNormal::new and drop, 3-D, covariance times y in [0.1, 10)", 43, 0.0, 1.0, 0.1, 10.0);
+    row("MultivariateNormal::log_pdf, d = 16, built once, at (x, y, x, y, ...), in [-3, 3)", 44, -3.0, 3.0, -3.0, 3.0);
+    row("MultivariateNormal, to JSON and back, 3-D, mean (x, y, 0), in [-10, 10)", 45, -10.0, 10.0, -10.0, 10.0);
     return 0;
 }
 

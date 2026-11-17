@@ -494,6 +494,13 @@ fn _par_json_write(fp, fl): i64 {
         if (PmnBinomial_new(&wbi, _par_in(0), wbp) != PMN_ERR_NONE) { return 0 - 1; }
         _par_json_k = 2;
         e = wbi.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::MultivariateNormal") == 1) {
+        var wmv: PmnMultivariateNormal;
+        var wmk = _par_mvn_codec_new(&wmv, 0);
+        if (wmk < 0) { return 0 - 1; }
+        _par_json_k = wmk;
+        e = wmv.to_json(sb);
+        var wmd = PmnMultivariateNormal_drop(&wmv);
     } elif (_par_eq(fp, fl, "json::write::Poisson") == 1) {
         var wpo: PmnPoisson;
         var wpl: f64 = _par_in(0);
@@ -677,6 +684,58 @@ fn _par_json_binomial(): i64 {
     return 1;
 }
 
+# The MultivariateNormal rows' buffers (M3 part d2): the mean, the covariance and a point or a draw, 4,096 f64s each.
+var _par_mv_m = 0;
+var _par_mv_c = 0;
+var _par_mv_x = 0;
+var _PAR_MV_CAP = 4096;
+
+# json::MultivariateNormal rows (M3 part d2): PmnMultivariateNormal_from_json, then its mean and covariance as the
+# codec's tokens (`v:d` and the mean, `v:d` and each row's `v:d` and entries); dropped after.
+fn _par_json_mvn(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var m: PmnMultivariateNormal;
+    var e = PmnMultivariateNormal_from_json(&m, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    var d = m.dim();
+    var mu = m.mean_vec();
+    var cv = m.covariance_matrix();
+    _par_got_seq(d);
+    for (var k = 0; k < d; k = k + 1) { _par_got_f(load64(mu + k * 8)); }
+    _par_got_seq(d);
+    for (var r = 0; r < d; r = r + 1) {
+        _par_got_seq(d);
+        for (var c = 0; c < d; c = c + 1) { _par_got_f(load64(cv + (r * d + c) * 8)); }
+    }
+    var e1 = PmnMultivariateNormal_drop(&m);
+    return 1;
+}
+
+# A MultivariateNormal from the codec's tokens at token k (as _par_json_mvn emits them), into m: the tokens read, or
+# -1 when they don't hold a square case the constructor accepts. The caller drops m.
+fn _par_mvn_codec_new(m, k): i64 {
+    if (_par_mv_m == 0) {
+        _par_mv_m = alloc(_PAR_MV_CAP * 8);
+        _par_mv_c = alloc(_PAR_MV_CAP * 8);
+        _par_mv_x = alloc(_PAR_MV_CAP * 8);
+        if (_par_mv_m == 0 || _par_mv_c == 0 || _par_mv_x == 0) { return 0 - 1; }
+    }
+    var d = _par_in(k);
+    if (d <= 0 || d > 64 || _par_in_f64s(k, _par_mv_m) != d || _par_in(k + 1 + d) != d) { return 0 - 1; }
+    var at = k + 2 + d;
+    for (var r = 0; r < d; r = r + 1) {
+        if (_par_in_f64s(at, _par_mv_c + r * d * 8) != d) { return 0 - 1; }
+        at = at + 1 + d;
+    }
+    if (PmnMultivariateNormal_new(m, _par_mv_m, d, _par_mv_c, d, d) != PMN_ERR_NONE) { return 0 - 1; }
+    return at - k;
+}
+
 fn _par_json_value(fp, fl, root): i64 {
     if (_par_eq(fp, fl, "json::Pair") == 1) { return _par_json_pair(root); }
     if (_par_eq(fp, fl, "json::Shapes") == 1) { return _par_json_shapes(root); }
@@ -693,6 +752,7 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::SimpleRng") == 1) { return _par_json_simple_rng(); }
     if (_par_eq(fp, fl, "json::Normal") == 1) { return _par_json_normal(); }
     if (_par_eq(fp, fl, "json::Binomial") == 1) { return _par_json_binomial(); }
+    if (_par_eq(fp, fl, "json::MultivariateNormal") == 1) { return _par_json_mvn(); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -840,6 +900,16 @@ fn _par_debug(fp, fl): i64 {
         var df2: f64 = _par_in(1);
         if (PmnFDistribution_new(&dfd, df1, df2) != PMN_ERR_NONE) { return 0 - 1; }
         e = dfd.debug(sb, _par_in(2));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::MultivariateNormal") == 1) {
+        var dmv: PmnMultivariateNormal;
+        var dmk = _par_mvn_codec_new(&dmv, 0);
+        if (dmk < 0 || dmk + 1 != _par_in_n) { return 0 - 1; }
+        e = dmv.debug(sb, _par_in(dmk));
+        var dmd = PmnMultivariateNormal_drop(&dmv);
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -1422,7 +1492,81 @@ fn _par_dist(fp, fl): i64 {
         if (eb != PMN_ERR_NONE) { return 0 - 1; }
         return _par_dist_call(&db, fp + px, fl - px, 1);
     }
+    px = _par_dist_prefix(fp, fl, "MultivariateNormal");
+    if (px > 0) { return _par_mvn(fp + px, fl - px); }
     return 0;
+}
+
+# `MultivariateNormal::` rows (M3 part d2): the constructor on the row's mean (d) and rows × cols covariance, read into
+# buffers of up to 4,096 f64s (declared with the codec's rows); then its L and log det (the oracle's `mvn_factor`), a
+# density at the `v:n` point, or `count` draws from the seed, each vector's d elements in order. The MultivariateNormal
+# is dropped after the row.
+
+fn _par_mvn(mp, ml): i64 {
+    if (_par_mv_m == 0) {
+        _par_mv_m = alloc(_PAR_MV_CAP * 8);
+        _par_mv_c = alloc(_PAR_MV_CAP * 8);
+        _par_mv_x = alloc(_PAR_MV_CAP * 8);
+        if (_par_mv_m == 0 || _par_mv_c == 0 || _par_mv_x == 0) { return 0 - 1; }
+    }
+    var d = _par_in(0);
+    if (d < 0 || d > 64 || _par_in_f64s(1, _par_mv_m) != d) { return 0 - 1; }
+    var rows = _par_in(2 + d);
+    var cols = _par_in(3 + d);
+    if (rows < 0 || cols < 0 || rows * cols > _PAR_MV_CAP) { return 0 - 1; }
+    if (_par_in_f64s(4 + d, _par_mv_c) != rows * cols) { return 0 - 1; }
+    var k0 = 5 + d + rows * cols;
+    var m: PmnMultivariateNormal;
+    var e = PmnMultivariateNormal_new(&m, _par_mv_m, d, _par_mv_c, rows, cols);
+    if (_par_eq(mp, ml, "new") == 1) {
+        if (e != PMN_ERR_NONE) {
+            _par_got_err(e);
+            return 1;
+        }
+        var l = m.buf + (d + d * d) * 8;
+        _par_got_seq(d * d);
+        for (var k = 0; k < d * d; k = k + 1) { _par_got_f(load64(l + k * 8)); }
+        var ld: f64 = m.log_det;
+        _par_got_f(ld);
+        var e0 = PmnMultivariateNormal_drop(&m);
+        return 1;
+    }
+    if (e != PMN_ERR_NONE) { return 0 - 1; }   # a density or a draw on a refused case
+    var r = 0;
+    if (_par_eq(mp, ml, "log_pdf") == 1 || _par_eq(mp, ml, "pdf") == 1) {
+        var n = _par_in(k0);
+        r = 0 - 1;
+        if (n >= 0 && n <= _PAR_MV_CAP) {
+            var nx = _par_in_f64s(k0, _par_mv_x);
+            var t = Err;
+            var v = 0;
+            if (ml == 7) {
+                t, v = m.log_pdf(_par_mv_x, nx);
+            } else {
+                t, v = m.pdf(_par_mv_x, nx);
+            }
+            if (t == Err) {
+                _par_got_err(v);
+            } else {
+                _par_got_f(v);
+            }
+            r = 1;
+        }
+    } elif (_par_eq(mp, ml, "sample") == 1) {
+        var g: PmnSimpleRng;
+        r = 0 - 1;
+        if (PmnSimpleRng_new(&g, _par_in(k0)) == PMN_ERR_NONE) {
+            var count = _par_in(k0 + 1);
+            _par_got_seq(count * d);
+            r = 1;
+            for (var c = 0; c < count; c = c + 1) {
+                if (m.sample(&g, _par_mv_x, _PAR_MV_CAP) != PMN_ERR_NONE) { r = 0 - 1; }
+                for (var j = 0; j < d; j = j + 1) { _par_got_f(load64(_par_mv_x + j * 8)); }
+            }
+        }
+    }
+    var e1 = PmnMultivariateNormal_drop(&m);
+    return r;
 }
 
 # `linalg` rows (M3 part d1): src/linalg.cyr's Cholesky factorization and solve, the matrix a `v:n²` slice and the
@@ -1624,6 +1768,10 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "Binomial::pdf") == 1) { return 0; }         # ln, ln_1p and exp; Stirling on T1 lnΓ (c2)
     if (_par_eq(fp, fl, "Binomial::cdf") == 1) { return 0; }         # downstream of the T1 incomplete beta
     if (_par_eq(fp, fl, "Binomial::sample") == 1) { return 0; }      # Marsaglia–Tsang
+    if (_par_eq(fp, fl, "MultivariateNormal::new") == 1) { return 0; }       # hisab's factor and ln (d2)
+    if (_par_eq(fp, fl, "MultivariateNormal::log_pdf") == 1) { return 0; }   # hisab's solve and ln
+    if (_par_eq(fp, fl, "MultivariateNormal::pdf") == 1) { return 0; }       # and exp
+    if (_par_eq(fp, fl, "MultivariateNormal::sample") == 1) { return 0; }    # Box–Muller's ln, cos and sin
     return 0 - 1;
 }
 

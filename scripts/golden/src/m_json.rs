@@ -12,6 +12,8 @@
 //! - 1.3.0's `Normal` (M3 part a1), read through `NormalRepr` and `Normal::new`, so a std_dev it refuses is an error;
 //!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2), `Cauchy` and `Weibull` (a3), `Gamma` and
 //!   `ChiSquared` (b1), `Beta`, `StudentT` and `FDistribution` (b2), `Poisson` (c1) and `Binomial` (c2), the same way.
+//!   `MultivariateNormal` (d2) is read through its two-field repr and `new`, so the cached factor, log det and dim a
+//!   document carries are ignored (the decoded value's mean and covariance are the tokens); and written with them.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -46,8 +48,8 @@
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
 use pramana::distribution::{
-    Bernoulli, Beta, Binomial, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, Normal, Poisson, StudentT,
-    Uniform, Weibull,
+    Bernoulli, Beta, Binomial, Cauchy, ChiSquared, Exponential, FDistribution, Gamma, MultivariateNormal, Normal,
+    Poisson, StudentT, Uniform, Weibull,
 };
 use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
@@ -609,6 +611,7 @@ pub fn emit() -> Module {
     f_distribution(&mut m, &mut g);
     poisson(&mut m, &mut g);
     binomial(&mut m, &mut g);
+    multivariate_normal(&mut m, &mut g);
     m
 }
 
@@ -910,6 +913,84 @@ fn binomial(m: &mut Module, g: &mut Rng) {
     for &(n, p) in &pairs {
         let x = Binomial::new(n, p).expect("valid parameters");
         m.row("json::write::Binomial", Class::A, &[i(n as i64), f(p)], &[text(&x)]);
+    }
+}
+
+// ── M3 d2: MultivariateNormal's codec ──
+
+/// The MultivariateNormals the codec rows write and read back: 1.3.0's test cases, signed zeros, wide scales, and
+/// seeded SPD matrices for d from 1 to 5.
+pub fn mvn_cases(g: &mut Rng) -> Vec<MultivariateNormal> {
+    let mut cases: Vec<(Vec<f64>, Vec<Vec<f64>>)> = vec![
+        (vec![2.0], vec![vec![4.0]]),
+        (vec![1.0, 2.0], vec![vec![4.0, 1.0], vec![1.0, 9.0]]),
+        (vec![1.0, 2.0], vec![vec![2.0, 0.5], vec![0.5, 1.0]]),
+        (vec![0.0, -0.0], vec![vec![1.0, -0.0], vec![-0.0, 1.0]]),
+        (vec![0.0; 3], vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 1.0]]),
+        (vec![f64::MAX, -5e-324], vec![vec![1e300, 0.0], vec![0.0, 1e-300]]),
+        (vec![0.0, 0.0], vec![vec![4.0, 1.0], vec![1.000_000_000_000_1, 9.0]]),
+    ];
+    for d in 1..=5usize {
+        let b: Vec<f64> = (0..d * d).map(|_| g.uniform(-1.0, 1.0)).collect();
+        #[allow(clippy::cast_precision_loss)]
+        let a: Vec<Vec<f64>> = (0..d)
+            .map(|r| {
+                (0..d)
+                    .map(|c| (0..d).map(|k| b[r * d + k] * b[c * d + k]).sum::<f64>() + if r == c { d as f64 } else { 0.0 })
+                    .collect()
+            })
+            .collect();
+        cases.push(((0..d).map(|_| g.signed_log_uniform(-3.0, 3.0)).collect(), a));
+    }
+    cases.into_iter().map(|(mean, cov)| MultivariateNormal::new(mean, cov).expect("a valid case")).collect()
+}
+
+/// A MultivariateNormal's mean and covariance as tokens: `v:d` and the mean, then the matrix's.
+pub fn mvn_toks(x: &MultivariateNormal) -> Vec<Tok> {
+    let mut t = f64s(x.mean_vec());
+    t.extend(mat_toks(x.covariance_matrix()));
+    t
+}
+
+fn multivariate_normal(m: &mut Module, g: &mut Rng) {
+    let base = MultivariateNormal::new(vec![1.0, 2.0], vec![vec![4.0, 1.0], vec![1.0, 9.0]]).expect("valid");
+    let means = bytes(&[
+        "[1.0,2.0]", "[1,2]", "[]", "[1.5]", "[1,2,3]", "[null,2]", "[1e309,2]", "[\"1\",2]", "null", "{}", "1", "[[1,2]]",
+        "[1,2,]", "[-0.0,0]", "[1.7976931348623157e308,5e-324]",
+    ]);
+    let covs = bytes(&[
+        "[[4,1],[1,9]]", "[]", "[[]]", "[[4,1]]", "[[4,1],[1]]", "[[4,1],[2,9]]", "[[1,2],[2,1]]", "[[4,1],[1,9],[0,0]]",
+        "[[4,1,0],[1,9,0]]", "[[4,null],[1,9]]", "[[4,1e309],[1,9]]", "[4,1,1,9]", "null", "[[4,\"1\"],[1,9]]",
+        "[[4.000000000000001,1],[1,9]]", "[[4,1],[1.0000000000000002,9]]", "{}", "[[1,0],[0,1]]", "[[0,0],[0,0]]",
+        "[[-4,1],[1,9]]", "[[4,1],[1,-0]]", "[[4,-0.0],[-0.0,9]]",
+    ]);
+    let mut docs = struct_docs(&serde_json::to_value(&base).expect("an MVN"), &["mean", "covariance"], &[means, covs]);
+    docs.extend(bytes(&[
+        r#"{"mean":[0,0,0],"covariance":[[1,0,0],[0,1,0],[0,0,1]],"cholesky_l":[[1]],"log_det":5.0,"dim":1}"#,
+        r#"{"mean":[1,2],"covariance":[[4,1],[1,9]],"cholesky_l":"junk","log_det":null,"dim":-1}"#,
+        r#"{"mean":[1,2],"covariance":[[4,1],[1,9]],"cholesky_l":[[2,0],[0.5,3]],"log_det":1e309,"dim":2}"#,
+        r#"{"mean":[0,0],"covariance":[[1,2],[2,1]]}"#,
+        r#"{"mean":[],"covariance":[]}"#,
+        r#"{"mean":[0],"covariance":[[0]]}"#,
+        r#"{"mean":[0],"covariance":[[5e-324]]}"#,
+        r#"{"mean":[0,0,0],"covariance":[[5e-324,0,1e200],[0,1,0],[1e200,0,1]]}"#,
+        r#"{"mean":[0,0],"covariance":[[4,1],[1.0000000001,9]]}"#,
+        r#"{"mean":[0,0],"covariance":[[4,1],[1.00000000001,9]]}"#,
+        r#"{"covariance":[[4,1],[1,9]],"mean":[1,2]}"#,
+        "[[1,2],[[4,1],[1,9]]]",
+        "[[1,2]]",
+        "[[1,2],[[4,1],[1,9]],5]",
+        "[]",
+    ]));
+    let cases = mvn_cases(g);
+    for c in &cases {
+        docs.push(serde_json::to_vec(c).expect("an MVN"));
+    }
+    for d in &docs {
+        row(m, "json::MultivariateNormal", d, serde_json::from_slice::<MultivariateNormal>(d), mvn_toks);
+    }
+    for c in &cases {
+        m.row("json::write::MultivariateNormal", Class::A, &mvn_toks(c), &[text(c)]);
     }
 }
 

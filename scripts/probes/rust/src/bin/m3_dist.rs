@@ -6,13 +6,29 @@
 //! JSON row's digest shows. Run pinned, interleaved with `cyrius bench tests/dist.bcyr`:
 //!   taskset -c 5 cargo run --release --locked --features roundtrip --bin m3_dist
 
-use pramana::SimpleRng;
 use pramana::distribution::{
-    Bernoulli, Beta, Binomial, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, Normal, Poisson,
-    StudentT, Uniform, Weibull,
+    Bernoulli, Beta, Binomial, Cauchy, ChiSquared, Distribution, Exponential, FDistribution, Gamma, MultivariateNormal,
+    Normal, Poisson, StudentT, Uniform, Weibull,
 };
+use pramana::{SimpleRng, oracle};
 use std::hint::black_box;
+use std::sync::LazyLock;
 use std::time::Instant;
+
+/// Criterion's 3-D covariance (rust-old/benches), each entry times s.
+fn cov3(s: f64) -> Vec<Vec<f64>> {
+    vec![vec![1.0 * s, 0.3 * s, 0.1 * s], vec![0.3 * s, 2.0 * s, 0.5 * s], vec![0.1 * s, 0.5 * s, 3.0 * s]]
+}
+
+/// Criterion's 3-D MultivariateNormal, and a d = 16 one (1/(1 + |i − j|), plus 16 on the diagonal), built once.
+static M3: LazyLock<MultivariateNormal> = LazyLock::new(|| MultivariateNormal::new(vec![0.0; 3], cov3(1.0)).unwrap());
+#[allow(clippy::cast_precision_loss)]
+static M16: LazyLock<MultivariateNormal> = LazyLock::new(|| {
+    let c = (0..16)
+        .map(|i: usize| (0..16).map(|j: usize| 1.0 / (1 + i.abs_diff(j)) as f64 + if i == j { 16.0 } else { 0.0 }).collect())
+        .collect();
+    MultivariateNormal::new(vec![0.0; 16], c).unwrap()
+});
 
 struct Rng(u64);
 
@@ -125,4 +141,26 @@ fn main() {
     row(&mut r, "Binomial::cdf, Binomial(20, 0.3), x in [0, 20)", |x, _, _| Binomial::new(20, 0.3).unwrap().cdf(x), (0.0, 20.0), u);
     row(&mut r, "Binomial::sample, simulated, n = 50, p in [0, 1)", |_, y, g| Binomial::new(50, y).unwrap().sample(g), u, u);
     row(&mut r, "Binomial::sample, Beta-split, n = 1e6, p in [0, 1)", |_, y, g| Binomial::new(1_000_000, y).unwrap().sample(g), u, u);
+    // part d2
+    let (_, _) = (M3.dim(), M16.dim());
+    row(&mut r, "MultivariateNormal::pdf, 3-D, built once, at (x, y, 0.5), x in [0, 10), y in [-1, 1)", |x, y, _| M3.pdf(&[x, y, 0.5]).unwrap(), (0.0, 10.0), (-1.0, 1.0));
+    row(&mut r, "MultivariateNormal::log_pdf, 3-D, built once, the same points", |x, y, _| M3.log_pdf(&[x, y, 0.5]).unwrap(), (0.0, 10.0), (-1.0, 1.0));
+    row(&mut r, "MultivariateNormal::sample, 3-D, built once (the sum of a draw)", |_, _, g| {
+        let s = M3.sample(g);
+        s[0] + s[1] + s[2]
+    }, u, u);
+    row(&mut r, "MultivariateNormal::new and drop, 3-D, covariance times y in [0.1, 10)", |_, y, _| {
+        oracle::mvn_factor(&MultivariateNormal::new(vec![0.0; 3], cov3(y)).unwrap()).1
+    }, u, sd);
+    row(&mut r, "MultivariateNormal::log_pdf, d = 16, built once, at (x, y, x, y, ...), in [-3, 3)", |x, y, _| {
+        let mut p = [0.0; 16];
+        for (i, v) in p.iter_mut().enumerate() {
+            *v = if i % 2 == 0 { x } else { y };
+        }
+        M16.log_pdf(&p).unwrap()
+    }, (-3.0, 3.0), (-3.0, 3.0));
+    row(&mut r, "MultivariateNormal, to JSON and back, 3-D, mean (x, y, 0), in [-10, 10)", |x, y, _| {
+        let t = serde_json::to_string(&MultivariateNormal::new(vec![x, y, 0.0], cov3(1.0)).unwrap()).unwrap();
+        serde_json::from_str::<MultivariateNormal>(&t).unwrap().mean_vec()[0]
+    }, wide, wide);
 }

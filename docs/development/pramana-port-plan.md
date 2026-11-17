@@ -43,8 +43,9 @@
 > Box–Muller and Normal, with Debug's f64 form, is committed (`7e1ca00`), part a2, Uniform, Exponential and
 > Bernoulli, is committed (`5b76636`), part a3, Cauchy and Weibull, is committed (`a636914`), part b1, Gamma,
 > ChiSquared and Marsaglia–Tsang, is committed (`ded8c4b`), part b2, Beta, StudentT and FDistribution, is committed
-> (`97abf28`), part c1, Poisson, is committed (`6a3da1b`), part c2, Binomial, is committed (`f7c9bef`), and part d1,
-> the Cholesky factor and solve, is done and not committed.
+> (`97abf28`), part c1, Poisson, is committed (`6a3da1b`), part c2, Binomial, is committed (`f7c9bef`), part d1,
+> the Cholesky factor and solve, is committed (`f7b9fb9`), and part d2, MultivariateNormal, is done and not
+> committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1208,7 +1209,9 @@ T1 function is recorded against T1 from the start (ADR 009 as amended):
   Lehmer and tridiagonal matrices to n = 64, the solves against unit, seeded, zero and NaN-bearing right sides); every
   row passing at 0 ulp on three targets ✅;
 - **d2:** `MultivariateNormal` in `src/dist_mvn.cyr`: owned, freelist-allocated with `_drop`, its sample into a caller
-  buffer (D11), its decode recomputing the factor;
+  buffer (D11), its decode recomputing the factor. 3,575 more `dist` rows (the constructor's shapes, entries, symmetry
+  edges and a NaN pivot; the densities; 24 streams), 127 codec rows and 24 Debug rows; `dist.cr.tsv` 12 more rows;
+  every row passing at 0 ulp on three targets ✅;
 - **e:** M3's gate.
 
 **Order:** M0 → M1 → M2 → … → M8.

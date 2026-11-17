@@ -7,7 +7,10 @@
 # pool's claimed slots must all be where they were: nothing an M1 call took stays taken. M2's special functions
 # (M2 part c, its gate) take nothing at all: 10^4 rounds of each of the fourteen, across their branches, leave the same
 # four measures where they were. So does M3 part d1's linalg: 10^4 factorizations and solves on caller buffers, where
-# hisab's return a fresh Vec each call and ganita's solve leaves 8n bytes (ledger L4).
+# hisab's return a fresh Vec each call and ganita's solve leaves 8n bytes (ledger L4). And M3 part d2's
+# MultivariateNormal, the one owned distribution: 10^4 rounds of its constructor, both densities, a draw, a clone and
+# its JSON both ways, each block freed by its drop, a tenth of them at d = 32 (a block over 4 KB, mapped and
+# unmapped).
 
 include "tests/lib.cyr"
 
@@ -142,6 +145,49 @@ fn linalg_round(r, a, l, b, x): f64 {
     return x0;
 }
 
+# One MultivariateNormal round on caller buffers mean, cov, x and out and the builder sb: d from 1 to 6, or 32 when
+# r is a multiple of 10, the covariance the [2 + r mod 7, −1] tridiagonal; the constructor, log_pdf and pdf at x, a draw
+# from seed r, a clone, a write and a read back, and the three drops. The log density, which the caller checks is
+# finite, or NaN when a call refuses.
+fn mvn_round(r, mean, cov, x, out, sb): f64 {
+    var d = 1 + r % 6;
+    if (r % 10 == 0) { d = 32; }
+    var rf: f64 = f64_from(r % 7);
+    for (var i = 0; i < d; i = i + 1) {
+        for (var j = 0; j < d; j = j + 1) {
+            var v: f64 = 0.0;
+            if (i == j) { v = 2.0 + rf; }
+            if (i - j == 1 || j - i == 1) { v = -1.0; }
+            store64(cov + (i * d + j) * 8, v);
+        }
+        var mi: f64 = f64_from(i);
+        store64(mean + i * 8, mi);
+        var xi: f64 = 0.5 + mi;
+        store64(x + i * 8, xi);
+    }
+    var nan: f64 = 0x7FF8000000000000;
+    var m: PmnMultivariateNormal;
+    if (PmnMultivariateNormal_new(&m, mean, d, cov, d, d) != PMN_ERR_NONE) { return nan; }
+    var t, v = m.log_pdf(x, d);
+    var t2, v2 = m.pdf(x, d);
+    var g: PmnSimpleRng;
+    var eg = PmnSimpleRng_new(&g, r);
+    var es = m.sample(&g, out, d);
+    var c: PmnMultivariateNormal;
+    var ec = PmnMultivariateNormal_clone(&c, &m);
+    store64(sb + 8, 0);
+    var ew = c.to_json(sb);
+    var back: PmnMultivariateNormal;
+    var eb = PmnMultivariateNormal_from_json(&back, load64(sb), load64(sb + 8));
+    var d1 = PmnMultivariateNormal_drop(&back);
+    var d2 = PmnMultivariateNormal_drop(&c);
+    var d3 = PmnMultivariateNormal_drop(&m);
+    if (t == Err || t2 == Err || es != PMN_ERR_NONE || ec != PMN_ERR_NONE || ew != PMN_ERR_NONE) { return nan; }
+    if (eb != PMN_ERR_NONE) { return nan; }
+    var lp: f64 = v;
+    return lp;
+}
+
 # One round of M2's fourteen special functions, the arguments moved by r so the rounds cross their branches: erf and
 # erfc either side of 0.84375 and in the tail, lnΓ reflected, the incomplete gamma's series, fraction, small-shape Q
 # and Wilson–Hilferty form, and the incomplete beta's fraction, power series and Rust's form past 1e9. The sum of the
@@ -261,6 +307,36 @@ fn main() {
     var lv1 = vm_kb();
     if (lv0 >= 0) {
         assert_eq(lv1 - lv0, 0, "the mapped size: unchanged");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing claimed");
+
+    test_group("10^4 MultivariateNormal rounds, 10^3 of them at d = 32 (M3 part d2): every block freed");
+    var mm = alloc(32 * 8);
+    var mc = alloc(32 * 32 * 8);
+    var mx = alloc(32 * 8);
+    var mo = alloc(32 * 8);
+    var msb = str_builder_new();
+    var mw: f64 = 0.0;
+    for (var r4 = 0; r4 < 70; r4 = r4 + 1) {   # every shape the loop makes, so the pool's slots reach their sizes
+        var w4: f64 = mvn_round(r4, mm, mc, mx, mo, msb);
+        mw = mw + w4;
+    }
+    var nb0 = alloc_used();
+    var nf0 = _fl_arena_pos;
+    var nv0 = vm_kb();
+    var macc: f64 = mw;
+    for (var r5 = 0; r5 < 10000; r5 = r5 + 1) {
+        var v5: f64 = mvn_round(r5, mm, mc, mx, mo, msb);
+        macc = macc + v5;
+    }
+    assert(_pmn_is_finite(macc) == 1, "every round succeeds, its log density finite");
+    assert_eq(alloc_used() - nb0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - nf0, 0, "the freelist's arena: 0 bytes carved");
+    var nv1 = vm_kb();
+    if (nv0 >= 0) {
+        assert_eq(nv1 - nv0, 0, "the mapped size: unchanged");
     } else {
         println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
     }
