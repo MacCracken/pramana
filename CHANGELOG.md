@@ -1118,6 +1118,16 @@ brief ([ADR 007](docs/decisions/007-port-api-divergences.md)):
   - **The CHANGELOG** gains its *Breaking* section, and `docs/guides/getting-started.md` is refreshed.
   - **`docs/examples/`** has five programs: the quick start, a t-test, π and an MH chain, a Markov chain and an HMM,
     and a StatQuery over a recorded reply. CI compiles and runs each one.
+- **M8 part d: the fuzz harness for the JSON readers** (port plan §7; `tests/pramana.fcyr`, replacing the scaffold's
+  stub, run by `cyrius fuzz` and in CI).
+  - **The inputs:** all 38 decoders, on documents mutated from a valid one by a seeded xorshift. A mutation flips,
+    drops or inserts a byte from JSON's alphabet, doubles or cuts a span, truncates, splices two documents, or nests
+    100 to 160 brackets deep. That is 76,000 documents a pass.
+  - **What every one must do:** refuse with `DESERIALIZE` or `OUT_OF_MEMORY`, never a crash or another code. When
+    accepted, it must round-trip: written, read back and written again to the same bytes (1,457 do). No pool slot
+    may stay claimed.
+  - **Two passes:** a second pass over the same documents gives the same digest and grows neither the bump heap nor
+    the freelist's arena.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

@@ -1,15 +1,286 @@
-# pramana fuzz harness
+# pramana.fcyr — the fuzz harness for the JSON readers (port plan M8 part d): every public type's decoder, 38 of
+# them, on documents mutated from a valid one by a seeded xorshift (a byte flipped, dropped, inserted from JSON's
+# alphabet, a span doubled or cut, the text truncated, two documents spliced, deep nesting).
+#
+# For each it checks:
+# - a refusal is PMN_ERR_DESERIALIZE or PMN_ERR_OUT_OF_MEMORY, never a crash or another code;
+# - an accepted document round-trips: written, read back and written again, the two texts are the same bytes;
+# - nothing stays taken: the pool's slots are free after every call, and a second pass over the same documents grows
+#   neither the bump heap nor the freelist's arena, since every owned value is dropped;
+# - the run is deterministic: a second pass with the same seed gives the same counts and the same digest.
+#   cyrius fuzz tests/pramana.fcyr
 
-# Fuzz target stub. The JSON readers' harness replaces it at M8 (port plan §7).
-fn fuzz_main(data, len) {
-    if (len == 0) { return 0; }
+include "tests/lib.cyr"
+
+var FZ_MAX = 40;
+var fz_name = 0;
+var fz_seed = 0;
+var fz_dec = 0;
+var fz_enc = 0;
+var fz_drop = 0;
+var fz_n = 0;
+var fz_x = 88172645463325252;
+var fz_fail = 0;
+
+fn fz_add(name, seed, dec, enc, drop): i64 {
+    store64(fz_name + fz_n * 8, name);
+    store64(fz_seed + fz_n * 8, seed);
+    store64(fz_dec + fz_n * 8, dec);
+    store64(fz_enc + fz_n * 8, enc);
+    store64(fz_drop + fz_n * 8, drop);
+    fz_n = fz_n + 1;
     return 0;
 }
 
-# Runs the fuzz target once on a fixed input.
+# Kernel and PramanaError read and write a word, not a struct: adapters to the (out, buf, len) and (value, sb) forms.
+fn fz_kernel_dec(out, buf, len): i64 { return pmn_kernel_from_json(out, buf, len); }
+
+fn fz_kernel_enc(v, sb): i64 { return pmn_kernel_to_json(load64(v), sb); }
+
+fn fz_err_dec(out, buf, len): i64 {
+    var t, c = pmn_err_from_json(buf, len);
+    if (t == Err) { return c; }
+    store64(out, c);
+    return PMN_ERR_NONE;
+}
+
+fn fz_err_enc(v, sb): i64 { return pmn_err_to_json(load64(v), sb); }
+
+fn fz_rand(): i64 {
+    var x = fz_x;
+    x = x ^ (x << 13);
+    x = x ^ (x >> 7);
+    x = x ^ (x << 17);
+    fz_x = x;
+    return (x >> 1) & 0x3FFFFFFFFFFFFFFF;
+}
+
+# A mutation of seed (n bytes) into buf (cap bytes): its length.
+fn fz_mutate(seed, n, other, on, buf, cap): i64 {
+    var alpha = "{}[],:\" 0123456789-+.eE\\/ntrufalse\x00\x01\x7f\xff\xc3\xa9";
+    var na = 37;
+    var m = n;
+    if (m > cap - 64) { m = cap - 64; }
+    memcpy(buf, seed, m);
+    var ops = 1 + fz_rand() % 4;
+    for (var k = 0; k < ops; k = k + 1) {
+        var op = fz_rand() % 8;
+        var at = 0;
+        if (m > 0) { at = fz_rand() % m; }
+        if (op == 0 && m > 0) {
+            store8(buf + at, load8(buf + at) ^ (1 << (fz_rand() % 8)));
+        } elif (op == 1 && m > 0) {
+            memcpy(buf + at, buf + at + 1, m - at - 1);
+            m = m - 1;
+        } elif (op == 2 && m < cap - 64) {
+            var j = m;
+            while (j > at) {
+                store8(buf + j, load8(buf + j - 1));
+                j = j - 1;
+            }
+            store8(buf + at, load8(alpha + fz_rand() % na));
+            m = m + 1;
+        } elif (op == 3 && m > 0) {
+            var span = 1 + fz_rand() % 8;
+            if (at + span > m) { span = m - at; }
+            if (m + span < cap - 64) {
+                var q = m - 1;
+                while (q >= at) {
+                    store8(buf + q + span, load8(buf + q));
+                    q = q - 1;
+                }
+                m = m + span;
+            }
+        } elif (op == 4) {
+            m = at;
+        } elif (op == 5 && on > 0) {
+            var cut = fz_rand() % on;
+            var take = on - cut;
+            if (at + take > cap - 64) { take = cap - 64 - at; }
+            memcpy(buf + at, other + cut, take);
+            m = at + take;
+        } elif (op == 6 && m < cap - 600) {
+            var depth = 100 + fz_rand() % 60;
+            var j2 = m - 1;
+            while (j2 >= at) {
+                store8(buf + j2 + depth, load8(buf + j2));
+                j2 = j2 - 1;
+            }
+            for (var d = 0; d < depth; d = d + 1) { store8(buf + at + d, 91); }
+            m = m + depth;
+        } elif (m > 0) {
+            store8(buf + at, load8(alpha + fz_rand() % na));
+        }
+    }
+    return m;
+}
+
+# One pass: rounds mutations of each reader's seed. Returns a digest of every code and accepted text's length; the
+# accepted count into accp.
+fn fz_pass(rounds, buf, cap, v1, v2, sb1, sb2, accp): i64 {
+    var digest = 1469598103934665603;
+    var acc = 0;
+    for (var t = 0; t < fz_n; t = t + 1) {
+        var seed = load64(fz_seed + t * 8);
+        var sn = strlen(seed);
+        var other = load64(fz_seed + ((t + 7) % fz_n) * 8);
+        var on = strlen(other);
+        var dec = load64(fz_dec + t * 8);
+        var enc = load64(fz_enc + t * 8);
+        var drop = load64(fz_drop + t * 8);
+        for (var r = 0; r < rounds; r = r + 1) {
+            var m = sn;
+            if (r == 0) {
+                memcpy(buf, seed, sn);
+            } else {
+                m = fz_mutate(seed, sn, other, on, buf, cap);
+            }
+            var e = callptr(dec, v1, buf, m);
+            digest = (digest ^ (e + 1)) * 1099511628211;
+            if (e == PMN_ERR_NONE) {
+                acc = acc + 1;
+                store64(sb1 + 8, 0);
+                store64(sb2 + 8, 0);
+                var w1 = callptr(enc, v1, sb1);
+                var e2 = PMN_ERR_NONE;
+                if (w1 == PMN_ERR_NONE) { e2 = callptr(dec, v2, load64(sb1), load64(sb1 + 8)); }
+                var w2 = PMN_ERR_NONE;
+                if (w1 == PMN_ERR_NONE && e2 == PMN_ERR_NONE) { w2 = callptr(enc, v2, sb2); }
+                if (w1 != PMN_ERR_NONE || e2 != PMN_ERR_NONE || w2 != PMN_ERR_NONE || load64(sb1 + 8) != load64(sb2 + 8)
+                    || memeq(load64(sb1), load64(sb2), load64(sb1 + 8)) == 0) {
+                    if (fz_fail < 10) {
+                        print("  round trip broke: ", 20);
+                        println(load64(fz_name + t * 8));
+                    }
+                    fz_fail = fz_fail + 1;
+                }
+                digest = (digest ^ load64(sb1 + 8)) * 1099511628211;
+                if (drop != 0) {
+                    callptr(drop, v1);
+                    if (e2 == PMN_ERR_NONE) { callptr(drop, v2); }
+                }
+            } elif (e != PMN_ERR_DESERIALIZE && e != PMN_ERR_OUT_OF_MEMORY) {
+                if (fz_fail < 10) {
+                    print("  an unexpected code from ", 25);
+                    println(load64(fz_name + t * 8));
+                }
+                fz_fail = fz_fail + 1;
+            }
+            if (_pmn_scratch_claimed() != 0) {
+                if (fz_fail < 10) {
+                    print("  a pool slot left claimed by ", 30);
+                    println(load64(fz_name + t * 8));
+                }
+                fz_fail = fz_fail + 1;
+            }
+        }
+    }
+    store64(accp, acc);
+    return digest;
+}
+
 fn main() {
     alloc_init();
-    fuzz_main("test", 4);
+    fz_name = alloc(FZ_MAX * 8);
+    fz_seed = alloc(FZ_MAX * 8);
+    fz_dec = alloc(FZ_MAX * 8);
+    fz_enc = alloc(FZ_MAX * 8);
+    fz_drop = alloc(FZ_MAX * 8);
+    fz_add("SimpleRng", "{\"state\":42}", &PmnSimpleRng_from_json, &PmnSimpleRng_to_json, 0);
+    fz_add("Normal", "{\"mean\":1.5,\"std_dev\":2.3}", &PmnNormal_from_json, &PmnNormal_to_json, 0);
+    fz_add("Uniform", "{\"min\":-1.0,\"max\":5.0}", &PmnUniform_from_json, &PmnUniform_to_json, 0);
+    fz_add("Exponential", "{\"lambda\":2.5}", &PmnExponential_from_json, &PmnExponential_to_json, 0);
+    fz_add("Bernoulli", "{\"p\":0.7}", &PmnBernoulli_from_json, &PmnBernoulli_to_json, 0);
+    fz_add("Cauchy", "{\"x0\":2.0,\"gamma\":3.0}", &PmnCauchy_from_json, &PmnCauchy_to_json, 0);
+    fz_add("Weibull", "{\"k\":2.0,\"lambda\":3.0}", &PmnWeibull_from_json, &PmnWeibull_to_json, 0);
+    fz_add("Gamma", "{\"alpha\":2.0,\"beta\":3.0}", &PmnGamma_from_json, &PmnGamma_to_json, 0);
+    fz_add("ChiSquared", "{\"df\":3.0}", &PmnChiSquared_from_json, &PmnChiSquared_to_json, 0);
+    fz_add("Beta", "{\"alpha\":2.0,\"beta\":3.0}", &PmnBeta_from_json, &PmnBeta_to_json, 0);
+    fz_add("StudentT", "{\"df\":3.0}", &PmnStudentT_from_json, &PmnStudentT_to_json, 0);
+    fz_add("FDistribution", "{\"d1\":2.0,\"d2\":3.0}", &PmnFDistribution_from_json, &PmnFDistribution_to_json, 0);
+    fz_add("Poisson", "{\"lambda\":3.5}", &PmnPoisson_from_json, &PmnPoisson_to_json, 0);
+    fz_add("Binomial", "{\"n\":10,\"p\":0.3}", &PmnBinomial_from_json, &PmnBinomial_to_json, 0);
+    fz_add("MultivariateNormal", "{\"mean\":[1.0,2.0],\"covariance\":[[4.0,1.0],[1.0,9.0]]}",
+        &PmnMultivariateNormal_from_json, &PmnMultivariateNormal_to_json, &PmnMultivariateNormal_drop);
+    fz_add("KernelDensity", "{\"data\":[1.0,2.0,3.0],\"bandwidth\":0.5,\"kernel\":\"Gaussian\"}",
+        &PmnKernelDensity_from_json, &PmnKernelDensity_to_json, &PmnKernelDensity_drop);
+    fz_add("PcaResult", "[[[1.0,0.0],[0.0,1.0]],[2.0,1.0],[0.667,0.333]]",
+        &PmnPcaResult_from_json, &PmnPcaResult_to_json, &PmnPcaResult_drop);
+    fz_add("TestResult", "[\"t-test\",1.5,0.2,9.0,0.05,false]",
+        &PmnTestResult_from_json, &PmnTestResult_to_json, &PmnTestResult_drop);
+    fz_add("AnovaResult", "[1.0,2.0,3.0,1,8,1.0,0.25,4.0,0.07,0.05,false]",
+        &PmnAnovaResult_from_json, &PmnAnovaResult_to_json, 0);
+    fz_add("KsResult", "{\"statistic\":0.25,\"p_value\":0.5,\"reject_at_alpha\":0.05,\"reject\":true}",
+        &PmnKsResult_from_json, &PmnKsResult_to_json, 0);
+    fz_add("ConfidenceInterval", "{\"lower\":4.8,\"upper\":5.2,\"estimate\":5.0,\"confidence_level\":0.95}",
+        &PmnConfidenceInterval_from_json, &PmnConfidenceInterval_to_json, 0);
+    fz_add("LinearModel", "{\"slope\":2.0,\"intercept\":1.0,\"r_squared\":0.99}",
+        &PmnLinearModel_from_json, &PmnLinearModel_to_json, 0);
+    fz_add("PolynomialModel", "{\"coefficients\":[1.0,2.0],\"degree\":1,\"r_squared\":0.99}",
+        &PmnPolynomialModel_from_json, &PmnPolynomialModel_to_json, &PmnPolynomialModel_drop);
+    fz_add("LogisticModel", "{\"coefficients\":[0.5,1.2],\"iterations\":7,\"converged\":true}",
+        &PmnLogisticModel_from_json, &PmnLogisticModel_to_json, &PmnLogisticModel_drop);
+    fz_add("ArimaModel", "{\"ar_coefficients\":[0.6,-0.2],\"d\":1,\"intercept\":0.25,\"residual_variance\":1.5}",
+        &PmnArimaModel_from_json, &PmnArimaModel_to_json, &PmnArimaModel_drop);
+    fz_add("BayesianUpdate", "{\"prior\":0.3,\"likelihood\":0.7,\"evidence\":0.4}",
+        &PmnBayesianUpdate_from_json, &PmnBayesianUpdate_to_json, 0);
+    fz_add("MarkovChain", "{\"transition_matrix\":[[0.7,0.3],[0.4,0.6]],\"state\":1}",
+        &PmnMarkovChain_from_json, &PmnMarkovChain_to_json, &PmnMarkovChain_drop);
+    fz_add("HiddenMarkovModel", "[[[0.7,0.3],[0.4,0.6]],[[0.5,0.5],[0.1,0.9]],[0.6,0.4]]",
+        &PmnHiddenMarkovModel_from_json, &PmnHiddenMarkovModel_to_json, &PmnHiddenMarkovModel_drop);
+    fz_add("EstimateResult", "{\"value\":0.333,\"std_error\":0.01}",
+        &PmnEstimateResult_from_json, &PmnEstimateResult_to_json, 0);
+    fz_add("McmcResult", "{\"samples\":[[0.1,0.2],[0.3,0.4]],\"acceptance_rate\":0.25}",
+        &PmnMcmcResult_from_json, &PmnMcmcResult_to_json, &PmnMcmcResult_drop);
+    fz_add("DistributionCurve", "[[0.0,1.0],[0.0,0.5],[0.0,1.0],\"N(0,1)\"]",
+        &PmnDistributionCurve_from_json, &PmnDistributionCurve_to_json, &PmnDistributionCurve_drop);
+    fz_add("McmcTrace", "{\"samples\":[1.0,1.1],\"log_likelihoods\":[-10.0],\"parameter\":\"mu\"}",
+        &PmnMcmcTrace_from_json, &PmnMcmcTrace_to_json, &PmnMcmcTrace_drop);
+    fz_add("RegressionFit", "[[1,2],[2.1,3.9],[2,4],[2.5],[],0.998]",
+        &PmnRegressionFit_from_json, &PmnRegressionFit_to_json, &PmnRegressionFit_drop);
+    fz_add("HistogramData", "{\"bin_edges\":[1.0,2.0,3.0],\"counts\":[2,1],\"total\":3}",
+        &PmnHistogramData_from_json, &PmnHistogramData_to_json, &PmnHistogramData_drop);
+    fz_add("CorrelationMatrix", "{\"values\":[1.0,0.8,0.8,1.0],\"size\":2,\"labels\":[\"x\",\"y\"]}",
+        &PmnCorrelationMatrix_from_json, &PmnCorrelationMatrix_to_json, &PmnCorrelationMatrix_drop);
+    fz_add("QueryResult", "{\"answer\":\"ok\",\"operation\":\"describe\",\"values\":{\"mean\":1.5}}",
+        &PmnQueryResult_from_json, &PmnQueryResult_to_json, &PmnQueryResult_drop);
+    fz_add("Kernel", "\"Epanechnikov\"", &fz_kernel_dec, &fz_kernel_enc, 0);
+    fz_add("PramanaError", "{\"InvalidSample\":\"x\"}", &fz_err_dec, &fz_err_enc, 0);
+    var cap = 8192;
+    var buf = alloc(cap);
+    var v1 = alloc(256);
+    var v2 = alloc(256);
+    var sb1 = str_builder_new();
+    var sb2 = str_builder_new();
+    if (_pmn_json_w_reserve(sb1, 262144) != PMN_ERR_NONE) { return 1; }
+    if (_pmn_json_w_reserve(sb2, 262144) != PMN_ERR_NONE) { return 1; }
+    var a0[8];
+    fz_x = 88172645463325252;
+    var dw = fz_pass(50, buf, cap, v1, v2, sb1, sb2, &a0);
+    var a1[8];
+    var a2[8];
+    fz_x = 0x5DEECE66D2545F49;
+    var d1 = fz_pass(2000, buf, cap, v1, v2, sb1, sb2, &a1);   # also the warm-up: every block size the pass uses
+    var b0 = alloc_used();
+    var f0 = _fl_arena_pos;
+    fz_x = 0x5DEECE66D2545F49;
+    var d2 = fz_pass(2000, buf, cap, v1, v2, sb1, sb2, &a2);   # the same documents again: nothing may grow
+    var b1 = alloc_used();
+    var f1 = _fl_arena_pos;
+    print("fuzz: ", 6);
+    fmt_int(fz_n);
+    print(" readers, ", 10);
+    fmt_int(fz_n * 2000);
+    print(" documents a pass, ", 19);
+    fmt_int(load64(&a1));
+    print(" accepted and round-tripped; ", 29);
+    fmt_int(fz_fail);
+    println(" failures");
+    if (fz_n != 38) { println("  FAIL: 38 readers expected"); return 1; }
+    if (d1 != d2 || load64(&a1) != load64(&a2)) { println("  FAIL: the two passes differ"); return 1; }
+    if (b1 != b0) { println("  FAIL: the bump heap grew"); return 1; }
+    if (f1 != f0) { println("  FAIL: the freelist's arena grew"); return 1; }
+    if (fz_fail != 0) { return 1; }
     println("fuzz: ok");
     return 0;
 }

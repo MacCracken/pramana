@@ -79,6 +79,9 @@ jobs:
       - name: Rust-test ledger (every 1.3.0 test carried over or retired, docs/development/rust-test-ledger.md current)
         run: python3 -I -B scripts/rust_test_ledger.py --check
 
+      - name: Fuzz (the 38 JSON readers on mutated documents)
+        run: cyrius fuzz tests/pramana.fcyr
+
       - name: Examples (docs/examples, compiled and run)
         run: |
           set -e
