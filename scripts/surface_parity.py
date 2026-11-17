@@ -27,7 +27,7 @@ PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptiv
           "timeseries", "bayesian", "markov", "monte_carlo"]   # M6's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {"integration/soorat": "M7"}
+PARTIAL = {"integration/soorat": "M7", "ai": "M7"}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
@@ -102,6 +102,16 @@ SURFACE = {
     "monte_carlo::McmcResult#Deserialize": ["fn PmnMcmcResult_from_json"],
     "monte_carlo::metropolis_hastings": ["fn pmn_metropolis_hastings"],
     "monte_carlo::gibbs_sampling": ["fn pmn_gibbs_sampling", "struct PmnRngRef"],
+    # ai.rs (M7 part b; D8, ADR 007 row 9)
+    "ai::StatQuery": ["struct PmnStatQuery", "fn PmnStatQuery_drop", "fn pmn_ai_sandhi_transport"],
+    "ai::StatQuery.new": ["fn PmnStatQuery_new"],
+    "ai::StatQuery.query": ["method PmnStatQuery.query"],
+    "ai::QueryResult": ["struct PmnQueryResult", "fn PmnQueryResult_new", "fn PmnQueryResult_drop",
+                        "method PmnQueryResult.value"],
+    "ai::QueryResult#Clone": ["fn PmnQueryResult_clone"],
+    "ai::QueryResult#Debug": ["method PmnQueryResult.debug"],
+    "ai::QueryResult#Serialize": ["method PmnQueryResult.to_json"],
+    "ai::QueryResult#Deserialize": ["fn PmnQueryResult_from_json"],
     # integration/soorat.rs (M7 part a; D9)
     "integration/soorat::DistributionCurve": ["struct PmnDistributionCurve", "fn PmnDistributionCurve_new", "fn PmnDistributionCurve_drop"],
     "integration/soorat::DistributionCurve#Clone": ["fn PmnDistributionCurve_clone"],
@@ -475,13 +485,13 @@ def rust_items(module):
             continue
         body = text[m.end() - 1:block_end(text, m.end() - 1)]
         if trait is None:
-            items.extend(f"{module}::{name}.{f}" for f in re.findall(r"\bpub fn (\w+)", body))
+            items.extend(f"{module}::{name}.{f}" for f in re.findall(r"\bpub (?:async )?fn (\w+)", body))
         elif trait in public_types or (RUST / f"{module}.rs").read_text(encoding="utf-8").count(f"pub trait {trait}"):
             items.extend(f"{module}::{name}.{f}" for f in re.findall(r"\bfn (\w+)", body))
     depth = 0
     for line in text.splitlines():
         if depth == 0:
-            m = re.match(r"pub fn (\w+)", line.strip())
+            m = re.match(r"pub (?:async )?fn (\w+)", line.strip())
             if m:
                 items.append(f"{module}::{m.group(1)}")
         depth += line.count("{") - line.count("}")

@@ -1,0 +1,1127 @@
+# ai.cyr — Rust 1.3.0's natural-language statistical queries (src/ai.rs; port plan D8, ADR 007 row 9; M7 part b):
+# `StatQuery` (over hoosh's OpenAI-compatible chat API), `QueryResult` and the five tools.
+#
+# In the `[lib.ai]` profile, not the core bundle (D8, probe P8), with src/ai_sandhi.cyr, its one sandhi user (the
+# transport a HooshClient makes): sandhi stays out of `[deps] stdlib`, so a consumer of the profile includes
+# `lib/sandhi.cyr` itself, as tests/ai_sandhi.tcyr does. This file names no sandhi function, so the parity harness and
+# tests/ai.tcyr replay it without sandhi.
+#
+# **The wire behavior is 1.3.0's** (M7's finding, plan §7). 1.3.0 calls hoosh 1.3.0's `HooshClient::infer`, whose
+# `to_chat_body` sends the model, the messages and `stream` only: the tools and the tool choice are dropped, and its
+# response always carries no tool calls. So `query` posts `{"messages":[system, user],"model":…,"stream":false}`
+# (serde_json's `json!`, keys sorted) to `{base}/v1/chat/completions` and answers directly, with the reply's first
+# choice's content, operation `direct_answer` and no values. The five tools are ported and proven on golden rows
+# (`_pmn_ai_execute_tool`, which 1.3.0's own tests reach the same way); turning them on is a 2.1 candidate.
+#
+# Rust's HashMaps become sorted lists (ADR 007 row 9): the columns, which the system prompt summarizes in name order,
+# and a result's values. A column is a 32-byte record: its name (a pointer, then a length; UTF-8) and its values (a
+# pointer, then a count). The text is Rust's: `{:.4}` and `{:.1}` correctly rounded with ties to even
+# (`_pmn_ai_w_fixed`), `{}` the shortest digits positionally (`_pmn_ai_w_display`).
+# UPSTREAM(L9): hoosh:docs/development/issues/2026-11-15-pramana-no-client-bundle-for-tool-calling.md
+#   the request body, the reply reader and the transport give way to a hoosh client bundle once it ships; parity: the
+#   `StatQuery::query` rows and tests/ai.tcyr's recorded replies
+
+# ── Rust's float text ──────────────────────────────────────────────────────────────────────────────
+
+# a := a / d, for 0 < d < 2^31; returns the remainder. a is fmtf's bignum (a count, then 32-bit limbs).
+fn _pmn_ai_bn_divmod(a, d): i64 {
+    var n = load64(a);
+    var rem = 0;
+    var i = n - 1;
+    while (i >= 0) {
+        var t = (rem << 32) | load64(a + 8 + i * 8);
+        store64(a + 8 + i * 8, t / d);
+        rem = t % d;
+        i = i - 1;
+    }
+    while (n > 0 && load64(a + n * 8) == 0) { n = n - 1; }
+    store64(a, n);
+    return rem;
+}
+
+# dst := a >> k (dst distinct from a).
+fn _pmn_ai_bn_shr(dst, a, k): i64 {
+    var n = load64(a);
+    var q = k / 32;
+    var b = k % 32;
+    if (q >= n) {
+        store64(dst, 0);
+        return 0;
+    }
+    var m = n - q;
+    for (var i = 0; i < m; i = i + 1) {
+        var lo = load64(a + 8 + (i + q) * 8) >> b;
+        var hi = 0;
+        if (b != 0 && i + q + 1 < n) { hi = (load64(a + 8 + (i + q + 1) * 8) << (32 - b)) & 0xFFFFFFFF; }
+        store64(dst + 8 + i * 8, lo | hi);
+    }
+    while (m > 0 && load64(dst + m * 8) == 0) { m = m - 1; }
+    store64(dst, m);
+    return 0;
+}
+
+# a := a + 1.
+fn _pmn_ai_bn_inc(a): i64 {
+    var n = load64(a);
+    var i = 0;
+    while (i < n) {
+        var t = load64(a + 8 + i * 8) + 1;
+        if (t < 0x100000000) {
+            store64(a + 8 + i * 8, t);
+            return 0;
+        }
+        store64(a + 8 + i * 8, 0);
+        i = i + 1;
+    }
+    store64(a + 8 + n * 8, 1);
+    store64(a, n + 1);
+    return 0;
+}
+
+# Appends x as Rust's `{:.p}` writes an f64 (0 ≤ p ≤ 17): the exact value rounded to p decimals with ties to even
+# (Dragon4's `format_exact`, as rustc 1.100's core prints it), the sign whenever the sign bit is set (`-0.0000`);
+# `NaN`, `inf`, `-inf`. PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY when sb can't grow.
+#must_use
+fn _pmn_ai_w_fixed(sb, x: f64, p): i64 {
+    if (p < 0 || p > 17) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_json_w_reserve(sb, 400);
+    if (e != PMN_ERR_NONE) { return e; }
+    if (x != x) {
+        str_builder_add_cstr(sb, "NaN");
+        return PMN_ERR_NONE;
+    }
+    var bits = _pmn_im_bits(x);
+    var mag = bits & 0x7FFFFFFFFFFFFFFF;
+    if (bits < 0) { str_builder_putc(sb, 45); }
+    if (mag == 0x7FF0000000000000) {
+        str_builder_add_cstr(sb, "inf");
+        return PMN_ERR_NONE;
+    }
+    var ex = (mag >> 52) & 0x7FF;
+    var m = mag & 0xFFFFFFFFFFFFF;
+    var e2 = 0 - 1074;
+    if (ex != 0) {
+        m = m | 0x10000000000000;
+        e2 = ex - 1075;
+    }
+    var nb[400];                                  # 50 words: m·10^17·2^971 and 2^1075 are 35 limbs at most
+    var r[400];
+    var t[400];
+    var dd[400];
+    _pmn_im_bn_set(&nb, m);
+    _pmn_im_bn_mul_pow10(&nb, p);
+    if (e2 >= 0) {
+        _pmn_im_bn_shl(&nb, e2);
+        _pmn_im_bn_copy(&r, &nb);
+    } else {
+        var k = 0 - e2;
+        _pmn_ai_bn_shr(&r, &nb, k);
+        _pmn_im_bn_copy(&t, &r);
+        _pmn_im_bn_shl(&t, k);
+        _pmn_im_bn_sub(&nb, &t);                  # nb := the remainder
+        _pmn_im_bn_shl(&nb, 1);
+        _pmn_im_bn_set(&dd, 1);
+        _pmn_im_bn_shl(&dd, k);
+        var c = _pmn_im_bn_cmp(&nb, &dd);
+        var odd = 0;
+        if (load64(&r) > 0) { odd = load64(&r + 8) & 1; }
+        if (c > 0 || (c == 0 && odd == 1)) { _pmn_ai_bn_inc(&r); }
+    }
+    var digits[400];
+    var nd = 0;
+    while (load64(&r) > 0) {
+        var chunk = _pmn_ai_bn_divmod(&r, 1000000000);
+        for (var j = 0; j < 9; j = j + 1) {
+            store8(&digits + nd, 48 + chunk % 10);
+            chunk = chunk / 10;
+            nd = nd + 1;
+        }
+    }
+    while (nd > 0 && load8(&digits + nd - 1) == 48) { nd = nd - 1; }
+    while (nd < p + 1) {
+        store8(&digits + nd, 48);
+        nd = nd + 1;
+    }
+    var q = nd - 1;
+    while (q >= p) {
+        str_builder_putc(sb, load8(&digits + q));
+        q = q - 1;
+    }
+    if (p > 0) {
+        str_builder_putc(sb, 46);
+        while (q >= 0) {
+            str_builder_putc(sb, load8(&digits + q));
+            q = q - 1;
+        }
+    }
+    return PMN_ERR_NONE;
+}
+
+# Appends x as Rust's `{}` (Display) writes an f64: the shortest digits that read back to x (on an exact tie the
+# upper, as `{:?}`), always positional, an integer without a fractional part (`1`, `0.0000001`, `1e21` as
+# `1000000000000000000000`), `-0` and `0`, `NaN`, `inf`, `-inf`. PMN_ERR_NONE, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn _pmn_ai_w_display(sb, x: f64): i64 {
+    var e = _pmn_json_w_reserve(sb, 340);
+    if (e != PMN_ERR_NONE) { return e; }
+    if (x != x) {
+        str_builder_add_cstr(sb, "NaN");
+        return PMN_ERR_NONE;
+    }
+    var bits = _pmn_im_bits(x);
+    var mag = bits & 0x7FFFFFFFFFFFFFFF;
+    if (bits < 0) { str_builder_putc(sb, 45); }
+    if (mag == 0x7FF0000000000000) {
+        str_builder_add_cstr(sb, "inf");
+        return PMN_ERR_NONE;
+    }
+    if (mag == 0) {
+        str_builder_putc(sb, 48);
+        return PMN_ERR_NONE;
+    }
+    var digits[24];
+    var n, k = _pmn_im_shortest(mag, &digits, 0);
+    _pmn_im_sb_positional(sb, &digits, n, k, 0);
+    return PMN_ERR_NONE;
+}
+
+# ── QueryResult ───────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `QueryResult`: the answer, the operation and the values (Rust's HashMap<String, f64>), here nvalues 24-byte
+# records (a key's pointer and length, then the value) sorted by key, bytewise (ADR 007 row 9). One owned block.
+struct PmnQueryResult {
+    buf;
+    answer;
+    nanswer;
+    operation;
+    noperation;
+    values;
+    nvalues;
+}
+
+# 1 when key a (na bytes) sorts after key b (nb), bytewise, a prefix first.
+#must_use
+fn _pmn_ai_key_after(a, na, b, nb): i64 {
+    var n = na;
+    if (nb < n) { n = nb; }
+    for (var i = 0; i < n; i = i + 1) {
+        var x = load8(a + i);
+        var y = load8(b + i);
+        if (x != y) {
+            if (x > y) { return 1; }
+            return 0;
+        }
+    }
+    if (na > nb) { return 1; }
+    return 0;
+}
+
+# The struct literal: the answer's and operation's bytes, and nv values (24-byte records: a key's pointer and length,
+# then the f64), copied into out's own block, the values sorted by key. Two equal keys refuse (a HashMap holds one):
+# PMN_ERR_INVALID_PARAMETER, as for a null out or an invalid slice; PMN_ERR_OUT_OF_MEMORY when the block can't be had.
+#must_use
+fn PmnQueryResult_new(out: *PmnQueryResult, answer, nanswer, operation, noperation, values, nv): i64 {
+    if (out == 0 || _pmn_so_ok(answer, nanswer) == 0 || _pmn_so_ok(operation, noperation) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (nv < 0 || (values == 0 && nv > 0) || nv > 72057594037927935) { return PMN_ERR_INVALID_PARAMETER; }
+    var kb = 0;
+    for (var i = 0; i < nv; i = i + 1) {
+        var kp = load64(values + i * 24);
+        var kn = load64(values + i * 24 + 8);
+        if (_pmn_so_ok(kp, kn) == 0 || kn > 1152921504606846975 - kb) { return PMN_ERR_INVALID_PARAMETER; }
+        kb = kb + kn;
+    }
+    var parts[96];
+    _pmn_so_part(&parts, 0, answer, nanswer, 1);
+    _pmn_so_part(&parts, 1, operation, noperation, 1);
+    _pmn_so_part(&parts, 2, 0, nv * 3, 8);
+    _pmn_so_part(&parts, 3, 0, kb, 1);
+    var d[32];
+    var blk = _pmn_so_pack(&parts, 4, &d);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var recs = load64(&d + 16);
+    var at = load64(&d + 24);
+    for (var j = 0; j < nv; j = j + 1) {
+        var sp = load64(values + j * 24);
+        var sn = load64(values + j * 24 + 8);
+        if (sn > 0) { memcpy(at, sp, sn); }
+        var pos = j;                              # insertion into the sorted records [0, j)
+        while (pos > 0 && _pmn_ai_key_after(load64(recs + (pos - 1) * 24), load64(recs + (pos - 1) * 24 + 8), at,
+            sn) == 1) {
+            _pmn_copy_words(recs + pos * 24, recs + (pos - 1) * 24, 3);
+            pos = pos - 1;
+        }
+        if (pos > 0 && _pmn_so_eq_bytes(load64(recs + (pos - 1) * 24), load64(recs + (pos - 1) * 24 + 8), at,
+            sn) == 1) {
+            fl_free(blk);
+            return PMN_ERR_INVALID_PARAMETER;
+        }
+        store64(recs + pos * 24, at);
+        store64(recs + pos * 24 + 8, sn);
+        store64(recs + pos * 24 + 16, load64(values + j * 24 + 16));
+        at = at + sn;
+    }
+    out.buf = blk;
+    out.answer = load64(&d);
+    out.nanswer = nanswer;
+    out.operation = load64(&d + 8);
+    out.noperation = noperation;
+    out.values = recs;
+    out.nvalues = nv;
+    return PMN_ERR_NONE;
+}
+
+#must_use
+fn PmnQueryResult_clone(out: *PmnQueryResult, src: *PmnQueryResult): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 56, src, 56) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    return PmnQueryResult_new(out, src.answer, src.nanswer, src.operation, src.noperation, src.values, src.nvalues);
+}
+
+fn PmnQueryResult_drop(r: *PmnQueryResult): i64 {
+    if (r == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (r.buf != 0) { fl_free(r.buf); }
+    r.buf = 0;
+    r.nanswer = 0;
+    r.noperation = 0;
+    r.nvalues = 0;
+    return PMN_ERR_NONE;
+}
+
+impl PmnQueryResult {
+    # The value under key[0, n), or NaN when there is none (or the result is dropped).
+    #must_use
+    fn value(self, key, n): f64 {
+        var nan: f64 = _PMN_F64_NAN;
+        if (self == 0 || self.buf == 0) { return nan; }
+        for (var i = 0; i < self.nvalues; i = i + 1) {
+            if (_pmn_so_eq_bytes(load64(self.values + i * 24), load64(self.values + i * 24 + 8), key, n) == 1) {
+                var v: f64 = load64(self.values + i * 24 + 16);
+                return v;
+            }
+        }
+        return nan;
+    }
+
+    # Appends Rust's derived Debug: `QueryResult { answer: "..", operation: "..", values: {"k": v, ..} }`, the map's
+    # entries in key order (ADR 007 row 9).
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "QueryResult", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_so_dbg_str_field(sb, "answer", 1, self.answer, self.nanswer, alternate); }
+        if (e == PMN_ERR_NONE) {
+            e = _pmn_so_dbg_str_field(sb, "operation", 0, self.operation, self.noperation, alternate);
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "values", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "{"); }
+        if (e == PMN_ERR_NONE && self.nvalues > 0 && alternate == 1) { e = _pmn_json_w_lit(sb, "\n"); }
+        var i = 0;
+        while (e == PMN_ERR_NONE && i < self.nvalues) {
+            if (alternate == 1) {
+                e = _pmn_dbg_indent(sb, 2);
+            } elif (i > 0) {
+                e = _pmn_json_w_lit(sb, ", ");
+            }
+            var kp = load64(self.values + i * 24);
+            var kn = load64(self.values + i * 24 + 8);
+            if (e == PMN_ERR_NONE) { e = _pmn_dbg_str(sb, kp, kn); }
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ": "); }
+            var v: f64 = load64(self.values + i * 24 + 16);
+            if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, v); }
+            if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_json_w_lit(sb, ",\n"); }
+            i = i + 1;
+        }
+        if (e == PMN_ERR_NONE && self.nvalues > 0 && alternate == 1) { e = _pmn_dbg_indent(sb, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"answer":"..","operation":"..","values":{"k":v,..}}`, keys in order.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_so_json_str_field(sb, "answer", 1, self.answer, self.nanswer);
+        if (e == PMN_ERR_NONE) { e = _pmn_so_json_str_field(sb, "operation", 0, self.operation, self.noperation); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "values", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "{"); }
+        var i = 0;
+        while (e == PMN_ERR_NONE && i < self.nvalues) {
+            if (i > 0) { e = _pmn_json_w_lit(sb, ","); }
+            if (e == PMN_ERR_NONE) {
+                e = _pmn_json_w_str(sb, load64(self.values + i * 24), load64(self.values + i * 24 + 8));
+            }
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ":"); }
+            var v: f64 = load64(self.values + i * 24 + 16);
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, v); }
+            i = i + 1;
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}}"); }
+        return e;
+    }
+}
+
+fn _pmn_qr_from_root(root, out: *PmnQueryResult): i64 {
+    var names[24];
+    store64(&names, "answer");
+    store64(&names + 8, "operation");
+    store64(&names + 16, "values");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var an[16];
+    var op[16];
+    if (_pmn_json_str(load64(&sl), &an) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    if (_pmn_json_str(load64(&sl + 8), &op) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var mv = load64(&sl + 16);
+    if (mv == 0 || bayan_json_v_tag(mv) != JTAG_OBJ) { return PMN_ERR_DESERIALIZE; }
+    var m = bayan_json_v_obj_len(mv);
+    var s, slot = _pmn_scratch_take(m * 24 + 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    e = PMN_ERR_NONE;
+    for (var i = 0; e == PMN_ERR_NONE && i < m; i = i + 1) {
+        var key = bayan_json_v_obj_key(mv, i);
+        if (key == 0 || _pmn_json_utf8(str_data(key), str_len(key)) == 0) { e = PMN_ERR_DESERIALIZE; }
+        if (e == PMN_ERR_NONE) {
+            store64(s + i * 24, str_data(key));
+            store64(s + i * 24 + 8, str_len(key));
+            var vn = bayan_json_v_obj_val(mv, i);
+            if (_pmn_json_f64(vn, s + i * 24 + 16) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+        }
+    }
+    if (e == PMN_ERR_NONE) {
+        e = PmnQueryResult_new(out, load64(&an), load64(&an + 8), load64(&op), load64(&op + 8), s, m);
+        if (e == PMN_ERR_INVALID_PARAMETER) { e = PMN_ERR_DESERIALIZE; }   # two equal keys: bayan refuses first, today
+    }
+    _pmn_scratch_give(s, slot);
+    return e;
+}
+
+# Reads a QueryResult document, buf[0, len), into out (caller storage, owning a new block: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnQueryResult_from_json(out: *PmnQueryResult, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_qr_from_root, out);
+}
+
+# ── the columns and the data summary ──────────────────────────────────────────────────────────────
+
+# A builder over a pool claim: hdr (24 bytes, the caller's) becomes a str_builder whose buffer is a claim of `bytes`.
+# The writers grow a builder only when a write wouldn't fit, so text within the claim takes nothing from the heap, and
+# each claim below is sized for the most its text can be. (claim, slot); (0, −1) when it can't be had.
+fn _pmn_ai_sb_open(hdr, bytes): (i64, i64) {
+    var s, slot = _pmn_scratch_take(bytes);
+    if (s == 0) { return (0, 0 - 1); }
+    store64(hdr, s);
+    store64(hdr + 8, 0);
+    store64(hdr + 16, bytes);
+    return (s, slot);
+}
+
+# The most text a summary of cols[0, nc) can be: per column its name and about 1,400 bytes (four `{:.4}` values of at
+# most 320 bytes each, the labels and a count).
+#must_use
+fn _pmn_ai_summary_bound(cols, nc): i64 {
+    var b = 64;
+    for (var i = 0; i < nc; i = i + 1) { b = b + load64(cols + i * 32 + 8) + 2048; }
+    return b;
+}
+
+# The index of the column named name[0, n) among cols[0, nc), or −1.
+#must_use
+fn _pmn_ai_col(cols, nc, name, n): i64 {
+    for (var i = 0; i < nc; i = i + 1) {
+        if (_pmn_so_eq_bytes(load64(cols + i * 32), load64(cols + i * 32 + 8), name, n) == 1) { return i; }
+    }
+    return 0 - 1;
+}
+
+# PMN_ERR_NONE when cols[0, nc) is valid (each name UTF-8 and the values a valid slice) with no two names equal (a
+# HashMap holds one of each), else PMN_ERR_INVALID_PARAMETER.
+#must_use
+fn _pmn_ai_cols_ok(cols, nc): i64 {
+    if (nc < 0 || (cols == 0 && nc > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var i = 0; i < nc; i = i + 1) {
+        var p = load64(cols + i * 32);
+        var n = load64(cols + i * 32 + 8);
+        if (_pmn_so_ok(p, n) == 0 || _pmn_so_ok(load64(cols + i * 32 + 16), load64(cols + i * 32 + 24)) == 0) {
+            return PMN_ERR_INVALID_PARAMETER;
+        }
+        if (_pmn_json_utf8(p, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_ai_col(cols, i, p, n) >= 0) { return PMN_ERR_INVALID_PARAMETER; }
+    }
+    return PMN_ERR_NONE;
+}
+
+# A Result's f64, or NaN for an error (Rust's `unwrap_or(f64::NAN)`).
+#must_use
+fn _pmn_ai_or_nan(t, v): f64 {
+    if (t == Err) {
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+    var r: f64 = v;
+    return r;
+}
+
+# Appends a `{:.4}` field: `, label=` (or `label=` first) and the value.
+#must_use
+fn _pmn_ai_w_stat(sb, label: cstring, x: f64): i64 {
+    var e = _pmn_json_w_lit(sb, label);
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_fixed(sb, x, 4); }
+    return e;
+}
+
+# Rust's private `build_data_summary(data)`, into sb: a line per column, in name order (ADR 007 row 9, where Rust's
+# HashMap order is random), joined by `\n`: "- `name`: empty", or "- `name`: n observations, mean=…, std=…, min=…,
+# max=…" with each `{:.4}` and NaN where the statistic refuses.
+#must_use
+fn _pmn_ai_summary(sb, cols, nc): i64 {
+    var s, slot = _pmn_scratch_take(nc * 8 + 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    for (var i = 0; i < nc; i = i + 1) {
+        var pos = i;
+        while (pos > 0 && _pmn_ai_key_after(load64(cols + load64(s + (pos - 1) * 8) * 32),
+            load64(cols + load64(s + (pos - 1) * 8) * 32 + 8), load64(cols + i * 32), load64(cols + i * 32 + 8)) == 1) {
+            store64(s + pos * 8, load64(s + (pos - 1) * 8));
+            pos = pos - 1;
+        }
+        store64(s + pos * 8, i);
+    }
+    var e = PMN_ERR_NONE;
+    for (var j = 0; e == PMN_ERR_NONE && j < nc; j = j + 1) {
+        var c = cols + load64(s + j * 8) * 32;
+        var x = load64(c + 16);
+        var n = load64(c + 24);
+        if (j > 0) { e = _pmn_json_w_lit(sb, "\n"); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "- `"); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(c), load64(c + 8)); }
+        if (n == 0) {
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "`: empty"); }
+        } else {
+            var t1, v1 = pmn_mean(x, n);
+            var t2, v2 = pmn_std_dev(x, n);
+            var t3, v3 = pmn_min(x, n);
+            var t4, v4 = pmn_max(x, n);
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "`: "); }
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, n); }
+            if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, " observations, mean=", _pmn_ai_or_nan(t1, v1)); }
+            if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", std=", _pmn_ai_or_nan(t2, v2)); }
+            if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", min=", _pmn_ai_or_nan(t3, v3)); }
+            if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", max=", _pmn_ai_or_nan(t4, v4)); }
+        }
+    }
+    _pmn_scratch_give(s, slot);
+    return e;
+}
+
+# ── the request and the response ──────────────────────────────────────────────────────────────────
+
+# The request body hoosh 1.3.0's `to_chat_body` builds for 1.3.0's query, as serde_json writes its `json!` value (keys
+# sorted): {"messages":[{"content":system,"role":"system"},{"content":question,"role":"user"}],"model":…,
+# "stream":false}, the system prompt with the data summary in it.
+#must_use
+fn _pmn_ai_request_body(sb, model, nmodel, cols, nc, question, nq): i64 {
+    var hs[24];
+    var ss = &hs;
+    var sc, sslot = _pmn_ai_sb_open(ss, _pmn_ai_summary_bound(cols, nc) + 256);
+    if (sc == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var e = _pmn_json_w_lit(ss, "You are a statistical analysis assistant. ");
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(ss, "The user has a dataset with these columns:\n\n"); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_summary(ss, cols, nc); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(ss, "\n\nUse the provided tools to answer the user's question. "); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(ss, "Call exactly one tool, then explain the result concisely."); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "{\"messages\":[{\"content\":"); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_str(sb, load64(ss), load64(ss + 8)); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ",\"role\":\"system\"},{\"content\":"); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_str(sb, question, nq); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ",\"role\":\"user\"}],\"model\":"); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_str(sb, model, nmodel); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ",\"stream\":false}"); }
+    _pmn_scratch_give(sc, sslot);
+    return e;
+}
+
+# A struct's members by serde derive's rules where every field may be absent (Rust's Option fields: `#[derive]` reads
+# a missing Option as None), or required (bit i of req): as `_pmn_json_struct`, but a missing optional field leaves
+# its slot 0. The sequence form takes exactly nf values.
+#must_use
+fn _pmn_ai_struct(v, names, nf, slots, req): i64 {
+    for (var i = 0; i < nf; i = i + 1) { store64(slots + i * 8, 0); }
+    if (v == 0) { return PMN_ERR_DESERIALIZE; }
+    var t = bayan_json_v_tag(v);
+    if (t == JTAG_ARR) {
+        if (bayan_json_v_arr_len(v) != nf) { return PMN_ERR_DESERIALIZE; }
+        for (var j = 0; j < nf; j = j + 1) { store64(slots + j * 8, bayan_json_v_arr_get(v, j)); }
+        return PMN_ERR_NONE;
+    }
+    if (t != JTAG_OBJ) { return PMN_ERR_DESERIALIZE; }
+    var m = bayan_json_v_obj_len(v);
+    for (var k = 0; k < m; k = k + 1) {
+        var key = bayan_json_v_obj_key(v, k);
+        if (key == 0 || _pmn_json_utf8(str_data(key), str_len(key)) == 0) { return PMN_ERR_DESERIALIZE; }
+        var f = _pmn_json_name_index(key, names, nf);
+        if (f >= 0) {
+            if (load64(slots + f * 8) != 0) { return PMN_ERR_DESERIALIZE; }
+            store64(slots + f * 8, bayan_json_v_obj_val(v, k));
+        }
+    }
+    for (var q = 0; q < nf; q = q + 1) {
+        if (((req >> q) & 1) == 1 && load64(slots + q * 8) == 0) { return PMN_ERR_DESERIALIZE; }
+    }
+    return PMN_ERR_NONE;
+}
+
+# 1 when node v is absent or `null` (an Option's None).
+#must_use
+fn _pmn_ai_none(v): i64 {
+    if (v == 0 || bayan_json_v_tag(v) == JTAG_NULL) { return 1; }
+    return 0;
+}
+
+# An Option<u32> node: PMN_ERR_NONE for None or an integer up to 2^32 − 1, else PMN_ERR_DESERIALIZE.
+#must_use
+fn _pmn_ai_opt_u32(v): i64 {
+    if (_pmn_ai_none(v) == 1) { return PMN_ERR_NONE; }
+    var w[8];
+    if (_pmn_json_u64(v, &w) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    if (load64(&w) < 0 || load64(&w) > 4294967295) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# The response reader: hoosh 1.3.0's ChatCompletionResp { model: Option<String>, choices: Vec<ChatChoice>, usage:
+# Option<ChatUsageResp> }, each ChatChoice { message: ChatMsg { content: Option<String> } } and ChatUsageResp's three
+# Option<u32>s, every unknown member skipped; then the first choice's content, or "" (`unwrap_or_default`), copied
+# into ctx[0, 2) (an owned copy: the caller frees it with fl_free when ctx[1] > 0).
+fn _pmn_ai_resp_root(root, ctx): i64 {
+    var names[24];
+    store64(&names, "model");
+    store64(&names + 8, "choices");
+    store64(&names + 16, "usage");
+    var sl[24];
+    var e = _pmn_ai_struct(root, &names, 3, &sl, 2);
+    if (e != PMN_ERR_NONE) { return e; }
+    var mv = load64(&sl);
+    if (_pmn_ai_none(mv) == 0) {
+        var ms[16];
+        if (_pmn_json_str(mv, &ms) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    }
+    var uv = load64(&sl + 16);
+    if (_pmn_ai_none(uv) == 0) {
+        var un[24];
+        store64(&un, "prompt_tokens");
+        store64(&un + 8, "completion_tokens");
+        store64(&un + 16, "total_tokens");
+        var us[24];
+        if (_pmn_ai_struct(uv, &un, 3, &us, 0) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+        for (var u = 0; u < 3; u = u + 1) {
+            if (_pmn_ai_opt_u32(load64(&us + u * 8)) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+        }
+    }
+    var cv = load64(&sl + 8);
+    var nch = _pmn_json_arr_len(cv);
+    if (nch < 0) { return PMN_ERR_DESERIALIZE; }
+    var text = 0;
+    var ntext = 0;
+    for (var i = 0; i < nch; i = i + 1) {
+        var cn[8];
+        store64(&cn, "message");
+        var cs[8];
+        if (_pmn_ai_struct(_pmn_json_arr_get(cv, i), &cn, 1, &cs, 1) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+        var mn[8];
+        store64(&mn, "content");
+        var mc[8];
+        if (_pmn_ai_struct(load64(&cs), &mn, 1, &mc, 0) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+        var cnode = load64(&mc);
+        if (_pmn_ai_none(cnode) == 0) {
+            var st[16];
+            if (_pmn_json_str(cnode, &st) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+            if (i == 0) {
+                text = load64(&st);
+                ntext = load64(&st + 8);
+            }
+        }
+    }
+    var copy = 0;
+    if (ntext > 0) {
+        copy = fl_alloc(ntext);
+        if (copy == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+        memcpy(copy, text, ntext);
+    }
+    store64(ctx, copy);
+    store64(ctx + 8, ntext);
+    return PMN_ERR_NONE;
+}
+
+# ── StatQuery ─────────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `StatQuery`: its HooshClient (hoosh's base URL, trailing `/`s trimmed as `HooshClient::new` does, and a
+# transport) and the model. The transport is `transport(ctx, url, nurl, body, nbody, resp)`: it POSTs body as
+# `application/json` and fills resp (24 bytes: the status, then the body's pointer and length, valid until the next
+# call), returning PMN_ERR_NONE, or an error code when there is no response. The strings live in one owned block.
+struct PmnStatQuery {
+    buf;
+    base;
+    nbase;
+    model;
+    nmodel;
+    transport;
+    ctx;
+}
+
+# Rust's `StatQuery::new(HooshClient::new(base_url), model)`: the client is base_url and a transport fp(ctx, …), as
+# the caller builds the HooshClient (`&pmn_ai_sandhi_transport` from src/ai_sandhi.cyr, sandhi's POST;
+# or a recorded-response one, for tests), into out (caller storage, owning a new block: drop it).
+# PMN_ERR_INVALID_PARAMETER for a null out or fp or an invalid slice; PMN_ERR_OUT_OF_MEMORY when the block can't be
+# had.
+#must_use
+fn PmnStatQuery_new(out: *PmnStatQuery, base, nbase, model, nmodel, fp, ctx): i64 {
+    if (out == 0 || fp == 0 || _pmn_so_ok(base, nbase) == 0 || _pmn_so_ok(model, nmodel) == 0) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    var nb = nbase;
+    while (nb > 0 && load8(base + nb - 1) == 47) { nb = nb - 1; }
+    var parts[48];
+    _pmn_so_part(&parts, 0, base, nb, 1);
+    _pmn_so_part(&parts, 1, model, nmodel, 1);
+    var d[16];
+    var blk = _pmn_so_pack(&parts, 2, &d);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    out.buf = blk;
+    out.base = load64(&d);
+    out.nbase = nb;
+    out.model = load64(&d + 8);
+    out.nmodel = nmodel;
+    out.transport = fp;
+    out.ctx = ctx;
+    return PMN_ERR_NONE;
+}
+
+fn PmnStatQuery_drop(q: *PmnStatQuery): i64 {
+    if (q == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (q.buf != 0) { fl_free(q.buf); }
+    q.buf = 0;
+    q.nbase = 0;
+    q.nmodel = 0;
+    return PMN_ERR_NONE;
+}
+
+impl PmnStatQuery {
+    # Replaces the transport (a recorded-response one, for tests). PMN_ERR_INVALID_PARAMETER for a null function or a
+    # dropped query.
+    #must_use
+    fn set_transport(self, fp, ctx): i64 {
+        if (self == 0 || self.buf == 0 || fp == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        self.transport = fp;
+        self.ctx = ctx;
+        return PMN_ERR_NONE;
+    }
+
+    # Rust's `query(data, question)`: the columns cols[0, nc) and the question's bytes (UTF-8) into one POST, and the
+    # reply into out (caller storage, owning a new block: drop it): answer the first choice's content (or ""),
+    # operation `direct_answer`, no values. PMN_ERR_INVALID_SAMPLE for no columns; PMN_ERR_COMPUTATION_ERROR when the
+    # transport fails, the status isn't 2xx or the reply isn't hoosh's response (Rust's "LLM inference failed");
+    # PMN_ERR_INVALID_PARAMETER first for a dropped query, a null out, an invalid slice, a column twice or text that
+    # isn't UTF-8; PMN_ERR_OUT_OF_MEMORY when a buffer can't be had.
+    #must_use
+    fn query(self, cols, nc, question, nq, out: *PmnQueryResult): i64 {
+        if (self == 0 || self.buf == 0 || out == 0 || _pmn_so_ok(question, nq) == 0) {
+            return PMN_ERR_INVALID_PARAMETER;
+        }
+        if (_pmn_ai_cols_ok(cols, nc) != PMN_ERR_NONE || _pmn_json_utf8(question, nq) == 0) {
+            return PMN_ERR_INVALID_PARAMETER;
+        }
+        if (nc == 0) { return PMN_ERR_INVALID_SAMPLE; }
+        var hb[24];
+        var hu[24];
+        var sb = &hb;
+        var ub = &hu;
+        var bound = 6 * (_pmn_ai_summary_bound(cols, nc) + 256) + 6 * nq + 6 * self.nmodel + 128;
+        var bc, bslot = _pmn_ai_sb_open(sb, bound);
+        if (bc == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+        var uc, uslot = _pmn_ai_sb_open(ub, self.nbase + 32);
+        if (uc == 0) {
+            _pmn_scratch_give(bc, bslot);
+            return PMN_ERR_OUT_OF_MEMORY;
+        }
+        var e = _pmn_ai_request_body(sb, self.model, self.nmodel, cols, nc, question, nq);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(ub, self.base, self.nbase); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(ub, "/v1/chat/completions"); }
+        var resp[24];
+        var te = PMN_ERR_NONE;
+        if (e == PMN_ERR_NONE) {
+            te = callptr(self.transport, self.ctx, load64(ub), load64(ub + 8), load64(sb), load64(sb + 8), &resp);
+        }
+        _pmn_scratch_give(uc, uslot);
+        _pmn_scratch_give(bc, bslot);
+        if (e != PMN_ERR_NONE) { return e; }
+        if (te == PMN_ERR_OUT_OF_MEMORY) { return te; }
+        if (te != PMN_ERR_NONE) { return PMN_ERR_COMPUTATION_ERROR; }
+        var st = load64(&resp);
+        if (st < 200 || st > 299) { return PMN_ERR_COMPUTATION_ERROR; }
+        var got[16];
+        store64(&got, 0);
+        store64(&got + 8, 0);
+        e = _pmn_json_decode(load64(&resp + 8), load64(&resp + 16), &_pmn_ai_resp_root, &got);
+        if (e == PMN_ERR_OUT_OF_MEMORY) { return e; }
+        if (e != PMN_ERR_NONE) { return PMN_ERR_COMPUTATION_ERROR; }
+        e = PmnQueryResult_new(out, load64(&got), load64(&got + 8), "direct_answer", 13, 0, 0);
+        if (load64(&got + 8) > 0) { fl_free(load64(&got)); }
+        return e;
+    }
+}
+
+# ── the five tools ────────────────────────────────────────────────────────────────────────────────
+
+# The member of object v named key (a C string), or 0: serde_json's `args.get(key)`, and `args[key]`'s node (0 reading
+# as Null). A non-object has none.
+#must_use
+fn _pmn_ai_arg(v, key: cstring): i64 {
+    if (v == 0 || bayan_json_v_tag(v) != JTAG_OBJ) { return 0; }
+    var kn = strlen(key);
+    var m = bayan_json_v_obj_len(v);
+    for (var i = 0; i < m; i = i + 1) {
+        var k = bayan_json_v_obj_key(v, i);
+        if (k != 0 && str_len(k) == kn && memeq(str_data(k), key, kn) == 1) { return bayan_json_v_obj_val(v, i); }
+    }
+    return 0;
+}
+
+# `args[key].as_str()`: the string's bytes into out[0, 2), PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER when it isn't one.
+#must_use
+fn _pmn_ai_arg_str(v, key, out): i64 {
+    var n = _pmn_ai_arg(v, key);
+    if (n == 0 || bayan_json_v_tag(n) != JTAG_STR) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_json_str(n, out) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    return PMN_ERR_NONE;
+}
+
+# Rust's private `get_col(data, args, key)`: the column named by `args[key]`, its index into out, PMN_ERR_NONE; the
+# name's bytes into nm[0, 2). PMN_ERR_INVALID_PARAMETER for a missing or non-string name or an unknown column.
+#must_use
+fn _pmn_ai_get_col(v, key, cols, nc, nm, out): i64 {
+    if (_pmn_ai_arg_str(v, key, nm) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    var i = _pmn_ai_col(cols, nc, load64(nm), load64(nm + 8));
+    if (i < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    store64(out, i);
+    return PMN_ERR_NONE;
+}
+
+# Rust's private `bounded_usize_arg(args, key, default, max)`: the default when the member is absent or null, else a
+# JSON integer (`as_u64`: a float such as 3.0 or −0 is none) in 1 … max; PMN_ERR_INVALID_PARAMETER otherwise.
+fn _pmn_ai_bounded(v, key, dflt, max): (i64, i64) {
+    var n = _pmn_ai_arg(v, key);
+    if (_pmn_ai_none(n) == 1) { return (dflt, PMN_ERR_NONE); }
+    var w[8];
+    if (_pmn_json_u64(n, &w) != PMN_ERR_NONE) { return (0, PMN_ERR_INVALID_PARAMETER); }
+    var x = load64(&w);
+    if (x < 1 || x > max) { return (0, PMN_ERR_INVALID_PARAMETER); }
+    return (x, PMN_ERR_NONE);
+}
+
+# The tool's run: ctx holds the out result, the tool's name and length, the columns and their count.
+struct _PmnAiTool {
+    out;
+    name;
+    nname;
+    cols;
+    nc;
+}
+
+# One value record: key (a C string), value.
+fn _pmn_ai_val(recs, i, key: cstring, x: f64): i64 {
+    store64(recs + i * 24, key);
+    store64(recs + i * 24 + 8, strlen(key));
+    store64(recs + i * 24 + 16, x);
+    return 0;
+}
+
+#must_use
+fn _pmn_ai_tool_is(t: *_PmnAiTool, s: cstring): i64 {
+    var n = strlen(s);
+    if (t.nname == n && memeq(t.name, s, n) == 1) { return 1; }
+    return 0;
+}
+
+# The result: answer the text sb holds, the operation and the values.
+#must_use
+fn _pmn_ai_tool_done(t: *_PmnAiTool, sb, op: cstring, recs, nv): i64 {
+    return PmnQueryResult_new(t.out, load64(sb), load64(sb + 8), op, strlen(op), recs, nv);
+}
+
+# describe: mean, median, std_dev, variance, min, max, each `?` in that order.
+fn _pmn_ai_describe(t: *_PmnAiTool, args, sb): i64 {
+    var nm[16];
+    var ci[8];
+    var e = _pmn_ai_get_col(args, "column", t.cols, t.nc, &nm, &ci);
+    if (e != PMN_ERR_NONE) { return e; }
+    var x = load64(t.cols + load64(&ci) * 32 + 16);
+    var n = load64(t.cols + load64(&ci) * 32 + 24);
+    var r1, v1 = pmn_mean(x, n);
+    if (r1 == Err) { return v1; }
+    var r2, v2 = pmn_median(x, n);
+    if (r2 == Err) { return v2; }
+    var r3, v3 = pmn_std_dev(x, n);
+    if (r3 == Err) { return v3; }
+    var r4, v4 = pmn_variance(x, n);
+    if (r4 == Err) { return v4; }
+    var r5, v5 = pmn_min(x, n);
+    if (r5 == Err) { return v5; }
+    var r6, v6 = pmn_max(x, n);
+    if (r6 == Err) { return v6; }
+    var m: f64 = v1;
+    var med: f64 = v2;
+    var sd: f64 = v3;
+    var va: f64 = v4;
+    var mn: f64 = v5;
+    var mx: f64 = v6;
+    e = _pmn_json_w_lit(sb, "Descriptive stats for '");
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&nm), load64(&nm + 8)); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, "': mean=", m); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", median=", med); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", std_dev=", sd); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", variance=", va); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", min=", mn); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", max=", mx); }
+    if (e != PMN_ERR_NONE) { return e; }
+    var recs[144];
+    _pmn_ai_val(&recs, 0, "mean", m);
+    _pmn_ai_val(&recs, 1, "median", med);
+    _pmn_ai_val(&recs, 2, "std_dev", sd);
+    _pmn_ai_val(&recs, 3, "variance", va);
+    _pmn_ai_val(&recs, 4, "min", mn);
+    _pmn_ai_val(&recs, 5, "max", mx);
+    return _pmn_ai_tool_done(t, sb, "describe", &recs, 6);
+}
+
+# correlate: the Pearson r of two columns, matrix[0][1] of `correlation_matrix(&[a, b])`.
+fn _pmn_ai_correlate(t: *_PmnAiTool, args, sb): i64 {
+    var na[16];
+    var nb[16];
+    var ia[8];
+    var ib[8];
+    var e = _pmn_ai_get_col(args, "column_a", t.cols, t.nc, &na, &ia);
+    if (e != PMN_ERR_NONE) { return e; }
+    e = _pmn_ai_get_col(args, "column_b", t.cols, t.nc, &nb, &ib);
+    if (e != PMN_ERR_NONE) { return e; }
+    var vars[32];
+    store64(&vars, load64(t.cols + load64(&ia) * 32 + 16));
+    store64(&vars + 8, load64(t.cols + load64(&ia) * 32 + 24));
+    store64(&vars + 16, load64(t.cols + load64(&ib) * 32 + 16));
+    store64(&vars + 24, load64(t.cols + load64(&ib) * 32 + 24));
+    var mat[32];
+    e = pmn_correlation_matrix(&vars, 2, &mat, 4);
+    if (e != PMN_ERR_NONE) { return e; }
+    var r: f64 = load64(&mat + 8);
+    e = _pmn_json_w_lit(sb, "Pearson correlation between '");
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&na), load64(&na + 8)); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "' and '"); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&nb), load64(&nb + 8)); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, "': r = ", r); }
+    if (e != PMN_ERR_NONE) { return e; }
+    var recs[24];
+    _pmn_ai_val(&recs, 0, "correlation", r);
+    return _pmn_ai_tool_done(t, sb, "correlate", &recs, 1);
+}
+
+# regress: `linear_regression(x, y)`.
+fn _pmn_ai_regress(t: *_PmnAiTool, args, sb): i64 {
+    var nx[16];
+    var ny[16];
+    var ix[8];
+    var iy[8];
+    var e = _pmn_ai_get_col(args, "x_column", t.cols, t.nc, &nx, &ix);
+    if (e != PMN_ERR_NONE) { return e; }
+    e = _pmn_ai_get_col(args, "y_column", t.cols, t.nc, &ny, &iy);
+    if (e != PMN_ERR_NONE) { return e; }
+    var cx = t.cols + load64(&ix) * 32;
+    var cy = t.cols + load64(&iy) * 32;
+    var lm: PmnLinearModel;
+    e = pmn_linear_regression(&lm, load64(cx + 16), load64(cx + 24), load64(cy + 16), load64(cy + 24));
+    if (e != PMN_ERR_NONE) { return e; }
+    var sl: f64 = lm.slope;
+    var ic: f64 = lm.intercept;
+    var r2: f64 = lm.r_squared;
+    e = _pmn_json_w_lit(sb, "Linear regression ");
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&ny), load64(&ny + 8)); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, " = ", sl); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, " * "); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&nx), load64(&nx + 8)); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, " + ", ic); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, " (R² = ", r2); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ")"); }
+    if (e != PMN_ERR_NONE) { return e; }
+    var recs[72];
+    _pmn_ai_val(&recs, 0, "slope", sl);
+    _pmn_ai_val(&recs, 1, "intercept", ic);
+    _pmn_ai_val(&recs, 2, "r_squared", r2);
+    return _pmn_ai_tool_done(t, sb, "regress", &recs, 3);
+}
+
+# t_test: two-sample against `column_b` when it is a string, else one-sample against `mu` (`as_f64`, default 0), both
+# at α = 0.05.
+fn _pmn_ai_t_test(t: *_PmnAiTool, args, sb): i64 {
+    var na[16];
+    var ia[8];
+    var e = _pmn_ai_get_col(args, "column_a", t.cols, t.nc, &na, &ia);
+    if (e != PMN_ERR_NONE) { return e; }
+    var a = load64(t.cols + load64(&ia) * 32 + 16);
+    var n = load64(t.cols + load64(&ia) * 32 + 24);
+    var tr: PmnTestResult;
+    var nb[16];
+    var two = 0;
+    var mu: f64 = 0.0;
+    if (_pmn_ai_arg_str(args, "column_b", &nb) == PMN_ERR_NONE) {
+        two = 1;
+        var ib = _pmn_ai_col(t.cols, t.nc, load64(&nb), load64(&nb + 8));
+        if (ib < 0) { return PMN_ERR_INVALID_PARAMETER; }
+        e = pmn_t_test_two_sample(&tr, a, n, load64(t.cols + ib * 32 + 16), load64(t.cols + ib * 32 + 24), 0.05);
+    } else {
+        var mv = _pmn_ai_arg(args, "mu");
+        var mw[8];
+        if (mv != 0 && _pmn_json_f64(mv, &mw) == PMN_ERR_NONE) { mu = load64(&mw); }
+        e = pmn_t_test_one_sample(&tr, a, n, mu, 0.05);
+    }
+    if (e != PMN_ERR_NONE) { return e; }
+    var st: f64 = tr.statistic;
+    var pv: f64 = tr.p_value;
+    var df: f64 = tr.degrees_of_freedom;
+    if (two == 1) {
+        e = _pmn_json_w_lit(sb, "Two-sample t-test (");
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&na), load64(&na + 8)); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, " vs "); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&nb), load64(&nb + 8)); }
+    } else {
+        e = _pmn_json_w_lit(sb, "One-sample t-test (");
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&na), load64(&na + 8)); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, " vs mu="); }
+        if (e == PMN_ERR_NONE) { e = _pmn_ai_w_display(sb, mu); }
+    }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, "): t = ", st); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_stat(sb, ", p = ", pv); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ", df = "); }
+    if (e == PMN_ERR_NONE) { e = _pmn_ai_w_fixed(sb, df, 1); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ", reject = "); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_bool(sb, tr.reject); }
+    PmnTestResult_drop(&tr);
+    if (e != PMN_ERR_NONE) { return e; }
+    var recs[72];
+    _pmn_ai_val(&recs, 0, "t_statistic", st);
+    _pmn_ai_val(&recs, 1, "p_value", pv);
+    _pmn_ai_val(&recs, 2, "df", df);
+    if (two == 1) { return _pmn_ai_tool_done(t, sb, "t_test_two_sample", &recs, 3); }
+    return _pmn_ai_tool_done(t, sb, "t_test_one_sample", &recs, 3);
+}
+
+# forecast: an AR(p) fit with d = 0 and `steps` forecasts, p and steps bounded (1 … 32, 1 … 1,000; defaults 1 and 5).
+fn _pmn_ai_forecast(t: *_PmnAiTool, args, sb): i64 {
+    var nm[16];
+    var ci[8];
+    var e = _pmn_ai_get_col(args, "column", t.cols, t.nc, &nm, &ci);
+    if (e != PMN_ERR_NONE) { return e; }
+    var steps, es = _pmn_ai_bounded(args, "steps", 5, PMN_AI_MAX_FORECAST_STEPS);
+    if (es != PMN_ERR_NONE) { return es; }
+    var p, ep = _pmn_ai_bounded(args, "ar_order", 1, PMN_AI_MAX_AR_ORDER);
+    if (ep != PMN_ERR_NONE) { return ep; }
+    var x = load64(t.cols + load64(&ci) * 32 + 16);
+    var n = load64(t.cols + load64(&ci) * 32 + 24);
+    var am: PmnArimaModel;
+    e = pmn_arima_fit(&am, x, n, p, 0);
+    if (e != PMN_ERR_NONE) { return e; }
+    var s, slot = _pmn_scratch_take(steps * 8 + steps * 24 + steps * 16 + 8);
+    if (s == 0) {
+        PmnArimaModel_drop(&am);
+        return PMN_ERR_OUT_OF_MEMORY;
+    }
+    var fc = s;
+    var recs = s + steps * 8;
+    var keys = recs + steps * 24;
+    e = pmn_arima_forecast(&am, x, n, steps, fc, steps);
+    PmnArimaModel_drop(&am);
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "AR("); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, p); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, ") forecast for '"); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(sb, load64(&nm), load64(&nm + 8)); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "', next "); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, steps); }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, " values: ["); }
+    for (var i = 0; e == PMN_ERR_NONE && i < steps; i = i + 1) {
+        if (i > 0) { e = _pmn_json_w_lit(sb, ", "); }
+        var v: f64 = load64(fc + i * 8);
+        if (e == PMN_ERR_NONE) { e = _pmn_ai_w_fixed(sb, v, 4); }
+    }
+    if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+    var hk[24];
+    var kb = &hk;
+    var kc, kslot = _pmn_ai_sb_open(kb, steps * 16 + 64);
+    if (kc == 0 && e == PMN_ERR_NONE) { e = PMN_ERR_OUT_OF_MEMORY; }
+    for (var j = 0; e == PMN_ERR_NONE && j < steps; j = j + 1) {
+        e = _pmn_json_w_lit(kb, "forecast_");
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(kb, j + 1); }
+        store64(keys + j * 16, load64(kb + 8));      # the key's end offset: the builder may move as it grows
+    }
+    if (e == PMN_ERR_NONE) {
+        var start = 0;
+        for (var k = 0; k < steps; k = k + 1) {
+            var end = load64(keys + k * 16);
+            store64(recs + k * 24, load64(kb) + start);
+            store64(recs + k * 24 + 8, end - start);
+            store64(recs + k * 24 + 16, load64(fc + k * 8));
+            start = end;
+        }
+        e = _pmn_ai_tool_done(t, sb, "forecast", recs, steps);
+    }
+    if (kc != 0) { _pmn_scratch_give(kc, kslot); }
+    _pmn_scratch_give(s, slot);
+    return e;
+}
+
+# The tool's text goes into a claim sized for its longest: two column names and its numbers, or a forecast of the
+# most steps, `{:.4}` at most 330 bytes each.
+fn _pmn_ai_tool_root(root, t: *_PmnAiTool): i64 {
+    var names = 0;
+    for (var i = 0; i < t.nc; i = i + 1) { names = names + load64(t.cols + i * 32 + 8); }
+    var hs[24];
+    var sb = &hs;
+    var sc, slot = _pmn_ai_sb_open(sb, 4096 + 2 * names + PMN_AI_MAX_FORECAST_STEPS * 340);
+    if (sc == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var e = PMN_ERR_INVALID_PARAMETER;
+    if (_pmn_ai_tool_is(t, "describe") == 1) {
+        e = _pmn_ai_describe(t, root, sb);
+    } elif (_pmn_ai_tool_is(t, "correlate") == 1) {
+        e = _pmn_ai_correlate(t, root, sb);
+    } elif (_pmn_ai_tool_is(t, "regress") == 1) {
+        e = _pmn_ai_regress(t, root, sb);
+    } elif (_pmn_ai_tool_is(t, "t_test") == 1) {
+        e = _pmn_ai_t_test(t, root, sb);
+    } elif (_pmn_ai_tool_is(t, "forecast") == 1) {
+        e = _pmn_ai_forecast(t, root, sb);
+    }
+    _pmn_scratch_give(sc, slot);
+    return e;
+}
+
+# Rust's private `execute_tool(tool_call, data)`: the tool named name[0, nname) on the arguments document
+# args[0, nargs) (serde_json's Value: any JSON) and the columns cols[0, nc), into out (caller storage, owning a new
+# block: drop it): answer the tool's text, its operation and its values. 1.3.0's refusals: PMN_ERR_INVALID_PARAMETER
+# for an unknown tool, a missing or unknown column or an argument out of bounds, the statistics' own codes as they
+# propagate; PMN_ERR_DESERIALIZE for arguments that aren't JSON; PMN_ERR_INVALID_PARAMETER first for a null out, an
+# invalid slice or a column twice; PMN_ERR_OUT_OF_MEMORY when a buffer can't be had. Unreachable from `query` in 1.3.0
+# (hoosh 1.3.0 returns no tool calls), as from 1.3.0's own tests.
+#must_use
+fn _pmn_ai_execute_tool(out: *PmnQueryResult, name, nname, args, nargs, cols, nc): i64 {
+    if (out == 0 || _pmn_so_ok(name, nname) == 0 || _pmn_ai_cols_ok(cols, nc) != PMN_ERR_NONE) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    var t: _PmnAiTool;
+    t.out = out;
+    t.name = name;
+    t.nname = nname;
+    t.cols = cols;
+    t.nc = nc;
+    return _pmn_json_decode(args, nargs, &_pmn_ai_tool_root, &t);
+}

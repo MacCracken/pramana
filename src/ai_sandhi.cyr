@@ -1,0 +1,28 @@
+# ai_sandhi.cyr — the HooshClient's transport, sandhi's HTTP POST (port plan D8; M7 part b): pass
+# `&pmn_ai_sandhi_transport` to `PmnStatQuery_new`. In the `[lib.ai]` profile after src/ai.cyr; sandhi itself comes
+# from the consumer (`include "lib/sandhi.cyr"`, probe P8), as 1.3.0's `HooshClient` came from hoosh. It names
+# nothing of pramana's but the error codes, so a sandhi build carries none of the library's tables.
+
+# POSTs body[0, nbody) to url[0, nurl) as `application/json` (reqwest's `.json(&body)`), and fills resp (24 bytes: the
+# status, then the body's pointer and length, sandhi's, valid until its allocator is reset). PMN_ERR_NONE;
+# PMN_ERR_COMPUTATION_ERROR when sandhi has no response (no connection, a refusal, a malformed reply);
+# PMN_ERR_OUT_OF_MEMORY when the URL's copy can't be had.
+fn pmn_ai_sandhi_transport(ctx, url, nurl, body, nbody, resp): i64 {
+    var cu = fl_alloc(nurl + 1);
+    if (cu == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    memcpy(cu, url, nurl);
+    store8(cu + nurl, 0);
+    var h = sandhi_headers_new();
+    if (h == 0) {
+        fl_free(cu);
+        return PMN_ERR_OUT_OF_MEMORY;
+    }
+    sandhi_headers_set(h, "content-type", "application/json");
+    var r = sandhi_http_post(cu, h, body, nbody);
+    fl_free(cu);
+    if (r == 0 || sandhi_http_err_kind(r) != SANDHI_OK) { return PMN_ERR_COMPUTATION_ERROR; }
+    store64(resp, sandhi_http_status(r));
+    store64(resp + 8, sandhi_http_body(r));
+    store64(resp + 16, sandhi_http_body_len(r));
+    return PMN_ERR_NONE;
+}

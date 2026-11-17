@@ -1,0 +1,26 @@
+# ai_sandhi.tcyr — src/ai_sandhi.cyr (M7 part b): sandhi's POST, the transport a HooshClient makes, as a consumer of
+# the `[lib.ai]` profile builds it (sandhi named here, D8, probe P8). sandhi's own static data is 127,168 bytes, just
+# under the compiler's 128 KiB advisory, so this test carries sandhi and the transport alone; StatQuery over a
+# transport is tests/ai.tcyr's, and the parity rows'.
+
+include "lib/sandhi.cyr"
+include "src/error.cyr"
+include "src/ai_sandhi.cyr"
+
+fn main() {
+    alloc_init();
+    test_group("sandhi's transport: a closed port");
+    var resp[24];
+    var url = "http://127.0.0.1:9/v1/chat/completions";
+    var body = "{\"messages\":[],\"model\":\"m\",\"stream\":false}";
+    assert_eq(pmn_ai_sandhi_transport(0, url, strlen(url), body, strlen(body), &resp), PMN_ERR_COMPUTATION_ERROR,
+        "no server on port 9: no response, LLM inference failed");
+    var bad = "not a url";
+    assert_eq(pmn_ai_sandhi_transport(0, bad, strlen(bad), body, strlen(body), &resp), PMN_ERR_COMPUTATION_ERROR,
+        "a malformed URL");
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

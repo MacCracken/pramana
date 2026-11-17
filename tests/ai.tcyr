@@ -1,0 +1,153 @@
+# ai.tcyr — src/ai.cyr (M7 part b), the `[lib.ai]` profile's logic.
+#
+# tests/parity.tcyr replays 1.3.0's text and values (tests/golden/ai.tsv, json.tsv, debug.tsv). These carry 1.3.0's
+# own tests over (ai.rs) and drive `query` over a recorded reply. tests/ai_sandhi.tcyr drives sandhi's transport: a
+# build with sandhi (127 KB of static data) and the whole library (88 KB) passes the compiler's 128 KiB static-data
+# advisory, so each test carries one.
+
+include "tests/lib.cyr"
+
+fn text_is(sb, want): i64 {
+    if (load64(sb + 8) == strlen(want) && memeq(load64(sb), want, strlen(want)) == 1) { return 1; }
+    return 0;
+}
+
+fn bytes_is(p, n, want): i64 {
+    if (n == strlen(want) && memeq(p, want, n) == 1) { return 1; }
+    return 0;
+}
+
+# A recorded reply: ctx holds the status, the body and its length; the call count goes in ctx[3].
+fn canned(ctx, url, nurl, body, nbody, resp): i64 {
+    store64(ctx + 24, load64(ctx + 24) + 1);
+    store64(resp, load64(ctx));
+    store64(resp + 8, load64(ctx + 8));
+    store64(resp + 16, load64(ctx + 16));
+    return PMN_ERR_NONE;
+}
+
+fn tool(out, name, args, cols, nc): i64 {
+    return _pmn_ai_execute_tool(out, name, strlen(name), args, strlen(args), cols, nc);
+}
+
+fn main() {
+    alloc_init();
+    # 1.3.0's dataset(): "series", sin(0.4i) + 0.05i for i < 40
+    var xs = alloc(40 * 8);
+    for (var i = 0; i < 40; i = i + 1) {
+        var fi: f64 = f64_from(i);
+        var a: f64 = fi * 0.4;
+        var sv: f64 = _pmn_sin(a);
+        var b: f64 = 0.05 * fi;
+        var y: f64 = sv + b;
+        store64(xs + i * 8, y);
+    }
+    var cols[32];
+    store64(&cols, "series");
+    store64(&cols + 8, 6);
+    store64(&cols + 16, xs);
+    store64(&cols + 24, 40);
+    var r: PmnQueryResult;
+
+    test_group("1.3.0's tests (bounded forecast arguments, the defaults, unknown tools and columns, serde)");
+    assert_eq(tool(&r, "forecast", "{\"column\":\"series\",\"steps\":1000000000000}", &cols, 1),
+        PMN_ERR_INVALID_PARAMETER, "steps 10^12");
+    assert_eq(tool(&r, "forecast", "{\"column\":\"series\",\"steps\":0}", &cols, 1), PMN_ERR_INVALID_PARAMETER,
+        "steps 0");
+    assert_eq(tool(&r, "forecast", "{\"column\":\"series\",\"steps\":-3}", &cols, 1), PMN_ERR_INVALID_PARAMETER,
+        "steps −3");
+    assert_eq(tool(&r, "forecast", "{\"column\":\"series\",\"steps\":\"many\"}", &cols, 1), PMN_ERR_INVALID_PARAMETER,
+        "steps \"many\"");
+    assert_eq(tool(&r, "forecast", "{\"column\":\"series\",\"ar_order\":10000}", &cols, 1), PMN_ERR_INVALID_PARAMETER,
+        "ar_order 10⁴");
+    assert_eq(tool(&r, "forecast", "{\"column\":\"series\",\"steps\":3}", &cols, 1), PMN_ERR_NONE, "steps 3");
+    assert(bytes_is(r.operation, r.noperation, "forecast") == 1 && r.nvalues == 3, "forecast, three values");
+    PmnQueryResult_drop(&r);
+    assert_eq(tool(&r, "forecast", "{\"column\":\"series\",\"steps\":null}", &cols, 1), PMN_ERR_NONE, "steps null");
+    assert_eq(r.nvalues, 5, "the default, 5");
+    PmnQueryResult_drop(&r);
+    assert_eq(tool(&r, "rm_rf", "{}", &cols, 1), PMN_ERR_INVALID_PARAMETER, "an unknown tool");
+    assert_eq(tool(&r, "describe", "{\"column\":\"nope\"}", &cols, 1), PMN_ERR_INVALID_PARAMETER, "an unknown column");
+    var vals[24];
+    store64(&vals, "mean");
+    store64(&vals + 8, 4);
+    store64(&vals + 16, 1.5);
+    assert_eq(PmnQueryResult_new(&r, "ok", 2, "describe", 8, &vals, 1), PMN_ERR_NONE, "a QueryResult");
+    var sb = str_builder_new();
+    assert_eq(r.to_json(sb), PMN_ERR_NONE, "serialized");
+    assert(text_is(sb, "{\"answer\":\"ok\",\"operation\":\"describe\",\"values\":{\"mean\":1.5}}") == 1,
+        "serde_json's text");
+    var r2: PmnQueryResult;
+    assert_eq(PmnQueryResult_from_json(&r2, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var m: f64 = r2.value("mean", 4);
+    assert(m == 1.5 && bytes_is(r2.operation, r2.noperation, "describe") == 1, "values[\"mean\"] 1.5, describe");
+    PmnQueryResult_drop(&r2);
+    PmnQueryResult_drop(&r);
+
+    test_group("Rust's float text ({:.4} ties to even, {:.1}, {} positional)");
+    var t1 = str_builder_new();
+    assert_eq(_pmn_ai_w_fixed(t1, 0.03125, 4), PMN_ERR_NONE, "{:.4} of 1/32");
+    assert(text_is(t1, "0.0312") == 1, "0.0312: the tie to even");
+    var t2 = str_builder_new();
+    assert_eq(_pmn_ai_w_fixed(t2, 0.09375, 4), PMN_ERR_NONE, "{:.4} of 3/32");
+    assert(text_is(t2, "0.0938") == 1, "0.0938");
+    var t3 = str_builder_new();
+    var nz: f64 = -0.0;
+    assert_eq(_pmn_ai_w_fixed(t3, nz, 4), PMN_ERR_NONE, "{:.4} of −0");
+    assert(text_is(t3, "-0.0000") == 1, "-0.0000");
+    var t4 = str_builder_new();
+    assert_eq(_pmn_ai_w_fixed(t4, 9.99995, 4), PMN_ERR_NONE, "{:.4} of 9.99995 (the double is just above the tie)");
+    assert(text_is(t4, "10.0000") == 1, "10.0000: the carry");
+    var t5 = str_builder_new();
+    assert_eq(_pmn_ai_w_display(t5, 100.0), PMN_ERR_NONE, "{} of 100");
+    assert(text_is(t5, "100") == 1, "100");
+    var t6 = str_builder_new();
+    var tiny: f64 = 0.0000001;
+    assert_eq(_pmn_ai_w_display(t6, tiny), PMN_ERR_NONE, "{} of 1e-7");
+    assert(text_is(t6, "0.0000001") == 1, "0.0000001");
+    var t7 = str_builder_new();
+    assert_eq(_pmn_ai_w_display(t7, nz), PMN_ERR_NONE, "{} of −0");
+    assert(text_is(t7, "-0") == 1, "-0");
+
+    test_group("query over a recorded reply: 1.3.0's direct answer");
+    var reply = "{\"choices\":[{\"message\":{\"content\":\"The mean is 1.1.\"}}]}";
+    var ctx[32];
+    store64(&ctx, 200);
+    store64(&ctx + 8, reply);
+    store64(&ctx + 16, strlen(reply));
+    store64(&ctx + 24, 0);
+    var q: PmnStatQuery;
+    assert_eq(PmnStatQuery_new(&q, "http://127.0.0.1:8088/", 22, "llama3", 6, &canned, &ctx), PMN_ERR_NONE,
+        "a StatQuery");
+    assert(q.nbase == 21, "the trailing / trimmed, as HooshClient::new");
+    assert_eq(q.query(&cols, 1, "What is the mean?", 17, &r), PMN_ERR_NONE, "query");
+    assert(load64(&ctx + 24) == 1, "one POST");
+    assert(bytes_is(r.answer, r.nanswer, "The mean is 1.1.") == 1, "the reply's content");
+    assert(bytes_is(r.operation, r.noperation, "direct_answer") == 1 && r.nvalues == 0, "direct_answer, no values");
+    PmnQueryResult_drop(&r);
+    store64(&ctx, 503);
+    assert_eq(q.query(&cols, 1, "q", 1, &r), PMN_ERR_COMPUTATION_ERROR, "a 503: LLM inference failed");
+    store64(&ctx, 200);
+    var bad = "{\"choices\":5}";
+    store64(&ctx + 8, bad);
+    store64(&ctx + 16, strlen(bad));
+    assert_eq(q.query(&cols, 1, "q", 1, &r), PMN_ERR_COMPUTATION_ERROR, "a reply hoosh can't read");
+    assert_eq(q.query(&cols, 0, "q", 1, &r), PMN_ERR_INVALID_SAMPLE, "no columns");
+    var dup[64];
+    store64(&dup, "a");
+    store64(&dup + 8, 1);
+    store64(&dup + 16, xs);
+    store64(&dup + 24, 3);
+    store64(&dup + 32, "a");
+    store64(&dup + 40, 1);
+    store64(&dup + 48, xs);
+    store64(&dup + 56, 3);
+    assert_eq(q.query(&dup, 2, "q", 1, &r), PMN_ERR_INVALID_PARAMETER, "a column twice (a HashMap holds one)");
+    PmnStatQuery_drop(&q);
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

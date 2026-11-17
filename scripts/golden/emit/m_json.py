@@ -672,6 +672,7 @@ def emit():
     markov_models(m, Rng(0x3F84D5B5B5470917))
     mc_results(m, Rng(0x8E79DCB0603A180E))
     soorat_shapes(m, Rng(0x3C6EF372A54FF53A))
+    query_results(m, Rng(0x1F83D9AB5BE0CD19 ^ 0x5A5A))
     return m
 
 def kde_toks(data, h, k):
@@ -926,3 +927,30 @@ def soorat_shapes(m, g):
             toks = TOKS[kind](base)
             write(m, kind, toks)
             read(m, f"json::{kind}", V.serde_write(kind, iter(parsed(toks))))
+
+
+def qr_toks(answer, op, values):
+    keys = sorted(values, key=lambda k: k.encode("utf-8"))
+    out = [s(answer), s(op), v(len(keys))]
+    for k in keys:
+        out += [s(k), f(values[k])]
+    return out
+
+
+def query_results(m, g):
+    """M7 part b: QueryResult, derived codec; its values a HashMap<String, f64>, written in key order (ADR 007 row 9)."""
+    strs = B('"ok"', '""', '"a\\"b"', "null", "1", '"\\ud800"', '"\\u00e9"')
+    maps = B('{"mean":1.5}', "{}", '{"b":1,"a":2}', '{"x":null}', '{"x":"1"}', "[]", "null", '{"k":1e309}',
+             '{"\\u00e9":-0.0,"z":5e-324}', '{"a":1,"a":2}', '{"a":1,"A":2,"":3}')
+    for d in struct_docs([("answer", b'"ok"'), ("operation", b'"describe"'), ("values", b'{"mean":1.5}')],
+                         [strs, strs, maps]):
+        read(m, "json::QueryResult", d)
+    cases = [("ok", "describe", {"mean": 1.5}), ("", "direct_answer", {}),
+             ("The mean is 3.", "describe", {"mean": 3.0, "median": 3.0, "std_dev": 1.4142135623730951, "variance": 2.0,
+                                             "min": 1.0, "max": 5.0}),
+             ("é", "forecast", {f"forecast_{k}": finite(g) for k in range(1, 13)}),
+             ("x", "t_test_two_sample", {"t_statistic": NAN, "p_value": 0.5, "df": INF})]
+    for a, op, vals in cases:
+        toks = qr_toks(a, op, vals)
+        write(m, "QueryResult", toks)
+        read(m, "json::QueryResult", V.serde_write("QueryResult", iter(parsed(toks))))

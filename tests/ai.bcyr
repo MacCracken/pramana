@@ -1,0 +1,75 @@
+# ai.bcyr — src/ai.cyr (M7 part b): ns per call. 1.3.0 has no criterion body for ai.rs, so these rows have no Rust
+# column:
+# - `ai/fmt_fixed4`: Rust's `{:.4}` of a seeded double in [−10⁶, 10⁶);
+# - `ai/request_body_3cols`: the system prompt and request body for three columns of 40, 5 and 5 values;
+# - `ai/describe_200`: the describe tool on a 200-value column, its text and values.
+# Each row prints a result. The record is docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+fn main(): i64 {
+    alloc_init();
+    var g: PmnSimpleRng;
+    PmnSimpleRng_new(&g, 42);
+    var xs = alloc(1000 * 8);
+    for (var i = 0; i < 1000; i = i + 1) {
+        var u: f64 = g.next_f64();
+        var t: f64 = u * 2000000.0;
+        var x: f64 = t - 1000000.0;
+        store64(xs + i * 8, x);
+    }
+    var sb = str_builder_new();
+    var b1 = bench_new("fmt_fixed4");
+    bench_batch_start(b1);
+    for (var r = 0; r < 100000; r = r + 1) {
+        store64(sb + 8, 0);
+        var v: f64 = load64(xs + (r % 1000) * 8);
+        if (_pmn_ai_w_fixed(sb, v, 4) != PMN_ERR_NONE) { return 1; }
+    }
+    bench_batch_stop(b1, 100000);
+    print("  last: ", 8);
+    print(load64(sb), load64(sb + 8));
+    println("");
+    bench_report(b1);
+
+    var cols[96];
+    store64(&cols, "series");
+    store64(&cols + 8, 6);
+    store64(&cols + 16, xs);
+    store64(&cols + 24, 40);
+    store64(&cols + 32, "x");
+    store64(&cols + 40, 1);
+    store64(&cols + 48, xs + 40 * 8);
+    store64(&cols + 56, 5);
+    store64(&cols + 64, "y");
+    store64(&cols + 72, 1);
+    store64(&cols + 80, xs + 45 * 8);
+    store64(&cols + 88, 5);
+    var b2 = bench_new("request_body_3cols");
+    bench_batch_start(b2);
+    for (var r2 = 0; r2 < 20000; r2 = r2 + 1) {
+        store64(sb + 8, 0);
+        if (_pmn_ai_request_body(sb, "llama3", 6, &cols, 3, "What is the mean of x?", 22) != PMN_ERR_NONE) { return 1; }
+    }
+    bench_batch_stop(b2, 20000);
+    print("  bytes: ", 9);
+    fmt_int(load64(sb + 8));
+    println("");
+    bench_report(b2);
+
+    store64(&cols + 24, 200);
+    var qr: PmnQueryResult;
+    var args = "{\"column\":\"series\"}";
+    var b3 = bench_new("describe_200");
+    bench_batch_start(b3);
+    for (var r3 = 0; r3 < 20000; r3 = r3 + 1) {
+        if (_pmn_ai_execute_tool(&qr, "describe", 8, args, strlen(args), &cols, 1) != PMN_ERR_NONE) { return 1; }
+        PmnQueryResult_drop(&qr);
+    }
+    bench_batch_stop(b3, 20000);
+    bench_report(b3);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

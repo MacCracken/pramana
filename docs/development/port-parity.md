@@ -4587,3 +4587,42 @@ Some `from_data` edge cases, all matching 1.3.0:
 
 **Mutants.** All eight fail rows (2 to 192 each): the floor's factor 2 and its magnitude floor of 1, the overflow
 bin, counting infinities, the min fold, equality by bits, and equality skipping a name or a size.
+
+### 13.2 Part b: the AI client (2026-11-17)
+
+`src/ai.cyr`, golden `ai` (2,721 rows), 89 codec and 6 Debug rows:
+
+| Function | Rows | Class |
+|---|---|---|
+| `ai::fmt_fixed` (Rust's `{:.p}`, p = 0 … 17) | 1,746 | A |
+| `ai::fmt_display` (Rust's `{}`) | 835 | A |
+| `ai::build_data_summary` | 5 | A |
+| `ai::request_body` | 19 | A |
+| `StatQuery::query` (the URL and body posted, then the result) | 45 | A |
+| `ai::execute_tool` | 71 | A; C for the t-test (13 rows in `ai.ref.tsv`, on the T1 p-value) |
+
+The first replay crashed. `_pmn_ai_w_fixed`'s bignums were declared `[96]`, 96 bytes (CLAUDE.md: `var buf[N]` is N
+bytes), where a value up to 2¹⁰⁸¹ needs 35 words. With the buffers sized at 50 words, every row passes at 0 ulp. That
+includes the exact ties, k/2^(p+1) for odd k, where Rust and Python both round to even.
+
+**What 1.3.0 sends.** hoosh 1.3.0's `to_chat_body` builds `json!({"model", "messages", "stream"})` and drops the
+request's tools and tool choice. 1.3.0's serde_json has no `preserve_order` (no indexmap in its lockfile), so the keys
+are written sorted. Its `infer` returns `tool_calls: Vec::new()` whatever the reply holds, so `query` always takes
+the direct-answer branch. The port posts the same bytes and reads the reply as `ChatCompletionResp` does:
+- `model` and `usage` are Options, absent or null;
+- `choices` is required;
+- each `message` is required and its `content` is an Option;
+- usage's u32s refuse 2³²;
+- unknown members are skipped, and the sequence form is taken.
+
+**sandhi's static data.** A binary with sandhi and the library has 215,392 bytes of `.bss`. That is over cyrius's
+131,072-byte advisory, and sandhi alone has 127,168. sandhi's transport is therefore tested in a binary of its own
+(`tests/ai_sandhi.tcyr`), and the request is filed in sandhi (ledger §10).
+
+**Mutants.** Twelve; eleven fail rows (1 to 205 each):
+- `{:.p}`'s ties and its −0 sign, `{}`'s integer suffix;
+- the summary's and the values' order, the prompt's text;
+- the 2xx test, the first choice, the u32 bound, the base's trailing `/`, `mu` from an integer.
+
+The twelfth, the bounded argument taking 0, is equivalent: steps or an AR order of 0 is refused with the same code by
+`arima_forecast` or `arima_fit`.

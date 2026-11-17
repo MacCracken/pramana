@@ -63,6 +63,10 @@ Rust 1.3.0 is the final Rust release; the Cyrius port ships as 2.0.0. Plan of re
 - [x] M4 descriptive + hypothesis (done 2026-11-17, parts a1–a3, b1–b2, c) · M5 regression, time series, Bayesian (done 2026-11-17, parts a–d, NIST StRD measured) · M6 Markov + Monte Carlo (done 2026-11-17, parts a–c)
 - [ ] M7 soorat shapes + `ai` · M8 release 2.0.0
 
+- [ ] The AI client's tools (2.1 candidate, M7 part b's finding): hoosh 1.3.0's client drops `tools` and returns no
+      tool calls, so 1.3.0's `StatQuery::query` always answers directly, and 2.0 keeps that. Sending the five tools in
+      OpenAI's tool-calling form, running the returned call through `_pmn_ai_execute_tool` and the follow-up request
+      would make them reachable; the tools themselves are ported and proven on golden rows
 - [ ] A Cyrius threat model (the JSON readers and the `ai` HTTP client are the input surface). The Rust 1.3.0 one is
       at `rust-old/docs/development/threat-model.md`
 

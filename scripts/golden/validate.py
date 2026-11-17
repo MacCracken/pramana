@@ -624,8 +624,9 @@ class SerdeModel:
         else:
             raise SerdeRefusal("expected a value")
 
-    def struct(self, fields):
-        """serde derive's visit_map and visit_seq through deserialize_struct."""
+    def struct(self, fields, optional=()):
+        """serde derive's visit_map and visit_seq through deserialize_struct; a missing field in `optional` (an Option)
+        reads as None."""
         self.ws()
         c = self.peek()
         if c == 0x5B:
@@ -687,6 +688,9 @@ class SerdeModel:
                 self.ignore_value()
         for name, _ty in fields:
             if name.encode() not in got:
+                if name in optional:
+                    got[name.encode()] = ["n"]
+                    continue
                 raise SerdeRefusal("missing field")
         return [t for name, _ty in fields for t in got[name.encode()]]
 
@@ -754,9 +758,55 @@ class SerdeModel:
             raise SerdeRefusal("invalid type")
         if ty == "String":
             return ["s:" + pct_bytes(self.string())]
+        if ty == "Map<String,f64>":
+            if c != 0x7B:
+                raise SerdeRefusal("invalid type")
+            self.i += 1
+            got, first = {}, True
+            while True:
+                self.ws()
+                c = self.peek()
+                if c == 0x7D and first:
+                    self.i += 1
+                    break
+                if not first:
+                    if c == 0x7D:
+                        self.i += 1
+                        break
+                    if c != 0x2C:
+                        raise SerdeRefusal("expected , or }")
+                    self.i += 1
+                    self.ws()
+                    c = self.peek()
+                if c != 0x22:
+                    raise SerdeRefusal("key must be a string")
+                first = False
+                key = self.string()
+                self.ws()
+                if self.peek() != 0x3A:
+                    raise SerdeRefusal("expected a colon")
+                self.i += 1
+                got[key] = self.value("f64")[0]
+            keys = sorted(got)
+            return [f"v:{len(keys)}"] + [t for k in keys for t in ("s:" + pct_bytes(k), got[k])]
         if ty == "SimpleRng":
             state = self.struct([("state", "u64")])[0]   # SimpleRngRepr, then SimpleRng::new: 0 becomes 1
             return [1 if state == 0 else state]
+        if ty.startswith("Option<") and ty.endswith(">"):
+            if c == 0x6E:
+                self.expect(b"null")
+                return ["n"]
+            return self.value(ty[7:-1])
+        if ty == "u32":
+            if c is None or not (c == 0x2D or 0x30 <= c <= 0x39):
+                raise SerdeRefusal("invalid type")
+            kind, v = self.number()
+            if kind != "u" or v >= 1 << 32:
+                raise SerdeRefusal("invalid type or value")
+            return [v]
+        if ty in HOOSH_STRUCTS:
+            fields = HOOSH_STRUCTS[ty]
+            return self.struct(fields, optional={n for n, t in fields if t.startswith("Option<")})
         if ty in JSON_VALIDATED:
             fields, check = JSON_VALIDATED[ty]
             vals = self.struct(fields)                   # the Repr, then the constructor: its refusal is an error
@@ -795,6 +845,15 @@ class SerdeModel:
         raise ValueError(f"no model for {ty}")
 
 
+# hoosh 1.3.0's reply, as its client reads it (src/client.rs: ChatCompletionResp and its parts).
+HOOSH_STRUCTS = {
+    "ChatCompletionResp": [("model", "Option<String>"), ("choices", "Vec<ChatChoice>"),
+                           ("usage", "Option<ChatUsageResp>")],
+    "ChatChoice": [("message", "ChatMsg")],
+    "ChatMsg": [("content", "Option<String>")],
+    "ChatUsageResp": [("prompt_tokens", "Option<u32>"), ("completion_tokens", "Option<u32>"),
+                      ("total_tokens", "Option<u32>")],
+}
 # The generator's test structs and 1.3.0's two enums (scripts/golden/emit/m_json.py).
 JSON_STRUCTS = {
     "TestResult": [("test_name", "String"), ("statistic", "f64"), ("p_value", "f64"), ("degrees_of_freedom", "f64"),
@@ -810,6 +869,7 @@ JSON_STRUCTS = {
     "ArimaModel": [("ar_coefficients", "Vec<f64>"), ("d", "usize"), ("intercept", "f64"), ("residual_variance", "f64")],
     "PcaResult": [("components", "Vec<Vec<f64>>"), ("eigenvalues", "Vec<f64>"), ("explained_variance_ratio", "Vec<f64>")],
     "EstimateResult": [("value", "f64"), ("std_error", "f64")],
+    "QueryResult": [("answer", "String"), ("operation", "String"), ("values", "Map<String,f64>")],
     "DistributionCurve": [("x_values", "Vec<f64>"), ("pdf", "Vec<f64>"), ("cdf", "Vec<f64>"), ("name", "String")],
     "McmcTrace": [("samples", "Vec<f64>"), ("log_likelihoods", "Vec<f64>"), ("parameter", "String")],
     "RegressionFit": [("x_observed", "Vec<f64>"), ("y_observed", "Vec<f64>"), ("y_predicted", "Vec<f64>"),
@@ -1029,6 +1089,13 @@ def serde_write(ty: str, toks) -> bytes:
         fields = JSON_STRUCTS[ty] if ty in JSON_STRUCTS else JSON_VALIDATED[ty][0]
         return b"{" + b",".join(b'"' + name.encode() + b'":' + serde_write(t, toks)
                                 for name, t in fields) + b"}"
+    if ty == "Map<String,f64>":
+        n = int(next(toks)[len("v:"):])
+        items = []
+        for _ in range(n):
+            k = urllib.parse.unquote_to_bytes(next(toks)[len("s:"):])
+            items.append(serde_escape(k) + b":" + json_f64_text(next(toks)).encode())
+        return b"{" + b",".join(items) + b"}"
     if ty in JSON_ENUMS:
         name = next(toks).split(".", 1)[1].encode()
         return b'"' + name + b'"' if JSON_ENUMS[ty][1] is None else b'{"' + name + b'":""}'
@@ -3756,6 +3823,22 @@ def debug_text(fn, ins):
         comps = rust_debug_list([vec(2) for _ in range(rows)], alt, 1)
         return debug_struct("PcaResult", [("components", comps), ("eigenvalues", vec(1)),
                                           ("explained_variance_ratio", vec(1))], alt)
+    if fn == "debug::QueryResult":
+        alt = ins[-1] == 1
+        it = iter(ins[:-1])
+        ans = rust_debug_str(urllib.parse.unquote_to_bytes(next(it)[len("s:"):]))
+        op = rust_debug_str(urllib.parse.unquote_to_bytes(next(it)[len("s:"):]))
+        items = []
+        for _ in range(int(next(it)[len("v:"):])):
+            k = rust_debug_str(urllib.parse.unquote_to_bytes(next(it)[len("s:"):]))
+            items.append(k + ": " + rust_debug_f64(next(it)))
+        if not items:
+            mp = "{}"
+        elif alt:
+            mp = "{\n" + "".join("        " + t + ",\n" for t in items) + "    }"
+        else:
+            mp = "{" + ", ".join(items) + "}"
+        return debug_struct("QueryResult", [("answer", ans), ("operation", op), ("values", mp)], alt)
     if fn == "debug::McmcResult":
         alt = ins[-1] == 1
         it = iter(ins[:-1])
@@ -5504,12 +5587,312 @@ for _k in ("DistributionCurve", "McmcTrace", "RegressionFit", "HistogramData", "
     SOORAT[f"{_k}::eq"] = (lambda kind: lambda L, sl, sc: so_eq(L, sl, sc, kind))(_k)
 
 
+# ── ai (M7 part b): 1.3.0's ai.rs, over hoosh 1.3.0's client ──
+# A column is its name (an `s:` token) and its values (a `v:` slice): names among a row's scalars, values among its
+# slices, in the same order. Text outputs are `s:` tokens.
+
+def rust_shortest(ax):
+    """Rust's shortest digits of ax > 0 (on an exact tie the upper; Python's repr takes the even one): (digits, k)
+    with ax = 0.d1…dn × 10^k."""
+    from fractions import Fraction
+    d = Decimal(repr(ax)).normalize()
+    _, digit_tuple, exp = d.as_tuple()
+    digits = "".join(str(t) for t in digit_tuple)
+    n = len(digits)
+    k = n + exp
+    scaled = Fraction(ax) / (Fraction(10) ** (k - n))
+    lo = scaled.numerator // scaled.denominator
+    if scaled - lo == Fraction(1, 2) and int(digits) == lo:
+        up = lo + 1
+        if float(Fraction(up) * Fraction(10) ** (k - n)) == ax:
+            ds = str(up)
+            k += len(ds) - n
+            digits = ds.rstrip("0")
+    return digits, k
+
+
+def rust_display(x):
+    """Rust's `{}` of an f64: the shortest digits, always positional, no fractional part for an integer."""
+    if math.isnan(x):
+        return "NaN"
+    if math.isinf(x):
+        return "inf" if x > 0 else "-inf"
+    sign = "-" if math.copysign(1.0, x) < 0 else ""
+    if x == 0.0:
+        return sign + "0"
+    digits, k = rust_shortest(abs(x))
+    n = len(digits)
+    if k <= 0:
+        body = "0." + "0" * (-k) + digits
+    elif k >= n:
+        body = digits + "0" * (k - n)
+    else:
+        body = digits[:k] + "." + digits[k:]
+    return sign + body
+
+
+def rust_fixed(x, p):
+    """Rust's `{:.p}` of an f64: the exact value rounded to p decimals, ties to even (Python's format is the same)."""
+    if math.isnan(x):
+        return "NaN"
+    if math.isinf(x):
+        return "inf" if x > 0 else "-inf"
+    return format(x, f".{p}f")
+
+
+def ai_cols(sl, sc):
+    """The columns: (name bytes, values) pairs from a row's scalars (the `s:` names, in order) and slices."""
+    names = [urllib.parse.unquote_to_bytes(t[len("s:"):]) for t in sc if isinstance(t, str) and t.startswith("s:")]
+    return list(zip(names, sl[len(sl) - len(names):]))
+
+
+def ai_or_nan(r):
+    return math.nan if isinstance(r[0], str) else r[0]
+
+
+def ai_summary(L, cols):
+    lines = []
+    for name, xs in sorted(cols, key=lambda c: c[0]):
+        if not xs:
+            lines.append(b"- `" + name + b"`: empty")
+            continue
+        st = [ai_or_nan(DESC[f"descriptive::{f}"](L, [xs], [])) for f in ("mean", "std_dev", "min", "max")]
+        lines.append(b"- `" + name + b"`: " + str(len(xs)).encode() + b" observations, mean=" + rust_fixed(st[0], 4).encode()
+                     + b", std=" + rust_fixed(st[1], 4).encode() + b", min=" + rust_fixed(st[2], 4).encode() + b", max="
+                     + rust_fixed(st[3], 4).encode())
+    return b"\n".join(lines)
+
+
+def ai_body(L, model, question, cols):
+    system = (b"You are a statistical analysis assistant. The user has a dataset with these columns:\n\n"
+              + ai_summary(L, cols) + b"\n\nUse the provided tools to answer the user's question. "
+              b"Call exactly one tool, then explain the result concisely.")
+    return (b'{"messages":[{"content":' + serde_escape(system) + b',"role":"system"},{"content":' + serde_escape(question)
+            + b',"role":"user"}],"model":' + serde_escape(model) + b',"stream":false}')
+
+
+def ai_reply(body):
+    """hoosh 1.3.0's `infer` on a 2xx reply: the first choice's content (or b""), or None when serde refuses it."""
+    import json as _json
+    if serde_read("ChatCompletionResp", body) == ["E:Deserialize"]:
+        return None
+    doc = _json.loads(body.decode("utf-8"))
+    if isinstance(doc, list):
+        choices = doc[1]
+    else:
+        choices = doc["choices"]
+    if not choices:
+        return b""
+    first = choices[0]
+    msg = first[0] if isinstance(first, list) else first["message"]
+    content = msg[0] if isinstance(msg, list) else msg.get("content")
+    return b"" if content is None else content.encode("utf-8")
+
+
+def s_bytes(b):
+    return "s:" + pct_bytes(b)
+
+
+def ai_out_summary(L, sl, sc):
+    return [s_bytes(ai_summary(L, ai_cols(sl, sc)))]
+
+
+def ai_out_body(L, sl, sc):
+    """Inputs: the model, the question, then the columns."""
+    model = urllib.parse.unquote_to_bytes(sc[0][len("s:"):])
+    question = urllib.parse.unquote_to_bytes(sc[1][len("s:"):])
+    return [s_bytes(ai_body(L, model, question, ai_cols(sl, sc[2:])))]
+
+
+def ai_out_query(L, sl, sc):
+    """Inputs: the base URL, the model, the question, the reply's status and body, then the columns. Outputs: the URL
+    and body the transport was handed (when it was called), then the result or the error."""
+    base, model, question = (urllib.parse.unquote_to_bytes(t[len("s:"):]) for t in sc[:3])
+    status, reply = sc[3], urllib.parse.unquote_to_bytes(sc[4][len("s:"):])
+    cols = ai_cols(sl, sc[5:])
+    if not cols:
+        return ["E:InvalidSample"]
+    sent = [s_bytes(base.rstrip(b"/") + b"/v1/chat/completions"), s_bytes(ai_body(L, model, question, cols))]
+    if not 200 <= status <= 299:
+        return sent + ["E:ComputationError"]
+    text = ai_reply(reply)
+    if text is None:
+        return sent + ["E:ComputationError"]
+    return sent + [s_bytes(text), s_bytes(b"direct_answer"), "v:0"]
+
+
+class AiNum:
+    """A serde_json Number: kind 'u' (PosInt), 'i' (NegInt) or 'f' (Float), and its value."""
+    def __init__(self, kind, v):
+        self.kind, self.v = kind, v
+
+
+def ai_args(text):
+    """serde_json's Value of the arguments: numbers as AiNum (serde_json's classes), the rest as json.loads reads it."""
+    import json as _json
+
+    def pint(lit):
+        n = int(lit)
+        if not lit.startswith("-"):
+            return AiNum("u", n) if n < 1 << 64 else AiNum("f", float(lit))
+        if n == 0 or n < -(1 << 63):
+            return AiNum("f", float(lit))
+        return AiNum("i", n)
+
+    return _json.loads(text, parse_int=pint, parse_float=lambda lit: AiNum("f", float(lit)))
+
+
+def ai_get(args, key):
+    return args.get(key) if isinstance(args, dict) else None
+
+
+def ai_str(v):
+    return v.encode("utf-8") if isinstance(v, str) else None
+
+
+def ai_tool(L, name, args, cols):
+    """`execute_tool`: (operation, values dict, text bytes), or an error string."""
+    data = dict(cols)
+
+    def col(key):
+        nm = ai_str(ai_get(args, key))
+        if nm is None or nm not in data:
+            return None, nm
+        return data[nm], nm
+
+    def f4(x):
+        return rust_fixed(x, 4).encode()
+
+    if name == b"describe":
+        xs, nm = col("column")
+        if xs is None:
+            return "E:InvalidParameter"
+        st = []
+        for f in ("mean", "median", "std_dev", "variance", "min", "max"):
+            r = DESC[f"descriptive::{f}"](L, [xs], [])
+            if isinstance(r[0], str):
+                return r[0]
+            st.append(r[0])
+        m, med, sd, v, mn, mx = st
+        text = (b"Descriptive stats for '" + nm + b"': mean=" + f4(m) + b", median=" + f4(med) + b", std_dev=" + f4(sd)
+                + b", variance=" + f4(v) + b", min=" + f4(mn) + b", max=" + f4(mx))
+        return "describe", {b"mean": m, b"median": med, b"std_dev": sd, b"variance": v, b"min": mn, b"max": mx}, text
+    if name == b"correlate":
+        a, na = col("column_a")
+        if a is None:
+            return "E:InvalidParameter"
+        b, nb = col("column_b")
+        if b is None:
+            return "E:InvalidParameter"
+        r = corr_model(L, [a, b], [])
+        if isinstance(r[0], str) and r[0].startswith("E:"):
+            return r[0]
+        cr = r[2]
+        return "correlate", {b"correlation": cr}, (b"Pearson correlation between '" + na + b"' and '" + nb + b"': r = "
+                                                   + f4(cr))
+    if name == b"regress":
+        x, nx = col("x_column")
+        if x is None:
+            return "E:InvalidParameter"
+        y, ny = col("y_column")
+        if y is None:
+            return "E:InvalidParameter"
+        r = rg_linear(x, y)
+        if isinstance(r, str):
+            return r
+        sl_, ic, r2 = r
+        return "regress", {b"slope": sl_, b"intercept": ic, b"r_squared": r2}, (
+            b"Linear regression " + ny + b" = " + f4(sl_) + b" * " + nx + b" + " + f4(ic) + " (R² = ".encode() + f4(r2)
+            + b")")
+    if name == b"t_test":
+        a, na = col("column_a")
+        if a is None:
+            return "E:InvalidParameter"
+        bname = ai_str(ai_get(args, "column_b"))
+        if bname is not None:
+            if bname not in data:
+                return "E:InvalidParameter"
+            r = hy_t_two(L, [a, data[bname]], [0.05])
+            op, head = "t_test_two_sample", b"Two-sample t-test (" + na + b" vs " + bname
+        else:
+            mv = ai_get(args, "mu")
+            mu = float(mv.v) if isinstance(mv, AiNum) else 0.0
+            r = hy_t_one(L, [a], [mu, 0.05])
+            op, head = "t_test_one_sample", b"One-sample t-test (" + na + b" vs mu=" + rust_display(mu).encode()
+        if isinstance(r[0], str) and r[0].startswith("E:"):
+            return r[0]
+        _, st, pv, df, _alpha, rej = r
+        text = (head + b"): t = " + f4(st) + b", p = " + f4(pv) + b", df = " + rust_fixed(df, 1).encode() + b", reject = "
+                + (b"true" if rej else b"false"))
+        return op, {b"t_statistic": st, b"p_value": pv, b"df": df}, text
+    if name == b"forecast":
+        xs, nm = col("column")
+        if xs is None:
+            return "E:InvalidParameter"
+
+        def bounded(key, dflt, mx):
+            v = ai_get(args, key)
+            if v is None:
+                return dflt
+            if isinstance(v, AiNum) and v.kind == "u" and 1 <= v.v <= mx:
+                return v.v
+            return "E:InvalidParameter"
+
+        steps = bounded("steps", 5, 1000)
+        if isinstance(steps, str):
+            return steps
+        p = bounded("ar_order", 1, 32)
+        if isinstance(p, str):
+            return p
+        fit = ts_arima_fit(xs, p, 0)
+        if isinstance(fit, str):
+            return fit
+        phi, d, icpt, _rv = fit
+        fc = ts_forecast(phi, d, icpt, xs, steps)
+        if isinstance(fc, str):
+            return fc
+        text = (b"AR(" + str(p).encode() + b") forecast for '" + nm + b"', next " + str(steps).encode() + b" values: ["
+                + b", ".join(f4(v) for v in fc) + b"]")
+        return "forecast", {f"forecast_{k + 1}".encode(): v for k, v in enumerate(fc)}, text
+    return "E:InvalidParameter"
+
+
+def ai_out_tool(L, sl, sc):
+    """Inputs: the tool's name, the arguments document, then the columns."""
+    name = urllib.parse.unquote_to_bytes(sc[0][len("s:"):])
+    args = ai_args(urllib.parse.unquote_to_bytes(sc[1][len("s:"):]).decode("utf-8"))
+    r = ai_tool(L, name, args, ai_cols(sl, sc[2:]))
+    if isinstance(r, str):
+        return [r]
+    op, values, text = r
+    keys = sorted(values)
+    return [s_bytes(text), s_bytes(op.encode()), f"v:{len(keys)}"] + [t for k in keys for t in (s_bytes(k), values[k])]
+
+
+def ai_out_fixed(L, sl, sc):
+    return [s_bytes(rust_fixed(sc[0], sc[1]).encode())]
+
+
+def ai_out_display(L, sl, sc):
+    return [s_bytes(rust_display(sc[0]).encode())]
+
+
+AI = {
+    "ai::fmt_fixed": ai_out_fixed,
+    "ai::fmt_display": ai_out_display,
+    "ai::build_data_summary": ai_out_summary,
+    "ai::request_body": ai_out_body,
+    "StatQuery::query": ai_out_query,
+    "ai::execute_tool": ai_out_tool,
+}
+
+
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
 STATS_T1 = {"hypothesis::t_test_one_sample": "incomplete beta", "hypothesis::t_test_two_sample": "incomplete beta",
             "hypothesis::chi_squared_test": "incomplete gamma", "hypothesis::one_way_anova": "incomplete beta",
             "hypothesis::ks_one_sample": "Φ", "hypothesis::z_quantile": "Φ", "hypothesis::t_quantile": "incomplete beta",
             "hypothesis::ci_mean": "incomplete beta", "hypothesis::ci_two_means": "incomplete beta",
-            "hypothesis::ci_proportion": "Φ"}
+            "hypothesis::ci_proportion": "Φ", "ai::execute_tool": "incomplete beta"}
 
 
 def stats_model(table, fn):
@@ -5563,7 +5946,7 @@ def check_stats(root, module, table, rows):
 
 
 STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG, "timeseries": TS,
-                 "bayesian": BAYES, "markov": MARKOV, "monte_carlo": MC, "soorat": SOORAT}
+                 "bayesian": BAYES, "markov": MARKOV, "monte_carlo": MC, "soorat": SOORAT, "ai": AI}
 
 
 def main(argv):

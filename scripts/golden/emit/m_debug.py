@@ -156,4 +156,9 @@ def emit():
     for kind, bs in bases(Rng(0x510E527F9B05688C)).items():
         for base in bs:
             both(f"debug::{kind}", TOKS[kind](base))
+    # M7 part b: QueryResult (its map in key order)
+    from .m_json import qr_toks
+    for a, op, vals in (("ok", "describe", {"mean": 1.5}), ("", "direct_answer", {}),
+                        ("a\"b\n", "forecast", {"forecast_1": 1.0, "forecast_10": -0.0, "forecast_2": 1e300})):
+        both("debug::QueryResult", qr_toks(a, op, vals))
     return m

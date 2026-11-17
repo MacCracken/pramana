@@ -997,3 +997,17 @@ pinned runs):
 
 The histogram is two passes over 10⁴ values and a division each. The curve's codec is almost all the serde_json float
 printer's 2.8–13.9 µs a value, M1 part d1's finding, which ledger L10 asks impetus for.
+
+## M7 part b: the AI client (2026-11-17)
+
+1.3.0 has no criterion body for `ai.rs` (its query is a network round trip), so these rows have no Rust column
+(`tests/ai.bcyr`, three pinned runs):
+
+| Row | Cyrius |
+|---|---|
+| `ai/fmt_fixed4` (Rust's `{:.4}` of a double in [−10⁶, 10⁶)) | 469–472 ns |
+| `ai/request_body_3cols` (the summary of 50 values and the request body) | 20.4–20.5 µs |
+| `ai/describe_200` (the tool on 200 values: six statistics, the text, the result) | 14.0–14.1 µs |
+
+`{:.4}` is exact, on fmtf's bignum. Rust's own `{:.4}` takes Grisu's fast path and falls back to Dragon4 only on a
+close call, so it would be faster. The other two rows are a dozen of those and the statistics.

@@ -577,6 +577,13 @@ fn _par_json_write(fp, fl): i64 {
         _par_json_k = whk;
         e = whm.to_json(sb);
         var whd = PmnHiddenMarkovModel_drop(&whm);
+    } elif (_par_eq(fp, fl, "json::write::QueryResult") == 1) {
+        var wqr: PmnQueryResult;
+        var wqk = _par_qr_from_toks(0, &wqr);
+        if (wqk < 0) { return 0 - 1; }
+        _par_json_k = wqk;
+        e = wqr.to_json(sb);
+        var wqd = PmnQueryResult_drop(&wqr);
     } elif (_par_eq(fp, fl, "json::write::EstimateResult") == 1) {
         var wer: PmnEstimateResult;
         var wev: f64 = _par_in(0);
@@ -1078,6 +1085,7 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::MarkovChain") == 1) { return _par_json_chain(); }
     if (_par_eq(fp, fl, "json::HiddenMarkovModel") == 1) { return _par_json_hmm(); }
     if (_par_eq(fp, fl, "json::EstimateResult") == 1) { return _par_json_estimate(); }
+    if (_par_eq(fp, fl, "json::QueryResult") == 1) { return _par_json_qr(); }
     var jsk = _par_so_kind(fp, fl, 6);
     if (jsk >= 0) { return _par_json_shape(jsk); }
     if (_par_eq(fp, fl, "json::McmcResult") == 1) { return _par_json_mcmc(); }
@@ -1320,6 +1328,16 @@ fn _par_debug(fp, fl): i64 {
         if (dhk < 0 || dhk + 1 != _par_in_n) { return 0 - 1; }
         e = dhm.debug(sb, _par_in(dhk));
         var dhd = PmnHiddenMarkovModel_drop(&dhm);
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::QueryResult") == 1) {
+        var dqr: PmnQueryResult;
+        var dqk = _par_qr_from_toks(0, &dqr);
+        if (dqk < 0 || dqk + 1 != _par_in_n) { return 0 - 1; }
+        e = dqr.debug(sb, _par_in(dqk));
+        var dqd = PmnQueryResult_drop(&dqr);
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -3768,8 +3786,208 @@ fn _par_json_shape(kind): i64 {
     return 1;
 }
 
+# ── `ai` rows (M7 part b): src/ai.cyr. A column is `s:name`, then its `v:` slice.
+
+# The columns from token k on, to the row's end, into fresh records (32 bytes each): the records, their count at np;
+# 0 on a malformed token.
+fn _par_ai_cols(k0, np): i64 {
+    var nc = 0;
+    var k = k0;
+    while (k < _par_in_n) {
+        if (load64(_par_in_k + k * 8) != 115 || k + 1 >= _par_in_n) { return 0; }
+        var n = _par_in(k + 1);
+        if (n < 0 || k + 1 + n >= _par_in_n + 1) { return 0; }
+        k = k + 2 + n;
+        nc = nc + 1;
+    }
+    var recs = alloc(nc * 32 + 8);
+    if (recs == 0) { return 0; }
+    k = k0;
+    for (var c = 0; c < nc; c = c + 1) {
+        var ln = 0;
+        var lp = _par_in_bytes_copy(k, &ln);
+        var vn = 0;
+        var vk = 0;
+        var vp = _par_so_vec(k + 1, &vn, &vk);
+        if (lp == 0 || vp == 0) { return 0; }
+        store64(recs + c * 32, lp);
+        store64(recs + c * 32 + 8, ln);
+        store64(recs + c * 32 + 16, vp);
+        store64(recs + c * 32 + 24, vn);
+        k = vk;
+    }
+    store64(np, nc);
+    return recs;
+}
+
+# Appends a QueryResult's tokens: the answer, the operation, then `v:n` and each value's key and f64.
+fn _par_got_query(r: *PmnQueryResult): i64 {
+    _par_got_text(r.answer, r.nanswer);
+    _par_got_text(r.operation, r.noperation);
+    _par_got_seq(r.nvalues);
+    for (var i = 0; i < r.nvalues; i = i + 1) {
+        _par_got_text(load64(r.values + i * 24), load64(r.values + i * 24 + 8));
+        _par_got_f(load64(r.values + i * 24 + 16));
+    }
+    return 0;
+}
+
+# The recorded-response transport: ctx holds the reply's status, body and length, then a flag set when called and
+# copies of the URL and body it was handed.
+fn _par_ai_transport(ctx, url, nurl, body, nbody, resp): i64 {
+    store64(ctx + 24, 1);
+    var cu = alloc(nurl + 8);
+    var cb = alloc(nbody + 8);
+    if (cu == 0 || cb == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    if (nurl > 0) { memcpy(cu, url, nurl); }
+    if (nbody > 0) { memcpy(cb, body, nbody); }
+    store64(ctx + 32, cu);
+    store64(ctx + 40, nurl);
+    store64(ctx + 48, cb);
+    store64(ctx + 56, nbody);
+    store64(resp, load64(ctx));
+    store64(resp + 8, load64(ctx + 8));
+    store64(resp + 16, load64(ctx + 16));
+    return PMN_ERR_NONE;
+}
+
+# A QueryResult from its codec tokens at k0 (the answer, the operation, `v:n` and each key and value) into r: the
+# next token, or -1. The caller drops r.
+fn _par_qr_from_toks(k0, r: *PmnQueryResult): i64 {
+    if (k0 + 2 >= _par_in_n) { return 0 - 1; }
+    var an = 0;
+    var ap = _par_in_bytes_copy(k0, &an);
+    var on = 0;
+    var op = _par_in_bytes_copy(k0 + 1, &on);
+    if (ap == 0 || op == 0 || load64(_par_in_k + (k0 + 2) * 8) != 118) { return 0 - 1; }
+    var nv = _par_in(k0 + 2);
+    if (nv < 0 || k0 + 2 + 2 * nv >= _par_in_n + 1) { return 0 - 1; }
+    var recs = alloc(nv * 24 + 8);
+    for (var i = 0; i < nv; i = i + 1) {
+        var kn = 0;
+        var kp = _par_in_bytes_copy(k0 + 3 + 2 * i, &kn);
+        if (kp == 0) { return 0 - 1; }
+        store64(recs + i * 24, kp);
+        store64(recs + i * 24 + 8, kn);
+        store64(recs + i * 24 + 16, _par_in(k0 + 4 + 2 * i));
+    }
+    if (PmnQueryResult_new(r, ap, an, op, on, recs, nv) != PMN_ERR_NONE) { return 0 - 1; }
+    return k0 + 3 + 2 * nv;
+}
+
+# json::QueryResult rows: the decoded result's tokens, or the error.
+fn _par_json_qr(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var r: PmnQueryResult;
+    var e = PmnQueryResult_from_json(&r, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_query(&r);
+    var d = PmnQueryResult_drop(&r);
+    return 1;
+}
+
+fn _par_ai(fp, fl): i64 {
+    var sb = str_builder_new();
+    if (sb == 0) { return 0 - 1; }
+    if (_par_eq(fp, fl, "ai::fmt_fixed") == 1) {
+        if (_par_in_n != 2) { return 0 - 1; }
+        var x: f64 = _par_in(0);
+        if (_pmn_ai_w_fixed(sb, x, _par_in(1)) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "ai::fmt_display") == 1) {
+        if (_par_in_n != 1) { return 0 - 1; }
+        var y: f64 = _par_in(0);
+        if (_pmn_ai_w_display(sb, y) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var nc = 0;
+    if (_par_eq(fp, fl, "ai::build_data_summary") == 1) {
+        var c0 = _par_ai_cols(0, &nc);
+        if (c0 == 0 && _par_in_n > 0) { return 0 - 1; }
+        if (_pmn_ai_summary(sb, c0, nc) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "ai::request_body") == 1) {
+        var mn = 0;
+        var mp = _par_in_bytes_copy(0, &mn);
+        var qn = 0;
+        var qp = _par_in_bytes_copy(1, &qn);
+        var c1 = _par_ai_cols(2, &nc);
+        if (mp == 0 || qp == 0 || c1 == 0) { return 0 - 1; }
+        if (_pmn_ai_request_body(sb, mp, mn, c1, nc, qp, qn) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var r: PmnQueryResult;
+    if (_par_eq(fp, fl, "StatQuery::query") == 1) {
+        var bn = 0;
+        var bp = _par_in_bytes_copy(0, &bn);
+        var m2 = 0;
+        var mp2 = _par_in_bytes_copy(1, &m2);
+        var q2 = 0;
+        var qp2 = _par_in_bytes_copy(2, &q2);
+        var rn = 0;
+        var rp = _par_in_bytes_copy(4, &rn);
+        if (bp == 0 || mp2 == 0 || qp2 == 0 || rp == 0) { return 0 - 1; }
+        var c2 = 0;
+        if (_par_in_n > 5) {
+            c2 = _par_ai_cols(5, &nc);
+            if (c2 == 0) { return 0 - 1; }
+        }
+        var ctx[64];
+        store64(&ctx, _par_in(3));
+        store64(&ctx + 8, rp);
+        store64(&ctx + 16, rn);
+        store64(&ctx + 24, 0);
+        var sq: PmnStatQuery;
+        if (PmnStatQuery_new(&sq, bp, bn, mp2, m2, &_par_ai_transport, &ctx) != PMN_ERR_NONE) {
+            return 0 - 1;
+        }
+        var e = sq.query(c2, nc, qp2, q2, &r);
+        if (load64(&ctx + 24) == 1) {
+            _par_got_text(load64(&ctx + 32), load64(&ctx + 40));
+            _par_got_text(load64(&ctx + 48), load64(&ctx + 56));
+        }
+        if (e != PMN_ERR_NONE) {
+            _par_got_err(e);
+        } else {
+            _par_got_query(&r);
+            var dq = PmnQueryResult_drop(&r);
+        }
+        var ds = PmnStatQuery_drop(&sq);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "ai::execute_tool") == 1) {
+        var tn = 0;
+        var tp = _par_in_bytes_copy(0, &tn);
+        var an = 0;
+        var ap = _par_in_bytes_copy(1, &an);
+        var c3 = _par_ai_cols(2, &nc);
+        if (tp == 0 || ap == 0 || c3 == 0) { return 0 - 1; }
+        var et = _pmn_ai_execute_tool(&r, tp, tn, ap, an, c3, nc);
+        if (et != PMN_ERR_NONE) {
+            _par_got_err(et);
+            return 1;
+        }
+        _par_got_query(&r);
+        var dt = PmnQueryResult_drop(&r);
+        return 1;
+    }
+    return 0;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
+    if (_par_eq(mp, ml, "ai") == 1) { return _par_ai(fp, fl); }
     if (_par_eq(mp, ml, "bayesian") == 1) { return _par_bayesian(fp, fl); }
     if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
     if (_par_eq(mp, ml, "combinatorics") == 1) { return _par_combinatorics(fp, fl); }
@@ -3913,6 +4131,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "monte_carlo::monte_carlo_integrate") == 1) { return 0; }   # sin and exp (M6 part b)
     if (_par_eq(fp, fl, "monte_carlo::metropolis_hastings") == 1) { return 0; }     # Box–Muller's ln and cos, exp
     if (_par_eq(fp, fl, "monte_carlo::gibbs_sampling") == 1) { return 0; }
+    if (_par_eq(fp, fl, "ai::execute_tool") == 1) { return 0; }    # the t-test's T1 p-value (M7 part b)
     if (_par_eq(fp, fl, "regression::logistic_regression") == 1) { return 0; }   # the sigmoid's exp (M5 part a)
     if (_par_eq(fp, fl, "regression::predict_logistic_proba") == 1) { return 0; }
     if (_par_eq(fp, fl, "regression::predict_logistic_class") == 1) { return 0; }

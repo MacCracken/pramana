@@ -1041,6 +1041,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     unequal to itself, −0 equal to +0). It also has 465 codec rows and 20 Debug rows. Every row passes at 0 ulp.
   - **Mutants:** all eight fail 2 to 192 rows each. `tests/soorat.tcyr` (47 checks) carries 1.3.0's nine tests over.
   - **Surface parity** now counts the PartialEq derive.
+- **M7 part b: the AI client** (port plan §7, D8 as amended; `src/ai.cyr` and `src/ai_sandhi.cyr`, the `[lib.ai]`
+  profile and its bundle `dist/pramana-ai.cyr`).
+  - **What's ported:** 1.3.0's `StatQuery`, whose HooshClient is a base URL and a transport (`pmn_ai_sandhi_transport`
+    for sandhi's POST, or a recorded one), and `QueryResult` with its codec and Debug, its values in key order (ADR 007
+    row 9, amended). Also the data summary, the request body and the reply reader. The five tools carry their
+    bounded arguments.
+  - **Rust's float text:** `{:.4}` and `{:.1}` are exact with ties to even, on fmtf's bignum. `{}` gives the shortest
+    digits positionally.
+  - **A finding:** hoosh 1.3.0's client drops the tools and returns no tool calls, so 1.3.0's `query` always answers
+    directly. The port keeps that wire behavior: `{"messages":[…],"model":…,"stream":false}`, with `json!`'s sorted
+    keys, to `{base}/v1/chat/completions`. The tools are ported and proven behind it, and sending them is a 2.1
+    candidate on the roadmap.
+  - **The rows:** a new golden module, `ai`, 2,721 rows:
+    - 2,581 rows of float text, the dyadic ties among them;
+    - the summary and the request body;
+    - 45 queries over recorded replies (statuses, Option fields absent or null, u32 usage bounds, the sequence form);
+    - 71 tool calls, 1.3.0's bounded-argument tests among them.
+
+    There are also 89 codec rows and 6 Debug rows. Every row passes at 0 ulp; `ai.ref.tsv` holds the 13 t-test rows
+    on the T1 p-value.
+  - **Mutants:** eleven of twelve fail rows; the twelfth is equivalent (steps 0 is refused all the same).
+  - **Tests:** `tests/ai.tcyr` (40 checks) carries 1.3.0's four tests over. `tests/ai_sandhi.tcyr` drives sandhi's
+    transport in a binary of its own: sandhi's static data alone fills cyrius's 128 KiB advisory, a request filed
+    in sandhi.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one
