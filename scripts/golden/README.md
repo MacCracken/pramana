@@ -109,6 +109,13 @@ files. This README records what is specific to pramana.
   `special`'s, and writes `dist.cr.tsv` (a glibc primitive's misround) and `dist.ref.tsv` (Normal's cdf on the T1 Φ;
   Weibull's moments and the gamma family's pdfs on the T1 lnΓ or ln B; their cdfs and the tails on the T1 incomplete
   gamma or beta).
+- **`linalg.tsv`** (M3 part d1, `src/m_linalg.rs`): hisab 1.4.0's `cholesky` and `cholesky_solve`, which 1.3.0
+  calls, through its `pub use hisab`. The factor on the empty matrix, 1×1 and 2×2 edges (every pivot class; singular,
+  indefinite and non-symmetric matrices; NaN and ∞ off the diagonal), seeded SPD matrices to n = 64, the Hilbert
+  matrices to n = 14 and Lehmer's and the [2, −1] tridiagonal, scaled; 13 of its 70 rows are hisab's refusal,
+  `E:InvalidParameter`. The solve with every factor against unit, seeded, zero and NaN-bearing right sides, with hand
+  factors (a zero diagonal, junk above it) and at n = 0: 612 rows. A matrix is `v:n²` and its entries row-major. All
+  class A; `validate.py` recomputes each row in hisab's order.
 - **`bridge.tsv`** (M1 part e3, `src/m_bridge.rs`): the eleven bridges on special-value grids, the 1e-15 floors and
   their neighbours, empty, single, mismatched and NaN-bearing slices, the fits' skipped records, and seeds. Class B,
   except the likelihood and the two fits (class C). A slice of pairs is `v:n` then each pair's `i:` and `f:` tokens;
@@ -205,6 +212,7 @@ files. This README records what is specific to pramana.
 | `bridge` | M1 e3 | 5,553 | `src/m_bridge.rs` | `bridge.cr.tsv`, 0 rows (glibc's exp, ln and log2 are correctly rounded on every input) |
 | `debug` | M1 f, M3 a1–c2 | 25,688 | `src/m_debug.rs` | — |
 | `dist` | M3 a1–c2 | 163,056 | `src/m_dist.rs` | `dist.cr.tsv`, 1,270 rows (glibc's exp, expm1, ln, ln_1p, cos, tan or pow misrounded in a pdf or cdf value, a moment or a draw); `dist.ref.tsv`, 31,437 rows (Normal's cdf on the T1 Φ, 2,699; Weibull's moments on the T1 lnΓ, 1,100; the gamma family's and the discrete distributions' pdfs on the T1 lnΓ or ln B, 9,947; their cdfs and the Student-t and F tails on the T1 incomplete gamma or beta, 17,691) |
+| `linalg` | M3 d1 | 682 | `src/m_linalg.rs` | — |
 | `combinatorics` | M1 e2 | 2,405 | `src/m_combinatorics.rs` | `combinatorics.cr.tsv`, 0 rows (glibc's pow is correctly rounded on every Stirling input) |
 | `special` | M2 a1–a4, b1–b5 | 58,101 | `src/m_special.rs` | `special.ref.tsv`, 20,621 rows (b1: erf and erfc at their true values, 1,074; b2: Φ and 1 − Φ at theirs, 5,574; b3: lnΓ at its, 2,441; b4: the incomplete gamma's P and Q at theirs, 3,669; b5: the incomplete beta's I and 1 − I at theirs, 4,834; and the rows downstream of them on T1's values, 3,029, among them gamma_inc's 510 Wilson–Hilferty rows and the three wrappers' 777); `special.cr.tsv`, 91 rows (glibc's log1p, exp or ln misrounded in bd0, the kernel and ln B, 87; two `beta_inc` rows whose true value is Rust's form on correctly rounded primitives; one Wilson–Hilferty `gamma_inc` row; and part a1's last erfc row, where fdlibm on a correctly rounded exp already gives the true erfc) |
 

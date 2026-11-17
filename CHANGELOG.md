@@ -829,6 +829,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 681–708 ns a pmf (8.3× Rust), 7.15–7.28 µs a cdf (39×: the T1 incomplete beta), 605–622 ns
     a simulated draw of 50 trials (2.6×) and 7.9–8.1 µs a Beta-split draw of 10⁶ (5.9×); every bench digest is explained
     by the models.
+- **M3 part d1: the Cholesky factor and solve** (`src/linalg.cyr`; port plan §7, §8.2, ledger L4; D11; ADR 008;
+  results in `docs/development/port-parity.md` §9.8):
+  - **`_pmn_cholesky` and `_pmn_cholesky_solve`:** hisab 1.4.0's `cholesky` and `cholesky_solve`, which 1.3.0 calls
+    for MultivariateNormal, ARIMA and the logistic regression, transcribed term for term in hisab's order on flat
+    row-major caller buffers, allocating nothing (hisab returns a fresh `Vec<Vec<f64>>`, and ganita's solve leaves 8n
+    bytes a call). The solve may run in place. hisab's InvalidInput is `PMN_ERR_INVALID_PARAMETER` (a pivot ≤ 0, an
+    empty matrix), and so are null buffers and overlaps;
+  - **golden rows:** a new module, `linalg`, 682 rows (the factor's pivot classes, singular, indefinite and
+    non-symmetric matrices, seeded SPD matrices to n = 64, Hilbert's to n = 14, Lehmer's and scaled tridiagonals; the
+    solves against unit, seeded, zero and NaN-bearing right sides), modelled by `validate.py` in hisab's order. Every
+    row passes at 0 ulp, warning-free, on x86_64 ELF, PE and aarch64;
+  - **tests and checks:** `tests/linalg.tcyr`, 43 checks (hisab's five tests among them); `tests/soak.tcyr` adds 10⁴
+    factorizations and solves that take nothing (18 checks); all 13 mutants fail (five, a reordered sum or a
+    reciprocal, only through the golden rows; three, the buffer rules, only through unit tests);
+  - **cost:** 145 ns, 3.7 µs and 181–182 µs a factor at n = 4, 16 and 64 (1.6–5.3× Rust), and 108 ns, 980 ns and
+    13.8–13.9 µs a solve (1.9–4.3×); the bench's sums and digests are 1.4.0's, bit for bit.
 
 ### Performance
 

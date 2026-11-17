@@ -1,0 +1,212 @@
+# linalg.tcyr — src/linalg.cyr, hisab 1.4.0's Cholesky factorization and solve (M3 part d1; port plan §8.2, ledger L4).
+#
+# tests/parity.tcyr replays hisab's own values (tests/golden/linalg.tsv), bit for bit. These carry hisab 1.4.0's own
+# tests over (num/mod.rs) and pin what a replay doesn't: the refusals, the buffer rules (null, overlap, the in-place
+# solve), that only the lower triangle is read, and that the factor reproduces its matrix.
+
+include "tests/lib.cyr"
+
+fn bits(x: f64): i64 {
+    return load64(&x);
+}
+
+# A row-major n × n buffer filled from a list of row-major entries.
+fn fill(buf, vals, n): i64 {
+    for (var k = 0; k < n; k = k + 1) { store64(buf + k * 8, load64(vals + k * 8)); }
+    return 0;
+}
+
+fn at(m, n, r, c): f64 {
+    var v: f64 = load64(m + (r * n + c) * 8);
+    return v;
+}
+
+fn main() {
+    alloc_init();
+    var a = alloc(64 * 64 * 8);
+    var l = alloc(64 * 64 * 8);
+    var b = alloc(64 * 8);
+    var x = alloc(64 * 8);
+    var y = alloc(64 * 8);
+    var nan: f64 = 0x7FF8000000000000;
+
+    test_group("hisab 1.4.0's tests (cholesky_2x2, cholesky_solve_2x2, cholesky_3x3_identity, _not_positive_definite)");
+    var m2[32];
+    store64(&m2, 4.0);
+    store64(&m2 + 8, 2.0);
+    store64(&m2 + 16, 2.0);
+    store64(&m2 + 24, 3.0);
+    fill(a, &m2, 4);
+    assert_eq(_pmn_cholesky(a, 2, l), PMN_ERR_NONE, "[[4, 2], [2, 3]] is SPD");
+    var l00: f64 = at(l, 2, 0, 0);
+    var l10: f64 = at(l, 2, 1, 0);
+    var l11: f64 = at(l, 2, 1, 1);
+    var l01: f64 = at(l, 2, 0, 1);
+    var s2: f64 = f64_sqrt(2.0);
+    assert(l00 == 2.0 && l10 == 1.0 && bits(l11) == bits(s2) && bits(l01) == 0, "L = [[2, 0], [1, √2]] exactly");
+    store64(b, 8.0);
+    store64(b + 8, 7.0);
+    assert_eq(_pmn_cholesky_solve(l, 2, b, x), PMN_ERR_NONE, "solved");
+    var x0: f64 = load64(x);
+    var x1: f64 = load64(x + 8);
+    var r0: f64 = 4.0 * x0 + 2.0 * x1;
+    var r1: f64 = 2.0 * x0 + 3.0 * x1;
+    assert(f64_abs(r0 - 8.0) < 0.000000000001 && f64_abs(r1 - 7.0) < 0.000000000001, "A·x = b");
+    for (var i = 0; i < 9; i = i + 1) { store64(a + i * 8, 0); }
+    store64(a, 1.0);
+    store64(a + 32, 1.0);
+    store64(a + 64, 1.0);
+    assert_eq(_pmn_cholesky(a, 3, l), PMN_ERR_NONE, "I₃");
+    var id_ok = 1;
+    for (var k = 0; k < 9; k = k + 1) {
+        var v: f64 = load64(l + k * 8);
+        var w: f64 = 0.0;
+        if (k == 0 || k == 4 || k == 8) { w = 1.0; }
+        if (bits(v) != bits(w)) { id_ok = 0; }
+    }
+    assert_eq(id_ok, 1, "the factor of the identity is the identity");
+    store64(a, -1.0);
+    store64(a + 8, 0.0);
+    store64(a + 16, 0.0);
+    store64(a + 24, 1.0);
+    assert_eq(_pmn_cholesky(a, 2, l), PMN_ERR_INVALID_PARAMETER, "a negative diagonal is not positive-definite");
+
+    test_group("hisab's cholesky_solve_3x3_verify, and the factor reproducing its matrix");
+    var m3[72];
+    store64(&m3, 4.0);
+    store64(&m3 + 8, 2.0);
+    store64(&m3 + 16, 1.0);
+    store64(&m3 + 24, 2.0);
+    store64(&m3 + 32, 5.0);
+    store64(&m3 + 40, 2.0);
+    store64(&m3 + 48, 1.0);
+    store64(&m3 + 56, 2.0);
+    store64(&m3 + 64, 6.0);
+    fill(a, &m3, 9);
+    assert_eq(_pmn_cholesky(a, 3, l), PMN_ERR_NONE, "the 3×3 SPD system");
+    store64(b, 1.0);
+    store64(b + 8, 2.0);
+    store64(b + 16, 3.0);
+    assert_eq(_pmn_cholesky_solve(l, 3, b, x), PMN_ERR_NONE, "solved");
+    var res_ok = 1;
+    var llt_ok = 1;
+    for (var ri = 0; ri < 3; ri = ri + 1) {
+        var rs: f64 = 0.0;
+        for (var rj = 0; rj < 3; rj = rj + 1) {
+            var aij: f64 = at(a, 3, ri, rj);
+            var xj: f64 = load64(x + rj * 8);
+            rs = rs + aij * xj;
+            var lt: f64 = 0.0;
+            for (var rk = 0; rk < 3; rk = rk + 1) {
+                var lik: f64 = at(l, 3, ri, rk);
+                var ljk: f64 = at(l, 3, rj, rk);
+                lt = lt + lik * ljk;
+            }
+            if (f64_abs(lt - aij) > 0.000000000001) { llt_ok = 0; }
+        }
+        var bi: f64 = load64(b + ri * 8);
+        if (f64_abs(rs - bi) > 0.000000000001) { res_ok = 0; }
+    }
+    assert_eq(res_ok, 1, "A·x = b within 1e-12");
+    assert_eq(llt_ok, 1, "L·Lᵀ = A within 1e-12");
+    var up_ok = 1;
+    for (var ui = 0; ui < 3; ui = ui + 1) {
+        for (var uj = ui + 1; uj < 3; uj = uj + 1) {
+            var u: f64 = at(l, 3, ui, uj);
+            if (bits(u) != 0) { up_ok = 0; }
+        }
+    }
+    assert_eq(up_ok, 1, "zeros above the diagonal, +0.0");
+
+    test_group("only the lower triangle is read");
+    fill(y, l, 9);
+    store64(a + 8, 99.0);
+    store64(a + 16, nan);
+    store64(a + 40, -7.0);
+    assert_eq(_pmn_cholesky(a, 3, l), PMN_ERR_NONE, "junk above the diagonal");
+    var same_ok = 1;
+    for (var k2 = 0; k2 < 9; k2 = k2 + 1) {
+        if (load64(l + k2 * 8) != load64(y + k2 * 8)) { same_ok = 0; }
+    }
+    assert_eq(same_ok, 1, "the same factor, bit for bit");
+    store64(l + 8, 123.0);
+    store64(l + 16, nan);
+    assert_eq(_pmn_cholesky_solve(l, 3, b, y), PMN_ERR_NONE, "junk above the factor's diagonal");
+    var sx_ok = 1;
+    for (var k3 = 0; k3 < 3; k3 = k3 + 1) {
+        if (load64(y + k3 * 8) != load64(x + k3 * 8)) { sx_ok = 0; }
+    }
+    assert_eq(sx_ok, 1, "the same solution, bit for bit");
+
+    test_group("the buffer rules: null, n, overlap, the in-place solve");
+    assert_eq(_pmn_cholesky(0, 3, l), PMN_ERR_INVALID_PARAMETER, "a null matrix");
+    assert_eq(_pmn_cholesky(a, 3, 0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(_pmn_cholesky(a, 0, l), PMN_ERR_INVALID_PARAMETER, "n = 0: hisab's empty matrix");
+    assert_eq(_pmn_cholesky(a, 0 - 1, l), PMN_ERR_INVALID_PARAMETER, "a negative n");
+    assert_eq(_pmn_cholesky(a, 3, a), PMN_ERR_INVALID_PARAMETER, "out the matrix itself");
+    assert_eq(_pmn_cholesky(a, 3, a + 8), PMN_ERR_INVALID_PARAMETER, "out overlapping the matrix");
+    assert_eq(_pmn_cholesky(a, 3, a + 72), PMN_ERR_NONE, "out just past the matrix");
+    assert_eq(_pmn_cholesky_solve(l, 0, b, x), PMN_ERR_NONE, "n = 0: nothing to solve");
+    assert_eq(_pmn_cholesky_solve(0, 3, b, x), PMN_ERR_INVALID_PARAMETER, "a null factor");
+    assert_eq(_pmn_cholesky_solve(l, 3, 0, x), PMN_ERR_INVALID_PARAMETER, "a null b");
+    assert_eq(_pmn_cholesky_solve(l, 3, b, 0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(_pmn_cholesky_solve(l, 3, b, l + 16), PMN_ERR_INVALID_PARAMETER, "out inside the factor");
+    assert_eq(_pmn_cholesky_solve(l, 3, b, b + 8), PMN_ERR_INVALID_PARAMETER, "out partly over b");
+    fill(y, b, 3);
+    assert_eq(_pmn_cholesky_solve(l, 3, y, y), PMN_ERR_NONE, "in place, out = b");
+    var ip_ok = 1;
+    for (var k4 = 0; k4 < 3; k4 = k4 + 1) {
+        if (load64(y + k4 * 8) != load64(x + k4 * 8)) { ip_ok = 0; }
+    }
+    assert_eq(ip_ok, 1, "the in-place solve gives the same bits");
+
+    test_group("1×1 edges and a large system");
+    store64(a, 4.0);
+    assert_eq(_pmn_cholesky(a, 1, l), PMN_ERR_NONE, "[4]");
+    var o4: f64 = load64(l);
+    assert(o4 == 2.0, "[2]");
+    store64(a, 0.0);
+    assert_eq(_pmn_cholesky(a, 1, l), PMN_ERR_INVALID_PARAMETER, "[0]: a zero pivot");
+    store64(a, nan);
+    assert_eq(_pmn_cholesky(a, 1, l), PMN_ERR_NONE, "[NaN]: not refused, NaN ≤ 0 being false, as hisab's");
+    var on: f64 = load64(l);
+    assert(on != on, "its factor is NaN");
+    store64(a, 0x7FF0000000000000);
+    assert_eq(_pmn_cholesky(a, 1, l), PMN_ERR_NONE, "[∞]");
+    var oi: f64 = load64(l);
+    assert(bits(oi) == 0x7FF0000000000000, "[∞]");
+    store64(l, 0);
+    store64(b, 1.0);
+    assert_eq(_pmn_cholesky_solve(l, 1, b, x), PMN_ERR_NONE, "a zero diagonal is not checked, as hisab's");
+    var oz: f64 = load64(x);
+    assert(bits(oz) == 0x7FF0000000000000, "1/0 = +∞");
+    var n64 = 64;
+    for (var gi = 0; gi < n64; gi = gi + 1) {
+        for (var gj = 0; gj < n64; gj = gj + 1) {
+            var gv: f64 = 0.0;
+            if (gi == gj) { gv = 2.0; }
+            if (gi - gj == 1 || gj - gi == 1) { gv = -1.0; }
+            store64(a + (gi * n64 + gj) * 8, gv);
+        }
+        store64(b + gi * 8, 1.0);
+    }
+    assert_eq(_pmn_cholesky(a, n64, l), PMN_ERR_NONE, "the 64×64 [2, −1] tridiagonal");
+    assert_eq(_pmn_cholesky_solve(l, n64, b, x), PMN_ERR_NONE, "solved");
+    var tri_ok = 1;
+    for (var ti = 0; ti < n64; ti = ti + 1) {
+        var tif: f64 = f64_from(ti + 1);
+        var tw: f64 = 65.0 - tif;
+        tw = tw * tif;
+        tw = tw / 2.0;
+        var tx: f64 = load64(x + ti * 8);
+        var td: f64 = tx - tw;
+        if (f64_abs(td) > 0.0000001) { tri_ok = 0; }
+    }
+    assert_eq(tri_ok, 1, "x_i = i(65 − i)/2, the closed form, within 1e-7");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

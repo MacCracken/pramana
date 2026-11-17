@@ -43,7 +43,8 @@
 > Box–Muller and Normal, with Debug's f64 form, is committed (`7e1ca00`), part a2, Uniform, Exponential and
 > Bernoulli, is committed (`5b76636`), part a3, Cauchy and Weibull, is committed (`a636914`), part b1, Gamma,
 > ChiSquared and Marsaglia–Tsang, is committed (`ded8c4b`), part b2, Beta, StudentT and FDistribution, is committed
-> (`97abf28`), part c1, Poisson, is committed (`6a3da1b`), and part c2, Binomial, is done and not committed.
+> (`97abf28`), part c1, Poisson, is committed (`6a3da1b`), part c2, Binomial, is committed (`f7c9bef`), and part d1,
+> the Cholesky factor and solve, is done and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1202,7 +1203,10 @@ T1 function is recorded against T1 from the start (ADR 009 as amended):
   u64::MAX. 8,070 more `dist` rows (the pmf and cdf for n from 1 to u64::MAX, 51 streams either side of 64 trials),
   226 codec rows and 32 Debug rows; `dist.ref.tsv` 1,742 more rows; every row passing on the first replay, at 0 ulp,
   on three targets ✅;
-- **d1:** `src/linalg.cyr`: hisab 1.4.0's Cholesky and solve, transcribed allocation-free (ledger L4);
+- **d1:** `src/linalg.cyr`: hisab 1.4.0's Cholesky and solve, transcribed term for term on caller storage, the solve
+  in place if asked (ledger L4). A new golden module, `linalg`, 682 rows (the factor's pivot classes, SPD, Hilbert,
+  Lehmer and tridiagonal matrices to n = 64, the solves against unit, seeded, zero and NaN-bearing right sides); every
+  row passing at 0 ulp on three targets ✅;
 - **d2:** `MultivariateNormal` in `src/dist_mvn.cyr`: owned, freelist-allocated with `_drop`, its sample into a caller
   buffer (D11), its decode recomputing the factor;
 - **e:** M3's gate.
@@ -1365,7 +1369,7 @@ shape:
 | L1 | open | `src/crmath.cyr`: kimiya's correctly rounded two-phase exp, ln, pow, sin, cos, atan2 and expm1, vendored (D2); new log1p, tan and log2 to the same contract; kimiya's double-double ln core (§8.1) | ganita has no correctly rounded tier. On pramana's golden rows its counterparts misround up to 8% (exp 264 of 3,274; tan 82 of 2,010); log1p and expm1 are private; log2 has no guarantee | `ganita:docs/development/issues/2026-11-09-correctly-rounded-exp-sin-cos-hypot.md` (pramana joined as the sixth consumer, after soorat, adding log1p, tan and log2) | ganita's correctly rounded tier | every class C row, at 0 ulp against `*.cr.tsv` |
 | L2 | open | `src/mathx.cyr`: `_pmn_min` / `_pmn_max` with Rust's NaN rule, fract as x − trunc(x), `_pmn_u64_to_f64`, `_pmn_sat_usize`, `is_nan` / `is_finite`; the typed std constants are generated into `src/constants.cyr` | `f64_min` / `f64_max` keep a NaN second operand (69 rows); `f64_fract` is floor-based; `f64_from` reads a u64 as signed; no saturating casts (port-parity §1) | `cyrius:docs/development/issues/2026-11-11-f64-min-max-drop-nan-only-as-first-operand.md` (pramana's section adds a trunc-based fract and an unsigned conversion, with the repro `2026-11-15-f64-fract-floor-and-f64-from-signed.cyr`) | the stdlib's `f64_*` | the math sweep's class A rows: fract, min, max, clamp, `as usize`, `u64 as f64` |
 | L3 | open | `src/sort.cyr`: a stable merge sort and the order statistics' selection on raw f64 arrays, NaN refused first (ADR 007 row 14) | no stable sort; `vec_select_nth`, `vec_get` and `vec_set` abort; both work on `vec`, not on a caller's `(ptr, n)` | `cyrius:docs/development/issues/2026-11-11-no-stable-sort.md`; `cyrius:docs/development/issues/2026-11-11-vec-keeps-outgrown-buffer-and-aborts.md` (pramana's sections added to both) | a stable sort over raw words in the stdlib | the order statistics' rows (class A on the stable rule) |
-| L4 | open | `src/linalg.cyr`: hisab 1.4.0's `cholesky` and `cholesky_solve`, transcribed, with caller scratch | `ganita_mat_cholesky_solve` leaves 8n bytes per call; ganita's Cholesky sums in another order (P5: up to 40 ulp from 1.4.0) | `ganita:docs/development/issues/2026-11-15-mat-cholesky-solve-allocates-and-sums-in-another-order.md` (with a repro) | ganita's `_into` solve, and its factor if it offers the term-by-term order | the MVN, ARIMA and logistic-regression rows |
+| L4 | open | `src/linalg.cyr`: hisab 1.4.0's `cholesky` and `cholesky_solve`, transcribed on caller storage, the solve in place (M3 part d1) | `ganita_mat_cholesky_solve` leaves 8n bytes per call; ganita's Cholesky sums in another order (P5: up to 40 ulp from 1.4.0) | `ganita:docs/development/issues/2026-11-15-mat-cholesky-solve-allocates-and-sums-in-another-order.md` (with a repro) | ganita's `_into` solve, and its factor if it offers the term-by-term order | the MVN, ARIMA and logistic-regression rows |
 | L5 | open | `src/linalg.cyr`: hisab 1.4.0's `least_squares_poly` (modified Gram–Schmidt), transcribed | hisab 3.5 has no polynomial least squares; ganita's Householder fit is up to 13,619 ulp from 1.4.0 and leaves 1.3–2.3 KB per call | `hisab:docs/development/issues/2026-11-15-no-polynomial-least-squares.md` | hisab's polynomial fit | the polynomial-regression rows |
 | L6 | open | `src/linalg.cyr`: hisab 1.4.0's cyclic Jacobi `eigen_symmetric(tol, max_iter)`, transcribed | hisab 3.5's `eigen_symmetric` takes no tolerance or budget, leaves ≈ 16n² bytes per call, and differs from 1.4.0 by up to 14 ulp | `hisab:docs/development/issues/2026-11-15-eigen-symmetric-no-tolerance-budget-or-caller-scratch.md` | hisab's `eigen_symmetric` with a tolerance and caller scratch | the PCA rows (class D) |
 | L7 | open | `src/json.cyr`: hand codecs for the 38 types over bayan's tree | `#derive` has no validation hook (20 types validate on deserialize), no `Vec<Vec<f64>>` (15 fields) and no u64 | `cyrius:docs/development/issues/2026-11-11-derive-json-no-vector-array-or-tagged-variant-shapes.md` (pramana's section adds the hook, matrices and u64) | `#derive(Serialize)` / `#derive(Deserialize)` | the JSON rows (class A) |

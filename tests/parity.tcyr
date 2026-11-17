@@ -1425,6 +1425,48 @@ fn _par_dist(fp, fl): i64 {
     return 0;
 }
 
+# `linalg` rows (M3 part d1): src/linalg.cyr's Cholesky factorization and solve, the matrix a `v:n²` slice and the
+# right side a `v:n` one, read into buffers of up to 64 × 64.
+var _par_la_a = 0;
+var _par_la_b = 0;
+var _par_la_o = 0;
+var _PAR_LA_CAP = 4096;
+
+fn _par_linalg(fp, fl): i64 {
+    if (_par_la_a == 0) {
+        _par_la_a = alloc(_PAR_LA_CAP * 8);
+        _par_la_b = alloc(_PAR_LA_CAP * 8);
+        _par_la_o = alloc(_PAR_LA_CAP * 8);
+        if (_par_la_a == 0 || _par_la_b == 0 || _par_la_o == 0) { return 0 - 1; }
+    }
+    var n = _par_in(0);
+    if (n < 0 || n > 64) { return 0 - 1; }
+    var nn = n * n;
+    if (_par_in_f64s(1, _par_la_a) != nn) { return 0 - 1; }
+    if (_par_eq(fp, fl, "linalg::cholesky") == 1) {
+        var e = _pmn_cholesky(_par_la_a, n, _par_la_o);
+        if (e != PMN_ERR_NONE) {
+            _par_got_err(e);
+            return 1;
+        }
+        _par_got_seq(nn);
+        for (var k = 0; k < nn; k = k + 1) { _par_got_f(load64(_par_la_o + k * 8)); }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "linalg::cholesky_solve") == 1) {
+        if (_par_in_f64s(nn + 2, _par_la_b) != n) { return 0 - 1; }
+        var e2 = _pmn_cholesky_solve(_par_la_a, n, _par_la_b, _par_la_o);
+        if (e2 != PMN_ERR_NONE) {
+            _par_got_err(e2);
+            return 1;
+        }
+        _par_got_seq(n);
+        for (var j = 0; j < n; j = j + 1) { _par_got_f(load64(_par_la_o + j * 8)); }
+        return 1;
+    }
+    return 0;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "bridge") == 1) { return _par_bridge(fp, fl); }
@@ -1434,6 +1476,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "dist") == 1) { return _par_dist(fp, fl); }
     if (_par_eq(mp, ml, "fmt") == 1) { return _par_fmt(fp, fl); }
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
+    if (_par_eq(mp, ml, "linalg") == 1) { return _par_linalg(fp, fl); }
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
     if (_par_eq(mp, ml, "rng") == 1) { return _par_rng(fp, fl); }
     if (_par_eq(mp, ml, "special") == 1) { return _par_special(fp, fl); }

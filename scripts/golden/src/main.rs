@@ -36,6 +36,7 @@ mod m_debug;
 mod m_dist;
 mod m_fmt;
 mod m_json;
+mod m_linalg;
 mod m_math;
 mod m_rng;
 mod m_special;
@@ -58,6 +59,7 @@ fn golden_modules(constants: &[consts::Const]) -> Vec<tsv::Module> {
         m_dist::emit(),
         m_fmt::emit(),
         m_json::emit(),
+        m_linalg::emit(),
         m_math::emit(),
         m_rng::emit(),
         m_special::emit(),

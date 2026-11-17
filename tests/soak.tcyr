@@ -6,7 +6,8 @@
 # heap, the freelist's arena cursor, the process's mapped size (/proc/self/statm, where the target has it) and the
 # pool's claimed slots must all be where they were: nothing an M1 call took stays taken. M2's special functions
 # (M2 part c, its gate) take nothing at all: 10^4 rounds of each of the fourteen, across their branches, leave the same
-# four measures where they were.
+# four measures where they were. So does M3 part d1's linalg: 10^4 factorizations and solves on caller buffers, where
+# hisab's return a fresh Vec each call and ganita's solve leaves 8n bytes (ledger L4).
 
 include "tests/lib.cyr"
 
@@ -115,6 +116,32 @@ fn doc_of(n, lenp): i64 {
     return load64(sb);
 }
 
+# One linalg round on caller buffers a (the matrix), l (the factor), b and x: the n × n [2, −1] tridiagonal with r
+# added to its diagonal, n from 1 to 24, factored and solved. x's first element, which the caller checks is finite.
+fn linalg_round(r, a, l, b, x): f64 {
+    var n = 1 + r % 24;
+    var rf: f64 = f64_from(r % 7);
+    for (var i = 0; i < n; i = i + 1) {
+        for (var j = 0; j < n; j = j + 1) {
+            var v: f64 = 0.0;
+            if (i == j) { v = 2.0 + rf; }
+            if (i - j == 1 || j - i == 1) { v = -1.0; }
+            store64(a + (i * n + j) * 8, v);
+        }
+        store64(b + i * 8, 1.0);
+    }
+    if (_pmn_cholesky(a, n, l) != PMN_ERR_NONE) {
+        var nan: f64 = 0x7FF8000000000000;
+        return nan;
+    }
+    if (_pmn_cholesky_solve(l, n, b, x) != PMN_ERR_NONE) {
+        var nan2: f64 = 0x7FF8000000000000;
+        return nan2;
+    }
+    var x0: f64 = load64(x);
+    return x0;
+}
+
 # One round of M2's fourteen special functions, the arguments moved by r so the rounds cross their branches: erf and
 # erfc either side of 0.84375 and in the tail, lnΓ reflected, the incomplete gamma's series, fraction, small-shape Q
 # and Wilson–Hilferty form, and the incomplete beta's fraction, power series and Rust's form past 1e9. The sum of the
@@ -209,6 +236,31 @@ fn main() {
     var mv1 = vm_kb();
     if (mv0 >= 0) {
         assert_eq(mv1 - mv0, 0, "the mapped size: unchanged");
+    } else {
+        println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
+    }
+    assert_eq(_pmn_scratch_claimed(), 0, "the pool: nothing claimed");
+
+    test_group("10^4 linalg factorizations and solves on caller buffers (M3 part d1): nothing taken");
+    var la = alloc(24 * 24 * 8);
+    var ll = alloc(24 * 24 * 8);
+    var lb = alloc(24 * 8);
+    var lx = alloc(24 * 8);
+    var lw: f64 = linalg_round(0, la, ll, lb, lx);
+    var lb0 = alloc_used();
+    var lf0 = _fl_arena_pos;
+    var lv0 = vm_kb();
+    var lacc: f64 = lw;
+    for (var r3 = 0; r3 < 10000; r3 = r3 + 1) {
+        var v3: f64 = linalg_round(r3, la, ll, lb, lx);
+        lacc = lacc + v3;
+    }
+    assert(_pmn_is_finite(lacc) == 1, "every factorization and solve succeeds, finite");
+    assert_eq(alloc_used() - lb0, 0, "the bump heap: 0 bytes taken");
+    assert_eq(_fl_arena_pos - lf0, 0, "the freelist's arena: 0 bytes carved");
+    var lv1 = vm_kb();
+    if (lv0 >= 0) {
+        assert_eq(lv1 - lv0, 0, "the mapped size: unchanged");
     } else {
         println("  (no /proc/self/statm on this target: the mapped size isn't measured)");
     }

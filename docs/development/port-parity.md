@@ -4012,3 +4012,83 @@ at 1,024 bits, and I_(1−p)(n − k, k + 1) by `mpfr_ref.beta_ic`):
 **Cost** (`docs/benchmarks-rust-v-cyrius.md`): 681–708 ns a pmf (8.3× Rust), 7.15–7.28 µs a cdf (39×: the T1
 incomplete beta), 605–622 ns a simulated draw of 50 trials (2.6×) and 7.9–8.1 µs a Beta-split draw of 10⁶ (5.9×). The
 bench's 42 digests are all explained by the models.
+
+### 9.8 Part d1: the Cholesky factor and solve (2026-11-16)
+
+**The module.** `src/linalg.cyr` holds hisab 1.4.0's `cholesky` and `cholesky_solve`, the two linear-algebra routines
+1.3.0 calls: for MultivariateNormal (d2), the ARIMA Yule–Walker fit (M5) and the logistic regression's Newton step
+(M4). It is ledger L4's stand-in, and carries the notes for L5 and L6, whose routines land with their first callers.
+- **Term for term:** each sum starts from the matrix entry and subtracts the products k = 0, 1, … in turn. The
+  diagonal is the correctly rounded √, and an off-diagonal entry is one division. ganita's factor sums in another
+  order (probe P5: up to 40 ulp from 1.4.0), so it would not pass.
+- **On caller storage (D11):** a matrix is a flat row-major n × n f64 array, and a vector n f64s. The factor fills
+  out, with zeros above the diagonal. The solve's y and x share out, which may be b itself. hisab returns a fresh
+  `Vec<Vec<f64>>` per call, and ganita's solve leaves 8n bytes, which an MVN pdf in a loop would leak.
+- **The refusals:** hisab's one error, InvalidInput, is `PMN_ERR_INVALID_PARAMETER`. The factor refuses a pivot ≤ 0
+  and n = 0. A NaN pivot is accepted, as hisab's is (NaN ≤ 0 is false). The buffer rules add null buffers, n past
+  2²⁶, and three overlaps: out over A, out over L, and out partly over b. hisab's shape checks (a ragged row, a b of
+  another length) have no counterpart, since a flat array with its n cannot be ragged.
+
+**The golden rows.** `linalg` is a new module, 682 rows, all class A (arithmetic and the correctly rounded √).
+- **`linalg::cholesky`, 70 rows:**
+  - the empty matrix;
+  - 1×1 at every pivot class: 4, 1, 2, ±0, −1, NaN, ±∞, 5e-324 and f64::MAX;
+  - nine 2×2: the identity, an SPD, a singular and an indefinite one, a non-symmetric one (its upper triangle
+    ignored), NaN and ∞ off the diagonal, 1e-300 and 1e300 on it, and a negative one;
+  - seeded B·Bᵀ + n·I and B·Bᵀ + 10⁻³·I for n from 3 to 64, the Hilbert matrices from 3 to 14, and Lehmer's and the
+    [2, −1] tridiagonal at n = 3, 7 and 16, the tridiagonal also scaled by 1e300, 1e-300 and −1.
+
+  13 are refused, as hisab refuses them: the empty matrix; the 1×1 pivots ±0, −1 and −∞; the singular, indefinite
+  and negative 2×2; the one with ∞ off the diagonal, whose second pivot is 3 − ∞; Hilbert's at n = 14, where rounding
+  loses definiteness; and the three negative tridiagonals.
+- **`linalg::cholesky_solve`, 612 rows:** every factor above against the unit vectors (up to 8), three seeded right
+  sides, a zero one and one with a NaN. Two hand factors: one with a zero diagonal, which divides by zero (±∞ or NaN),
+  and one with junk above the diagonal, never read. And n = 0.
+
+**The model.** `validate.py` recomputes every row in hisab's order with Python's floats, whose arithmetic and √ are
+IEEE's (`lin_cholesky`, `lin_cholesky_solve`). Every row agrees.
+
+**The result.** Every row passes at 0 ulp, warning-free, on x86_64 ELF, PE and aarch64. The replay is eleven modules:
+272,050 rows ok and 53,655 accepted (53,495 under ADR 9, 160 under ADR 7).
+
+**Mutation checks** (`build/handoff/mut_d1.py`: the replay and `tests/linalg.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| the factor: a zero pivot accepted | 3 | 1 |
+| the factor: n = 0 accepted | 1 | 1 |
+| the factor: the products in reverse order | 31 | 0 |
+| the factor: sum·(1/l_jj) | 34 | 0 |
+| the factor: the upper triangle not zeroed | 43 | 3 |
+| the factor: A's upper triangle read | 2 | 5 |
+| the factor: out over A not refused | 0 | 1 |
+| the solve: forward y·(1/l_ii) | 273 | 0 |
+| the solve: the forward products in reverse | 218 | 0 |
+| the solve: back substitution reading L, not Lᵀ | 450 | 5 |
+| the solve: the back products in reverse | 299 | 0 |
+| the solve: in place refused | 0 | 2 |
+| the solve: out over L not refused | 0 | 2 |
+
+- **All 13 fail.**
+- **Five fail through the replay only:** a reordered sum or a reciprocal moves a last bit, which hisab's own tests,
+  at a tolerance of 10⁻¹⁰, cannot see.
+- **Three fail through unit tests only:** the buffer rules, which no golden row can express.
+
+**Tests.** `tests/linalg.tcyr` has 43 checks:
+- hisab 1.4.0's own tests: `cholesky_2x2`, `cholesky_solve_2x2`, `cholesky_3x3_identity`,
+  `cholesky_not_positive_definite` and `cholesky_solve_3x3_verify`;
+- L·Lᵀ = A, zeros above the diagonal, and the upper triangle never read: junk there gives the same bits, in both;
+- the buffer rules: null buffers; n = 0, refused by the factor and nothing to do for the solve; n < 0; out on A, over
+  it and just past it; out inside L; out partly over b; and the in-place solve, bit for bit the out-of-place one;
+- the 1×1 edges: [4] gives 2, [0] is refused, [NaN] is accepted, [∞] gives ∞, and a zero diagonal's solve gives +∞;
+- a 64×64 [2, −1] tridiagonal solve, x_i = i(65 − i)/2 to within 10⁻⁷.
+
+`tests/soak.tcyr` (18 checks) adds 10⁴ factorizations and solves on caller buffers, n from 1 to 24. Nothing is taken:
+the bump heap, the freelist arena, the mapped size and the pool are unchanged.
+
+**Surface parity.** Nothing to map. 1.3.0 reaches hisab through `pub use hisab`, a Rust re-export that 2.0 does not
+carry (port plan §4.2).
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 145 ns, 3.7 µs and 181–182 µs a factor at n = 4, 16 and 64 (1.6×, 3.6×
+and 5.3× Rust), and 108 ns, 980 ns and 13.8–13.9 µs a solve (1.9×, 3.1× and 4.3×). The bench's 12 sums and digests
+are 1.4.0's, bit for bit.

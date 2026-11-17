@@ -747,3 +747,30 @@ same in all four rounds.
 
 These are findings to measure against, not changes for this part. The incomplete beta's cost is T1's, which ADR 009
 accepts.
+
+## M3 part d1: the Cholesky factor and solve (2026-11-16)
+
+**Bodies.** `tests/linalg.bcyr` and its twin `m3_linalg.rs` time hisab 1.4.0's `cholesky` and `cholesky_solve` at
+n = 4, 16 and 64, on the same seeded SPD matrices (A = BᵀB + n·I, B uniform in [−1, 1)) and right sides. Rust's
+calls each return a fresh `Vec`; the port's fill caller buffers. Pinned to core 5, interleaved, each round started
+under a load average of 3 (loads 2.95, 2.88 and 2.88).
+- **The sums and digests:** all 12 are the same on both sides in every round, so the port's outputs are 1.4.0's, bit
+  for bit.
+- **The spread:** within 1% between rounds on the Cyrius side and 4% on Rust's.
+
+| Row | Rust (hisab 1.4.0) | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `cholesky`, n = 4 | 89.0–92.4 ns | 145–146 ns | 1.6× |
+| `cholesky_solve`, n = 4 | 57.1–57.3 ns | 108–109 ns | 1.9× |
+| `cholesky`, n = 16 | 1.02–1.04 µs | 3.69–3.72 µs | 3.6× |
+| `cholesky_solve`, n = 16 | 313.5–313.8 ns | 977–982 ns | 3.1× |
+| `cholesky`, n = 64 | 34.07–34.17 µs | 181.3–182.1 µs | 5.3× |
+| `cholesky_solve`, n = 64 | 3.17–3.19 µs | 13.78–13.92 µs | 4.3× |
+
+**Where the time goes.** The inner loop is a load, a load, a multiply and a subtract per term, in order: about n³/6
+terms for the factor and n² for the solve. At n = 64 the port spends about 4.2 ns a term and Rust 0.8 ns. Rust keeps
+the running sum and the row pointers in registers; the port reloads its locals each term. At n = 4 the allocations
+Rust makes are a larger share of its time, so the ratio is lower.
+
+These are findings to measure against, not changes for this part. The order of the sums is fixed by parity, so the
+loop cannot be reassociated or vectorized; a gain would come from the compiler's register use.

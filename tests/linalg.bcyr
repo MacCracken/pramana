@@ -1,0 +1,124 @@
+# linalg.bcyr — src/linalg.cyr's Cholesky factorization and solve (M3 part d1): ns per call.
+#
+# The Rust twin is scripts/probes/rust/src/bin/m3_linalg.rs: hisab 1.4.0's `cholesky` and `cholesky_solve`, each
+# result a fresh Vec, on the same seeded SPD matrices (A = BᵀB + n·I, B uniform in [−1, 1), summed in k order, from the
+# same xorshift64*) at n = 4, 16 and 64. Here both run on caller buffers. Each side prints the sum of one output
+# element over the calls and an FNV-1a digest of one call's output bits, which agree bit for bit (class A). The record
+# is docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+var g_rng = 0x2545F4914F6CDD1D;
+
+fn next(): i64 {
+    var x = g_rng;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    g_rng = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+fn unit(): f64 {
+    var top = next() >> 11;
+    var a: f64 = f64_from(top);
+    var d: f64 = 9007199254740992.0;
+    return a / d;
+}
+
+fn uni(): f64 {
+    var u: f64 = unit();
+    var t: f64 = 2.0 * u;
+    return -1.0 + t;
+}
+
+# A = BᵀB + n·I into a, B into scratch bm, both n × n row-major.
+fn spd(a, bm, n): i64 {
+    for (var k = 0; k < n * n; k = k + 1) {
+        var v: f64 = uni();
+        store64(bm + k * 8, v);
+    }
+    var nf: f64 = f64_from(n);
+    for (var i = 0; i < n; i = i + 1) {
+        for (var j = 0; j < n; j = j + 1) {
+            var s: f64 = 0.0;
+            for (var k2 = 0; k2 < n; k2 = k2 + 1) {
+                var bki: f64 = load64(bm + (k2 * n + i) * 8);
+                var bkj: f64 = load64(bm + (k2 * n + j) * 8);
+                var p: f64 = bki * bkj;
+                s = s + p;
+            }
+            if (i == j) { s = s + nf; }
+            store64(a + (i * n + j) * 8, s);
+        }
+    }
+    return 0;
+}
+
+fn digest(p, n): i64 {
+    var d = 0xCBF29CE484222325;
+    for (var k = 0; k < n; k = k + 1) { d = (d ^ load64(p + k * 8)) * 0x100000001B3; }
+    return d;
+}
+
+fn show(name, sum: f64, dg): i64 {
+    var sb: f64 = sum;
+    print("  ", 2);
+    print(name, strlen(name));
+    print(", the sum: ", 11);
+    fmt_hex(load64(&sb));
+    println("");
+    print("  ", 2);
+    print(name, strlen(name));
+    print(", the digest: ", 14);
+    fmt_hex(dg);
+    println("");
+    return 0;
+}
+
+fn row(n, reps, cname, sname, a, bm, l, b, x): i64 {
+    spd(a, bm, n);
+    for (var k = 0; k < n; k = k + 1) {
+        var v: f64 = uni();
+        store64(b + k * 8, v);
+    }
+    var s: f64 = 0.0;
+    var bc = bench_new(cname);
+    bench_batch_start(bc);
+    for (var r = 0; r < reps; r = r + 1) {
+        if (_pmn_cholesky(a, n, l) != PMN_ERR_NONE) { return 1; }
+        var last: f64 = load64(l + (n * n - 1) * 8);
+        s = s + last;
+    }
+    bench_batch_stop(bc, reps);
+    show(cname, s, digest(l, n * n));
+    bench_report(bc);
+    var s2: f64 = 0.0;
+    var bs = bench_new(sname);
+    bench_batch_start(bs);
+    for (var r2 = 0; r2 < reps; r2 = r2 + 1) {
+        if (_pmn_cholesky_solve(l, n, b, x) != PMN_ERR_NONE) { return 1; }
+        var x0: f64 = load64(x);
+        s2 = s2 + x0;
+    }
+    bench_batch_stop(bs, reps);
+    show(sname, s2, digest(x, n));
+    bench_report(bs);
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var a = alloc(64 * 64 * 8);
+    var bm = alloc(64 * 64 * 8);
+    var l = alloc(64 * 64 * 8);
+    var b = alloc(64 * 8);
+    var x = alloc(64 * 8);
+    if (row(4, 200000, "cholesky, n = 4", "cholesky_solve, n = 4", a, bm, l, b, x) != 0) { return 1; }
+    if (row(16, 20000, "cholesky, n = 16", "cholesky_solve, n = 16", a, bm, l, b, x) != 0) { return 1; }
+    if (row(64, 500, "cholesky, n = 64", "cholesky_solve, n = 64", a, bm, l, b, x) != 0) { return 1; }
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

@@ -1028,6 +1028,77 @@ def xorshift_draws(seed, n):
         yield bits((x >> 11) / 9007199254740992.0)
 
 
+# ── linalg: hisab 1.4.0's Cholesky factorization and solve (M3 part d1), term for term ──
+def lin_cholesky(n, a):
+    """hisab's cholesky on a flat row-major n×n list: the flat L, or None for its InvalidInput."""
+    if n == 0:
+        return None
+    l = [0.0] * (n * n)
+    for i in range(n):
+        for j in range(i + 1):
+            s = a[i * n + j]
+            for k in range(j):
+                s -= l[i * n + k] * l[j * n + k]
+            if i == j:
+                if s <= 0.0:
+                    return None
+                l[i * n + j] = math.sqrt(s)
+            else:
+                l[i * n + j] = fdiv(s, l[j * n + j])
+    return l
+
+
+def lin_cholesky_solve(n, l, b):
+    """hisab's cholesky_solve: forward then back substitution, reading L's lower triangle."""
+    y = [0.0] * n
+    for i in range(n):
+        s = b[i]
+        for j in range(i):
+            s -= l[i * n + j] * y[j]
+        y[i] = fdiv(s, l[i * n + i])
+    x = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        s = y[i]
+        for j in range(i + 1, n):
+            s -= l[j * n + i] * x[j]
+        x[i] = fdiv(s, l[i * n + i])
+    return x
+
+
+def check_linalg(rows):
+    """Every linalg row re-derived by the transcription above (class A: arithmetic and the correctly rounded √)."""
+    failures, by_fn = [], {}
+
+    def same_all(a, b):
+        return len(a) == len(b) and all(same(x, y) if isinstance(y, float) else x == y for x, y in zip(a, b))
+
+    for fn, cls, ins, outs, raw in rows:
+        n = ins[0]
+        k = 1
+        if not (isinstance(ins[k], str) and ins[k] == f"v:{n * n}"):
+            failures.append(f"linalg: {fn}: a malformed matrix")
+            continue
+        a = ins[k + 1:k + 1 + n * n]
+        if fn == "linalg::cholesky":
+            l = lin_cholesky(n, a)
+            want = ["E:InvalidParameter"] if l is None else [f"v:{n * n}"] + l
+        elif fn == "linalg::cholesky_solve":
+            b = ins[k + 2 + n * n:]
+            if ins[k + 1 + n * n] != f"v:{n}" or len(b) != n:
+                failures.append(f"linalg: {fn}: a malformed right side")
+                continue
+            want = [f"v:{n}"] + lin_cholesky_solve(n, a, b)
+        else:
+            failures.append(f"linalg: no model for {fn}")
+            continue
+        ok = same_all(outs, want)
+        stat = by_fn.setdefault(fn, [0, 0])
+        stat[0 if ok else 1] += 1
+        if not ok:
+            failures.append(f"linalg: {fn} at n = {n}: recorded {outs[:4]!r}, modelled {want[:4]!r}")
+    return failures, by_fn
+
+
 def check_rng(rows):
     failures, by_fn = [], {}
     for fn, _cls, ins, outs, _raw in rows:
@@ -3512,6 +3583,12 @@ def main(argv):
                 print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
             cr_file(gdir, module, provenance, crs, write_cr, failures)
             ref_file(gdir, module, provenance, refs, write_cr, failures)
+        if module == "linalg":
+            f, by_fn = check_linalg(rows)
+            failures.extend(f)
+            for fn in sorted(by_fn):
+                ok, bad = by_fn[fn]
+                print(f"  {fn:28s} {ok:6d} ok" + (f", {bad} FAILED" if bad else ""))
         if module == "rng":
             f, by_fn = check_rng(rows)
             failures.extend(f)

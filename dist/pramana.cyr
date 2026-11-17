@@ -11305,6 +11305,123 @@ fn _pmn_regularized_incomplete_beta(x: f64, a: f64, b: f64): f64 {
     return p;
 }
 
+# --- linalg.cyr ---
+
+# linalg.cyr — hisab 1.4.0's dense Cholesky factorization and solve (`hisab::num::cholesky`, `cholesky_solve`), which
+# 1.3.0 calls for MultivariateNormal (M3 part d2), the ARIMA Yule–Walker fit (M5) and the logistic regression's Newton
+# step (M4). Port plan §8.2 and ledger L4; M3 part d1.
+#
+# Transcribed, term for term and in hisab's order, so every value is 1.4.0's bit for bit: each sum starts from the
+# matrix entry and subtracts the products k = 0, 1, … in turn; the diagonal is the correctly rounded √, an
+# off-diagonal entry one division. Both run on caller storage and allocate nothing (D11): hisab returns a fresh
+# `Vec<Vec<f64>>` each call, and ganita's solve leaves 8n bytes per call, which an MVN pdf in a loop would leak.
+# Matrices are flat row-major n × n f64 arrays, vectors n f64s.
+#
+# hisab's one error, `InvalidInput`, is PMN_ERR_INVALID_PARAMETER here; each caller maps it as 1.3.0 does
+# (MultivariateNormal to InvalidParameter, ARIMA to ComputationError, the logistic step to a stop). hisab's shape
+# checks (a ragged row, a b of another length) have no counterpart: a flat array with n cannot be ragged.
+#
+# UPSTREAM(L4): ganita:docs/development/issues/2026-11-15-mat-cholesky-solve-allocates-and-sums-in-another-order.md
+# ganita's `mat_cholesky_solve` allocates, and its `mat_cholesky` sums in another order (probe P5: up to 40 ulp from
+# 1.4.0). This stand-in goes when ganita has an allocation-free solve and the factor in this order, its rows re-run.
+#
+# The file is also the home of hisab 1.4.0's two other routines 1.3.0 calls, transcribed with their first callers:
+# UPSTREAM(L5): hisab:docs/development/issues/2026-11-15-no-polynomial-least-squares.md
+# `least_squares_poly` (modified Gram–Schmidt), with the polynomial regression;
+# UPSTREAM(L6): hisab:docs/development/issues/2026-11-15-eigen-symmetric-no-tolerance-budget-or-caller-scratch.md
+# `eigen_symmetric(tol, max_iter)` (cyclic Jacobi), with the PCA.
+
+# The largest n either function takes: n·n words then stay far inside the address space.
+var _PMN_LINALG_MAX_N = 67108864;           # 2^26
+
+# 1 when the byte ranges [p, p + pn) and [q, q + qn) overlap (neither empty).
+#must_use
+#pure
+fn _pmn_linalg_overlaps(p, pn, q, qn): i64 {
+    if (pn == 0 || qn == 0) { return 0; }
+    if (p < q + qn && q < p + pn) { return 1; }
+    return 0;
+}
+
+# hisab's `cholesky(a)`: the lower-triangular L with A = L·Lᵀ, into out (n × n, zeros above the diagonal), reading A's
+# lower triangle and diagonal only. PMN_ERR_NONE; or PMN_ERR_INVALID_PARAMETER, as hisab's InvalidInput, when a pivot
+# is ≤ 0 (not positive-definite) or n = 0, and for a null or overlapping buffer or n out of range. A NaN pivot is not
+# refused (NaN ≤ 0 is false), as hisab's: its √ is NaN and the factor carries it. On a refusal out holds the factor's
+# rows up to the failed pivot.
+#must_use
+fn _pmn_cholesky(a, n, out): i64 {
+    if (a == 0 || out == 0 || n <= 0 || n > _PMN_LINALG_MAX_N) { return PMN_ERR_INVALID_PARAMETER; }
+    var bytes = n * n * 8;
+    if (_pmn_linalg_overlaps(a, bytes, out, bytes) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var z = 0; z < n * n; z = z + 1) { store64(out + z * 8, 0); }
+    for (var i = 0; i < n; i = i + 1) {
+        var ri = i * n;
+        for (var j = 0; j <= i; j = j + 1) {
+            var rj = j * n;
+            var sum: f64 = load64(a + (ri + j) * 8);
+            for (var k = 0; k < j; k = k + 1) {
+                var lik: f64 = load64(out + (ri + k) * 8);
+                var ljk: f64 = load64(out + (rj + k) * 8);
+                var p: f64 = lik * ljk;
+                sum = sum - p;
+            }
+            if (i == j) {
+                if (sum <= 0.0) { return PMN_ERR_INVALID_PARAMETER; }
+                var r: f64 = f64_sqrt(sum);
+                store64(out + (ri + j) * 8, r);
+            } else {
+                var ljj: f64 = load64(out + (rj + j) * 8);
+                var q: f64 = sum / ljj;
+                store64(out + (ri + j) * 8, q);
+            }
+        }
+    }
+    return PMN_ERR_NONE;
+}
+
+# hisab's `cholesky_solve(l, b)`: x with L·Lᵀ·x = b, into out (n f64s), by forward substitution L·y = b and back
+# substitution Lᵀ·x = y, reading L's lower triangle and diagonal only; hisab's y and x share out, which gives the same
+# values (each element is read before it is overwritten). out may be b itself, the solve then in place. PMN_ERR_NONE,
+# n = 0 included (nothing to solve, as hisab's empty result); or PMN_ERR_INVALID_PARAMETER for a null buffer, out
+# overlapping L or partly overlapping b, or n out of range. A zero diagonal divides by zero, as hisab's: ±∞ or NaN.
+#must_use
+fn _pmn_cholesky_solve(l, n, b, out): i64 {
+    if (n < 0 || n > _PMN_LINALG_MAX_N) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n == 0) { return PMN_ERR_NONE; }
+    if (l == 0 || b == 0 || out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var vb = n * 8;
+    if (_pmn_linalg_overlaps(l, n * vb, out, vb) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    if (out != b && _pmn_linalg_overlaps(b, vb, out, vb) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var i = 0; i < n; i = i + 1) {
+        var ri = i * n;
+        var sum: f64 = load64(b + i * 8);
+        for (var j = 0; j < i; j = j + 1) {
+            var lij: f64 = load64(l + (ri + j) * 8);
+            var yj: f64 = load64(out + j * 8);
+            var p: f64 = lij * yj;
+            sum = sum - p;
+        }
+        var lii: f64 = load64(l + (ri + i) * 8);
+        var y: f64 = sum / lii;
+        store64(out + i * 8, y);
+    }
+    var i2 = n - 1;
+    while (i2 >= 0) {
+        var s2: f64 = load64(out + i2 * 8);
+        for (var j2 = i2 + 1; j2 < n; j2 = j2 + 1) {
+            var lji: f64 = load64(l + (j2 * n + i2) * 8);
+            var xj: f64 = load64(out + j2 * 8);
+            var p2: f64 = lji * xj;
+            s2 = s2 - p2;
+        }
+        var ld: f64 = load64(l + (i2 * n + i2) * 8);
+        var x: f64 = s2 / ld;
+        store64(out + i2 * 8, x);
+        i2 = i2 - 1;
+    }
+    return PMN_ERR_NONE;
+}
+
 # --- dist.cyr ---
 
 # dist.cyr — the distributions' shared parts (port of Rust 1.3.0's src/distribution.rs; port plan D7, D11, §8.3; M3):

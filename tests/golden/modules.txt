@@ -6,6 +6,7 @@ debug
 dist
 fmt
 json
+linalg
 math
 rng
 special

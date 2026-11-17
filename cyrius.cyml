@@ -60,6 +60,7 @@ modules = [
     "src/combinatorics.cyr",
     "src/bridge.cyr",
     "src/special.cyr",
+    "src/linalg.cyr",
     "src/dist.cyr",
     "src/dist_cont.cyr",
     "src/dist_gamma.cyr",
