@@ -75,4 +75,5 @@ modules = [
     "src/timeseries.cyr",
     "src/bayesian.cyr",
     "src/markov.cyr",
+    "src/monte_carlo.cyr",
 ]

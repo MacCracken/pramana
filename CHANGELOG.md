@@ -1006,6 +1006,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   aarch64, and glibc's ln never moves a log-likelihood or a path (`markov.cr.tsv` is empty). Twenty mutants each fail
   1 to 541 rows. Four of them first survived and were closed with rows: the strict `r < Σ`, the 0.999 stall factor,
   the 10⁴-step cap and the stall counter's reset. `tests/markov.tcyr` (110 checks) carries 1.3.0's tests over.
+- **M6 part b: Monte Carlo** (port plan §7; `src/monte_carlo.cyr`).
+  - **What's ported:** 1.3.0's `EstimateResult` and `monte_carlo_integrate` (Welford's mean and variance), and
+    `monte_carlo_pi`. `McmcResult` is owned, and its codec reads ragged rows as the derive does.
+    `metropolis_hastings` uses Box–Muller's `standard_normal` on the correctly rounded ln and cos, reads a NaN density
+    as −∞ and escapes a zero-density start. In `gibbs_sampling`, each conditional gets Rust's `&mut dyn Rng` as a
+    stack `PmnRngRef` (P3). The caller's functions are a function pointer and a context (D7).
+  - **The rows:** a new golden module, `monte_carlo`, 1,608 rows: nine integrands, π, ten log-densities and five
+    conditionals, from fixed seeds, and every refusal. It also has 174 codec rows and 18 Debug rows. Every row passes
+    on the first replay, at 0 ulp, on x86_64 ELF, PE and aarch64.
+  - **More accurate than 1.3.0:** `monte_carlo.cr.tsv` holds the 19 chains a glibc misround moves, and the port
+    follows the correctly rounded chain on each.
+  - **Mutants:** thirteen of seventeen fail 1 to 912 rows. One is equivalent. The other three need draws SimpleRng
+    never makes, and `tests/monte_carlo.tcyr` (69 checks, 1.3.0's tests among them) catches them with a scripted
+    `PmnRng`.
+  - **A divergence** ([ADR 007](docs/decisions/007-port-api-divergences.md) row 18): a count at or past 2⁶³, such as
+    a burn-in that would start a run of 2⁶³ steps, is refused rather than run.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

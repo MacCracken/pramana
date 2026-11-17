@@ -809,6 +809,8 @@ JSON_STRUCTS = {
     "LogisticModel": [("coefficients", "Vec<f64>"), ("iterations", "usize"), ("converged", "bool")],
     "ArimaModel": [("ar_coefficients", "Vec<f64>"), ("d", "usize"), ("intercept", "f64"), ("residual_variance", "f64")],
     "PcaResult": [("components", "Vec<Vec<f64>>"), ("eigenvalues", "Vec<f64>"), ("explained_variance_ratio", "Vec<f64>")],
+    "EstimateResult": [("value", "f64"), ("std_error", "f64")],
+    "McmcResult": [("samples", "Vec<Vec<f64>>"), ("acceptance_rate", "f64")],
     "Pair": [("mean", "f64"), ("std_dev", "f64")],
     "Shapes": [("x", "f64"), ("n", "u64"), ("k", "usize"), ("flag", "bool"), ("name", "String"), ("xs", "Vec<f64>"),
                ("ns", "Vec<u64>"), ("labels", "Vec<String>"), ("m", "Vec<Vec<f64>>"), ("kernel", "Kernel")],
@@ -3710,7 +3712,8 @@ def debug_text(fn, ins):
         return debug_struct("KernelDensity", [("data", rust_debug_list([rust_debug_f64(x) for x in data], alt, 1)),
                                               ("bandwidth", rust_debug_f64(h)), ("kernel", k)], alt)
     if fn in ("debug::TestResult", "debug::AnovaResult", "debug::KsResult", "debug::ConfidenceInterval",
-              "debug::LinearModel", "debug::PolynomialModel", "debug::LogisticModel", "debug::ArimaModel"):
+              "debug::LinearModel", "debug::PolynomialModel", "debug::LogisticModel", "debug::ArimaModel",
+              "debug::EstimateResult"):
         ty = fn[len("debug::"):]
         alt = ins[-1] == 1
         vals = iter(ins[:-1])
@@ -3741,6 +3744,15 @@ def debug_text(fn, ins):
         comps = rust_debug_list([vec(2) for _ in range(rows)], alt, 1)
         return debug_struct("PcaResult", [("components", comps), ("eigenvalues", vec(1)),
                                           ("explained_variance_ratio", vec(1))], alt)
+    if fn == "debug::McmcResult":
+        alt = ins[-1] == 1
+        it = iter(ins[:-1])
+        rows = []
+        for _ in range(int(next(it)[len("v:"):])):
+            n = int(next(it)[len("v:"):])
+            rows.append(rust_debug_list([rust_debug_f64(next(it)) for _ in range(n)], alt, 2))
+        return debug_struct("McmcResult", [("samples", rust_debug_list(rows, alt, 1)),
+                                           ("acceptance_rate", rust_debug_f64(next(it)))], alt)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:
@@ -5228,6 +5240,186 @@ MARKOV = {
 }
 
 
+# ── monte_carlo (M6 part b): 1.3.0's monte_carlo.rs ──
+# The caller's functions are the harness's (tests/parity.tcyr's `_par_mc_*`), named by id in each row, and modelled
+# here in the same operation order. Draws come from `SimpleRng::new(seed)` (d_uniforms); Box–Muller is
+# `standard_normal`'s (d_standard_normal). A chain's samples are one flat `v:` slice, row-major.
+
+def mc_sqrt(x):
+    return math.sqrt(x) if x >= 0.0 or x != x else math.nan
+
+
+def mc_f(L, fid, x):
+    """The integrands, by id: x, x², 3x² + 2x + 1, sin x, exp(−x²), 1/x, 1e8 + x, √x, 5."""
+    if fid == 0:
+        return x
+    if fid == 1:
+        return x * x
+    if fid == 2:
+        return (3.0 * x) * x + 2.0 * x + 1.0
+    if fid == 3:
+        return L.sin(x)
+    if fid == 4:
+        return L.exp(-(x * x))
+    if fid == 5:
+        return fdiv(1.0, x)
+    if fid == 6:
+        return 1e8 + x
+    if fid == 7:
+        return mc_sqrt(x)
+    return 5.0
+
+
+def mc_integrate(L, sl, sc):
+    """Inputs: the integrand's id, a, b, n_samples, the seed."""
+    fid, a, b, n, seed = sc
+    if n == 0 or not (math.isfinite(a) and math.isfinite(b)) or a >= b or not math.isfinite(b - a):
+        return ["E:InvalidParameter"]
+    w, u, mean, m2 = b - a, d_uniforms(seed), 0.0, 0.0
+    for k in range(n):
+        val = mc_f(L, fid, a + next(u) * w)
+        delta = val - mean
+        mean += delta / float(k + 1)
+        m2 += delta * (val - mean)
+    nf = float(n)
+    return [w * mean, w * mc_sqrt(m2 / nf / nf)]
+
+
+def mc_pi(L, sl, sc):
+    n, seed = sc
+    if n == 0:
+        return ["E:InvalidParameter"]
+    u, inside = d_uniforms(seed), 0
+    for _ in range(n):
+        x = next(u) * 2.0 - 1.0
+        y = next(u) * 2.0 - 1.0
+        if x * x + y * y <= 1.0:
+            inside += 1
+    return [4.0 * float(inside) / float(n)]
+
+
+def mc_target(L, tid, xs):
+    """The log-densities, by id (as the harness's `_par_mc_target`)."""
+    if tid == 0:                                     # N(0, I): −Σx²/2
+        s = 0.0
+        for x in xs:
+            s += x * x
+        return -0.5 * s
+    if tid == 1:                                     # N(0, 4I): −Σx²/8
+        s = 0.0
+        for x in xs:
+            s += x * x
+        return -0.125 * s
+    if tid in (2, 3):                                # the box [−1, 1]^d: 0 inside, −∞ (2) or NaN (3) outside
+        inside = all(-1.0 <= x <= 1.0 for x in xs)
+        return 0.0 if inside else (-math.inf if tid == 2 else math.nan)
+    if tid == 4:                                     # zero density below 2, then −(x₀ − 3)²
+        if xs[0] < 2.0:
+            return -math.inf
+        d = xs[0] - 3.0
+        return -(d * d)
+    if tid == 5:                                     # the mixture ½N(−2, 1) + ½N(2, 1), unnormalized: ln(e^a + e^b)
+        a = xs[0] - 2.0
+        b = xs[0] + 2.0
+        ea = L.exp(-0.5 * (a * a))
+        eb = L.exp(-0.5 * (b * b))
+        return L.ln(ea + eb) if ea + eb > 0.0 else -math.inf
+    if tid == 6:                                     # Rosenbrock's, scaled: −((1 − x)² + 100(y − x²)²)/20
+        p = 1.0 - xs[0]
+        q = xs[1] - xs[0] * xs[0]
+        return -(p * p + 100.0 * (q * q)) / 20.0
+    if tid == 7:
+        return -math.inf
+    return 0.0
+
+
+def mc_mh(L, sl, sc):
+    """Inputs: the initial point (a slice), then the target's id, σ, n_samples, burn_in, the seed."""
+    init, (tid, sd, n, burn, seed) = sl[0], sc
+    dim = len(init)
+    if dim == 0 or not (math.isfinite(sd) and sd > 0.0):
+        return ["E:InvalidParameter"]
+    nu, bu = n % (1 << 64), burn % (1 << 64)
+    if nu == 0 or nu + bu >= 1 << 64 or nu >= 1 << 60:
+        return ["E:InvalidParameter"]
+
+    def ld(xs):
+        v = mc_target(L, tid, xs)
+        return -math.inf if v != v else v
+
+    total, u = n + burn, d_uniforms(seed)
+    cur, acc, out = list(init), 0, []
+    lc = ld(cur)
+    for step in range(total):
+        prop = [xi + sd * d_standard_normal(L, u) for xi in cur]
+        lp = ld(prop)
+        if lc == -math.inf:
+            la = math.inf if lp > -math.inf else -math.inf
+        else:
+            la = lp - lc
+        if la >= 0.0 or next(u) < L.exp(la):
+            cur, lc, acc = prop, lp, acc + 1
+        if step >= burn:
+            out.extend(cur)
+    return [f"v:{len(out)}"] + out + [float(acc) / float(total)]
+
+
+def mc_cond(L, cid, par, state, j, u):
+    """The Gibbs conditionals, by id (as the harness's `_par_mc_cond`): par·(mean of the others) + √(1 − par²)·z, a
+    standard normal z, a uniform draw, the others' mean plus a uniform in [−½, ½), and ½(x_j + par) (no draw)."""
+    if cid == 0:
+        others = [state[k] for k in range(len(state)) if k != j]
+        m = 0.0
+        for x in others:
+            m += x
+        if others:
+            m = m / float(len(others))
+        z = d_standard_normal(L, u)
+        return par * m + math.sqrt(1.0 - par * par) * z
+    if cid == 1:
+        return d_standard_normal(L, u)
+    if cid == 2:
+        return next(u)
+    if cid == 3:
+        others = [state[k] for k in range(len(state)) if k != j]
+        m = 0.0
+        for x in others:
+            m += x
+        if others:
+            m = m / float(len(others))
+        return m + (next(u) - 0.5)
+    return 0.5 * (state[j] + par)
+
+
+def mc_gibbs(L, sl, sc):
+    """Inputs: the conditionals' ids and parameters (two slices), the initial point, then n_samples, burn_in, seed."""
+    cids, pars, init = sl[0], sl[1], sl[2]
+    n, burn, seed = sc
+    dim = len(cids)
+    if dim == 0:
+        return ["E:InvalidParameter"]
+    if len(init) != dim:
+        return ["E:DimensionMismatch"]
+    nu, bu = n % (1 << 64), burn % (1 << 64)
+    if nu == 0 or nu + bu >= 1 << 64 or nu >= 1 << 60:
+        return ["E:InvalidParameter"]
+    state, u, out = list(init), d_uniforms(seed), []
+    for step in range(n + burn):
+        for j in range(dim):
+            state[j] = mc_cond(L, cids[j], pars[j], state, j, u)
+        if step >= burn:
+            out.extend(state)
+    return [f"v:{len(out)}"] + out + [1.0]
+
+
+MC = {
+    "monte_carlo::monte_carlo_integrate": mc_integrate,
+    "monte_carlo::monte_carlo_pi": mc_pi,
+    "monte_carlo::metropolis_hastings": mc_mh,
+    "monte_carlo::gibbs_sampling": mc_gibbs,
+}
+
+
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
 STATS_T1 = {"hypothesis::t_test_one_sample": "incomplete beta", "hypothesis::t_test_two_sample": "incomplete beta",
             "hypothesis::chi_squared_test": "incomplete gamma", "hypothesis::one_way_anova": "incomplete beta",
@@ -5287,7 +5479,7 @@ def check_stats(root, module, table, rows):
 
 
 STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG, "timeseries": TS,
-                 "bayesian": BAYES, "markov": MARKOV}
+                 "bayesian": BAYES, "markov": MARKOV, "monte_carlo": MC}
 
 
 def main(argv):

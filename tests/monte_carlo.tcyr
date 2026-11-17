@@ -1,0 +1,347 @@
+# monte_carlo.tcyr — src/monte_carlo.cyr (M6 part b).
+#
+# tests/parity.tcyr replays 1.3.0's values (tests/golden/monte_carlo.tsv, json.tsv, debug.tsv). These carry 1.3.0's
+# own tests over (monte_carlo.rs, the hardening regressions among them) and pin what the port adds: the callbacks'
+# contexts, the owned McmcResult, the buffer refusals and drop.
+
+include "tests/lib.cyr"
+
+fn near(x: f64, y: f64, tol: f64): i64 {
+    var d: f64 = x - y;
+    if (f64_abs(d) < tol) { return 1; }
+    return 0;
+}
+
+fn f_ident(ctx, x: f64): f64 {
+    return x;
+}
+
+fn f_square(ctx, x: f64): f64 {
+    var r: f64 = x * x;
+    return r;
+}
+
+# 1e9 + 0.1, whatever x: 1.3.0's constant-offset regression.
+fn f_offset(ctx, x: f64): f64 {
+    var r: f64 = 1000000000.1;
+    return r;
+}
+
+# k·x, k read from the context: a callback's own state.
+fn f_scaled(ctx, x: f64): f64 {
+    var k: f64 = load64(ctx);
+    var r: f64 = k * x;
+    return r;
+}
+
+fn lt_flat(ctx, xs, dim): f64 {
+    return 0.0;
+}
+
+fn lt_normal1(ctx, xs, dim): f64 {
+    var x: f64 = load64(xs);
+    var h: f64 = -0.5 * x;
+    var r: f64 = h * x;
+    return r;
+}
+
+fn lt_normal2(ctx, xs, dim): f64 {
+    var x: f64 = load64(xs);
+    var y: f64 = load64(xs + 8);
+    var xx: f64 = x * x;
+    var yy: f64 = y * y;
+    var s: f64 = xx + yy;
+    var r: f64 = -0.5 * s;
+    return r;
+}
+
+# Uniform(0, 1): 0 on [0, 1], −∞ elsewhere.
+fn lt_unit(ctx, xs, dim): f64 {
+    var x: f64 = load64(xs);
+    if (x >= 0.0 && x <= 1.0) { return 0.0; }
+    var ninf: f64 = _PMN_F64_NEG_INFINITY;
+    return ninf;
+}
+
+# 0 for |x| < 1, NaN elsewhere.
+fn lt_nan_outside(ctx, xs, dim): f64 {
+    var x: f64 = load64(xs);
+    var ax: f64 = f64_abs(x);
+    if (ax < 1.0) { return 0.0; }
+    var nan: f64 = _PMN_F64_NAN;
+    return nan;
+}
+
+# A scripted Rng: the n words at p, in turn, again and again.
+struct SeqRng {
+    p;
+    n;
+    i;
+}
+
+impl PmnRng for SeqRng {
+    fn next_f64(self): f64 {
+        var r: f64 = load64(self.p + (self.i % self.n) * 8);
+        self.i = self.i + 1;
+        return r;
+    }
+}
+
+# 0 on the box [−1, 1], −∞ outside.
+fn lt_box(ctx, xs, dim): f64 {
+    var x: f64 = load64(xs);
+    if (x >= -1.0 && x <= 1.0) { return 0.0; }
+    var ninf: f64 = _PMN_F64_NEG_INFINITY;
+    return ninf;
+}
+
+fn cond_normal(ctx, state, dim, rp: *PmnRngRef): f64 {
+    var d1: f64 = rp.o.next_f64();
+    var mp: f64 = _PMN_F64_MIN_POSITIVE;
+    var u1: f64 = _pmn_max(d1, mp);
+    var u2: f64 = rp.o.next_f64();
+    var l: f64 = _pmn_ln(u1);
+    var a: f64 = -2.0 * l;
+    var r: f64 = f64_sqrt(a);
+    var tp: f64 = 2.0 * _PMN_F64_PI;
+    var t: f64 = tp * u2;
+    var c: f64 = _pmn_cos(t);
+    var z: f64 = r * c;
+    return z;
+}
+
+fn cond_zero(ctx, state, dim, rp: *PmnRngRef): f64 {
+    return 0.0;
+}
+
+fn column_mean(r: *PmnMcmcResult, dim, k): f64 {
+    var n = r.n_samples();
+    var s: f64 = 0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        var v: f64 = load64(r.samples() + (i * dim + k) * 8);
+        s = s + v;
+    }
+    var nf: f64 = f64_from(n);
+    var m: f64 = s / nf;
+    return m;
+}
+
+fn main() {
+    alloc_init();
+    var g: PmnSimpleRng;
+    var er: PmnEstimateResult;
+
+    test_group("1.3.0's tests (π, ∫x², zero samples, serde, the bounds, the constant offset)");
+    PmnSimpleRng_new(&g, 42);
+    var t, v = pmn_monte_carlo_pi(100000, &g);
+    var pi: f64 = v;
+    assert(t != Err && near(pi, _PMN_F64_PI, 0.05) == 1, "π from 10⁵ points within 0.05");
+    PmnSimpleRng_new(&g, 42);
+    assert_eq(pmn_monte_carlo_integrate(&er, &f_square, 0, 0.0, 1.0, 100000, &g), PMN_ERR_NONE, "∫₀¹ x² dx");
+    var third: f64 = 1.0 / 3.0;
+    var ev: f64 = er.value;
+    var es: f64 = er.std_error;
+    assert(near(ev, third, 0.01) == 1 && es > 0.0, "about 1/3, with a positive standard error");
+    PmnSimpleRng_new(&g, 1);
+    t, v = pmn_monte_carlo_pi(0, &g);
+    assert(t == Err && v == PMN_ERR_INVALID_PARAMETER, "π from no samples");
+    assert_eq(pmn_monte_carlo_integrate(&er, &f_ident, 0, 0.0, 1.0, 0, &g), PMN_ERR_INVALID_PARAMETER, "no samples");
+    er.value = 3.15;
+    er.std_error = 0.01;
+    var sb = str_builder_new();
+    assert_eq(er.to_json(sb), PMN_ERR_NONE, "EstimateResult's JSON");
+    var er2: PmnEstimateResult;
+    assert_eq(PmnEstimateResult_from_json(&er2, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var e1: f64 = er.value;
+    var e2: f64 = er2.value;
+    assert(e1 == e2, "the same value");
+    var nan: f64 = _PMN_F64_NAN;
+    var inf: f64 = _PMN_F64_INFINITY;
+    var mxw = 0x7FEFFFFFFFFFFFFF;
+    var mx: f64 = load64(&mxw);
+    var nmx: f64 = -mx;
+    assert_eq(pmn_monte_carlo_integrate(&er, &f_ident, 0, nan, 1.0, 10, &g), PMN_ERR_INVALID_PARAMETER, "a NaN bound");
+    assert_eq(pmn_monte_carlo_integrate(&er, &f_ident, 0, 0.0, inf, 10, &g), PMN_ERR_INVALID_PARAMETER, "an ∞ bound");
+    assert_eq(pmn_monte_carlo_integrate(&er, &f_ident, 0, nmx, mx, 10, &g), PMN_ERR_INVALID_PARAMETER,
+        "b − a overflowing");
+    assert_eq(pmn_monte_carlo_integrate(&er, &f_ident, 0, 1.0, 1.0, 10, &g), PMN_ERR_INVALID_PARAMETER, "a = b");
+    PmnSimpleRng_new(&g, 5);
+    assert_eq(pmn_monte_carlo_integrate(&er, &f_offset, 0, 0.0, 1.0, 1000, &g), PMN_ERR_NONE, "1e9 + 0.1");
+    var os: f64 = er.std_error;
+    assert(_pmn_is_finite(os) == 1 && os >= 0.0 && os < 0.000001, "Welford's error: finite, ≥ 0, below 1e-6");
+
+    test_group("1.3.0's Metropolis–Hastings tests (N(0, 1), 2-D, refusals, serde, overflow, the zero-density start)");
+    var r: PmnMcmcResult;
+    var x0[16];
+    store64(&x0, 0.0);
+    store64(&x0 + 8, 0.0);
+    PmnSimpleRng_new(&g, 42);
+    assert_eq(pmn_metropolis_hastings(&r, &lt_normal1, 0, &x0, 1, 1.0, 50000, 5000, &g), PMN_ERR_NONE, "N(0, 1)");
+    assert_eq(r.n_samples(), 50000, "50,000 samples");
+    var ar: f64 = r.acceptance_rate;
+    assert(ar > 0.1 && ar < 0.9, "an acceptance rate in (0.1, 0.9)");
+    var m: f64 = column_mean(&r, 1, 0);
+    assert(f64_abs(m) < 0.1, "the sample mean near 0");
+    var ss: f64 = 0.0;
+    for (var i = 0; i < 50000; i = i + 1) {
+        var xi: f64 = load64(r.samples() + i * 8);
+        var d: f64 = xi - m;
+        var dd: f64 = d * d;
+        ss = ss + dd;
+    }
+    var vr: f64 = ss / 50000.0;
+    assert(near(vr, 1.0, 0.2) == 1, "the sample variance near 1");
+    PmnMcmcResult_drop(&r);
+    PmnSimpleRng_new(&g, 123);
+    assert_eq(pmn_metropolis_hastings(&r, &lt_normal2, 0, &x0, 2, 0.5, 20000, 2000, &g), PMN_ERR_NONE, "2-D normal");
+    assert_eq(r.sample_len(0), 2, "2-D samples");
+    var mxx: f64 = column_mean(&r, 2, 0);
+    var myy: f64 = column_mean(&r, 2, 1);
+    assert(f64_abs(mxx) < 0.15 && f64_abs(myy) < 0.15, "both means near 0");
+    PmnMcmcResult_drop(&r);
+    PmnSimpleRng_new(&g, 1);
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 0, 1.0, 100, 0, &g), PMN_ERR_INVALID_PARAMETER,
+        "an empty initial point");
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, 0.0, 100, 0, &g), PMN_ERR_INVALID_PARAMETER, "σ = 0");
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, 1.0, 0, 0, &g), PMN_ERR_INVALID_PARAMETER,
+        "no samples");
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, nan, 10, 0, &g), PMN_ERR_INVALID_PARAMETER, "σ NaN");
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, inf, 10, 0, &g), PMN_ERR_INVALID_PARAMETER, "σ ∞");
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, 1.0, 0 - 1, 1, &g), PMN_ERR_INVALID_PARAMETER,
+        "usize::MAX samples and one burn-in: the run overflows");
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, 1.0, 0 - 1, 0, &g), PMN_ERR_INVALID_PARAMETER,
+        "usize::MAX samples: too many to reserve");
+    var xs[8];
+    store64(&xs, 0.9);
+    PmnSimpleRng_new(&g, 11);
+    assert_eq(pmn_metropolis_hastings(&r, &lt_unit, 0, &xs, 1, 2.0, 2000, 0, &g), PMN_ERR_NONE, "Uniform(0, 1)");
+    var ar2: f64 = r.acceptance_rate;
+    assert(ar2 > 0.0, "moves");
+    PmnMcmcResult_drop(&r);
+    store64(&xs, 1.5);
+    PmnSimpleRng_new(&g, 11);
+    assert_eq(pmn_metropolis_hastings(&r, &lt_unit, 0, &xs, 1, 1.0, 4000, 1000, &g), PMN_ERR_NONE,
+        "from 1.5, of zero density");
+    var allin = 1;
+    for (var k = 0; k < 4000; k = k + 1) {
+        var sk: f64 = load64(r.samples() + k * 8);
+        if (sk < 0.0 || sk > 1.0) { allin = 0; }
+    }
+    assert(allin == 1, "it escapes, and every sample after burn-in is in [0, 1]");
+    PmnMcmcResult_drop(&r);
+    store64(&xs, 3.0);
+    PmnSimpleRng_new(&g, 3);
+    assert_eq(pmn_metropolis_hastings(&r, &lt_nan_outside, 0, &xs, 1, 2.0, 500, 200, &g), PMN_ERR_NONE,
+        "a NaN density outside (−1, 1)");
+    var alln = 1;
+    for (var k2 = 0; k2 < 500; k2 = k2 + 1) {
+        var sn: f64 = load64(r.samples() + k2 * 8);
+        if (f64_abs(sn) >= 1.0) { alln = 0; }
+    }
+    assert(alln == 1, "NaN reads as zero density: every sample inside");
+    var r2: PmnMcmcResult;
+    assert_eq(PmnMcmcResult_clone(&r2, &r), PMN_ERR_NONE, "a clone");
+    assert(r2.samples() != r.samples() && load64(r2.samples() + 8 * 499) == load64(r.samples() + 8 * 499),
+        "its own block, the same samples");
+    PmnMcmcResult_drop(&r2);
+    PmnMcmcResult_drop(&r);
+    var doc = "{\"samples\":[[1.0,2.0],[3.0,4.0]],\"acceptance_rate\":0.5}";
+    assert_eq(PmnMcmcResult_from_json(&r, doc, strlen(doc)), PMN_ERR_NONE, "a McmcResult document");
+    var sb2 = str_builder_new();
+    assert_eq(r.to_json(sb2), PMN_ERR_NONE, "written back");
+    var want = "{\"samples\":[[1.0,2.0],[3.0,4.0]],\"acceptance_rate\":0.5}";
+    assert(load64(sb2 + 8) == strlen(want) && memeq(load64(sb2), want, strlen(want)) == 1, "serde_json's text");
+    PmnMcmcResult_drop(&r);
+    var rag = "{\"samples\":[[1],[2,3],[]],\"acceptance_rate\":1}";
+    assert_eq(PmnMcmcResult_from_json(&r, rag, strlen(rag)), PMN_ERR_NONE, "ragged samples, as the derive reads them");
+    assert(r.n_samples() == 3 && r.sample_len(0) == 1 && r.sample_len(1) == 2 && r.sample_len(2) == 0, "1, 2, 0");
+    var sb3 = str_builder_new();
+    assert_eq(r.debug(sb3, 0), PMN_ERR_NONE, "Debug");
+    var dw = "McmcResult { samples: [[1.0], [2.0, 3.0], []], acceptance_rate: 1.0 }";
+    assert(load64(sb3 + 8) == strlen(dw) && memeq(load64(sb3), dw, strlen(dw)) == 1, "the derive's text");
+    PmnMcmcResult_drop(&r);
+
+    test_group("1.3.0's Gibbs tests (independent normals, refusals, overflow)");
+    var conds[32];
+    store64(&conds, &cond_normal);
+    store64(&conds + 8, 0);
+    store64(&conds + 16, &cond_normal);
+    store64(&conds + 24, 0);
+    PmnSimpleRng_new(&g, 42);
+    assert_eq(pmn_gibbs_sampling(&r, &conds, 2, &x0, 2, 20000, 1000, &g), PMN_ERR_NONE, "two independent normals");
+    assert_eq(r.n_samples(), 20000, "20,000 samples");
+    var gr: f64 = r.acceptance_rate;
+    assert(gr == 1.0, "acceptance rate 1");
+    var gm: f64 = column_mean(&r, 2, 0);
+    assert(f64_abs(gm) < 0.1, "x's mean near 0");
+    PmnMcmcResult_drop(&r);
+    PmnSimpleRng_new(&g, 1);
+    assert_eq(pmn_gibbs_sampling(&r, &conds, 0, &x0, 0, 100, 0, &g), PMN_ERR_INVALID_PARAMETER, "no conditionals");
+    var cz[16];
+    store64(&cz, &cond_zero);
+    store64(&cz + 8, 0);
+    assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 2, 100, 0, &g), PMN_ERR_DIMENSION_MISMATCH, "1 conditional, 2-D");
+    assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 1, 0, 0, &g), PMN_ERR_INVALID_PARAMETER, "no samples");
+    assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 1, 1, 0 - 1, &g), PMN_ERR_INVALID_PARAMETER,
+        "one sample, usize::MAX burn-in: overflows");
+
+    test_group("draws SimpleRng never makes (the boundaries mutants found)");
+    var seq[24];
+    store64(&seq, 0.0);
+    store64(&seq + 8, 0.5);
+    var sr: SeqRng;
+    sr.p = &seq;
+    sr.n = 2;
+    sr.i = 0;
+    t, v = pmn_monte_carlo_pi(3, &sr);
+    var p4: f64 = v;
+    assert(t != Err && p4 == 4.0, "(−1, 0) has x² + y² = 1 exactly: inside, as ≤ 1");
+    var tiny = 0x3EB0000000000000;
+    store64(&seq, load64(&tiny));
+    store64(&seq + 8, 0.0);
+    store64(&seq + 16, 0.0);
+    sr.n = 3;
+    sr.i = 0;
+    store64(&xs, 0.0);
+    assert_eq(pmn_metropolis_hastings(&r, &lt_box, 0, &xs, 1, 1.0, 4, 0, &sr), PMN_ERR_NONE,
+        "proposals of z = √(40 ln 2) ≈ 5.3, outside the box");
+    var stay = 1;
+    for (var k3 = 0; k3 < 4; k3 = k3 + 1) {
+        if (load64(r.samples() + k3 * 8) != 0) { stay = 0; }
+    }
+    var ar3: f64 = r.acceptance_rate;
+    assert(stay == 1 && ar3 == 0.0, "a draw of 0 against exp(−∞) = 0 rejects: r < exp is strict");
+    PmnMcmcResult_drop(&r);
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, 1.0, 1, 9223372036854775807, &g),
+        PMN_ERR_INVALID_PARAMETER, "a burn-in of 2^63 − 1: the run's length overflows (ADR 007 row 18)");
+    assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 1, 1, 9223372036854775807, &g), PMN_ERR_INVALID_PARAMETER,
+        "Gibbs too");
+
+    test_group("the port's callbacks and buffers (a context, null pointers, drop)");
+    var kk[8];
+    store64(&kk, 2.0);
+    PmnSimpleRng_new(&g, 9);
+    assert_eq(pmn_monte_carlo_integrate(&er, &f_scaled, &kk, 0.0, 1.0, 10000, &g), PMN_ERR_NONE, "∫₀¹ 2x dx");
+    var sv: f64 = er.value;
+    assert(near(sv, 1.0, 0.05) == 1, "about 1: the context reaches the callback");
+    assert_eq(pmn_monte_carlo_integrate(0, &f_ident, 0, 0.0, 1.0, 10, &g), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(pmn_monte_carlo_integrate(&er, 0, 0, 0.0, 1.0, 10, &g), PMN_ERR_INVALID_PARAMETER, "a null f");
+    assert_eq(pmn_metropolis_hastings(&r, 0, 0, &x0, 1, 1.0, 10, 0, &g), PMN_ERR_INVALID_PARAMETER,
+        "a null log-density");
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, 0, 1, 1.0, 10, 0, &g), PMN_ERR_INVALID_PARAMETER,
+        "a null initial point");
+    store64(&cz, 0);
+    assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 1, 10, 0, &g), PMN_ERR_INVALID_PARAMETER, "a null conditional");
+    store64(&cz, &cond_zero);
+    assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 1, 3, 2, &g), PMN_ERR_NONE, "three samples after two sweeps");
+    assert(r.n_samples() == 3 && load64(r.samples() + 16) == 0, "zeros");
+    PmnMcmcResult_drop(&r);
+    assert(r.n_samples() == 0 && r.samples() == 0, "a dropped result");
+    assert_eq(r.to_json(sb), PMN_ERR_INVALID_PARAMETER, "refuses");
+    assert_eq(PmnMcmcResult_drop(&r), PMN_ERR_NONE, "a second drop");
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

@@ -143,4 +143,12 @@ def emit():
                        ([stochastic_row(g7, 3) for _ in range(3)], [stochastic_row(g7, 2) for _ in range(3)],
                         [1.0, 0.0, -0.0])):
         both("debug::HiddenMarkovModel", mat_toks(ta) + mat_toks(eb) + [v(len(pi))] + [f(x) for x in pi])
+    # M6 part b: EstimateResult and McmcResult (ragged rows allowed)
+    from .m_json import mc_toks
+    g8 = Rng(0x3B8F48D6E1C3F24D)
+    for ev, se in ((0.333, 0.01), (-0.0, 0.0), (1e300, 5e-324), (MAXF, 1e-16)):
+        both("debug::EstimateResult", [f(ev), f(se)])
+    for rows, rate in (([[0.1, 0.2], [0.3, 0.4]], 0.25), ([], 1.0), ([[]], 0.0), ([[1.0], [2.0, 3.0], []], 0.5),
+                       ([[g8.signed_log_uniform(-10.0, 10.0) for _ in range(2)] for _ in range(3)], g8.unit())):
+        both("debug::McmcResult", mc_toks(rows, rate))
     return m

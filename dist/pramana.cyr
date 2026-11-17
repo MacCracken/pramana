@@ -19125,3 +19125,488 @@ fn PmnHiddenMarkovModel_from_json(out: *PmnHiddenMarkovModel, buf, len): i64 {
     if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
     return _pmn_json_decode(buf, len, &_pmn_hmm_from_root, out);
 }
+
+# --- monte_carlo.cyr ---
+
+# monte_carlo.cyr — Rust 1.3.0's Monte Carlo methods (src/monte_carlo.rs; port plan §4.1, D5, D7, D11, D12; M6 part
+# b): `EstimateResult`, `monte_carlo_integrate` (Welford's mean and variance), `monte_carlo_pi`, `McmcResult`,
+# `metropolis_hastings` and `gibbs_sampling`, their serde_json codecs and their derived Debug.
+#
+# Every API that takes Rust's `&mut impl Rng` is generic over `R: PmnRng` (D7, amended). A caller's function is a
+# function pointer and a context word, called through `callptr` (D7):
+# - the integrand `f(ctx, x: f64): f64`;
+# - Metropolis–Hastings' log-density `log_target(ctx, xs, dim): f64`, xs borrowed for the call;
+# - each Gibbs conditional `cond(ctx, state, dim, rng: *PmnRngRef): f64`, with `rng.o.next_f64()` its draws: Rust's
+#   `&mut dyn Rng`, a stack record of the dyn formed by a non-generic helper (P3). The conditionals are 16-byte
+#   records, a function and its context.
+#
+# `EstimateResult` is caller storage; `McmcResult` is owned (D11): the struct in caller storage, the samples (row
+# offsets, then the entries, contiguous) in one freelist block, freed by `_drop`. Its codec takes rows of any lengths,
+# as Rust's derive does. Every value is 1.3.0's in its operation order, on the correctly rounded ln, cos and exp (ADR
+# 009).
+
+# Rust's `&mut dyn Rng` for Gibbs' conditionals: a dyn is two words and can't be pointed to, so the conditional gets
+# the address of a record that holds it (probe P3).
+struct PmnRngRef {
+    o: dyn PmnRng;
+}
+
+# ── EstimateResult, monte_carlo_integrate, monte_carlo_pi ─────────────────────────────────────────
+
+# Rust's `EstimateResult`: the estimate and its standard error.
+struct PmnEstimateResult {
+    value: f64;
+    std_error: f64;
+}
+
+impl PmnEstimateResult {
+    # Appends Rust's derived Debug (D12): `EstimateResult { value: .., std_error: .. }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "EstimateResult", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "value", 1, self.value, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "std_error", 0, self.std_error, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"value":..,"std_error":..}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_f64_field(sb, "value", 1, self.value);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "std_error", 0, self.std_error); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_est_from_root(root, out: *PmnEstimateResult): i64 {
+    var names[16];
+    store64(&names, "value");
+    store64(&names + 8, "std_error");
+    var sl[16];
+    var e = _pmn_json_struct(root, &names, 2, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var v[16];
+    if (_pmn_hyp_f64s(&sl, 0, 2, &v) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var a: f64 = load64(&v);
+    var b: f64 = load64(&v + 8);
+    out.value = a;
+    out.std_error = b;
+    return PMN_ERR_NONE;
+}
+
+# Reads an EstimateResult document, buf[0, len), into out (caller storage): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any
+# document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnEstimateResult_from_json(out: *PmnEstimateResult, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_est_from_root, out);
+}
+
+# Rust's `monte_carlo_integrate(f, a, b, n_samples, rng)`: the integral of f over [a, b] from n_samples uniform points
+# x = a + u·(b − a), into out (caller storage). Welford's running mean and m2 (each from +0.0; the mean's step δ/(i+1));
+# the value (b − a)·mean and the standard error (b − a)·√(m2/n/n). PMN_ERR_INVALID_PARAMETER, in Rust's order, for no
+# samples, a non-finite bound, a ≥ b, or b − a overflowing; and for a null out or f, or a negative count. f is
+# `callptr(f, ctx, x)`, returning an f64. On a refusal out is untouched.
+#must_use
+fn pmn_monte_carlo_integrate<R: PmnRng>(out: *PmnEstimateResult, f, ctx, a: f64, b: f64, n_samples, rng: *R): i64 {
+    if (out == 0 || f == 0 || n_samples < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n_samples == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_is_finite(a) == 0 || _pmn_is_finite(b) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (a >= b) { return PMN_ERR_INVALID_PARAMETER; }
+    var width: f64 = b - a;
+    if (_pmn_is_finite(width) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var mean: f64 = 0.0;
+    var m2: f64 = 0.0;
+    for (var i = 0; i < n_samples; i = i + 1) {
+        var u: f64 = rng.next_f64();
+        var t: f64 = u * width;
+        var x: f64 = a + t;
+        var val: f64 = callptr(f, ctx, x);
+        var delta: f64 = val - mean;
+        var k: f64 = f64_from(i + 1);
+        var step: f64 = delta / k;
+        mean = mean + step;
+        var d2: f64 = val - mean;
+        var p: f64 = delta * d2;
+        m2 = m2 + p;
+    }
+    var n: f64 = f64_from(n_samples);
+    var value: f64 = width * mean;
+    var vr: f64 = m2 / n;
+    var vn: f64 = vr / n;
+    var sq: f64 = f64_sqrt(vn);
+    var se: f64 = width * sq;
+    out.value = value;
+    out.std_error = se;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `monte_carlo_pi(n_samples, rng)`: Ok(4·inside/n) over n points (2u − 1, 2v − 1) of the square, inside when
+# x² + y² ≤ 1. Err(PMN_ERR_INVALID_PARAMETER) for no samples (or a negative count).
+#must_use
+fn pmn_monte_carlo_pi<R: PmnRng>(n_samples, rng: *R): Result {
+    if (n_samples <= 0) { return Err(PMN_ERR_INVALID_PARAMETER); }
+    var inside = 0;
+    for (var i = 0; i < n_samples; i = i + 1) {
+        var u: f64 = rng.next_f64();
+        var u2: f64 = u * 2.0;
+        var x: f64 = u2 - 1.0;
+        var v: f64 = rng.next_f64();
+        var v2: f64 = v * 2.0;
+        var y: f64 = v2 - 1.0;
+        var xx: f64 = x * x;
+        var yy: f64 = y * y;
+        var r: f64 = xx + yy;
+        if (r <= 1.0) { inside = inside + 1; }
+    }
+    var fi: f64 = f64_from(inside);
+    var num: f64 = 4.0 * fi;
+    var den: f64 = f64_from(n_samples);
+    var est: f64 = num / den;
+    return Ok(est);
+}
+
+# ── McmcResult ────────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `McmcResult`: the samples (rows rows, of any lengths) and the acceptance rate. buf is the owned block: offs,
+# the rows + 1 row offsets (in f64s, into data), then data, the entries, contiguous.
+struct PmnMcmcResult {
+    buf;
+    rows;
+    offs;
+    data;
+    acceptance_rate: f64;
+}
+
+# A block for rows rows and cells entries into out (its offsets left for the caller to write). PMN_ERR_INVALID_PARAMETER
+# when the words overflow (Rust's `try_reserve_exact` refusing the capacity); PMN_ERR_OUT_OF_MEMORY when it can't be
+# had.
+#must_use
+fn _pmn_mcmc_alloc(out: *PmnMcmcResult, rows, cells): i64 {
+    if (rows < 0 || cells < 0 || rows > 1152921504606846975 - cells) { return PMN_ERR_INVALID_PARAMETER; }
+    var blk = fl_alloc((rows + 1 + cells) * 8 + 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    out.buf = blk;
+    out.rows = rows;
+    out.offs = blk;
+    out.data = blk + (rows + 1) * 8;
+    return PMN_ERR_NONE;
+}
+
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src;
+# PMN_ERR_OUT_OF_MEMORY when the block can't be had. Drop each one.
+#must_use
+fn PmnMcmcResult_clone(out: *PmnMcmcResult, src: *PmnMcmcResult): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 40, src, 40) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var cells = load64(src.offs + src.rows * 8);
+    var tmp: PmnMcmcResult;
+    var e = _pmn_mcmc_alloc(&tmp, src.rows, cells);
+    if (e != PMN_ERR_NONE) { return e; }
+    _pmn_copy_words(tmp.buf, src.buf, src.rows + 1 + cells);
+    out.buf = tmp.buf;
+    out.rows = tmp.rows;
+    out.offs = tmp.offs;
+    out.data = tmp.data;
+    var ar: f64 = src.acceptance_rate;
+    out.acceptance_rate = ar;
+    return PMN_ERR_NONE;
+}
+
+# Frees r's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null r.
+fn PmnMcmcResult_drop(r: *PmnMcmcResult): i64 {
+    if (r == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (r.buf != 0) { fl_free(r.buf); }
+    r.buf = 0;
+    r.rows = 0;
+    return PMN_ERR_NONE;
+}
+
+impl PmnMcmcResult {
+    # The number of samples, or 0 for a dropped one.
+    #must_use
+    fn n_samples(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.rows;
+    }
+
+    # Sample i's length, or −1 out of range (or dropped).
+    #must_use
+    fn sample_len(self, i): i64 {
+        if (self == 0 || self.buf == 0 || i < 0 || i >= self.rows) { return 0 - 1; }
+        return load64(self.offs + (i + 1) * 8) - load64(self.offs + i * 8);
+    }
+
+    # Sample i's entries (borrowed: valid until the drop), or 0 out of range (or dropped).
+    #must_use
+    fn sample(self, i): i64 {
+        if (self == 0 || self.buf == 0 || i < 0 || i >= self.rows) { return 0; }
+        return self.data + load64(self.offs + i * 8) * 8;
+    }
+
+    # Every sample's entries, contiguous (borrowed): a chain's n_samples × dim, row-major. 0 for a dropped one.
+    #must_use
+    fn samples(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.data;
+    }
+
+    # Appends Rust's derived Debug (D12): `McmcResult { samples: [[..], ..], acceptance_rate: .. }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "McmcResult", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "samples", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "["); }
+        if (e == PMN_ERR_NONE && self.rows > 0 && alternate == 1) { e = _pmn_json_w_lit(sb, "\n"); }
+        var r = 0;
+        while (e == PMN_ERR_NONE && r < self.rows) {
+            if (alternate == 1) {
+                e = _pmn_dbg_indent(sb, 2);
+            } elif (r > 0) {
+                e = _pmn_json_w_lit(sb, ", ");
+            }
+            if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.sample(r), self.sample_len(r), alternate, 2); }
+            if (e == PMN_ERR_NONE && alternate == 1) { e = _pmn_json_w_lit(sb, ",\n"); }
+            r = r + 1;
+        }
+        if (e == PMN_ERR_NONE && self.rows > 0 && alternate == 1) { e = _pmn_dbg_indent(sb, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64_field(sb, "acceptance_rate", 0, self.acceptance_rate, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"samples":[[..],..],"acceptance_rate":..}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_w_key(sb, "samples", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "["); }
+        var r = 0;
+        while (e == PMN_ERR_NONE && r < self.rows) {
+            if (r > 0) { e = _pmn_json_w_lit(sb, ","); }
+            if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.sample(r), self.sample_len(r)); }
+            r = r + 1;
+        }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "]"); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_f64_field(sb, "acceptance_rate", 0, self.acceptance_rate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder: the derive's two fields by serde's struct rules (samples a Vec<Vec<f64>> of rows of any lengths, read
+# whole), then copied into a new block.
+fn _pmn_mcmc_from_root(root, out: *PmnMcmcResult): i64 {
+    var names[16];
+    store64(&names, "samples");
+    store64(&names + 8, "acceptance_rate");
+    var sl[16];
+    var e = _pmn_json_struct(root, &names, 2, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var sv = load64(&sl);
+    var rows = _pmn_json_arr_len(sv);
+    if (rows < 0) { return PMN_ERR_DESERIALIZE; }
+    var cells = 0;
+    var x[8];
+    for (var r = 0; r < rows; r = r + 1) {
+        var row = _pmn_json_arr_get(sv, r);
+        var c = _pmn_json_arr_len(row);
+        if (c < 0) { return PMN_ERR_DESERIALIZE; }
+        for (var j = 0; j < c; j = j + 1) {
+            if (_pmn_json_f64(_pmn_json_arr_get(row, j), &x) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+        }
+        cells = cells + c;
+    }
+    var ar[8];
+    if (_pmn_json_f64(load64(&sl + 8), &ar) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var tmp: PmnMcmcResult;
+    e = _pmn_mcmc_alloc(&tmp, rows, cells);
+    if (e != PMN_ERR_NONE) { return PMN_ERR_OUT_OF_MEMORY; }
+    var at = 0;
+    for (var r2 = 0; r2 < rows; r2 = r2 + 1) {
+        var row2 = _pmn_json_arr_get(sv, r2);
+        var c2 = _pmn_json_arr_len(row2);
+        store64(tmp.offs + r2 * 8, at);
+        if (_pmn_json_vec_f64(row2, tmp.data + at * 8, c2) != PMN_ERR_NONE) {
+            PmnMcmcResult_drop(&tmp);
+            return PMN_ERR_DESERIALIZE;
+        }
+        at = at + c2;
+    }
+    store64(tmp.offs + rows * 8, at);
+    out.buf = tmp.buf;
+    out.rows = tmp.rows;
+    out.offs = tmp.offs;
+    out.data = tmp.data;
+    var a: f64 = load64(&ar);
+    out.acceptance_rate = a;
+    return PMN_ERR_NONE;
+}
+
+# Reads a McmcResult document, buf[0, len), into out (caller storage, owning a new block: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnMcmcResult_from_json(out: *PmnMcmcResult, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_mcmc_from_root, out);
+}
+
+# Rust's private `chain_buffers(n_samples, burn_in)`: the block for n_samples rows of dim entries into out, its offsets
+# written (row i at i·dim), and the run's length n_samples + burn_in; or (0, the error): PMN_ERR_INVALID_PARAMETER for
+# no samples, a sum that overflows, or a block too large to reserve (each Rust's InvalidParameter), and for a negative
+# count (a usize at or past 2^63: past what any reservation takes); PMN_ERR_OUT_OF_MEMORY when it can't be had.
+fn _pmn_chain_buffers(out: *PmnMcmcResult, n_samples, burn_in, dim): (i64, i64) {
+    if (n_samples == 0) { return (0, PMN_ERR_INVALID_PARAMETER); }
+    if (n_samples < 0 || burn_in < 0 || n_samples > 9223372036854775807 - burn_in) {
+        return (0, PMN_ERR_INVALID_PARAMETER);
+    }
+    if (dim > 0 && n_samples > 1152921504606846975 / dim) { return (0, PMN_ERR_INVALID_PARAMETER); }
+    var e = _pmn_mcmc_alloc(out, n_samples, n_samples * dim);
+    if (e != PMN_ERR_NONE) { return (0, e); }
+    for (var i = 0; i <= n_samples; i = i + 1) { store64(out.offs + i * 8, i * dim); }
+    return (n_samples + burn_in, PMN_ERR_NONE);
+}
+
+# ── Metropolis–Hastings ───────────────────────────────────────────────────────────────────────────
+
+# Rust's log_density closure: log_target(ctx, xs, dim), a NaN read as −∞.
+#must_use
+fn _pmn_mh_density(log_target, ctx, xs, dim): f64 {
+    var v: f64 = callptr(log_target, ctx, xs, dim);
+    if (v != v) {
+        var ninf: f64 = _PMN_F64_NEG_INFINITY;
+        return ninf;
+    }
+    return v;
+}
+
+# Rust's `metropolis_hastings(log_target, initial, proposal_std, n_samples, burn_in, rng)`: a Gaussian random walk from
+# initial[0, dim), into out (caller storage, owning a new block: drop it). Each step proposes x + σ·z per coordinate,
+# z Box–Muller's √(−2 ln u1)·cos(2π u2) (`standard_normal`'s); the log-ratio ln p(x′) − ln p(x), or from a zero-density
+# point +∞ for any proposal of positive density (−∞ otherwise); accepted when it is ≥ 0, else when a draw is below its
+# exp. After burn_in steps each state is a sample; the acceptance rate is accepted/total. PMN_ERR_INVALID_PARAMETER,
+# in Rust's order, for an empty initial point, σ not positive and finite, then chain_buffers' refusals; and for a null
+# out, log_target or initial or a negative dim; PMN_ERR_OUT_OF_MEMORY when the block or the scratch can't be had. On a
+# refusal out is untouched.
+#must_use
+fn pmn_metropolis_hastings<R: PmnRng>(out: *PmnMcmcResult, log_target, ctx, initial, dim, proposal_std: f64,
+    n_samples, burn_in, rng: *R): i64 {
+    if (out == 0 || log_target == 0 || dim < 0 || (initial == 0 && dim > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (dim == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_is_finite(proposal_std) == 0 || proposal_std <= 0.0) { return PMN_ERR_INVALID_PARAMETER; }
+    var res: PmnMcmcResult;
+    var total, e = _pmn_chain_buffers(&res, n_samples, burn_in, dim);
+    if (e != PMN_ERR_NONE) { return e; }
+    var s, slot = _pmn_scratch_take(2 * dim * 8);
+    if (s == 0) {
+        PmnMcmcResult_drop(&res);
+        return PMN_ERR_OUT_OF_MEMORY;
+    }
+    var cur = s;
+    var prop = s + dim * 8;
+    _pmn_copy_words(cur, initial, dim);
+    var lc: f64 = _pmn_mh_density(log_target, ctx, cur, dim);
+    var ninf: f64 = _PMN_F64_NEG_INFINITY;
+    var accepted = 0;
+    for (var step = 0; step < total; step = step + 1) {
+        for (var k = 0; k < dim; k = k + 1) {
+            var xi: f64 = load64(cur + k * 8);
+            var z: f64 = _pmn_standard_normal(rng);
+            var dz: f64 = proposal_std * z;
+            var nx: f64 = xi + dz;
+            store64(prop + k * 8, nx);
+        }
+        var lp: f64 = _pmn_mh_density(log_target, ctx, prop, dim);
+        var la: f64 = 0.0;
+        if (lc == ninf) {
+            la = ninf;
+            if (lp > ninf) { la = _PMN_F64_INFINITY; }
+        } else {
+            la = lp - lc;
+        }
+        var accept = 0;
+        if (la >= 0.0) {
+            accept = 1;
+        } else {
+            var r: f64 = rng.next_f64();
+            var ea: f64 = _pmn_exp(la);
+            if (r < ea) { accept = 1; }
+        }
+        if (accept == 1) {
+            _pmn_copy_words(cur, prop, dim);
+            lc = lp;
+            accepted = accepted + 1;
+        }
+        if (step >= burn_in) { _pmn_copy_words(res.data + (step - burn_in) * dim * 8, cur, dim); }
+    }
+    _pmn_scratch_give(s, slot);
+    var fa: f64 = f64_from(accepted);
+    var ft: f64 = f64_from(total);
+    var rate: f64 = fa / ft;
+    out.buf = res.buf;
+    out.rows = res.rows;
+    out.offs = res.offs;
+    out.data = res.data;
+    out.acceptance_rate = rate;
+    return PMN_ERR_NONE;
+}
+
+# ── Gibbs sampling ────────────────────────────────────────────────────────────────────────────────
+
+# The run, non-generic so that the dyn forms at its call (P3): total sweeps of state[0, dim), each conditional j
+# `callptr(fn, ctx, state, dim, &rr)` replacing state[j] in turn; after burn_in sweeps each state a row of data.
+fn _pmn_gibbs_run(rng: dyn PmnRng, conds, state, dim, total, burn_in, data): i64 {
+    var rr = PmnRngRef { rng };
+    for (var step = 0; step < total; step = step + 1) {
+        for (var j = 0; j < dim; j = j + 1) {
+            var fp = load64(conds + j * 16);
+            var cx = load64(conds + j * 16 + 8);
+            var v: f64 = callptr(fp, cx, state, dim, &rr);
+            store64(state + j * 8, v);
+        }
+        if (step >= burn_in) { _pmn_copy_words(data + (step - burn_in) * dim * 8, state, dim); }
+    }
+    return 0;
+}
+
+# Rust's `gibbs_sampling(conditionals, initial, n_samples, burn_in, rng)`: conds holds dim conditionals (16-byte
+# records: a function, then its context), initial its n_init coordinates; the samples into out (caller storage, owning
+# a new block: drop it), the acceptance rate 1. PMN_ERR_INVALID_PARAMETER for no conditionals,
+# PMN_ERR_DIMENSION_MISMATCH for an initial point of another length, then chain_buffers' refusals, in Rust's order; and
+# PMN_ERR_INVALID_PARAMETER first for a null out, conds or initial, a negative count or a null conditional;
+# PMN_ERR_OUT_OF_MEMORY when the block or the scratch can't be had. On a refusal out is untouched.
+#must_use
+fn pmn_gibbs_sampling<R: PmnRng>(out: *PmnMcmcResult, conds, dim, initial, n_init, n_samples, burn_in, rng: *R): i64 {
+    if (out == 0 || dim < 0 || n_init < 0 || (conds == 0 && dim > 0) || (initial == 0 && n_init > 0)) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    for (var c = 0; c < dim; c = c + 1) {
+        if (load64(conds + c * 16) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    }
+    if (dim == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n_init != dim) { return PMN_ERR_DIMENSION_MISMATCH; }
+    var res: PmnMcmcResult;
+    var total, e = _pmn_chain_buffers(&res, n_samples, burn_in, dim);
+    if (e != PMN_ERR_NONE) { return e; }
+    var s, slot = _pmn_scratch_take(dim * 8);
+    if (s == 0) {
+        PmnMcmcResult_drop(&res);
+        return PMN_ERR_OUT_OF_MEMORY;
+    }
+    _pmn_copy_words(s, initial, dim);
+    _pmn_gibbs_run(rng, conds, s, dim, total, burn_in, res.data);
+    _pmn_scratch_give(s, slot);
+    out.buf = res.buf;
+    out.rows = res.rows;
+    out.offs = res.offs;
+    out.data = res.data;
+    out.acceptance_rate = 1.0;
+    return PMN_ERR_NONE;
+}

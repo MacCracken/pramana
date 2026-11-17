@@ -4521,3 +4521,33 @@ Sixteen failed rows on the first run. Four survived and were closed with rows:
   that didn't reset would go lazy. They were found by a search and are held in the emitter as bits.
 
 After that every mutant fails 1 to 541 rows.
+
+### 12.2 Part b: Monte Carlo (2026-11-17)
+
+`src/monte_carlo.cyr`, golden `monte_carlo` (1,608 rows), 174 codec and 18 Debug rows. Every row passes on its first
+replay, at 0 ulp, on x86_64 ELF, PE and aarch64:
+
+| Function | Rows | Class |
+|---|---|---|
+| `monte_carlo_integrate` | 1,107 | A, C for sin and exp(−x²) |
+| `monte_carlo_pi` | 48 | A |
+| `metropolis_hastings` | 373 | C (Box–Muller's ln and cos, the acceptance's exp) |
+| `gibbs_sampling` | 80 | C where a conditional draws a normal |
+
+`monte_carlo.cr.tsv` holds 19 chains, 9 Metropolis–Hastings and 10 Gibbs, where a glibc misround of ln, cos or exp
+moves a proposal by an ulp and the chain from there on. The port matches the correctly rounded chain on each, at 0
+ulp. The caller's functions in the rows are the harness's (`_par_mc_f`, `_par_mc_target`, `_par_mc_cond`), and
+`validate.py` models each in the same operation order.
+
+**Mutants.** Seventeen, and thirteen failed rows (1 to 912 each):
+- Welford's step and m2;
+- the standard error's /n;
+- the width and order checks;
+- MH's `la ≥ 0`, its NaN-as-−∞ rule, its burn-in, its rate and its log-density update;
+- Gibbs's sweep order and burn-in;
+- the order of Gibbs's refusals.
+
+Of the other four, one is equivalent: the zero-density escape written as `lp − lc`. There −∞ − (−∞) is NaN, and NaN
+rejects exactly as −∞ does, after the same draw. Three need draws SimpleRng never makes: π's `≤ 1` on x² + y² = 1
+exactly, MH's strict `r < exp(la)` against exp(−∞) = 0, and a run length past 2⁶³ (ADR 007 row 18). A scripted
+`PmnRng` in `tests/monte_carlo.tcyr` makes those draws, and its unit tests catch all three.

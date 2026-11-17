@@ -971,3 +971,16 @@ glibc's 5.3–5.4 ns (M1 part b1's record), they are 2.4 µs of the 3.0. ADR 009
 The step row is 1,000 draws through the bounded generic (M1's 10 ns against Rust's inlined 1.7 ns) and a short scan.
 The forward pass's 1,000 correctly rounded logarithms are about 55 µs of its 143. `steady_state_10` is about 20 power
 iterations of a 10 × 10 product, the dense inner loop that Rust vectorizes.
+
+## M6 part b: Monte Carlo (2026-11-17)
+
+`tests/monte_carlo.bcyr` runs 1.3.0's two Monte Carlo criterion bodies. Three pinned runs at a load average of 0.3.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `monte_carlo/pi_100000` | 328 µs | 2.28 ms | 7.0× |
+| `monte_carlo/mh_1d_10000` | 850 µs | 2.95–2.98 ms | 3.5× |
+
+π is 2 × 10⁵ draws through the bounded generic, M1's 10 ns against Rust's inlined 1.7 ns: almost all of the row.
+Metropolis–Hastings spends its time in Box–Muller's correctly rounded ln and cos and the acceptance's exp, which are
+8–10× glibc's.

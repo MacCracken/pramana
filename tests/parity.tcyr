@@ -569,6 +569,21 @@ fn _par_json_write(fp, fl): i64 {
         _par_json_k = whk;
         e = whm.to_json(sb);
         var whd = PmnHiddenMarkovModel_drop(&whm);
+    } elif (_par_eq(fp, fl, "json::write::EstimateResult") == 1) {
+        var wer: PmnEstimateResult;
+        var wev: f64 = _par_in(0);
+        var wes: f64 = _par_in(1);
+        wer.value = wev;
+        wer.std_error = wes;
+        _par_json_k = 2;
+        e = wer.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::McmcResult") == 1) {
+        var wmr: PmnMcmcResult;
+        var wrk = _par_mcmc_from_toks(0, &wmr);
+        if (wrk < 0) { return 0 - 1; }
+        _par_json_k = wrk;
+        e = wmr.to_json(sb);
+        var wrd = PmnMcmcResult_drop(&wmr);
     } elif (_par_eq(fp, fl, "json::write::ArimaModel") == 1) {
         if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
         var wam: PmnArimaModel;
@@ -1054,6 +1069,8 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::BayesianUpdate") == 1) { return _par_json_bayes(); }
     if (_par_eq(fp, fl, "json::MarkovChain") == 1) { return _par_json_chain(); }
     if (_par_eq(fp, fl, "json::HiddenMarkovModel") == 1) { return _par_json_hmm(); }
+    if (_par_eq(fp, fl, "json::EstimateResult") == 1) { return _par_json_estimate(); }
+    if (_par_eq(fp, fl, "json::McmcResult") == 1) { return _par_json_mcmc(); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -1282,6 +1299,28 @@ fn _par_debug(fp, fl): i64 {
         if (dhk < 0 || dhk + 1 != _par_in_n) { return 0 - 1; }
         e = dhm.debug(sb, _par_in(dhk));
         var dhd = PmnHiddenMarkovModel_drop(&dhm);
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::EstimateResult") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var der: PmnEstimateResult;
+        var dev: f64 = _par_in(0);
+        var des: f64 = _par_in(1);
+        der.value = dev;
+        der.std_error = des;
+        e = der.debug(sb, _par_in(2));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::McmcResult") == 1) {
+        var dmr: PmnMcmcResult;
+        var drk = _par_mcmc_from_toks(0, &dmr);
+        if (drk < 0 || drk + 1 != _par_in_n) { return 0 - 1; }
+        e = dmr.debug(sb, _par_in(drk));
+        var drd = PmnMcmcResult_drop(&dmr);
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -3075,6 +3114,358 @@ fn _par_markov(fp, fl): i64 {
     return 0;
 }
 
+# ── `monte_carlo` rows (M6 part b): src/monte_carlo.cyr. The caller's functions are these, by id; validate.py's
+# mc_f, mc_target and mc_cond model them in the same operation order.
+
+# The integrands: x, x², 3x² + 2x + 1, sin x, exp(−x²), 1/x, 1e8 + x, √x, 5. ctx holds the id.
+fn _par_mc_f(ctx, x: f64): f64 {
+    var fid = load64(ctx);
+    if (fid == 0) { return x; }
+    if (fid == 1) {
+        var r1: f64 = x * x;
+        return r1;
+    }
+    if (fid == 2) {
+        var a: f64 = 3.0 * x;
+        var b: f64 = a * x;
+        var c: f64 = 2.0 * x;
+        var d: f64 = b + c;
+        var r2: f64 = d + 1.0;
+        return r2;
+    }
+    if (fid == 3) {
+        var r3: f64 = _pmn_sin(x);
+        return r3;
+    }
+    if (fid == 4) {
+        var q: f64 = x * x;
+        var nq: f64 = -q;
+        var r4: f64 = _pmn_exp(nq);
+        return r4;
+    }
+    if (fid == 5) {
+        var r5: f64 = 1.0 / x;
+        return r5;
+    }
+    if (fid == 6) {
+        var r6: f64 = 100000000.0 + x;
+        return r6;
+    }
+    if (fid == 7) {
+        var r7: f64 = f64_sqrt(x);
+        return r7;
+    }
+    return 5.0;
+}
+
+# The log-densities: N(0, I), N(0, 4I), the box [−1, 1]^d (−∞ or NaN outside), zero density below 2 then −(x₀ − 3)²,
+# the mixture ln(e^(−(x−2)²/2) + e^(−(x+2)²/2)), Rosenbrock's scaled, always −∞, flat. ctx holds the id.
+fn _par_mc_target(ctx, xs, dim): f64 {
+    var tid = load64(ctx);
+    var ninf: f64 = _PMN_F64_NEG_INFINITY;
+    if (tid == 0 || tid == 1) {
+        var s: f64 = 0.0;
+        for (var k = 0; k < dim; k = k + 1) {
+            var v: f64 = load64(xs + k * 8);
+            var vv: f64 = v * v;
+            s = s + vv;
+        }
+        if (tid == 0) {
+            var r0: f64 = -0.5 * s;
+            return r0;
+        }
+        var r1: f64 = -0.125 * s;
+        return r1;
+    }
+    if (tid == 2 || tid == 3) {
+        var inside = 1;
+        for (var k2 = 0; k2 < dim; k2 = k2 + 1) {
+            var w: f64 = load64(xs + k2 * 8);
+            if (w < -1.0 || w > 1.0 || w != w) { inside = 0; }
+        }
+        if (inside == 1) { return 0.0; }
+        if (tid == 2) { return ninf; }
+        var nan: f64 = _PMN_F64_NAN;
+        return nan;
+    }
+    var x0: f64 = load64(xs);
+    if (tid == 4) {
+        if (x0 < 2.0) { return ninf; }
+        var d: f64 = x0 - 3.0;
+        var dd: f64 = d * d;
+        var r4: f64 = -dd;
+        return r4;
+    }
+    if (tid == 5) {
+        var a: f64 = x0 - 2.0;
+        var b: f64 = x0 + 2.0;
+        var aa: f64 = a * a;
+        var ha: f64 = -0.5 * aa;
+        var ea: f64 = _pmn_exp(ha);
+        var bb: f64 = b * b;
+        var hb: f64 = -0.5 * bb;
+        var eb: f64 = _pmn_exp(hb);
+        var sm: f64 = ea + eb;
+        if (sm > 0.0) {
+            var r5: f64 = _pmn_ln(sm);
+            return r5;
+        }
+        return ninf;
+    }
+    if (tid == 6) {
+        var x1: f64 = load64(xs + 8);
+        var p: f64 = 1.0 - x0;
+        var x00: f64 = x0 * x0;
+        var q: f64 = x1 - x00;
+        var pp: f64 = p * p;
+        var qq: f64 = q * q;
+        var hq: f64 = 100.0 * qq;
+        var t: f64 = pp + hq;
+        var nt: f64 = -t;
+        var r6: f64 = nt / 20.0;
+        return r6;
+    }
+    if (tid == 7) { return ninf; }
+    return 0.0;
+}
+
+# Box–Muller's normal from a conditional's dyn draws, as `standard_normal`.
+fn _par_mc_normal(rp: *PmnRngRef): f64 {
+    var d1: f64 = rp.o.next_f64();
+    var mp: f64 = _PMN_F64_MIN_POSITIVE;
+    var u1: f64 = _pmn_max(d1, mp);
+    var u2: f64 = rp.o.next_f64();
+    var l: f64 = _pmn_ln(u1);
+    var a: f64 = -2.0 * l;
+    var r: f64 = f64_sqrt(a);
+    var tp: f64 = 2.0 * _PMN_F64_PI;
+    var t: f64 = tp * u2;
+    var c: f64 = _pmn_cos(t);
+    var z: f64 = r * c;
+    return z;
+}
+
+# The Gibbs conditionals, by id: par·(the others' mean) + √(1 − par²)·z, z, a uniform draw, the others' mean plus a
+# uniform in [−½, ½), ½(x_j + par). c holds {id, j, par}.
+fn _par_mc_cond(c, state, dim, rp: *PmnRngRef): f64 {
+    var cid = load64(c);
+    var j = load64(c + 8);
+    var par: f64 = load64(c + 16);
+    if (cid == 0 || cid == 3) {
+        var m: f64 = 0.0;
+        var cnt = 0;
+        for (var k = 0; k < dim; k = k + 1) {
+            if (k != j) {
+                var v: f64 = load64(state + k * 8);
+                m = m + v;
+                cnt = cnt + 1;
+            }
+        }
+        if (cnt > 0) {
+            var cf: f64 = f64_from(cnt);
+            m = m / cf;
+        }
+        if (cid == 0) {
+            var z: f64 = _par_mc_normal(rp);
+            var pm: f64 = par * m;
+            var p2: f64 = par * par;
+            var om: f64 = 1.0 - p2;
+            var sq: f64 = f64_sqrt(om);
+            var sz: f64 = sq * z;
+            var r0: f64 = pm + sz;
+            return r0;
+        }
+        var u: f64 = rp.o.next_f64();
+        var uh: f64 = u - 0.5;
+        var r3: f64 = m + uh;
+        return r3;
+    }
+    if (cid == 1) {
+        var r1: f64 = _par_mc_normal(rp);
+        return r1;
+    }
+    if (cid == 2) {
+        var r2: f64 = rp.o.next_f64();
+        return r2;
+    }
+    var sj: f64 = load64(state + j * 8);
+    var sp: f64 = sj + par;
+    var r4: f64 = 0.5 * sp;
+    return r4;
+}
+
+# Appends a chain's samples (one flat `v:` slice) and its acceptance rate.
+fn _par_got_chain(r: *PmnMcmcResult): i64 {
+    var rows = r.n_samples();
+    var cells = 0;
+    if (rows > 0) { cells = load64(r.offs + rows * 8); }
+    _par_got_seq(cells);
+    for (var k = 0; k < cells; k = k + 1) { _par_got_f(load64(r.samples() + k * 8)); }
+    var ar: f64 = r.acceptance_rate;
+    _par_got_f(ar);
+    return 0;
+}
+
+# monte_carlo rows: integrate (the integrand's id, a, b, n, seed), π (n, seed), Metropolis–Hastings (the initial point,
+# the target's id, σ, n, burn-in, seed) and Gibbs (the conditionals' ids and parameters, the initial point, n, burn-in,
+# seed).
+fn _par_monte_carlo(fp, fl): i64 {
+    if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_o == 0) { _par_ds_o = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_a == 0 || _par_ds_b == 0 || _par_ds_o == 0) { return 0 - 1; }
+    var g: PmnSimpleRng;
+    var ctx[8];
+    if (_par_eq(fp, fl, "monte_carlo::monte_carlo_integrate") == 1) {
+        if (_par_in_n != 5) { return 0 - 1; }
+        store64(&ctx, _par_in(0));
+        var a: f64 = _par_in(1);
+        var b: f64 = _par_in(2);
+        if (PmnSimpleRng_new(&g, _par_in(4)) != PMN_ERR_NONE) { return 0 - 1; }
+        var er: PmnEstimateResult;
+        var e = pmn_monte_carlo_integrate(&er, &_par_mc_f, &ctx, a, b, _par_in(3), &g);
+        if (e != PMN_ERR_NONE) {
+            _par_got_err(e);
+            return 1;
+        }
+        var v: f64 = er.value;
+        var se: f64 = er.std_error;
+        _par_got_f(v);
+        _par_got_f(se);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "monte_carlo::monte_carlo_pi") == 1) {
+        if (_par_in_n != 2) { return 0 - 1; }
+        if (PmnSimpleRng_new(&g, _par_in(1)) != PMN_ERR_NONE) { return 0 - 1; }
+        var t, pv = pmn_monte_carlo_pi(_par_in(0), &g);
+        if (t == Err) {
+            _par_got_err(pv);
+        } else {
+            _par_got_f(pv);
+        }
+        return 1;
+    }
+    var r: PmnMcmcResult;
+    if (_par_eq(fp, fl, "monte_carlo::metropolis_hastings") == 1) {
+        var k = _par_slice_at(0, _par_ds_a, _PAR_DS_CAP);
+        if (k < 0 || k + 5 != _par_in_n) { return 0 - 1; }
+        store64(&ctx, _par_in(k));
+        var sd: f64 = _par_in(k + 1);
+        if (PmnSimpleRng_new(&g, _par_in(k + 4)) != PMN_ERR_NONE) { return 0 - 1; }
+        var em = pmn_metropolis_hastings(&r, &_par_mc_target, &ctx, _par_ds_a, _par_in(0), sd, _par_in(k + 2),
+            _par_in(k + 3), &g);
+        if (em != PMN_ERR_NONE) {
+            _par_got_err(em);
+            return 1;
+        }
+        _par_got_chain(&r);
+        var dm = PmnMcmcResult_drop(&r);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "monte_carlo::gibbs_sampling") == 1) {
+        var q = _PAR_DS_CAP / 4;
+        var kc = _par_slice_at(0, _par_ds_a, q);
+        if (kc < 0) { return 0 - 1; }
+        var kp = _par_slice_at(kc, _par_ds_a + q * 8, q);
+        if (kp < 0) { return 0 - 1; }
+        var ki = _par_slice_at(kp, _par_ds_a + 2 * q * 8, q);
+        if (ki < 0 || ki + 3 != _par_in_n) { return 0 - 1; }
+        var dim = _par_in(0);
+        if (_par_in(kc) != dim || dim > q / 3) { return 0 - 1; }
+        for (var j = 0; j < dim; j = j + 1) {
+            var cx = _par_ds_b + j * 24;
+            store64(cx, load64(_par_ds_a + j * 8));
+            store64(cx + 8, j);
+            store64(cx + 16, load64(_par_ds_a + (q + j) * 8));
+            store64(_par_ds_o + j * 16, &_par_mc_cond);
+            store64(_par_ds_o + j * 16 + 8, cx);
+        }
+        if (PmnSimpleRng_new(&g, _par_in(ki + 2)) != PMN_ERR_NONE) { return 0 - 1; }
+        var eg = pmn_gibbs_sampling(&r, _par_ds_o, dim, _par_ds_a + 2 * q * 8, _par_in(kp), _par_in(ki),
+            _par_in(ki + 1), &g);
+        if (eg != PMN_ERR_NONE) {
+            _par_got_err(eg);
+            return 1;
+        }
+        _par_got_chain(&r);
+        var dg = PmnMcmcResult_drop(&r);
+        return 1;
+    }
+    return 0;
+}
+
+# A McmcResult from its codec tokens at k0 (the samples nested, rows of any lengths, then the rate) into r: the token
+# after them, or -1. The caller drops r.
+fn _par_mcmc_from_toks(k0, r: *PmnMcmcResult): i64 {
+    if (k0 >= _par_in_n) { return 0 - 1; }
+    var rows = _par_in(k0);
+    var k = k0 + 1;
+    var cells = 0;
+    for (var i = 0; i < rows; i = i + 1) {
+        if (k >= _par_in_n) { return 0 - 1; }
+        var c = _par_in(k);
+        cells = cells + c;
+        k = k + 1 + c;
+    }
+    if (k >= _par_in_n || rows < 0) { return 0 - 1; }
+    if (_pmn_mcmc_alloc(r, rows, cells) != PMN_ERR_NONE) { return 0 - 1; }
+    k = k0 + 1;
+    var at = 0;
+    for (var i2 = 0; i2 < rows; i2 = i2 + 1) {
+        var c2 = _par_in(k);
+        store64(r.offs + i2 * 8, at);
+        for (var j = 0; j < c2; j = j + 1) { store64(r.data + (at + j) * 8, _par_in(k + 1 + j)); }
+        at = at + c2;
+        k = k + 1 + c2;
+    }
+    store64(r.offs + rows * 8, at);
+    var ar: f64 = _par_in(k);
+    r.acceptance_rate = ar;
+    return k + 1;
+}
+
+# json::EstimateResult rows (M6 part b): the decoded fields, or the error.
+fn _par_json_estimate(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var er: PmnEstimateResult;
+    var e = PmnEstimateResult_from_json(&er, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    var v: f64 = er.value;
+    var se: f64 = er.std_error;
+    _par_got_f(v);
+    _par_got_f(se);
+    return 1;
+}
+
+# json::McmcResult rows (M6 part b): the decoded samples (nested lists, rows of any lengths) and rate; dropped after.
+fn _par_json_mcmc(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var r: PmnMcmcResult;
+    var e = PmnMcmcResult_from_json(&r, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    var rows = r.n_samples();
+    _par_got_seq(rows);
+    for (var i = 0; i < rows; i = i + 1) {
+        var c = r.sample_len(i);
+        _par_got_seq(c);
+        for (var j = 0; j < c; j = j + 1) { _par_got_f(load64(r.sample(i) + j * 8)); }
+    }
+    var ar: f64 = r.acceptance_rate;
+    _par_got_f(ar);
+    var e1 = PmnMcmcResult_drop(&r);
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "bayesian") == 1) { return _par_bayesian(fp, fl); }
@@ -3089,6 +3480,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
     if (_par_eq(mp, ml, "linalg") == 1) { return _par_linalg(fp, fl); }
     if (_par_eq(mp, ml, "markov") == 1) { return _par_markov(fp, fl); }
+    if (_par_eq(mp, ml, "monte_carlo") == 1) { return _par_monte_carlo(fp, fl); }
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
     if (_par_eq(mp, ml, "regression") == 1) { return _par_regression(fp, fl); }
     if (_par_eq(mp, ml, "rng") == 1) { return _par_rng(fp, fl); }
@@ -3215,6 +3607,9 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "bayesian::naive_bayes_classify") == 1) { return 0; }    # ln (M5 part c)
     if (_par_eq(fp, fl, "HiddenMarkovModel::forward_log_likelihood") == 1) { return 0; }   # ln (M6 part a)
     if (_par_eq(fp, fl, "HiddenMarkovModel::viterbi") == 1) { return 0; }
+    if (_par_eq(fp, fl, "monte_carlo::monte_carlo_integrate") == 1) { return 0; }   # sin and exp (M6 part b)
+    if (_par_eq(fp, fl, "monte_carlo::metropolis_hastings") == 1) { return 0; }     # Box–Muller's ln and cos, exp
+    if (_par_eq(fp, fl, "monte_carlo::gibbs_sampling") == 1) { return 0; }
     if (_par_eq(fp, fl, "regression::logistic_regression") == 1) { return 0; }   # the sigmoid's exp (M5 part a)
     if (_par_eq(fp, fl, "regression::predict_logistic_proba") == 1) { return 0; }
     if (_par_eq(fp, fl, "regression::predict_logistic_class") == 1) { return 0; }

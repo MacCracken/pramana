@@ -670,6 +670,7 @@ def emit():
     arima_models(m, Rng(0xEC4E6C89452821E6))
     bayesian_update(m, Rng(0x5F6F7E8D9CABBACD))
     markov_models(m, Rng(0x3F84D5B5B5470917))
+    mc_results(m, Rng(0x8E79DCB0603A180E))
     return m
 
 def kde_toks(data, h, k):
@@ -865,3 +866,31 @@ def markov_models(m, g):
         write(m, "HiddenMarkovModel", toks)
     for d in docs:
         read(m, "json::HiddenMarkovModel", d)
+
+
+def mc_toks(rows, rate):
+    return [v(len(rows))] + [t for r in rows for t in [v(len(r))] + [f(x) for x in r]] + [f(rate)]
+
+
+def mc_results(m, g):
+    """M6 part b: EstimateResult and McmcResult, derived codecs (no validation: McmcResult's rows may be ragged)."""
+    nums = B("0.5", "0", "-0.0", "1e309", "null", '"1"', "true", "1.5", "-0.1", "5e-324")
+    for d in struct_docs([("value", b"0.333"), ("std_error", b"0.01")], [nums, nums]):
+        read(m, "json::EstimateResult", d)
+    for _ in range(10):
+        write(m, "EstimateResult", [f(finite(g)), f(g.unit())])
+    write(m, "EstimateResult", [f(NAN), f(INF)])
+    samples = B("[[0.1,0.2],[0.3,0.4]]", "[]", "[[]]", "[[1],[2,3],[]]", "[[1,null]]", "[1,2]", "null", "[[1e309]]",
+                '[["1"]]', "[[1,2],]", "[[-0.0,5e-324]]")
+    rates = B("0.25", "1", "0", "-1", "1e309", "null", '"0.5"', "2.5")
+    for d in struct_docs([("samples", b"[[0.1,0.2],[0.3,0.4]]"), ("acceptance_rate", b"0.25")], [samples, rates]):
+        read(m, "json::McmcResult", d)
+    cases = [([[0.1, 0.2], [0.3, 0.4]], 0.25), ([], 1.0), ([[]], 0.0), ([[1.0], [2.0, 3.0], []], 0.5),
+             ([[-0.0, 5e-324, MAXF]], NAN)]
+    for k in range(6):
+        dim = g.int(1, 3)
+        cases.append(([[finite(g) for _ in range(dim)] for _ in range(g.int(1, 6))], g.unit()))
+    for rows, rate in cases:
+        toks = mc_toks(rows, rate)
+        write(m, "McmcResult", toks)
+        read(m, "json::McmcResult", V.serde_write("McmcResult", iter(parsed(toks))))

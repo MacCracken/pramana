@@ -27,7 +27,7 @@ PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptiv
           "timeseries", "bayesian"]   # M5's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {"markov": "M6"}
+PARTIAL = {"markov": "M6", "monte_carlo": "M6"}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
@@ -85,6 +85,23 @@ SURFACE = {
     "markov::HiddenMarkovModel.forward_log_likelihood": ["method PmnHiddenMarkovModel.forward_log_likelihood"],
     "markov::HiddenMarkovModel.viterbi": ["method PmnHiddenMarkovModel.viterbi"],
     "markov::HiddenMarkovModel.baum_welch": ["method PmnHiddenMarkovModel.baum_welch"],
+    # monte_carlo.rs (M6 part b; D5, D7, D11, D12)
+    "monte_carlo::EstimateResult": ["struct PmnEstimateResult"],
+    "monte_carlo::EstimateResult#Clone": "a plain struct: copying it clones it",
+    "monte_carlo::EstimateResult#Debug": ["method PmnEstimateResult.debug"],
+    "monte_carlo::EstimateResult#Serialize": ["method PmnEstimateResult.to_json"],
+    "monte_carlo::EstimateResult#Deserialize": ["fn PmnEstimateResult_from_json"],
+    "monte_carlo::monte_carlo_integrate": ["fn pmn_monte_carlo_integrate"],
+    "monte_carlo::monte_carlo_pi": ["fn pmn_monte_carlo_pi"],
+    "monte_carlo::McmcResult": ["struct PmnMcmcResult", "fn PmnMcmcResult_drop", "method PmnMcmcResult.n_samples",
+                                "method PmnMcmcResult.sample", "method PmnMcmcResult.sample_len",
+                                "method PmnMcmcResult.samples"],
+    "monte_carlo::McmcResult#Clone": ["fn PmnMcmcResult_clone"],
+    "monte_carlo::McmcResult#Debug": ["method PmnMcmcResult.debug"],
+    "monte_carlo::McmcResult#Serialize": ["method PmnMcmcResult.to_json"],
+    "monte_carlo::McmcResult#Deserialize": ["fn PmnMcmcResult_from_json"],
+    "monte_carlo::metropolis_hastings": ["fn pmn_metropolis_hastings"],
+    "monte_carlo::gibbs_sampling": ["fn pmn_gibbs_sampling", "struct PmnRngRef"],
     # bayesian.rs (M5 part c)
     "bayesian::BayesianUpdate": ["struct PmnBayesianUpdate"],
     "bayesian::BayesianUpdate#Clone": "a plain struct: copying it clones it",

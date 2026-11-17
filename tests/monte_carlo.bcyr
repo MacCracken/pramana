@@ -1,0 +1,63 @@
+# monte_carlo.bcyr — src/monte_carlo.cyr (M6 part b): ns per call, on 1.3.0's own criterion bodies
+# (rust-old/benches/benchmarks.rs), whose numbers are rust-old/benchmarks.md's (2026-11-14, this host; ADR 010):
+# - `monte_carlo/pi_100000`: SimpleRng::new(42), then π from 10⁵ points (327,660 ns in Rust);
+# - `monte_carlo/mh_1d_10000`: SimpleRng::new(42), then Metropolis–Hastings on −x²/2 from 0, σ = 1, 10⁴ samples after
+#   10³ of burn-in (850,130 ns).
+# Each row prints a result's bits. The record is docs/benchmarks-rust-v-cyrius.md.
+
+include "tests/lib.cyr"
+
+fn show(name, r: f64): i64 {
+    var x: f64 = r;
+    print("  ", 2);
+    print(name, strlen(name));
+    print(": ", 2);
+    fmt_hex(load64(&x));
+    println("");
+    return 0;
+}
+
+# 1.3.0's closure, −0.5·x₀·x₀, left to right.
+fn lt_normal(ctx, xs, dim): f64 {
+    var x: f64 = load64(xs);
+    var h: f64 = -0.5 * x;
+    var r: f64 = h * x;
+    return r;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var g: PmnSimpleRng;
+    var est: f64 = 0.0;
+    var b1 = bench_new("pi_100000");
+    bench_batch_start(b1);
+    for (var r = 0; r < 200; r = r + 1) {
+        PmnSimpleRng_new(&g, 42);
+        var t, v = pmn_monte_carlo_pi(100000, &g);
+        if (t == Err) { return 1; }
+        est = v;
+    }
+    bench_batch_stop(b1, 200);
+    show("π", est);
+    bench_report(b1);
+
+    var x0[8];
+    store64(&x0, 0.0);
+    var res: PmnMcmcResult;
+    var rate: f64 = 0.0;
+    var b2 = bench_new("mh_1d_10000");
+    bench_batch_start(b2);
+    for (var r2 = 0; r2 < 100; r2 = r2 + 1) {
+        PmnSimpleRng_new(&g, 42);
+        if (pmn_metropolis_hastings(&res, &lt_normal, 0, &x0, 1, 1.0, 10000, 1000, &g) != PMN_ERR_NONE) { return 1; }
+        rate = res.acceptance_rate;
+        PmnMcmcResult_drop(&res);
+    }
+    bench_batch_stop(b2, 100);
+    show("acceptance rate", rate);
+    bench_report(b2);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);
