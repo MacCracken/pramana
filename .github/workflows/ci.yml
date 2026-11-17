@@ -79,6 +79,17 @@ jobs:
       - name: Rust-test ledger (every 1.3.0 test carried over or retired, docs/development/rust-test-ledger.md current)
         run: python3 -I -B scripts/rust_test_ledger.py --check
 
+      - name: Examples (docs/examples, compiled and run)
+        run: |
+          set -e
+          mkdir -p build
+          for e in docs/examples/*.cyr; do
+            n=$(basename "$e" .cyr)
+            cyrius build "$e" "build/example_$n"
+            "./build/example_$n" > /dev/null
+            echo "ok: $n"
+          done
+
       - name: Bundle current (dist/pramana.cyr is what distlib writes from [lib])
         run: cyrius distlib --check
 

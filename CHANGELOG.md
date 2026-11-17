@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Breaking
+
+2.0.0 is pramana 1.3.0 ported from Rust to Cyrius. Its values are 1.3.0's, row by row (the golden corpus, 369,563
+rows on three targets), but it is a new library: a Rust project stays on `pramana = "1"` (crates.io keeps 1.3.x)
+or moves with [`docs/guides/migration-2.0.md`](docs/guides/migration-2.0.md), which takes each change in turn. In
+brief ([ADR 007](docs/decisions/007-port-api-divergences.md)):
+- **Names:** `pmn_<fn>`, `Pmn<Type>`, `PMN_<CONSTANT>`.
+- **Errors:** `PMN_ERR_*` codes in a value-form `Result`, without detail strings. `OUT_OF_MEMORY` and `DESERIALIZE`
+  are new.
+- **Memory:** constructors fill caller storage, length-known results go into caller buffers `(out, cap)`, and owned
+  results are freed by their `_drop`.
+- **Arguments:** slices are a pointer and a count; matrices are flat row-major arrays with their shape; closures are
+  a function pointer and a context.
+- **RNGs and integers:** RNGs are generic over `PmnRng`, and the combinatorics write a `PmnU128`.
+- **Text:** JSON is `to_json` and `_from_json`, with serde_json's text byte for byte. Debug is `debug(sb, alternate)`.
+- **Ordering:** HashMaps become lists sorted by key, and the order statistics' sorts are stable.
+- **Features:** the cargo features are gone. soorat is in the core bundle, and the AI client is the `[lib.ai]` bundle,
+  whose consumer includes sandhi.
+- **Large counts:** a count at or past 2⁶³ is refused.
+- **Accuracy:** every elementary function is correctly rounded, the special functions meet ADR 009's bounds, and the
+  bits are the same on every target. A value 1.3.0 got wrong by glibc's misrounding, or by its own special functions'
+  error, is now right, so it differs from 1.3.0 by those ulps (`*.cr.tsv` and `*.ref.tsv` list every such golden row).
+
 ### Added
 
 - **Cyrius port plan**: `docs/development/pramana-port-plan.md`, the plan of record for porting 1.3.0 to Cyrius 6.7.18 as 2.0.0, drawn from the tanmatra, kimiya and pravash ports and a review of ganita. Every decision was taken on 2026-11-15, among them D3: correctly rounded erf/erfc, and fixed accuracy bounds for `normal_cdf` (≤ 1 ulp), `ln_gamma` (≤ 2), `gamma_inc` (≤ 4) and `beta_inc` (≤ 8)
@@ -1087,6 +1110,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   written, and the modules' benches run the rest (three pinned runs). Cyrius is 1.8–66× Rust, with a geometric mean
   of 10.0×: the correctly rounded primitives (ADR 009), the T1 functions in the cdfs (33–66×) and the codegen,
   each with every row at least as accurate as 1.3.0's.
+- **M8 part c: the docs for 2.0** (port plan §7).
+  - **The README** is rewritten for the Cyrius library: what it does, the accuracy contract, a quick start, the two
+    bundles, and building and testing.
+  - **`docs/guides/migration-2.0.md`** takes each ADR 007 row with its before and after, and covers the AI client's
+    wire behavior. An appendix maps all 374 public items of 1.3.0 to their 2.0 names, from surface parity.
+  - **The CHANGELOG** gains its *Breaking* section, and `docs/guides/getting-started.md` is refreshed.
+  - **`docs/examples/`** has five programs: the quick start, a t-test, π and an MH chain, a Markov chain and an HMM,
+    and a StatQuery over a recorded reply. CI compiles and runs each one.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

@@ -1,0 +1,51 @@
+# markov.cyr — a Markov chain's walk and steady state, and an HMM's likelihood and Viterbi path, in 2.0: matrices are
+# flat row-major arrays with their shape, results go into caller buffers, owned models are freed by their drop.
+include "dist/pramana.cyr"
+
+fn put(p, k, x: f64): i64 {
+    store64(p + k * 8, x);
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var m = alloc(4 * 8);
+    put(m, 0, 0.7);
+    put(m, 1, 0.3);
+    put(m, 2, 0.4);
+    put(m, 3, 0.6);
+    var chain: PmnMarkovChain;
+    if (PmnMarkovChain_new(&chain, m, 2, 2, 0) != PMN_ERR_NONE) { return 1; }
+    var rng: PmnSimpleRng;
+    PmnSimpleRng_new(&rng, 7);
+    var walk = alloc(11 * 8);
+    if (chain.simulate(10, &rng, walk, 11) != PMN_ERR_NONE) { return 1; }
+    var pi = alloc(2 * 8);
+    if (chain.steady_state(pi, 2) != PMN_ERR_NONE) { return 1; }   # [4/7, 3/7]
+    PmnMarkovChain_drop(&chain);
+    var e = alloc(6 * 8);
+    put(e, 0, 0.1);
+    put(e, 1, 0.4);
+    put(e, 2, 0.5);
+    put(e, 3, 0.6);
+    put(e, 4, 0.3);
+    put(e, 5, 0.1);
+    var init = alloc(2 * 8);
+    put(init, 0, 0.6);
+    put(init, 1, 0.4);
+    var hmm: PmnHiddenMarkovModel;
+    if (PmnHiddenMarkovModel_new(&hmm, m, 2, 2, e, 2, 3, init, 2) != PMN_ERR_NONE) { return 1; }
+    var obs = alloc(3 * 8);
+    store64(obs, 0);
+    store64(obs + 8, 1);
+    store64(obs + 16, 2);
+    var t, ll = hmm.forward_log_likelihood(obs, 3);
+    var path = alloc(3 * 8);
+    if (t == Err || hmm.viterbi(obs, 3, path, 3) != PMN_ERR_NONE) { return 1; }
+    PmnHiddenMarkovModel_drop(&hmm);
+    println("a chain, its steady state, an HMM: ok");
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

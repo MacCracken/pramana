@@ -1,0 +1,28 @@
+# hypothesis.cyr — 1.3.0's Hypothesis Testing example, in 2.0: a one-sample t-test, its result written as Rust's
+# derived Debug prints it.
+include "dist/pramana.cyr"
+
+fn main(): i64 {
+    alloc_init();
+    var data = alloc(8 * 8);
+    var tenths = "100 101 099 102 098 100 101 099";   # the data in tenths: 10.0, 10.1, 9.9, …
+    for (var k = 0; k < 8; k = k + 1) {
+        var q = tenths + k * 4;
+        var v: f64 = f64_from((load8(q) - 48) * 100 + (load8(q + 1) - 48) * 10 + load8(q + 2) - 48);
+        var x: f64 = v / 10.0;
+        store64(data + k * 8, x);
+    }
+    var r: PmnTestResult;
+    if (pmn_t_test_one_sample(&r, data, 8, 0.0, 0.05) != PMN_ERR_NONE) { return 1; }
+    var sb = str_builder_new();
+    if (r.debug(sb, 0) != PMN_ERR_NONE) { return 1; }
+    print(load64(sb), load64(sb + 8));
+    println("");
+    var rej = r.reject;
+    PmnTestResult_drop(&r);
+    if (rej != 1) { return 1; }                  # the mean clearly differs from 0
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

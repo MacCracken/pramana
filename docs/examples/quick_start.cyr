@@ -1,0 +1,26 @@
+# quick_start.cyr — 1.3.0's Quick Start, in 2.0: descriptive statistics, then a Normal fitted to them and a draw.
+#   cyrius build docs/examples/quick_start.cyr build/quick_start && ./build/quick_start
+include "dist/pramana.cyr"
+
+fn main(): i64 {
+    alloc_init();
+    var data = alloc(5 * 8);
+    for (var i = 0; i < 5; i = i + 1) { store64(data + i * 8, f64_from(i + 1)); }
+    var tm, m = pmn_mean(data, 5);              # a value-form Result: (Ok or Err, the value or a PMN_ERR_* code)
+    var ts, s = pmn_std_dev(data, 5);
+    if (tm == Err || ts == Err) { return 1; }
+    var normal: PmnNormal;                       # constructors fill caller storage and return a code
+    if (PmnNormal_new(&normal, m, s) != PMN_ERR_NONE) { return 1; }
+    var rng: PmnSimpleRng;
+    PmnSimpleRng_new(&rng, 42);
+    var x: f64 = normal.sample(&rng);            # generic over R: PmnRng, a static call
+    var sb = str_builder_new();
+    if (normal.to_json(sb) != PMN_ERR_NONE) { return 1; }
+    print(load64(sb), load64(sb + 8));           # {"mean":3.0,"std_dev":1.4142135623730951}
+    println("");
+    if (_pmn_is_finite(x) == 0) { return 1; }
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

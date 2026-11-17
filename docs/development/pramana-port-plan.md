@@ -58,7 +58,7 @@
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
 > begun:** parts a–d are done: **M5 is complete.** **M6 has begun:** parts a (the Markov chains and HMMs), b (Monte Carlo) and c, the gate, are done: **M6 is
 > complete.** **M7 has begun:** parts a (the soorat shapes), b (the AI client) and c, the gate, are done: **M7 is complete.**
-> **M8 has begun:** parts a (the Rust-test ledger) and b (the benchmark record) are done.
+> **M8 has begun:** parts a (the Rust-test ledger), b (the benchmark record) and c (the docs) are done.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1322,7 +1322,8 @@ Rust's operation order with its refusals, each type with its codec and Debug; go
 - **b:** the benchmark record: the seventeen criterion bodies no part ran as written, in `tests/criterion.bcyr`, and
   the 34 rows in both columns: 1.8–66× Rust, a geometric mean of 10.0× ✅;
 - **c:** the README, `docs/guides/migration-2.0.md` (every ADR 007 row), the CHANGELOG's *Breaking* section, and the
-  examples in `docs/examples/`, compiled and run;
+  examples in `docs/examples/`, compiled and run. The README rewritten; the guide with its 374-item appendix; five
+  examples, run in CI ✅;
 - **d:** the fuzz harness for the JSON readers: each type's decoder on mutated documents, refusing without a crash,
   deterministic, every claim released;
 - **e:** the release gate: the whole corpus on three targets, every check, VERSION 2.0.0.

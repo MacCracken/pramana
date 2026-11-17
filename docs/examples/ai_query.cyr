@@ -1,0 +1,37 @@
+# ai_query.cyr — the [lib.ai] profile: a StatQuery over hoosh. A consumer includes sandhi itself (D8), then the
+# profile's bundle; the HooshClient is a base URL and a transport. This one is a recorded reply, so the example runs
+# without a server; `&pmn_ai_sandhi_transport` instead posts to hoosh.
+#   cyrius build docs/examples/ai_query.cyr build/ai_query && ./build/ai_query
+include "lib/sandhi.cyr"
+include "dist/pramana-ai.cyr"
+
+fn recorded(ctx, url, nurl, body, nbody, resp): i64 {
+    var reply = "{\"choices\":[{\"message\":{\"content\":\"The mean of x is 3.\"}}]}";
+    store64(resp, 200);
+    store64(resp + 8, reply);
+    store64(resp + 16, strlen(reply));
+    return PMN_ERR_NONE;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var xs = alloc(5 * 8);
+    for (var i = 0; i < 5; i = i + 1) { store64(xs + i * 8, f64_from(i + 1)); }
+    var cols[32];                                # a column: its name, then its values (Rust's HashMap entry)
+    store64(&cols, "x");
+    store64(&cols + 8, 1);
+    store64(&cols + 16, xs);
+    store64(&cols + 24, 5);
+    var q: PmnStatQuery;
+    if (PmnStatQuery_new(&q, "http://127.0.0.1:8088", 21, "llama3", 6, &recorded, 0) != PMN_ERR_NONE) { return 1; }
+    var r: PmnQueryResult;
+    if (q.query(&cols, 1, "What is the mean of x?", 22, &r) != PMN_ERR_NONE) { return 1; }
+    print(r.answer, r.nanswer);
+    println("");
+    PmnQueryResult_drop(&r);
+    PmnStatQuery_drop(&q);
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);
