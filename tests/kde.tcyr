@@ -1,0 +1,203 @@
+# kde.tcyr — src/kde.cyr: Kernel, KernelDensity and correlation_matrix (M4 part a2).
+#
+# tests/parity.tcyr replays 1.3.0's values (tests/golden/descriptive.tsv, json.tsv, debug.tsv). These carry 1.3.0's own
+# tests over (descriptive.rs: kde_*, corr_*) and pin what a replay doesn't: the buffer rules, the drop, the clone, a
+# round trip through JSON, and that nothing is left claimed or held.
+
+include "tests/lib.cyr"
+
+fn bits(x: f64): i64 {
+    return load64(&x);
+}
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var a = alloc(256 * 8);
+    var o = alloc(256 * 8);
+    var kd: PmnKernelDensity;
+
+    test_group("1.3.0's KDE tests (integrates to one, peak, Silverman, grid, compact support, non-negative, refusals)");
+    for (var i = 0; i < 5; i = i + 1) { put(a, i, f64_from(i)); }
+    assert_eq(PmnKernelDensity_new(&kd, a, 5, 1.0, PMN_KERNEL_GAUSSIAN), PMN_ERR_NONE, "new([0..4], 1, Gaussian)");
+    var integral: f64 = 0.0;
+    var dx: f64 = 25.0 / 10000.0;
+    for (var j = 0; j < 10000; j = j + 1) {
+        var jf: f64 = f64_from(j);
+        var jh: f64 = jf + 0.5;
+        var off: f64 = jh * dx;
+        var x: f64 = -10.0 + off;
+        var dens: f64 = kd.evaluate(x);
+        var w: f64 = dens * dx;
+        integral = integral + w;
+    }
+    var gap: f64 = integral - 1.0;
+    assert(f64_abs(gap) < 0.01, "a Gaussian KDE integrates to about 1");
+    PmnKernelDensity_drop(&kd);
+    put(a, 0, 5.0);
+    assert_eq(PmnKernelDensity_new(&kd, a, 1, 1.0, PMN_KERNEL_GAUSSIAN), PMN_ERR_NONE, "new([5], 1, Gaussian)");
+    var at_peak: f64 = kd.evaluate(5.0);
+    var away: f64 = kd.evaluate(10.0);
+    assert(at_peak > away, "the density peaks at the data point");
+    PmnKernelDensity_drop(&kd);
+    for (var k = 0; k < 100; k = k + 1) {
+        var kf: f64 = f64_from(k);
+        var y: f64 = kf * 0.1;
+        put(a, k, y);
+    }
+    assert_eq(PmnKernelDensity_silverman(&kd, a, 100, PMN_KERNEL_GAUSSIAN), PMN_ERR_NONE, "silverman(i·0.1)");
+    var bw: f64 = kd.bandwidth;
+    assert(bw > 0.0, "Silverman's bandwidth is positive");
+    PmnKernelDensity_drop(&kd);
+    put(a, 0, 0.0);
+    put(a, 1, 1.0);
+    assert_eq(PmnKernelDensity_new(&kd, a, 2, 0.5, PMN_KERNEL_GAUSSIAN), PMN_ERR_NONE, "new([0, 1], 0.5)");
+    var pts[40];
+    put(&pts, 0, -1.0);
+    put(&pts, 1, 0.0);
+    put(&pts, 2, 0.5);
+    put(&pts, 3, 1.0);
+    put(&pts, 4, 2.0);
+    assert_eq(kd.evaluate_grid(&pts, 5, o, 5), PMN_ERR_NONE, "evaluate_grid of 5 points");
+    var nonneg = 1;
+    for (var q = 0; q < 5; q = q + 1) {
+        var gv: f64 = load64(o + q * 8);
+        var ev: f64 = load64(&pts + q * 8);
+        var e2: f64 = kd.evaluate(ev);
+        if (gv < 0.0 || bits(gv) != bits(e2)) { nonneg = 0; }
+    }
+    assert(nonneg == 1, "the grid is non-negative and equals evaluate at each point");
+    assert_eq(kd.evaluate_grid(&pts, 5, o, 4), PMN_ERR_INVALID_PARAMETER, "cap < m is refused");
+    assert_eq(kd.evaluate_grid(&pts, 5, &pts, 5), PMN_ERR_NONE, "in place");
+    PmnKernelDensity_drop(&kd);
+    put(a, 0, 0.0);
+    assert_eq(PmnKernelDensity_new(&kd, a, 1, 1.0, PMN_KERNEL_EPANECHNIKOV), PMN_ERR_NONE, "new([0], 1, Epanechnikov)");
+    var c0: f64 = kd.evaluate(0.0);
+    var c2: f64 = kd.evaluate(2.0);
+    var cm2: f64 = kd.evaluate(-2.0);
+    assert(c0 > 0.0 && bits(c2) == 0 && bits(cm2) == 0, "Epanechnikov has compact support");
+    PmnKernelDensity_drop(&kd);
+    put(a, 0, 1.0);
+    put(a, 1, 2.0);
+    put(a, 2, 3.0);
+    var all_nonneg = 1;
+    for (var kn = 0; kn < 4; kn = kn + 1) {
+        if (PmnKernelDensity_new(&kd, a, 3, 0.5, kn) != PMN_ERR_NONE) { all_nonneg = 0; }
+        for (var ii = 0 - 20; ii <= 60; ii = ii + 1) {
+            var iif: f64 = f64_from(ii);
+            var xx: f64 = iif * 0.1;
+            var dv: f64 = kd.evaluate(xx);
+            if (dv < 0.0) { all_nonneg = 0; }
+        }
+        PmnKernelDensity_drop(&kd);
+    }
+    assert(all_nonneg == 1, "every kernel is non-negative on [−2, 6]");
+    assert_eq(PmnKernelDensity_new(&kd, a, 0, 1.0, PMN_KERNEL_GAUSSIAN), PMN_ERR_INVALID_SAMPLE, "no data");
+    assert_eq(PmnKernelDensity_new(&kd, a, 1, 0.0, PMN_KERNEL_GAUSSIAN), PMN_ERR_INVALID_PARAMETER, "h = 0");
+    assert_eq(PmnKernelDensity_new(&kd, a, 1, -1.0, PMN_KERNEL_GAUSSIAN), PMN_ERR_INVALID_PARAMETER, "h = −1");
+    var e1 = PmnKernelDensity_silverman(&kd, a, 1, PMN_KERNEL_GAUSSIAN);
+    assert_eq(e1, PMN_ERR_INVALID_SAMPLE, "Silverman of one point");
+
+    test_group("1.3.0's serde round trip, and the port's clone and drop");
+    assert_eq(PmnKernelDensity_new(&kd, a, 3, 0.5, PMN_KERNEL_GAUSSIAN), PMN_ERR_NONE, "new([1, 2, 3], 0.5)");
+    var sb = str_builder_new();
+    assert_eq(kd.to_json(sb), PMN_ERR_NONE, "to_json");
+    var kd2: PmnKernelDensity;
+    assert_eq(PmnKernelDensity_from_json(&kd2, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "from_json of its text");
+    var same = 1;
+    if (kd2.len() != 3) { same = 0; }
+    for (var r = 0; r < 3; r = r + 1) {
+        if (load64(kd2.data_ptr() + r * 8) != load64(a + r * 8)) { same = 0; }
+    }
+    var h1: f64 = kd.bandwidth;
+    var h2: f64 = kd2.bandwidth;
+    if (bits(h1) != bits(h2) || kd2.kernel != PMN_KERNEL_GAUSSIAN) { same = 0; }
+    assert(same == 1, "the data, the bandwidth and the kernel round-trip bit for bit");
+    var kd3: PmnKernelDensity;
+    assert_eq(PmnKernelDensity_clone(&kd3, &kd), PMN_ERR_NONE, "clone");
+    assert(kd3.data_ptr() != kd.data_ptr() && kd3.len() == 3, "the clone owns its own block");
+    assert_eq(PmnKernelDensity_clone(&kd, &kd), PMN_ERR_INVALID_PARAMETER, "cloning onto itself is refused");
+    PmnKernelDensity_drop(&kd3);
+    PmnKernelDensity_drop(&kd2);
+    PmnKernelDensity_drop(&kd);
+    var dead: f64 = kd.evaluate(1.0);
+    assert(dead != dead && kd.len() == 0, "a dropped one gives NaN and no data");
+    assert_eq(kd.to_json(sb), PMN_ERR_INVALID_PARAMETER, "a dropped one refuses to_json");
+    assert_eq(PmnKernelDensity_drop(&kd), PMN_ERR_NONE, "a second drop is a no-op");
+    assert_eq(PmnKernelDensity_new(&kd, a, 3, 0.5, 7), PMN_ERR_INVALID_PARAMETER, "a value that is no kernel");
+    assert_eq(PmnKernelDensity_new(0, a, 3, 0.5, 0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnKernelDensity_new(&kd, 0, 3, 0.5, 0), PMN_ERR_INVALID_PARAMETER, "a null data");
+
+    test_group("1.3.0's correlation tests (perfect positive and negative, symmetric, refusals)");
+    var x5 = alloc(5 * 8);
+    var y5 = alloc(5 * 8);
+    var z5 = alloc(5 * 8);
+    for (var t = 0; t < 5; t = t + 1) {
+        put(x5, t, f64_from(t + 1));
+        put(y5, t, f64_from(2 * (t + 1)));
+        put(z5, t, f64_from(5 - t));
+    }
+    var recs[64];
+    store64(&recs, x5);
+    store64(&recs + 8, 5);
+    store64(&recs + 16, y5);
+    store64(&recs + 24, 5);
+    assert_eq(pmn_correlation_matrix(&recs, 2, o, 4), PMN_ERR_NONE, "corr(x, 2x)");
+    var m01: f64 = load64(o + 8);
+    var m00: f64 = load64(o);
+    assert(f64_abs(m01 - 1.0) < 0.00000001 && bits(m00) == bits(1.0), "r = 1 for y = 2x");
+    store64(&recs + 16, z5);
+    assert_eq(pmn_correlation_matrix(&recs, 2, o, 4), PMN_ERR_NONE, "corr(x, reversed)");
+    var mneg: f64 = load64(o + 8);
+    assert(f64_abs(mneg + 1.0) < 0.00000001, "r = −1 for the reversed");
+    var a4 = alloc(32);
+    var b4 = alloc(32);
+    var c4 = alloc(32);
+    put(a4, 0, 1.0);
+    put(a4, 1, 2.0);
+    put(a4, 2, 3.0);
+    put(a4, 3, 4.0);
+    put(b4, 0, 4.0);
+    put(b4, 1, 3.0);
+    put(b4, 2, 2.0);
+    put(b4, 3, 5.0);
+    put(c4, 0, 1.0);
+    put(c4, 1, 5.0);
+    put(c4, 2, 2.0);
+    put(c4, 3, 4.0);
+    store64(&recs, a4);
+    store64(&recs + 8, 4);
+    store64(&recs + 16, b4);
+    store64(&recs + 24, 4);
+    store64(&recs + 32, c4);
+    store64(&recs + 40, 4);
+    assert_eq(pmn_correlation_matrix(&recs, 3, o, 9), PMN_ERR_NONE, "a 3 × 3 matrix");
+    var sym = 1;
+    for (var r1 = 0; r1 < 3; r1 = r1 + 1) {
+        for (var c1 = 0; c1 < 3; c1 = c1 + 1) {
+            if (load64(o + (r1 * 3 + c1) * 8) != load64(o + (c1 * 3 + r1) * 8)) { sym = 0; }
+        }
+    }
+    assert(sym == 1, "symmetric, bit for bit");
+    assert_eq(pmn_correlation_matrix(&recs, 1, o, 9), PMN_ERR_INVALID_SAMPLE, "fewer than 2 variables");
+    store64(&recs + 8, 1);
+    store64(&recs + 24, 2);
+    assert_eq(pmn_correlation_matrix(&recs, 2, o, 9), PMN_ERR_INVALID_SAMPLE, "1 observation (the first variable's)");
+    store64(&recs + 8, 2);
+    store64(&recs + 24, 3);
+    assert_eq(pmn_correlation_matrix(&recs, 2, o, 9), PMN_ERR_DIMENSION_MISMATCH, "lengths 2 and 3");
+    store64(&recs + 24, 2);
+    assert_eq(pmn_correlation_matrix(&recs, 2, o, 3), PMN_ERR_INVALID_PARAMETER, "cap < p²");
+    assert_eq(pmn_correlation_matrix(&recs, 2, a4, 9), PMN_ERR_INVALID_PARAMETER, "out overlapping a variable");
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

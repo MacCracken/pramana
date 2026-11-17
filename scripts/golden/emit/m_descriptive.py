@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .grids import INF, MAXF, MIN_POSITIVE, NAN, TINY, Rng
 from .models import V
-from .tsv import Module, f, from_bits, bits, from_model, parsed, v
+from .tsv import Module, bits, e, f, from_bits, from_model, none, parsed, v
 
 ROOT = Path(__file__).resolve().parents[3]
 _PRIMS = None
@@ -97,4 +97,96 @@ def emit():
                   [2.0] * n, seeded(g, n, 2), seeded(g, n, 3), [float(j % 7) for j in range(n)]]
         for xs in shapes:
             all_stats(m, xs, ps=P_GRID)
+    kde_rows(m, Rng(0xA54FF53A5F1D36F1))
+    corr_rows(m, Rng(0x510E527FADE682D1))
     return m
+
+
+KERNELS = ["Gaussian", "Epanechnikov", "Uniform", "Triangular"]
+
+
+def kde_row(m, data, pts, k, h):
+    """`KernelDensity::new(data, h, k)` (h None: `silverman(data, k)`), then `evaluate_grid(pts)`. Class C: the
+    Gaussian kernel's exp and Silverman's pow."""
+    hb = [none()] if h is None else [f(h)]
+    row(m, V.DESC, "KernelDensity::evaluate_grid", "C", slice_(data) + slice_(pts) + [e("Kernel", k)] + hb)
+
+
+def points(data, h, extra):
+    lo, hi = min(data), max(data)
+    span = (hi - lo) + 10.0 * h if h is not None and h < 1e300 else (hi - lo) + 10.0
+    pts = [lo - 5.0 * (h or 1.0) + span * j / 24.0 for j in range(25)]
+    return [x for x in pts if x == x] + extra
+
+
+def kde_rows(m, g):
+    sp_pts = [0.0, -0.0, NAN, INF, -INF, MAXF, -MAXF, TINY]
+    sets = [[0.0, 1.0, 2.0, 3.0, 4.0], [5.0], [0.0, 1.0], [1.0, 2.0, 3.0],
+            [(j - 100.0) * 0.05 for j in range(200)], [j * 0.1 for j in range(100)],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0], [1e300, -1e300], [MAXF, -MAXF], [TINY, -TINY, 0.0],
+            [1e16, 1e16 + 2.0, 1e16 + 4.0]]
+    for _ in range(12):
+        sets.append([g.uniform(-10.0, 10.0) for _ in range(g.int(2, 40))])
+    for _ in range(6):
+        sets.append([g.signed_log_uniform(-20.0, 20.0) for _ in range(g.int(2, 12))])
+    hs = [1.0, 0.5, 0.05, 3.0, 1e-300, TINY, 1e300, MAXF]
+    for data in sets:
+        for k in KERNELS:
+            for h in hs:
+                kde_row(m, data, points(data, h, sp_pts), k, h)
+            kde_row(m, data, points(data, 1.0, sp_pts), k, None)
+    # the constructors' refusals
+    for data in ([], [NAN], [INF], [1.0, -INF], [1.0, NAN, 2.0]):
+        for k in KERNELS:
+            kde_row(m, data, [0.0], k, 1.0)
+            kde_row(m, data, [0.0], k, None)
+    for h in (0.0, -0.0, -1.0, NAN, INF, -INF, -TINY):
+        for k in KERNELS:
+            kde_row(m, [1.0, 2.0], [0.0], k, h)
+    for data in ([1.0], [2.0, 2.0, 2.0], [-0.0, 0.0]):
+        kde_row(m, data, [0.0], "Gaussian", None)
+
+
+def corr_row(m, vs):
+    ins = []
+    for x in vs:
+        ins += slice_(x)
+    row(m, V.DESC, "descriptive::correlation_matrix", "A", ins)
+
+
+def corr_rows(m, g):
+    x = [1.0, 2.0, 3.0, 4.0, 5.0]
+    corr_row(m, [])
+    corr_row(m, [x])
+    corr_row(m, [[1.0], [2.0]])
+    corr_row(m, [[], []])
+    corr_row(m, [x, [1.0, 2.0]])
+    corr_row(m, [[1.0], [2.0, 3.0]])
+    corr_row(m, [x, [2.0 * v for v in x]])
+    corr_row(m, [x, list(reversed(x))])
+    corr_row(m, [[1.0, 2.0, 3.0, 4.0], [4.0, 3.0, 2.0, 5.0], [1.0, 5.0, 2.0, 4.0]])
+    corr_row(m, [x, [3.0] * 5, x])
+    corr_row(m, [[0.0, 0.0], [0.0, 0.0]])
+    corr_row(m, [[1.0, NAN, 3.0], [1.0, 2.0, 3.0]])
+    corr_row(m, [[1.0, INF, 3.0], [1.0, 2.0, 3.0]])
+    corr_row(m, [[MAXF, -MAXF], [1.0, 2.0]])
+    corr_row(m, [[1e300, 2e300, 3e300], [1e-300, 2e-300, 4e-300]])
+    corr_row(m, [[TINY, 2 * TINY, 0.0], [1.0, 2.0, 3.0]])
+    corr_row(m, [[-0.0, 0.0], [0.0, -0.0]])
+    for _ in range(80):
+        p = g.int(2, 6)
+        n = g.int(2, 30)
+        base = [g.uniform(-10.0, 10.0) for _ in range(n)]
+        vs = []
+        for j in range(p):
+            r = g.int(0, 3)
+            if r == 0:
+                vs.append([g.uniform(-10.0, 10.0) for _ in range(n)])
+            elif r == 1:
+                a = g.uniform(-3.0, 3.0)
+                vs.append([a * b + g.uniform(-0.1, 0.1) for b in base])
+            elif r == 2:
+                vs.append([g.signed_log_uniform(-100.0, 100.0) for _ in range(n)])
+            else:
+                vs.append([float(g.int(0, 3)) for _ in range(n)])
+        corr_row(m, vs)

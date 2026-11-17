@@ -54,7 +54,7 @@
 > `scripts/golden/digests.txt` holds its sha256. Where this plan says "the oracle" for M4 onward, read "Python's model
 > of 1.3.0, from `rust-old/src`", and where it says "Rust twin", read "the twin's recorded numbers"; new proofs are
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
-> part a1, the descriptive statistics, is done.
+> part a1, the descriptive statistics, and part a2, KDE and the correlation matrix, are done.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1241,7 +1241,8 @@ a T1 function is recorded against T1:
   (23,180 rows); every row passing on the first replay, at 0 ulp, on three targets; `_pmn_copy_words` for the
   stdlib's byte-wise `memcpy` (ledger L15) ✅;
 - **a2:** `Kernel` and `KernelDensity` (owned, freelist-allocated, Silverman's bandwidth) in `src/kde.cyr`, and
-  `correlation_matrix`;
+  `correlation_matrix`. 1,212 more `descriptive` rows, 145 codec rows and 40 Debug rows; `descriptive.cr.tsv` 3 rows;
+  every row passing on the first replay, at 0 ulp, on three targets ✅;
 - **a3:** hisab 1.4.0's cyclic Jacobi `eigen_symmetric(tol, max_iter)` in `src/linalg.cyr` (ledger L6) and `pca`
   with `PcaResult` (owned) in `src/pca.cyr`;
 - **b1:** `src/hypothesis.cyr`: `TestResult`, `AnovaResult` and `KsResult`; the one- and two-sample t-tests, the χ²

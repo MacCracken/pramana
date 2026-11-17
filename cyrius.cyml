@@ -68,4 +68,5 @@ modules = [
     "src/dist_mvn.cyr",
     "src/sort.cyr",
     "src/descriptive.cyr",
+    "src/kde.cyr",
 ]

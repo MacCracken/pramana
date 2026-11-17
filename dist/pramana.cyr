@@ -14670,3 +14670,410 @@ fn pmn_range(data, n): Result {
     var r: f64 = h - l;
     return Ok(r);
 }
+
+# --- kde.cyr ---
+
+# kde.cyr — Rust 1.3.0's kernel density estimation (src/descriptive.rs; port plan §4.1, D5, D11, D12; M4 part a2):
+# `Kernel`, `KernelDensity` (`new`, `silverman`, `evaluate`, `evaluate_grid`), their serde_json codecs and derived
+# Debug.
+#
+# `KernelDensity` owns its data (D11): the struct lives in caller storage and the data in a freelist block sized at
+# construction, freed by `PmnKernelDensity_drop`; a dropped one refuses every call. `evaluate_grid` writes into a
+# caller buffer (out, cap). Every value is Rust's in its operation order: the kernel sum from −0.0, divided by n·h; the
+# Gaussian kernel on the correctly rounded exp (ADR 009), so a density differs from 1.3.0's only where glibc's exp
+# misrounds; Silverman's bandwidth 0.9·min(σ, IQR/1.34)·n^(−1/5) on the correctly rounded pow, its σ and IQR from
+# src/descriptive.cyr.
+
+# Rust's `Kernel`: the four kernels, append-only (the Cyrius form of #[non_exhaustive]).
+enum PmnKernel {
+    PMN_KERNEL_GAUSSIAN = 0;
+    PMN_KERNEL_EPANECHNIKOV = 1;
+    PMN_KERNEL_UNIFORM = 2;
+    PMN_KERNEL_TRIANGULAR = 3;
+}
+
+# The kernel's Rust variant name, or 0 for a value that is no kernel.
+#must_use
+#pure
+fn pmn_kernel_name(k): i64 {
+    match k {
+        PMN_KERNEL_GAUSSIAN => { return "Gaussian"; }
+        PMN_KERNEL_EPANECHNIKOV => { return "Epanechnikov"; }
+        PMN_KERNEL_UNIFORM => { return "Uniform"; }
+        PMN_KERNEL_TRIANGULAR => { return "Triangular"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# Rust's private `Kernel::evaluate(u)`: the Gaussian e^(−u²/2)/√(2π); Epanechnikov ¾(1 − u²), uniform ½ and triangular
+# 1 − |u| for |u| ≤ 1, else 0. A NaN u gives NaN (Gaussian) or 0 (the others: |NaN| ≤ 1 is false).
+#must_use
+fn _pmn_kernel_eval(k, u: f64): f64 {
+    var au: f64 = f64_abs(u);
+    if (k == PMN_KERNEL_GAUSSIAN) {
+        var h: f64 = -0.5 * u;
+        var a: f64 = h * u;
+        var e: f64 = _pmn_exp(a);
+        var tau: f64 = _PMN_F64_TAU;
+        var s: f64 = f64_sqrt(tau);
+        var g: f64 = e / s;
+        return g;
+    }
+    if (au <= 1.0) {
+        if (k == PMN_KERNEL_EPANECHNIKOV) {
+            var uu: f64 = u * u;
+            var om: f64 = 1.0 - uu;
+            var ep: f64 = 0.75 * om;
+            return ep;
+        }
+        if (k == PMN_KERNEL_UNIFORM) { return 0.5; }
+        var tr: f64 = 1.0 - au;
+        return tr;
+    }
+    return 0.0;
+}
+
+# Appends a kernel's serde_json text, `"Gaussian"`. PMN_ERR_INVALID_PARAMETER for a value that is no kernel.
+#must_use
+fn pmn_kernel_to_json(k, sb): i64 {
+    var name = pmn_kernel_name(k);
+    if (name == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_w_unit_variant(sb, name);
+}
+
+# Appends a kernel's derived Debug, its variant name (both forms alike). PMN_ERR_INVALID_PARAMETER for a value that is
+# no kernel.
+#must_use
+fn pmn_kernel_debug(k, sb, alternate): i64 {
+    var name = pmn_kernel_name(k);
+    if (name == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_w_lit(sb, name);
+}
+
+# A kernel from its JSON node (serde's externally tagged unit variant), into out.
+#must_use
+fn _pmn_kernel_from_node(v, out): i64 {
+    var names[32];
+    store64(&names, "Gaussian");
+    store64(&names + 8, "Epanechnikov");
+    store64(&names + 16, "Uniform");
+    store64(&names + 24, "Triangular");
+    return _pmn_json_unit_variant(v, &names, 4, out);
+}
+
+fn _pmn_kernel_from_root(root, out): i64 {
+    return _pmn_kernel_from_node(root, out);
+}
+
+# Reads a Kernel document, buf[0, len), into out (one word): PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document
+# serde_json refuses, or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn pmn_kernel_from_json(out, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_kernel_from_root, out);
+}
+
+# Rust's `KernelDensity`: n data points in an owned block, the bandwidth h and the kernel.
+struct PmnKernelDensity {
+    n;
+    data;
+    bandwidth: f64;
+    kernel;
+}
+
+# Rust's `require_finite_data`: PMN_ERR_INVALID_SAMPLE for no data or a non-finite point.
+#must_use
+fn _pmn_kde_check_data(data, n): i64 {
+    if (n == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    for (var i = 0; i < n; i = i + 1) {
+        var x: f64 = load64(data + i * 8);
+        if (_pmn_is_finite(x) == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    }
+    return PMN_ERR_NONE;
+}
+
+# Fills out with a copy of data[0, n) in a new block, h and k. PMN_ERR_OUT_OF_MEMORY when the block can't be had.
+#must_use
+fn _pmn_kde_fill(out: *PmnKernelDensity, data, n, h: f64, k): i64 {
+    var blk = fl_alloc(n * 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    _pmn_copy_words(blk, data, n);
+    out.n = n;
+    out.data = blk;
+    out.bandwidth = h;
+    out.kernel = k;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `KernelDensity::new(data, bandwidth, kernel)`, data[0, n) copied into out's own block (caller storage, D11).
+# PMN_ERR_INVALID_SAMPLE for no data or a non-finite point, then PMN_ERR_INVALID_PARAMETER for a bandwidth that isn't
+# positive and finite, as Rust's checks in its order. Before them, PMN_ERR_INVALID_PARAMETER for a null out, a null
+# data with n > 0, a negative n or a value that is no kernel (Rust's type can't hold one); PMN_ERR_OUT_OF_MEMORY when
+# the block can't be had. On a refusal out is untouched. A live KernelDensity in out is overwritten, not freed.
+#must_use
+fn PmnKernelDensity_new(out: *PmnKernelDensity, data, n, bandwidth: f64, kernel): i64 {
+    if (out == 0 || n < 0 || (data == 0 && n > 0) || pmn_kernel_name(kernel) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var e = _pmn_kde_check_data(data, n);
+    if (e != PMN_ERR_NONE) { return e; }
+    if (_pmn_require_positive(bandwidth) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_kde_fill(out, data, n, bandwidth, kernel);
+}
+
+# Rust's `KernelDensity::silverman(data, kernel)`: h = 0.9·spread·n^(−0.2), spread = min(σ, IQR/1.34) when the IQR is
+# positive, else σ (σ the population standard deviation). PMN_ERR_INVALID_SAMPLE for fewer than 2 points, a
+# non-finite point or σ = 0; PMN_ERR_COMPUTATION_ERROR for an h that isn't positive and finite; the argument checks of
+# `new` before them; PMN_ERR_OUT_OF_MEMORY when the block or the IQR's scratch can't be had.
+#must_use
+fn PmnKernelDensity_silverman(out: *PmnKernelDensity, data, n, kernel): i64 {
+    if (out == 0 || n < 0 || (data == 0 && n > 0) || pmn_kernel_name(kernel) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    var e = _pmn_kde_check_data(data, n);
+    if (e != PMN_ERR_NONE) { return e; }
+    var t, sv = pmn_std_dev(data, n);
+    if (t == Err) { return sv; }
+    var s: f64 = sv;
+    if (s == 0.0) { return PMN_ERR_INVALID_SAMPLE; }
+    var t2, iv = pmn_iqr(data, n);
+    if (t2 == Err) { return iv; }
+    var iq: f64 = iv;
+    var spread: f64 = s;
+    if (iq > 0.0) {
+        var q: f64 = iq / 1.34;
+        spread = _pmn_min(s, q);
+    }
+    var nf: f64 = f64_from(n);
+    var p: f64 = _pmn_powf(nf, -0.2);
+    var a: f64 = 0.9 * spread;
+    var h: f64 = a * p;
+    if (_pmn_require_positive(h) != PMN_ERR_NONE) { return PMN_ERR_COMPUTATION_ERROR; }
+    return _pmn_kde_fill(out, data, n, h, kernel);
+}
+
+# Rust's derived Clone: a new block holding src's data. PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER for a null or dropped
+# src, a null out or out overlapping src; PMN_ERR_OUT_OF_MEMORY when the block can't be had. Drop each one.
+#must_use
+fn PmnKernelDensity_clone(out: *PmnKernelDensity, src: *PmnKernelDensity): i64 {
+    if (out == 0 || src == 0 || src.data == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 32, src, 32) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var h: f64 = src.bandwidth;
+    return _pmn_kde_fill(out, src.data, src.n, h, src.kernel);
+}
+
+# Frees k's block and marks it dropped (every call on it then refuses). PMN_ERR_NONE, a dropped one included;
+# PMN_ERR_INVALID_PARAMETER for a null k.
+fn PmnKernelDensity_drop(k: *PmnKernelDensity): i64 {
+    if (k == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (k.data != 0) { fl_free(k.data); }
+    k.data = 0;
+    k.n = 0;
+    return PMN_ERR_NONE;
+}
+
+impl PmnKernelDensity {
+    # The number of data points, or 0 for a dropped one.
+    #must_use
+    fn len(self): i64 {
+        if (self == 0 || self.data == 0) { return 0; }
+        return self.n;
+    }
+
+    # The data, n f64s (borrowed: valid until the drop), or 0 for a dropped one.
+    #must_use
+    fn data_ptr(self): i64 {
+        if (self == 0) { return 0; }
+        return self.data;
+    }
+
+    # Rust's `evaluate(x)`: Σ K((x − xᵢ)/h) from −0.0, over n·h. NaN for a dropped one (Rust's can't be).
+    #must_use
+    fn evaluate(self, x: f64): f64 {
+        if (self == 0 || self.data == 0) {
+            var bad: f64 = _PMN_F64_NAN;
+            return bad;
+        }
+        var n = self.n;
+        var d = self.data;
+        var k = self.kernel;
+        var h: f64 = self.bandwidth;
+        var s: f64 = -0.0;
+        for (var i = 0; i < n; i = i + 1) {
+            var xi: f64 = load64(d + i * 8);
+            var dx: f64 = x - xi;
+            var u: f64 = dx / h;
+            var kv: f64 = _pmn_kernel_eval(k, u);
+            s = s + kv;
+        }
+        var nf: f64 = f64_from(n);
+        var nh: f64 = nf * h;
+        var r: f64 = s / nh;
+        return r;
+    }
+
+    # Rust's `evaluate_grid(points)`: the density at points[0, m), into out[0, m) (cap ≥ m, D11). PMN_ERR_NONE;
+    # PMN_ERR_INVALID_PARAMETER for a dropped self, a null buffer with m > 0, a negative m, cap < m, or out partly
+    # overlapping points (out == points evaluates in place: each point is read before its slot is written).
+    #must_use
+    fn evaluate_grid(self, points, m, out, cap): i64 {
+        if (self == 0 || self.data == 0 || m < 0 || cap < m) { return PMN_ERR_INVALID_PARAMETER; }
+        if (m == 0) { return PMN_ERR_NONE; }
+        if (points == 0 || out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        if (out != points && _pmn_linalg_overlaps(points, m * 8, out, m * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        for (var i = 0; i < m; i = i + 1) {
+            var x: f64 = load64(points + i * 8);
+            var r: f64 = self.evaluate(x);
+            store64(out + i * 8, r);
+        }
+        return PMN_ERR_NONE;
+    }
+
+    # Appends Rust's derived Debug (D12): `KernelDensity { data: [..], bandwidth: .., kernel: Gaussian }`, or the
+    # pretty form (alternate 1). PMN_ERR_NONE; PMN_ERR_OUT_OF_MEMORY when sb can't grow; PMN_ERR_INVALID_PARAMETER for a
+    # dropped self.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.data == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var h: f64 = self.bandwidth;
+        var e = _pmn_dbg_open(sb, "KernelDensity", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "data", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.data, self.n, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "bandwidth", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_f64(sb, h); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "kernel", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = pmn_kernel_debug(self.kernel, sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"data":[..],"bandwidth":..,"kernel":"Gaussian"}`. PMN_ERR_NONE;
+    # PMN_ERR_OUT_OF_MEMORY when sb can't grow; PMN_ERR_INVALID_PARAMETER for a dropped self.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.data == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var h: f64 = self.bandwidth;
+        var e = _pmn_json_w_key(sb, "data", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.data, self.n); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "bandwidth", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_f64(sb, h); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "kernel", 0); }
+        if (e == PMN_ERR_NONE) { e = pmn_kernel_to_json(self.kernel, sb); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# The decoder for PmnKernelDensity_from_json: KernelDensityRepr's three fields by serde's struct rules, each read whole
+# as its type (a Vec<f64>, an f64, a Kernel), then `KernelDensity::new`, as serde's `try_from`: any refusal is
+# PMN_ERR_DESERIALIZE. The data is copied to pool scratch for the constructor.
+fn _pmn_kde_from_root(root, out): i64 {
+    var names[24];
+    store64(&names, "data");
+    store64(&names + 8, "bandwidth");
+    store64(&names + 16, "kernel");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var dv = load64(&sl);
+    var n = _pmn_json_arr_len(dv);
+    if (n < 0) { return PMN_ERR_DESERIALIZE; }
+    var x[8];
+    for (var i = 0; i < n; i = i + 1) {
+        if (_pmn_json_f64(_pmn_json_arr_get(dv, i), &x) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    }
+    var hb[8];
+    if (_pmn_json_f64(load64(&sl + 8), &hb) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var kk[8];
+    if (_pmn_kernel_from_node(load64(&sl + 16), &kk) != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    var s, slot = _pmn_scratch_take(n * 8 + 8);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    e = _pmn_json_vec_f64(dv, s, n);
+    var h: f64 = load64(&hb);
+    if (e == PMN_ERR_NONE) { e = PmnKernelDensity_new(out, s, n, h, load64(&kk)); }
+    _pmn_scratch_give(s, slot);
+    if (e == PMN_ERR_OUT_OF_MEMORY) { return e; }
+    if (e != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a KernelDensity document, buf[0, len), into out (caller storage, owning a new block: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses (one `KernelDensity::new` refuses included), or
+# PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnKernelDensity_from_json(out: *PmnKernelDensity, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_kde_from_root, out);
+}
+
+# ── correlation_matrix ────────────────────────────────────────────────────────────────────────────
+
+# Rust's `correlation_matrix(variables)`: the p × p Pearson matrix of p variables, into out (row-major, cap ≥ p·p f64s,
+# D11). vars holds p slices as 16-byte records (a pointer, then a count), Rust's `&[&[f64]]`. Each mean is the sum from
+# −0.0 over n, each σ the population one, each covariance Σ (xᵢ − m_i)(x_j − m_j) / n; r = cov/(σ_i σ_j), 1 on the
+# diagonal, and 0 off it where a σ is 0. PMN_ERR_INVALID_SAMPLE for fewer than 2 variables or 2 observations,
+# PMN_ERR_DIMENSION_MISMATCH for a variable of another length, in Rust's order; PMN_ERR_INVALID_PARAMETER for a null
+# buffer, a negative count, cap < p·p or out overlapping a variable; PMN_ERR_OUT_OF_MEMORY when the means' scratch
+# (2p f64s) can't be had.
+#must_use
+fn pmn_correlation_matrix(vars, p, out, cap): i64 {
+    if (p < 0 || (vars == 0 && p > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (p < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    var n = load64(vars + 8);
+    if (n < 0 || (load64(vars) == 0 && n > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (n < 2) { return PMN_ERR_INVALID_SAMPLE; }
+    for (var i = 0; i < p; i = i + 1) {
+        var ni = load64(vars + i * 16 + 8);
+        if (ni < 0 || (load64(vars + i * 16) == 0 && ni > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+        if (ni != n) { return PMN_ERR_DIMENSION_MISMATCH; }
+    }
+    if (out == 0 || cap < p * p) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var j = 0; j < p; j = j + 1) {
+        var vj = load64(vars + j * 16);
+        if (_pmn_linalg_overlaps(vj, n * 8, out, p * p * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    }
+    var s, slot = _pmn_scratch_take(p * 16);
+    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    var nf: f64 = f64_from(n);
+    for (var a = 0; a < p; a = a + 1) {
+        var va = load64(vars + a * 16);
+        var sum: f64 = pmn_sum(va, n);
+        var m: f64 = sum / nf;
+        var ss: f64 = _pmn_desc_ss(va, n, m);
+        var vv: f64 = ss / nf;
+        var sd: f64 = f64_sqrt(vv);
+        store64(s + a * 8, m);
+        store64(s + (p + a) * 8, sd);
+    }
+    for (var r = 0; r < p; r = r + 1) {
+        store64(out + (r * p + r) * 8, 1.0);
+        for (var c = r + 1; c < p; c = c + 1) {
+            var sr: f64 = load64(s + (p + r) * 8);
+            var sc: f64 = load64(s + (p + c) * 8);
+            var rv: f64 = 0.0;
+            if (sr != 0.0 && sc != 0.0) {
+                var xr = load64(vars + r * 16);
+                var xc = load64(vars + c * 16);
+                var mr: f64 = load64(s + r * 8);
+                var mc: f64 = load64(s + c * 8);
+                var acc: f64 = -0.0;
+                for (var k = 0; k < n; k = k + 1) {
+                    var x1: f64 = load64(xr + k * 8);
+                    var x2: f64 = load64(xc + k * 8);
+                    var d1: f64 = x1 - mr;
+                    var d2: f64 = x2 - mc;
+                    var pr: f64 = d1 * d2;
+                    acc = acc + pr;
+                }
+                var cov: f64 = acc / nf;
+                var den: f64 = sr * sc;
+                rv = cov / den;
+            }
+            store64(out + (r * p + c) * 8, rv);
+            store64(out + (c * p + r) * 8, rv);
+        }
+    }
+    _pmn_scratch_give(s, slot);
+    return PMN_ERR_NONE;
+}

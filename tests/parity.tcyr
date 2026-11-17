@@ -79,6 +79,12 @@ fn _par_dg_print(slot, name) {
 
 _par_dg_init();
 
+# The descriptive module's buffers (M4), declared here: the json and debug hooks use them too.
+var _par_ds_a = 0;
+var _par_ds_b = 0;
+var _par_ds_o = 0;
+var _PAR_DS_CAP = 4096;
+
 # ── hooks ───────────────────────────────────────────────────────────────────────────
 
 # The Rust variant name of an error code (src/error.cyr).
@@ -369,7 +375,7 @@ fn _par_jw(code): i64 {
         store64(&kn + 24, "Triangular");
         var v = _par_jw_variant(&kn, 4);
         if (v < 0) { return 0 - 1; }
-        return _pmn_json_w_unit_variant(sb, load64(&kn + v * 8));
+        return pmn_kernel_to_json(v, sb);                 # M4 part a2: the port's own writer
     }
     return 0 - 1;
 }
@@ -501,6 +507,18 @@ fn _par_json_write(fp, fl): i64 {
         _par_json_k = wmk;
         e = wmv.to_json(sb);
         var wmd = PmnMultivariateNormal_drop(&wmv);
+    } elif (_par_eq(fp, fl, "json::write::KernelDensity") == 1) {
+        var wkn = _par_in(0);
+        if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+        if (wkn < 0 || wkn > _PAR_DS_CAP || _par_ds_a == 0) { return 0 - 1; }
+        _par_in_f64s(0, _par_ds_a);
+        var wkh: f64 = _par_in(wkn + 1);
+        var wkk = _par_in_kernel(wkn + 2);
+        var wkd: PmnKernelDensity;
+        if (PmnKernelDensity_new(&wkd, _par_ds_a, wkn, wkh, wkk) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = wkn + 3;
+        e = wkd.to_json(sb);
+        var wkx = PmnKernelDensity_drop(&wkd);
     } elif (_par_eq(fp, fl, "json::write::Poisson") == 1) {
         var wpo: PmnPoisson;
         var wpl: f64 = _par_in(0);
@@ -736,6 +754,50 @@ fn _par_mvn_codec_new(m, k): i64 {
     return at - k;
 }
 
+# json::Kernel rows through the port's reader (M4 part a2).
+fn _par_json_kernel(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var k = 0;
+    var e = pmn_kernel_from_json(&k, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    if (k == PMN_KERNEL_GAUSSIAN) { _par_got_e("Kernel.Gaussian"); }
+    if (k == PMN_KERNEL_EPANECHNIKOV) { _par_got_e("Kernel.Epanechnikov"); }
+    if (k == PMN_KERNEL_UNIFORM) { _par_got_e("Kernel.Uniform"); }
+    if (k == PMN_KERNEL_TRIANGULAR) { _par_got_e("Kernel.Triangular"); }
+    return 1;
+}
+
+# json::KernelDensity rows: the data, the bandwidth and the kernel of the decoded value, or the error.
+fn _par_json_kde(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var kd: PmnKernelDensity;
+    var e = PmnKernelDensity_from_json(&kd, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    var d = kd.len();
+    var p = kd.data_ptr();
+    _par_got_seq(d);
+    for (var k = 0; k < d; k = k + 1) { _par_got_f(load64(p + k * 8)); }
+    var h: f64 = kd.bandwidth;
+    _par_got_f(h);
+    var kn = kd.kernel;
+    if (kn == PMN_KERNEL_GAUSSIAN) { _par_got_e("Kernel.Gaussian"); }
+    if (kn == PMN_KERNEL_EPANECHNIKOV) { _par_got_e("Kernel.Epanechnikov"); }
+    if (kn == PMN_KERNEL_UNIFORM) { _par_got_e("Kernel.Uniform"); }
+    if (kn == PMN_KERNEL_TRIANGULAR) { _par_got_e("Kernel.Triangular"); }
+    var e1 = PmnKernelDensity_drop(&kd);
+    return 1;
+}
+
 fn _par_json_value(fp, fl, root): i64 {
     if (_par_eq(fp, fl, "json::Pair") == 1) { return _par_json_pair(root); }
     if (_par_eq(fp, fl, "json::Shapes") == 1) { return _par_json_shapes(root); }
@@ -753,6 +815,8 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::Normal") == 1) { return _par_json_normal(); }
     if (_par_eq(fp, fl, "json::Binomial") == 1) { return _par_json_binomial(); }
     if (_par_eq(fp, fl, "json::MultivariateNormal") == 1) { return _par_json_mvn(); }
+    if (_par_eq(fp, fl, "json::KernelDensity") == 1) { return _par_json_kde(); }
+    if (_par_eq(fp, fl, "json::Kernel") == 1) { return _par_json_kernel(); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -910,6 +974,27 @@ fn _par_debug(fp, fl): i64 {
         if (dmk < 0 || dmk + 1 != _par_in_n) { return 0 - 1; }
         e = dmv.debug(sb, _par_in(dmk));
         var dmd = PmnMultivariateNormal_drop(&dmv);
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::Kernel") == 1) {
+        if (_par_in_n != 2) { return 0 - 1; }
+        e = pmn_kernel_debug(_par_in_kernel(0), sb, _par_in(1));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::KernelDensity") == 1) {
+        var dkn = _par_in(0);
+        if (dkn < 0 || dkn > _PAR_DS_CAP || dkn + 4 != _par_in_n) { return 0 - 1; }
+        if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+        _par_in_f64s(0, _par_ds_a);
+        var dkh: f64 = _par_in(dkn + 1);
+        var dkd: PmnKernelDensity;
+        if (PmnKernelDensity_new(&dkd, _par_ds_a, dkn, dkh, _par_in_kernel(dkn + 2)) != PMN_ERR_NONE) { return 0 - 1; }
+        e = dkd.debug(sb, _par_in(dkn + 3));
+        var dkx = PmnKernelDensity_drop(&dkd);
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -1612,8 +1697,6 @@ fn _par_linalg(fp, fl): i64 {
 }
 
 # `descriptive` rows (M4): src/descriptive.cyr. A slice is `v:n` and its values; a Result is its value or `E:`.
-var _par_ds_a = 0;
-var _PAR_DS_CAP = 4096;
 
 fn _par_ds_result(t, v): i64 {
     if (t == Err) {
@@ -1624,11 +1707,86 @@ fn _par_ds_result(t, v): i64 {
     return 1;
 }
 
-fn _par_descriptive(fp, fl): i64 {
-    if (_par_ds_a == 0) {
-        _par_ds_a = alloc(_PAR_DS_CAP * 8);
-        if (_par_ds_a == 0) { return 0 - 1; }
+# The kernel of an `e:Kernel.<Name>` input token at k, or -1.
+fn _par_in_kernel(k): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + k * 8) != 101) { return 0 - 1; }
+    var p = _par_in(k);
+    var len = load64(_par_in_l + k * 8);
+    for (var j = 0; j < 4; j = j + 1) {
+        var name = pmn_kernel_name(j);
+        var nl = strlen(name);
+        if (len == nl + 7 && memeq(p + 7, name, nl) == 1) { return j; }
     }
+    return 0 - 1;
+}
+
+# `KernelDensity::evaluate_grid` rows: the data, the points, the kernel, then the bandwidth or `n:` for Silverman's.
+fn _par_kde(): i64 {
+    var n = _par_in(0);
+    if (n < 0 || n > _PAR_DS_CAP || n + 1 >= _par_in_n) { return 0 - 1; }
+    _par_in_f64s(0, _par_ds_a);
+    var m = _par_in(n + 1);
+    if (m < 0 || m > _PAR_DS_CAP) { return 0 - 1; }
+    _par_in_f64s(n + 1, _par_ds_b);
+    var kk = n + m + 2;
+    var k = _par_in_kernel(kk);
+    if (k < 0) { return 0 - 1; }
+    var kd: PmnKernelDensity;
+    var e = 0;
+    if (load64(_par_in_k + (kk + 1) * 8) == 110) {
+        e = PmnKernelDensity_silverman(&kd, _par_ds_a, n, k);
+    } else {
+        var h: f64 = _par_in(kk + 1);
+        e = PmnKernelDensity_new(&kd, _par_ds_a, n, h, k);
+    }
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    var bw: f64 = kd.bandwidth;
+    _par_got_f(bw);
+    _par_got_seq(m);
+    var r = 1;
+    if (kd.evaluate_grid(_par_ds_b, m, _par_ds_o, _PAR_DS_CAP) != PMN_ERR_NONE) { r = 0 - 1; }
+    for (var j = 0; j < m; j = j + 1) { _par_got_f(load64(_par_ds_o + j * 8)); }
+    PmnKernelDensity_drop(&kd);
+    return r;
+}
+
+# `correlation_matrix` rows: the variables, each a slice; the p × p matrix row-major or the error.
+fn _par_corr(): i64 {
+    var recs[256];
+    var p = 0;
+    var k = 0;
+    var used = 0;
+    while (k < _par_in_n) {
+        if (load64(_par_in_k + k * 8) != 118 || p >= 16) { return 0 - 1; }
+        var n = _par_in(k);
+        if (n < 0 || used + n > _PAR_DS_CAP) { return 0 - 1; }
+        _par_in_f64s(k, _par_ds_a + used * 8);
+        store64(&recs + p * 16, _par_ds_a + used * 8);
+        store64(&recs + p * 16 + 8, n);
+        used = used + n;
+        p = p + 1;
+        k = k + 1 + n;
+    }
+    var e = pmn_correlation_matrix(&recs, p, _par_ds_o, _PAR_DS_CAP);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    _par_got_seq(p * p);
+    for (var j = 0; j < p * p; j = j + 1) { _par_got_f(load64(_par_ds_o + j * 8)); }
+    return 1;
+}
+
+fn _par_descriptive(fp, fl): i64 {
+    if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_o == 0) { _par_ds_o = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_a == 0 || _par_ds_b == 0 || _par_ds_o == 0) { return 0 - 1; }
+    if (_par_eq(fp, fl, "KernelDensity::evaluate_grid") == 1) { return _par_kde(); }
+    if (_par_eq(fp, fl, "descriptive::correlation_matrix") == 1) { return _par_corr(); }
     var n = _par_in(0);
     if (n < 0 || n > _PAR_DS_CAP) { return 0 - 1; }
     _par_in_f64s(0, _par_ds_a);
@@ -1801,6 +1959,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "math::regularized_upper_incomplete_gamma") == 1) { return 0; }
     if (_par_eq(fp, fl, "math::beta_inc") == 1) { return _par_c_beta_bound(); }     # T1 (part b5)
     if (_par_eq(fp, fl, "math::regularized_incomplete_beta") == 1) { return 0; }
+    if (_par_eq(fp, fl, "KernelDensity::evaluate_grid") == 1) { return 0; }   # exp and powf (M4 part a2)
     if (_par_eq(fp, fl, "Normal::pdf") == 1) { return 0; }      # exp (M3 part a1)
     if (_par_eq(fp, fl, "Normal::cdf") == 1) { return 0; }      # downstream of the T1 Φ (ADR 009 as amended)
     if (_par_eq(fp, fl, "Normal::sample") == 1) { return 0; }   # Box–Muller: ln and cos

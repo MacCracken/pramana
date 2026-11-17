@@ -894,3 +894,16 @@ column is `rust-old/benchmarks.md` (2026-11-14, this host, criterion's point est
   iteration, and the 80 KB copy took 134 µs of it (a word loop: 17 µs). With `_pmn_copy_words` it takes 182 µs. A
   partition with fewer stores (Wirth's for Dijkstra's three-way) took it from 348 to 290 µs before that.
 
+## M4 part a2: kernel density estimation (2026-11-16)
+
+`tests/descriptive.bcyr`'s fourth row, 1.3.0's `descriptive/kde_gaussian_200pts_1000eval` body: a Gaussian KDE of 200
+points (h = 0.5) evaluated at 1,000. Three pinned runs at a load average of 1.9–2.2.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `descriptive/kde_gaussian_200pts_1000eval` | 1,047.4 µs | 11,876–11,895 µs | 11.3× |
+
+The 200,000 kernel evaluations each take one exp. The correctly rounded exp costs about 46 ns here against glibc's
+5.7 ns (M1 part b1's record), so about 9.2 ms of the 11.9 ms is ADR 009's price for exp's last bit; the rest is the
+codegen's 3–4× on the arithmetic.
+

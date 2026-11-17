@@ -820,7 +820,15 @@ JSON_VALIDATED = {
     "Binomial": ([("n", "u64"), ("p", "f64")], lambda n, p: n % (1 << 64) != 0 and 0.0 <= p <= 1.0),
     "MultivariateNormal": ([("mean", "Vec<f64>"), ("covariance", "Vec<Vec<f64>>")],
                            lambda *vals: mvn_json_accepts(*vals)),
+    "KernelDensity": ([("data", "Vec<f64>"), ("bandwidth", "f64"), ("kernel", "Kernel")],
+                      lambda *vals: kde_json_accepts(*vals)),
 }
+
+
+def kde_json_accepts(*vals):
+    """KernelDensityRepr's fields as tokens, then `KernelDensity::new`'s verdict."""
+    n = int(vals[0][len("v:"):])
+    return kde_new(list(vals[1:1 + n]), vals[1 + n]) is None
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
     "PramanaError": (["InvalidParameter", "InvalidSample", "ConvergenceFailure", "DimensionMismatch",
@@ -3638,6 +3646,17 @@ def debug_text(fn, ins):
         return debug_struct("MultivariateNormal", [("mean", vec(mean, 1)), ("covariance", mat(rows)),
                                                    ("cholesky_l", mat(lrows)), ("log_det", rust_debug_f64(ld)),
                                                    ("dim", str(len(mean)))], alt)
+    if fn == "debug::Kernel":
+        name = ins[0].split(".", 1)[1]
+        if name not in KERNEL_NAMES:
+            raise ValueError(name)
+        return name
+    if fn == "debug::KernelDensity":
+        alt = ins[-1] == 1
+        n = int(ins[0][len("v:"):])
+        data, h, k = ins[1:1 + n], ins[1 + n], ins[2 + n].split(".", 1)[1]
+        return debug_struct("KernelDensity", [("data", rust_debug_list([rust_debug_f64(x) for x in data], alt, 1)),
+                                              ("bandwidth", rust_debug_f64(h)), ("kernel", k)], alt)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:
@@ -3840,6 +3859,109 @@ def ds_iqr(xs):
     return q if isinstance(q[0], str) else [q[2] - q[0]]
 
 
+# ── KDE and the correlation matrix (M4 part a2): descriptive.rs's Kernel, KernelDensity and correlation_matrix ──
+
+KERNEL_NAMES = ["Gaussian", "Epanechnikov", "Uniform", "Triangular"]
+
+
+def kde_kernel(L, k, u):
+    """1.3.0's `Kernel::evaluate`: the Gaussian on L's exp, over √(2π) (the correctly rounded √ of 2π, exact)."""
+    if k == "Gaussian":
+        return L.exp(-0.5 * u * u) / math.sqrt(2.0 * math.pi)
+    au = abs(u)
+    if not au <= 1.0:
+        return 0.0
+    if k == "Epanechnikov":
+        return 0.75 * (1.0 - u * u)
+    if k == "Uniform":
+        return 0.5
+    return 1.0 - au
+
+
+def kde_check_data(xs):
+    if not xs:
+        return "E:InvalidSample"
+    return "E:InvalidSample" if any(not math.isfinite(x) for x in xs) else None
+
+
+def kde_new(xs, h):
+    e = kde_check_data(xs)
+    if e:
+        return e
+    if not (math.isfinite(h) and h > 0.0):
+        return "E:InvalidParameter"
+    return None
+
+
+def kde_silverman_h(L, xs):
+    """1.3.0's Silverman bandwidth, or an error token."""
+    if len(xs) < 2:
+        return "E:InvalidSample"
+    e = kde_check_data(xs)
+    if e:
+        return e
+    s = r_sqrt(ds_variance(xs))
+    if s == 0.0:
+        return "E:InvalidSample"
+    q = ds_quartiles(xs)
+    iq = q[2] - q[0]
+    spread = sp_min(s, iq / 1.34) if iq > 0.0 else s
+    h = 0.9 * spread * L.pow(float(len(xs)), -0.2)
+    if not (math.isfinite(h) and h > 0.0):
+        return "E:ComputationError"
+    return h
+
+
+def kde_evaluate(L, xs, h, k, x):
+    s = -0.0
+    for xi in xs:
+        s += kde_kernel(L, k, fdiv(x - xi, h))
+    return s / (float(len(xs)) * h)
+
+
+def kde_model(L, sl, sc):
+    """`KernelDensity::evaluate_grid` (and `evaluate` at each point) after `new` or `silverman`: inputs the data, the
+    points, then the kernel (`e:Kernel.X`) and the bandwidth (`n:` for Silverman's); outputs the bandwidth and the
+    densities, or the constructor's error."""
+    xs, pts = sl[0], sl[1]
+    k = sc[0][len("e:Kernel."):]
+    if sc[1] == "n:":
+        h = kde_silverman_h(L, xs)
+        if isinstance(h, str):
+            return [h]
+    else:
+        h = sc[1]
+        e = kde_new(xs, h)
+        if e:
+            return [e]
+    return [h, f"v:{len(pts)}"] + [kde_evaluate(L, xs, h, k, x) for x in pts]
+
+
+def corr_model(L, sl, sc):
+    """`correlation_matrix(variables)`: the p × p matrix row-major, or the error, in 1.3.0's checks' order."""
+    p = len(sl)
+    if p < 2:
+        return ["E:InvalidSample"]
+    n = len(sl[0])
+    if n < 2:
+        return ["E:InvalidSample"]
+    if any(len(v) != n for v in sl):
+        return ["E:DimensionMismatch"]
+    means = [rsum(v) / float(n) for v in sl]
+    sds = [r_sqrt(rsum([(x - m) * (x - m) for x in v]) / float(n)) for v, m in zip(sl, means)]
+    out = [[0.0] * p for _ in range(p)]
+    for i in range(p):
+        out[i][i] = 1.0
+        for j in range(i + 1, p):
+            if sds[i] == 0.0 or sds[j] == 0.0:
+                r = 0.0
+            else:
+                cov = rsum([(a - means[i]) * (b - means[j]) for a, b in zip(sl[i], sl[j])]) / float(n)
+                r = fdiv(cov, sds[i] * sds[j])
+            out[i][j] = out[j][i] = r
+    return [f"v:{p * p}"] + [x for row in out for x in row]
+
+
 DESC = {  # name: model(L, slices, scalars) -> outputs
     "descriptive::sum": lambda L, s, r: [rsum(s[0])],
     "descriptive::mean": lambda L, s, r: [ds_mean(s[0])] if s[0] else ["E:InvalidSample"],
@@ -3855,7 +3977,11 @@ DESC = {  # name: model(L, slices, scalars) -> outputs
     "descriptive::min": lambda L, s, r: ds_reduce(s[0], sp_min),
     "descriptive::max": lambda L, s, r: ds_reduce(s[0], sp_max),
     "descriptive::range": lambda L, s, r: ds_range(s[0]),
+    # part a2
+    "KernelDensity::evaluate_grid": kde_model,
+    "descriptive::correlation_matrix": corr_model,
 }
+
 
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
 STATS_T1 = {}

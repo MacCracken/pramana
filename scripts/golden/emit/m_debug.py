@@ -5,7 +5,7 @@ validate.py's debug_text models the derive. Class A: the text."""
 from .grids import MAXF, MIN_POSITIVE, Rng
 from .models import V
 from .mvn_cases import mvn_cases, mvn_toks
-from .tsv import Module, e, f, from_bits, i, parsed, s
+from .tsv import Module, e, f, from_bits, i, parsed, s, v
 from . import m_fmt
 
 U64 = (1 << 64) - 1
@@ -85,4 +85,15 @@ def emit():
         both("debug::MultivariateNormal", mvn_toks(c))
     for x in m_fmt.inputs():
         m.row("debug::f64", "A", [f(x)], [s(V.rust_debug_f64(x))])
+    # M4 part a2: Kernel and KernelDensity
+    for k in ["Gaussian", "Epanechnikov", "Uniform", "Triangular"]:
+        both("debug::Kernel", [e("Kernel", k)])
+    g2 = Rng(0x5BE0CD19137E2179)
+    kdes = [([1.0, 2.0, 3.0], 0.5, "Gaussian"), ([0.0], 1.0, "Epanechnikov"), ([-0.0, 1e16], 9.999999999999999e-5,
+            "Uniform"), ([MAXF, from_bits(1)], 1e-300, "Triangular")]
+    for k in range(12):
+        kdes.append(([g2.signed_log_uniform(-20.0, 20.0) for _ in range(g2.int(1, 6))], g2.log_uniform(-10.0, 10.0),
+                     ["Gaussian", "Epanechnikov", "Uniform", "Triangular"][k % 4]))
+    for data, h, k in kdes:
+        both("debug::KernelDensity", [v(len(data))] + [f(x) for x in data] + [f(h), e("Kernel", k)])
     return m

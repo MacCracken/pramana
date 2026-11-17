@@ -895,6 +895,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **`_pmn_copy_words`** (ledger L15): the stdlib's `memcpy` moves one byte per iteration, 134 µs for the median's
     80 KB copy against 17 µs a word at a time. Every f64 array the library copies goes through it, MultivariateNormal's
     included; pramana joins the open cyrius issue with these numbers.
+- **M4 part a2: kernel density estimation and the correlation matrix** (port plan §7; `src/kde.cyr`). 1.3.0's
+  `Kernel` (four kernels, append-only), `KernelDensity` (owned, freelist-allocated with `_drop`; `new`, `silverman`,
+  `evaluate`, `evaluate_grid` into a caller buffer, Clone), their serde_json codecs through the validating constructor
+  and their derived Debug, and `correlation_matrix` into a caller buffer, all in Rust's operation order. The Gaussian
+  kernel and Silverman's n^(−1/5) are on the correctly rounded exp and pow (ADR 009). 1,212 more `descriptive` rows
+  (1,115 KDE grids: 34 data sets × the four kernels × eight bandwidths and Silverman's, at points across and beyond the
+  data and the specials; every refusal; 97 correlation matrices), 145 codec rows and 40 Debug rows. Every row passes on
+  the first replay, at 0 ulp, on x86_64 ELF, PE and aarch64; `descriptive.cr.tsv` holds the 3 KDE rows where glibc's
+  exp misrounds (by up to 3 ulp), and the port gives the correctly rounded value; 10 codec rows are ADR 007 row 16's
+  whole-document refusals. `json::Kernel` and `json::write::Kernel` now go through the port's own codec. Four mutants
+  fail 4 to 48 rows each. `tests/kde.tcyr` (43 checks) carries 1.3.0's KDE and correlation tests over.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

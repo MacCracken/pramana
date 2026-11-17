@@ -2,7 +2,9 @@
 # (rust-old/benches/benchmarks.rs), whose numbers are rust-old/benchmarks.md's (2026-11-14, this host; ADR 010):
 # - `descriptive/stats_10000`: mean, variance and std_dev of i·0.1 for i in 0..10⁴ (36,868 ns in Rust);
 # - `descriptive/median_10001`: the median of `scrambled(10001)`, (i·7919 + 13) mod 10007 / 10007 (18,435 ns);
-# - `descriptive/mode_10000`: the mode of ⌊500·scrambled(10⁴)⌋ (172,780 ns).
+# - `descriptive/mode_10000`: the mode of ⌊500·scrambled(10⁴)⌋ (172,780 ns);
+# - `descriptive/kde_gaussian_200pts_1000eval`: a Gaussian KDE of (i − 100)·0.05, i < 200, h = 0.5, at
+#   (i − 500)·0.01 for i < 1000 (1,047.4 µs; part a2).
 # Each row prints its result's bits, which the golden rows pin as Rust's. The record is
 # docs/benchmarks-rust-v-cyrius.md.
 
@@ -85,6 +87,29 @@ fn main(): i64 {
     bench_batch_stop(b3, 500);
     show("mode(⌊500·scrambled(10⁴)⌋)", mo);
     bench_report(b3);
+
+    for (var d = 0; d < 200; d = d + 1) {
+        var df: f64 = f64_from(d - 100);
+        var dv: f64 = df * 0.05;
+        store64(a + d * 8, dv);
+    }
+    var kd: PmnKernelDensity;
+    if (PmnKernelDensity_new(&kd, a, 200, 0.5, PMN_KERNEL_GAUSSIAN) != PMN_ERR_NONE) { return 1; }
+    var ks: f64 = 0.0;
+    var b4 = bench_new("kde_gaussian_200pts_1000eval");
+    bench_batch_start(b4);
+    for (var r4 = 0; r4 < 20; r4 = r4 + 1) {
+        for (var q = 0; q < 1000; q = q + 1) {
+            var qf: f64 = f64_from(q - 500);
+            var x: f64 = qf * 0.01;
+            var dens: f64 = kd.evaluate(x);
+            ks = ks + dens;
+        }
+    }
+    bench_batch_stop(b4, 20);
+    show("Σ densities over the 20 runs", ks);
+    bench_report(b4);
+    PmnKernelDensity_drop(&kd);
     return 0;
 }
 

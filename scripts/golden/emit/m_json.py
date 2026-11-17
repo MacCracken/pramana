@@ -663,4 +663,31 @@ def emit():
               [1.0, 30.0, from_bits(1), MAXF], "neg")
     binomial(m, g)
     multivariate_normal(m, g)
+    kernel_density(m, Rng(0x3C6EF372FE94F82B))
     return m
+
+def kde_toks(data, h, k):
+    return [v(len(data))] + [f(x) for x in data] + [f(h), e("Kernel", k)]
+
+
+def kernel_density(m, g):
+    """M4 part a2: KernelDensity's codec through `KernelDensity::new` (serde's try_from)."""
+    datas = B("[1.0,2.0,3.0]", "[1,2,3]", "[]", "[5]", "[1,null]", "[1e309]", "[\"1\"]", "null", "{}", "1", "[[1]]",
+              "[1,2,]", "[-0.0,0]", "[1.7976931348623157e308,5e-324]")
+    hs = B("0.5", "0", "-0.0", "-1", "1e309", "5e-324", "1.7976931348623157e308", "null", "\"0.5\"", "[0.5]", "true")
+    kernels = B('"Gaussian"', '"Epanechnikov"', '"Uniform"', '"Triangular"', '"gaussian"', '"Box"', "0", '{"Uniform":null}',
+                '{"Uniform":1}', "null", '["Gaussian"]', '""')
+    docs = struct_docs([("data", b"[1.0,2.0,3.0]"), ("bandwidth", b"0.5"), ("kernel", b'"Gaussian"')],
+                       [datas, hs, kernels])
+    docs += B('{"data":[1,2],"bandwidth":0.5,"kernel":"Gaussian","extra":[1]}', "[[1,2],0.5,\"Triangular\"]",
+              "[[1,2],0.5]", "[[1,2],0.5,\"Uniform\",1]", '{"data":[1,2],"bandwidth":0.5}', "[]")
+    cases = [([1.0, 2.0, 3.0], 0.5, "Gaussian"), ([0.0], 1.0, "Epanechnikov"), ([-0.0, 0.0], 5e-324, "Uniform"),
+             ([MAXF, -MAXF], MAXF, "Triangular")]
+    for k in range(20):
+        n = g.int(1, 9)
+        cases.append(([finite(g) for _ in range(n)], g.log_uniform(-30.0, 30.0), KERNELS[g.int(0, 3)]))
+    docs += [V.serde_write("KernelDensity", iter(parsed(kde_toks(*c)))) for c in cases]
+    for d in docs:
+        read(m, "json::KernelDensity", d)
+    for c in cases:
+        write(m, "KernelDensity", kde_toks(*c))
