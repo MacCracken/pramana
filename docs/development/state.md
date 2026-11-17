@@ -25,7 +25,7 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
 | M5 Regression, time series, Bayesian | ✅ **every part done; the gate passes** (port plan §7's parts a–d; port-parity §11). **Part a**: `src/regression.cyr` (linear, polynomial on hisab's MGS, ledger L5, logistic); golden `regression`, 562 rows, 264 codec and 48 Debug rows, at 0 ulp on three targets. **Part b**: `src/timeseries.cyr`; golden `timeseries`, 1,322 rows, 97 codec and 16 Debug rows, at 0 ulp on three targets. **Part c**: `src/bayesian.cyr`; golden `bayesian`, 2,005 rows, 97 codec and 10 Debug rows, at 0 ulp on three targets. **Part d**, the gate: NIST StRD's regression sets and r(1) replayed and measured, the soak's M5 group, surface parity |
 | M6 Markov chains, Monte Carlo | ✅ **every part done; the gate passes** (port plan §7's parts a–c; port-parity §12). **Part a** ✅: `src/markov.cyr` (MarkovChain, HiddenMarkovModel); golden `markov`, 2,884 rows, 226 codec and 20 Debug rows, at 0 ulp on three targets. **Part b** ✅: `src/monte_carlo.cyr` (integration, π, Metropolis–Hastings, Gibbs; ADR 007 row 18); golden `monte_carlo`, 1,608 rows (`monte_carlo.cr.tsv` 19), 174 codec and 18 Debug rows, at 0 ulp on three targets. **Part c**, the gate: the soak's M6 group, surface parity, every row at 0 ulp on three targets |
 | M7 soorat, ai | ✅ **every part done; the gate passes** (port plan §7's parts a–c; port-parity §13). **Part a** ✅: `src/soorat.cyr` (the five shapes, `HistogramData::from_data`); golden `soorat`, 363 rows, 465 codec and 20 Debug rows, at 0 ulp. **Part b** ✅: `src/ai.cyr` and `src/ai_sandhi.cyr` in `[lib.ai]` (StatQuery with 1.3.0's tool-less wire behavior, QueryResult, the five tools, Rust's float text); golden `ai`, 2,721 rows (`ai.ref.tsv` 13), 89 codec and 6 Debug rows, at 0 ulp. **Part c**, the gate: the soak's M7 group, a `[lib.ai]` consumer on three targets, surface parity, every row at 0 ulp on three targets |
-| M8 | not started |
+| M8 Release 2.0.0 | in progress (port plan §7's parts a–e). **Part a** ✅: the Rust-test ledger (`scripts/rust_test_ledger.py`, `docs/development/rust-test-ledger.md`): all 330 of 1.3.0's tests accounted for, 319 carried, 11 retired with the `oracle` feature; `tests/integration.tcyr` |
 
 ## Toolchain
 
@@ -106,6 +106,8 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
   - M5: `tests/regression.tcyr` (46), `tests/timeseries.tcyr` (45), `tests/bayesian.tcyr` (19);
   - M6: `tests/markov.tcyr` (110), `tests/monte_carlo.tcyr` (69);
   - M7: `tests/soorat.tcyr` (47), `tests/ai.tcyr` (40), `tests/ai_sandhi.tcyr` (2);
+  - M8: `tests/integration.tcyr` (35: 1.3.0's `tests/integration.rs` and its doc tests). The Rust-test ledger
+    (`docs/development/rust-test-ledger.md`) accounts for all 330 of 1.3.0's tests;
   - `tests/soak.tcyr` (48: every allocating path through M7, nothing taken), and the scaffold's
     `tests/pramana.{tcyr,bcyr,fcyr}` stubs.
 

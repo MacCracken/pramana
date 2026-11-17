@@ -1076,6 +1076,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **the `[lib.ai]` bundle:** a consumer of `dist/pramana-ai.cyr` that includes `lib/sandhi.cyr` builds and runs on
     the three targets, its query to a closed port refused as `ComputationError`;
   - **surface parity:** `integration/soorat` and `ai` are ported (374 items in fourteen modules, none pending).
+- **M8 part a: the Rust-test ledger** (port plan §7; `scripts/rust_test_ledger.py`,
+  `docs/development/rust-test-ledger.md`). It accounts for every test of 1.3.0 (330: the `#[test]`s of
+  `rust-old/src` and `rust-old/tests`, and the crate docs' three doc tests) by the Cyrius test file and groups that
+  carry it. 319 are carried over, each as the Rust test states it, and the 11 of `tests/oracle.rs` retire with the
+  `oracle` feature (ADR 010). `tests/integration.tcyr` (35 checks) carries 1.3.0's `tests/integration.rs` and its doc
+  tests over. The ledger's check runs in CI.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

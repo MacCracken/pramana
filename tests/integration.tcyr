@@ -1,0 +1,158 @@
+# integration.tcyr — 1.3.0's tests/integration.rs and its crate docs' three doc tests, carried over (M8 part a): the
+# cross-module checks, each as its Rust test states it, through the public API.
+
+include "tests/lib.cyr"
+
+fn near(x: f64, y: f64, tol: f64): i64 {
+    var d: f64 = x - y;
+    if (f64_abs(d) < tol) { return 1; }
+    return 0;
+}
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn u128_is(u: *PmnU128, lo): i64 {
+    if (u.hi == 0 && u.lo == lo) { return 1; }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var d = alloc(16 * 8);
+    for (var i = 0; i < 5; i = i + 1) { put(d, i, f64_from(i + 1)); }
+
+    test_group("1.3.0's integration tests");
+    var n: PmnNormal;
+    assert_eq(PmnNormal_new(&n, 0.0, 1.0), PMN_ERR_NONE, "N(0, 1)");
+    var tp: f64 = 2.0 * _PMN_F64_PI;
+    var sq: f64 = f64_sqrt(tp);
+    var want: f64 = 1.0 / sq;
+    var p0: f64 = n.pdf(0.0);
+    assert(near(p0, want, 0.0000000001) == 1, "normal_pdf_at_mean: 1/√(2π)");
+    var n5: PmnNormal;
+    assert_eq(PmnNormal_new(&n5, 5.0, 2.0), PMN_ERR_NONE, "N(5, 2)");
+    var c5: f64 = n5.cdf(5.0);
+    assert(near(c5, 0.5, 0.000001) == 1, "normal_cdf_at_mean: ½");
+    var t, v = pmn_mean(d, 5);
+    var m: f64 = v;
+    assert(t != Err && near(m, 3.0, 0.0000000001) == 1, "mean_of_1_to_5: 3");
+    t, v = pmn_median(d, 5);
+    var md: f64 = v;
+    assert(t != Err && near(md, 3.0, 0.0000000001) == 1, "median_of_1_to_5: 3");
+    var y = alloc(5 * 8);
+    for (var k = 0; k < 5; k = k + 1) { put(y, k, f64_from(2 * (k + 1) + 1)); }
+    var lm: PmnLinearModel;
+    assert_eq(pmn_linear_regression(&lm, d, 5, y, 5), PMN_ERR_NONE, "a fit of y = 2x + 1");
+    var sl: f64 = lm.slope;
+    var ic: f64 = lm.intercept;
+    var r2: f64 = lm.r_squared;
+    assert(near(sl, 2.0, 0.0000000001) == 1 && near(ic, 1.0, 0.0000000001) == 1 && near(r2, 1.0, 0.0000000001) == 1,
+        "linear_regression_recovers_line: slope 2, intercept 1, R² 1");
+    var u: PmnU128;
+    assert(pmn_factorial(10, &u) == PMN_ERR_NONE && u128_is(&u, 3628800) == 1, "factorial_10: 3,628,800");
+    assert(pmn_combinations(10, 3, &u) == PMN_ERR_NONE && u128_is(&u, 120) == 1, "combinations_10_choose_3: 120");
+    var tb, vb = pmn_bayes_theorem(0.01, 0.9, 0.1);
+    var post: f64 = vb;
+    var ex1: f64 = 0.9 * 0.01;
+    var ex: f64 = ex1 / 0.1;
+    assert(tb != Err && near(post, ex, 0.0000000001) == 1, "bayes_theorem_basic: P(B|A)·P(A)/P(B)");
+    var mat[32];
+    put(&mat, 0, 0.5);
+    put(&mat, 1, 0.3);
+    put(&mat, 2, 0.4);
+    put(&mat, 3, 0.6);
+    var ch: PmnMarkovChain;
+    assert_eq(PmnMarkovChain_new(&ch, &mat, 2, 2, 0), PMN_ERR_INVALID_PARAMETER,
+        "markov_chain_rows_must_sum_to_1: refused");
+    put(&mat, 0, 0.7);
+    assert_eq(PmnMarkovChain_new(&ch, &mat, 2, 2, 0), PMN_ERR_NONE, "and the valid one accepted");
+    PmnMarkovChain_drop(&ch);
+    var nn: PmnNormal;
+    assert_eq(PmnNormal_new(&nn, 2.5, 1.3), PMN_ERR_NONE, "N(2.5, 1.3)");
+    var sb = str_builder_new();
+    assert_eq(nn.to_json(sb), PMN_ERR_NONE, "serialized");
+    var n2: PmnNormal;
+    assert_eq(PmnNormal_from_json(&n2, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var a1: f64 = nn.mean;
+    var a2: f64 = n2.mean;
+    var s1: f64 = nn.std_dev;
+    var s2: f64 = n2.std_dev;
+    assert(a1 == a2 && s1 == s2, "serde_roundtrip_normal: the same mean and std_dev");
+    put(&mat, 0, 0.6);
+    put(&mat, 1, 0.4);
+    put(&mat, 2, 0.3);
+    put(&mat, 3, 0.7);
+    assert_eq(PmnMarkovChain_new(&ch, &mat, 2, 2, 0), PMN_ERR_NONE, "[[0.6, 0.4], [0.3, 0.7]]");
+    var sb2 = str_builder_new();
+    assert_eq(ch.to_json(sb2), PMN_ERR_NONE, "serialized");
+    var ch2: PmnMarkovChain;
+    assert_eq(PmnMarkovChain_from_json(&ch2, load64(sb2), load64(sb2 + 8)), PMN_ERR_NONE, "read back");
+    var same = 1;
+    for (var w = 0; w < 4; w = w + 1) {
+        if (load64(ch.transition_matrix() + w * 8) != load64(ch2.transition_matrix() + w * 8)) { same = 0; }
+    }
+    assert(same == 1 && ch.state == ch2.state, "serde_roundtrip_markov: the same matrix and state");
+    PmnMarkovChain_drop(&ch2);
+    PmnMarkovChain_drop(&ch);
+    var g: PmnSimpleRng;
+    PmnSimpleRng_new(&g, 42);
+    var tq, vq = pmn_monte_carlo_pi(100000, &g);
+    var pi: f64 = vq;
+    assert(tq != Err && near(pi, _PMN_F64_PI, 0.1) == 1, "monte_carlo_pi_accuracy: within 0.1 of π");
+    var xs = alloc(10000 * 8);
+    PmnSimpleRng_new(&g, 12345);
+    for (var s = 0; s < 10000; s = s + 1) {
+        var z: f64 = n.sample(&g);
+        put(xs, s, z);
+    }
+    var tm, vm = pmn_mean(xs, 10000);
+    var sm: f64 = vm;
+    assert(tm != Err && f64_abs(sm) < 0.1, "normal_sample_distribution: a mean near 0");
+    var te1, ve1 = pmn_mean(d, 0);
+    var te2, ve2 = pmn_median(d, 0);
+    var te3, ve3 = pmn_variance(d, 0);
+    var te4, ve4 = pmn_std_dev(d, 0);
+    assert(te1 == Err && te2 == Err && te3 == Err && te4 == Err, "descriptive_empty_errors: all four refuse");
+    assert(pmn_factorial(0, &u) == PMN_ERR_NONE && u128_is(&u, 1) == 1, "combinatorics_edge_cases: 0! = 1");
+    assert(pmn_factorial(1, &u) == PMN_ERR_NONE && u128_is(&u, 1) == 1, "1! = 1");
+    assert(pmn_combinations(5, 0, &u) == PMN_ERR_NONE && u128_is(&u, 1) == 1, "C(5, 0) = 1");
+    assert(pmn_combinations(5, 5, &u) == PMN_ERR_NONE && u128_is(&u, 1) == 1, "C(5, 5) = 1");
+    assert(pmn_permutations(5, 0, &u) == PMN_ERR_NONE && u128_is(&u, 1) == 1, "P(5, 0) = 1");
+
+    test_group("1.3.0's doc tests (the crate docs: Quick Start, Hypothesis Testing, Monte Carlo)");
+    var tq1, vq1 = pmn_mean(d, 5);
+    var qm: f64 = vq1;
+    assert(tq1 != Err && near(qm, 3.0, 0.0000000001) == 1, "Quick Start: the mean, 3");
+    var tq2, vq2 = pmn_std_dev(d, 5);
+    var qs: f64 = vq2;
+    var nq: PmnNormal;
+    assert(tq2 != Err && PmnNormal_new(&nq, qm, qs) == PMN_ERR_NONE, "a Normal fitted to it");
+    PmnSimpleRng_new(&g, 42);
+    var qx: f64 = nq.sample(&g);
+    assert(_pmn_is_finite(qx) == 1, "its draw is finite");
+    var hd = alloc(8 * 8);
+    put(hd, 0, 10.0);
+    put(hd, 1, 10.1);
+    put(hd, 2, 9.9);
+    put(hd, 3, 10.2);
+    put(hd, 4, 9.8);
+    put(hd, 5, 10.0);
+    put(hd, 6, 10.1);
+    put(hd, 7, 9.9);
+    var tr: PmnTestResult;
+    assert_eq(pmn_t_test_one_sample(&tr, hd, 8, 0.0, 0.05), PMN_ERR_NONE, "Hypothesis Testing: a one-sample t-test");
+    assert(tr.reject == 1, "the mean clearly differs from 0");
+    PmnTestResult_drop(&tr);
+    PmnSimpleRng_new(&g, 42);
+    var tp2, vp2 = pmn_monte_carlo_pi(100000, &g);
+    var p2: f64 = vp2;
+    assert(tp2 != Err && near(p2, _PMN_F64_PI, 0.1) == 1, "Monte Carlo: π within 0.1");
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

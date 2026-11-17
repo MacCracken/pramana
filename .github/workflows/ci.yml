@@ -76,6 +76,9 @@ jobs:
       - name: Surface parity (every public item of a ported 1.3.0 module has its port)
         run: python3 -I -B scripts/surface_parity.py --check
 
+      - name: Rust-test ledger (every 1.3.0 test carried over or retired, docs/development/rust-test-ledger.md current)
+        run: python3 -I -B scripts/rust_test_ledger.py --check
+
       - name: Bundle current (dist/pramana.cyr is what distlib writes from [lib])
         run: cyrius distlib --check
 

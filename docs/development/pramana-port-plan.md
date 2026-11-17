@@ -58,7 +58,7 @@
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
 > begun:** parts a–d are done: **M5 is complete.** **M6 has begun:** parts a (the Markov chains and HMMs), b (Monte Carlo) and c, the gate, are done: **M6 is
 > complete.** **M7 has begun:** parts a (the soorat shapes), b (the AI client) and c, the gate, are done: **M7 is complete.**
-> M8, the release, is next.
+> **M8 has begun:** part a (the Rust-test ledger) is done.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1313,6 +1313,19 @@ Rust's operation order with its refusals, each type with its codec and Debug; go
 - **c:** M7's gate: the soak, surface parity, the `[lib.ai]` bundle, three targets. The soak's M7 group takes nothing
   (the AI client's text builders moved onto pool claims); a `[lib.ai]` consumer runs on three targets; both modules
   ported in surface parity; every row at 0 ulp on three targets ✅. **M7 is complete.**
+
+**M8's parts** (set at its start, 2026-11-17, under ADR 010), the release of 2.0.0:
+- **a:** the Rust-test ledger: `scripts/rust_test_ledger.py` accounts for every test of 1.3.0 (330: the `#[test]`s
+  and the crate docs' three doc tests) by the Cyrius test file and groups that carry it, and writes
+  `docs/development/rust-test-ledger.md`; 1.3.0's `tests/integration.rs` and its doc tests carried into
+  `tests/integration.tcyr`; the ledger's check in CI. 319 carried, 11 (the `oracle` feature's) retired by ADR 010 ✅;
+- **b:** the benchmark record: the eighteen criterion bodies no part ran as written, in `tests/criterion.bcyr`, and
+  the 34 rows in both columns;
+- **c:** the README, `docs/guides/migration-2.0.md` (every ADR 007 row), the CHANGELOG's *Breaking* section, and the
+  examples in `docs/examples/`, compiled and run;
+- **d:** the fuzz harness for the JSON readers: each type's decoder on mutated documents, refusing without a crash,
+  deterministic, every claim released;
+- **e:** the release gate: the whole corpus on three targets, every check, VERSION 2.0.0.
 
 **Order:** M0 → M1 → M2 → … → M8.
 - The special functions come first because almost everything else calls them, and T1 must land before any downstream
