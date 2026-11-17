@@ -18276,3 +18276,852 @@ fn pmn_naive_bayes_classify(features, nf, priors, nc, rows, nr): Result {
     }
     return Ok(best);
 }
+
+# --- markov.cyr ---
+
+# markov.cyr — Rust 1.3.0's Markov chains and hidden Markov models (src/markov.rs; port plan §4.1, D5, D7, D11, D12;
+# M6 part a): `MarkovChain` (`new`, `num_states`, `step`, `simulate`, `steady_state`) and `HiddenMarkovModel` (`new`,
+# `num_states`, `num_symbols`, `forward_log_likelihood`, `viterbi`, `baum_welch`), their serde_json codecs through the
+# validating constructors and their derived Debug.
+#
+# Both own their matrices (D11): the struct in caller storage, the matrices in one freelist block, freed by `_drop`;
+# a dropped one refuses every call. Rust's `Vec<Vec<f64>>` matrices are flat row-major arrays with their rows and
+# columns (§8.3); a ragged JSON matrix reads as PMN_ERR_DESERIALIZE, as Rust's constructor refuses it. Trajectories,
+# stationary distributions and Viterbi paths go into caller buffers. `step` and `simulate` are generic over
+# `R: PmnRng` (D7). Every value is 1.3.0's in its operation order: the forward and backward passes scaled per step
+# (Rabiner), the logarithms the correctly rounded ln (ADR 009), Viterbi's final argmax the last of equal maxima (Rust's
+# `max_by` on `total_cmp`). Observations are usize words: one at or past 2^63 reads negative and is out of range.
+
+# Rust's `validate_stochastic_row(row)`: PMN_ERR_INVALID_PARAMETER for a non-finite or negative entry, then for a sum
+# (from −0.0) more than 1e-6 from 1.
+#must_use
+fn _pmn_mk_row_ok(row, n): i64 {
+    for (var j = 0; j < n; j = j + 1) {
+        var v: f64 = load64(row + j * 8);
+        if (_pmn_is_finite(v) == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        if (v < 0.0) { return PMN_ERR_INVALID_PARAMETER; }
+    }
+    var s: f64 = pmn_sum(row, n);
+    var d: f64 = s - 1.0;
+    var ad: f64 = f64_abs(d);
+    if (ad > 0.000001) { return PMN_ERR_INVALID_PARAMETER; }
+    return PMN_ERR_NONE;
+}
+
+# ── MarkovChain ───────────────────────────────────────────────────────────────────────────────────
+
+# Rust's `MarkovChain`: the n × n row-stochastic transition matrix (in an owned block) and the current state.
+struct PmnMarkovChain {
+    n;
+    tm;
+    state;
+}
+
+# Rust's `MarkovChain::new(transition_matrix, initial_state)`, the rows × cols matrix at tm (row-major) copied into
+# out's own block (caller storage, D11). PMN_ERR_INVALID_PARAMETER, in Rust's order, for no rows, a row of other than
+# rows entries (the matrix isn't square), a row that isn't a distribution (non-finite, negative, or not summing to 1
+# within 1e-6), or an initial state out of range (a word at or past 2^63 is); and for a null buffer or negative count;
+# PMN_ERR_OUT_OF_MEMORY when the block can't be had. On a refusal out is untouched.
+#must_use
+fn PmnMarkovChain_new(out: *PmnMarkovChain, tm, rows, cols, initial_state): i64 {
+    if (out == 0 || rows < 0 || cols < 0 || (tm == 0 && rows > 0 && cols > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (rows == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (cols != rows || rows > _PMN_LINALG_MAX_N) { return PMN_ERR_INVALID_PARAMETER; }
+    var n = rows;
+    for (var i = 0; i < n; i = i + 1) {
+        if (_pmn_mk_row_ok(tm + i * n * 8, n) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    }
+    if (initial_state < 0 || initial_state >= n) { return PMN_ERR_INVALID_PARAMETER; }
+    var blk = fl_alloc(n * n * 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    _pmn_copy_words(blk, tm, n * n);
+    out.n = n;
+    out.tm = blk;
+    out.state = initial_state;
+    return PMN_ERR_NONE;
+}
+
+# Rust's derived Clone: a new block with src's matrix, and its state. PMN_ERR_INVALID_PARAMETER for a null or dropped
+# src, a null out or out overlapping src; PMN_ERR_OUT_OF_MEMORY when the block can't be had. Drop each one.
+#must_use
+fn PmnMarkovChain_clone(out: *PmnMarkovChain, src: *PmnMarkovChain): i64 {
+    if (out == 0 || src == 0 || src.tm == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 24, src, 24) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var n = src.n;
+    var blk = fl_alloc(n * n * 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    _pmn_copy_words(blk, src.tm, n * n);
+    out.n = n;
+    out.tm = blk;
+    out.state = src.state;
+    return PMN_ERR_NONE;
+}
+
+# Frees c's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null c.
+fn PmnMarkovChain_drop(c: *PmnMarkovChain): i64 {
+    if (c == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (c.tm != 0) { fl_free(c.tm); }
+    c.tm = 0;
+    c.n = 0;
+    return PMN_ERR_NONE;
+}
+
+impl PmnMarkovChain {
+    # Rust's `num_states()`: n, or 0 for a dropped one.
+    #must_use
+    fn num_states(self): i64 {
+        if (self == 0 || self.tm == 0) { return 0; }
+        return self.n;
+    }
+
+    # The transition matrix (borrowed, n × n row-major), or 0 for a dropped one.
+    #must_use
+    fn transition_matrix(self): i64 {
+        if (self == 0) { return 0; }
+        return self.tm;
+    }
+
+    # Rust's `step(rng)`: the next state, the first j with r < Σ_(k ≤ j) P(k | state) (the cumulative sum from +0.0, as
+    # written), r one draw; when rounding leaves the row's sum below r, the last state with P > 0. A state set out of
+    # range stays where it is, as Rust's, with no draw; so does a dropped chain (−1 for a null one).
+    fn step<R: PmnRng>(self, rng: *R): i64 {
+        if (self == 0) { return 0 - 1; }
+        if (self.tm == 0) { return self.state; }
+        var n = self.n;
+        var st = self.state;
+        if (st < 0 || st >= n) { return st; }
+        var row = self.tm + st * n * 8;
+        var r: f64 = rng.next_f64();
+        var cum: f64 = 0.0;
+        for (var j = 0; j < n; j = j + 1) {
+            var p: f64 = load64(row + j * 8);
+            cum = cum + p;
+            if (r < cum) {
+                self.state = j;
+                return j;
+            }
+        }
+        var k = n - 1;
+        while (k >= 0) {
+            var q: f64 = load64(row + k * 8);
+            if (q > 0.0) {
+                self.state = k;
+                return k;
+            }
+            k = k - 1;
+        }
+        return self.state;
+    }
+
+    # Rust's `simulate(steps, rng)`: the state, then each of steps steps' states, into out[0, steps + 1) (cap ≥
+    # steps + 1, D11). PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER for a dropped self, a null out, a negative steps, cap
+    # too small, or out overlapping the chain or its matrix.
+    #must_use
+    fn simulate<R: PmnRng>(self, steps, rng: *R, out, cap): i64 {
+        if (self == 0 || self.tm == 0 || out == 0 || steps < 0 || cap < 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (steps > cap - 1) { return PMN_ERR_INVALID_PARAMETER; }
+        var on = (steps + 1) * 8;
+        if (_pmn_linalg_overlaps(out, on, self.tm, self.n * self.n * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(out, on, self, 24) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        store64(out, self.state);
+        for (var i = 0; i < steps; i = i + 1) {
+            self.step(rng);
+            store64(out + (i + 1) * 8, self.state);
+        }
+        return PMN_ERR_NONE;
+    }
+
+    # Rust's `steady_state()`: power iteration from the uniform distribution, into out[0, n) (cap ≥ n). Each step
+    # next = πP (each next_j from +0.0, the rows in order); the residual Σ|π − next| from −0.0; below 1e-10 the result
+    # is next normalized by its sum (when positive). Until then, a residual not below 0.999 times the last one counts a
+    # stall, and 8 in a row switch to the lazy chain π ← (π + πP)/2 for good; otherwise π ← next. PMN_ERR_NONE;
+    # PMN_ERR_CONVERGENCE_FAILURE after 10⁴ steps; PMN_ERR_INVALID_PARAMETER for a dropped self, a null out, cap < n
+    # or out overlapping the matrix; PMN_ERR_OUT_OF_MEMORY when the scratch (2n f64s) can't be had.
+    #must_use
+    fn steady_state(self, out, cap): i64 {
+        if (self == 0 || self.tm == 0 || out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var n = self.n;
+        if (cap < n) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(out, n * 8, self.tm, n * n * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        var s, slot = _pmn_scratch_take(2 * n * 8);
+        if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+        var pi = s;
+        var nx = s + n * 8;
+        var nf: f64 = f64_from(n);
+        var u: f64 = 1.0 / nf;
+        for (var i = 0; i < n; i = i + 1) { store64(pi + i * 8, u); }
+        var lazy = 0;
+        var prev: f64 = _PMN_F64_INFINITY;
+        var stalled = 0;
+        for (var it = 0; it < 10000; it = it + 1) {
+            for (var z = 0; z < n; z = z + 1) { store64(nx + z * 8, 0.0); }
+            for (var a = 0; a < n; a = a + 1) {
+                var pa: f64 = load64(pi + a * 8);
+                var row = self.tm + a * n * 8;
+                for (var b = 0; b < n; b = b + 1) {
+                    var p: f64 = load64(row + b * 8);
+                    var nb: f64 = load64(nx + b * 8);
+                    var t: f64 = pa * p;
+                    var nv: f64 = nb + t;
+                    store64(nx + b * 8, nv);
+                }
+            }
+            var res: f64 = -0.0;
+            for (var c = 0; c < n; c = c + 1) {
+                var x: f64 = load64(pi + c * 8);
+                var y: f64 = load64(nx + c * 8);
+                var d: f64 = x - y;
+                var ad: f64 = f64_abs(d);
+                res = res + ad;
+            }
+            if (res < 0.0000000001) {
+                var total: f64 = pmn_sum(nx, n);
+                for (var k = 0; k < n; k = k + 1) {
+                    var v: f64 = load64(nx + k * 8);
+                    if (total > 0.0) { v = v / total; }
+                    store64(out + k * 8, v);
+                }
+                _pmn_scratch_give(s, slot);
+                return PMN_ERR_NONE;
+            }
+            if (lazy == 0) {
+                var lim: f64 = 0.999 * prev;
+                if (res >= lim) { stalled = stalled + 1; } else { stalled = 0; }
+                if (stalled >= _PMN_MARKOV_STEADY_STATE_STALL_LIMIT) { lazy = 1; }
+                prev = res;
+            }
+            if (lazy == 1) {
+                for (var q = 0; q < n; q = q + 1) {
+                    var pq: f64 = load64(pi + q * 8);
+                    var nq: f64 = load64(nx + q * 8);
+                    var sm: f64 = pq + nq;
+                    var hv: f64 = 0.5 * sm;
+                    store64(pi + q * 8, hv);
+                }
+            } else {
+                var tmp = pi;
+                pi = nx;
+                nx = tmp;
+            }
+        }
+        _pmn_scratch_give(s, slot);
+        return PMN_ERR_CONVERGENCE_FAILURE;
+    }
+
+    # Appends Rust's derived Debug (D12): `MarkovChain { transition_matrix: [[..], ..], state: k }`, or the pretty form.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.tm == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "MarkovChain", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "transition_matrix", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_mat_f64(sb, self.tm, self.n, self.n, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "state", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.state); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"transition_matrix":[[..],..],"state":k}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.tm == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_w_key(sb, "transition_matrix", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_mat_f64(sb, self.tm, self.n, self.n); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "state", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_u64(sb, self.state); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+# A Vec<Vec<f64>> field read whole into pool scratch: (copy, slot), its rows and columns in dims[0, 2) (16 bytes, the
+# caller's); (0, the error code) on a refusal, a ragged matrix among them (every 1.3.0 constructor here refuses one).
+fn _pmn_mk_mat_node(v, dims): (i64, i64) {
+    var sh[24];
+    var e = _pmn_json_mat_shape(v, &sh);
+    if (e != PMN_ERR_NONE) { return (0, PMN_ERR_DESERIALIZE); }
+    var rows = load64(&sh);
+    var cols = load64(&sh + 8);
+    if (load64(&sh + 16) == 1) { return (0, PMN_ERR_DESERIALIZE); }
+    var s, slot = _pmn_scratch_take(rows * cols * 8 + 8);
+    if (s == 0) { return (0, PMN_ERR_OUT_OF_MEMORY); }
+    if (_pmn_json_mat_f64(v, s, rows, cols) != PMN_ERR_NONE) {
+        _pmn_scratch_give(s, slot);
+        return (0, PMN_ERR_DESERIALIZE);
+    }
+    store64(dims, rows);
+    store64(dims + 8, cols);
+    return (s, slot);
+}
+
+fn _pmn_mk_from_root(root, out: *PmnMarkovChain): i64 {
+    var names[16];
+    store64(&names, "transition_matrix");
+    store64(&names + 8, "state");
+    var sl[16];
+    var e = _pmn_json_struct(root, &names, 2, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var st[8];
+    var dm[16];
+    var m, slot = _pmn_mk_mat_node(load64(&sl), &dm);
+    if (m == 0) { return slot; }
+    e = PMN_ERR_NONE;
+    if (_pmn_json_u64(load64(&sl + 8), &st) != PMN_ERR_NONE) { e = PMN_ERR_DESERIALIZE; }
+    if (e == PMN_ERR_NONE) { e = PmnMarkovChain_new(out, m, load64(&dm), load64(&dm + 8), load64(&st)); }
+    _pmn_scratch_give(m, slot);
+    if (e == PMN_ERR_OUT_OF_MEMORY) { return e; }
+    if (e != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a MarkovChain document, buf[0, len), into out (caller storage, owning a new block: drop it): PMN_ERR_NONE,
+# PMN_ERR_DESERIALIZE for any document serde_json refuses (one `MarkovChain::new` refuses included), or
+# PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnMarkovChain_from_json(out: *PmnMarkovChain, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_mk_from_root, out);
+}
+
+# ── HiddenMarkovModel ─────────────────────────────────────────────────────────────────────────────
+
+# Rust's `HiddenMarkovModel`: n hidden states and m symbols; one owned block holding the transition matrix A (n × n),
+# the emission matrix B (n × m) and the initial distribution π (n), at ta, eb and ip.
+struct PmnHiddenMarkovModel {
+    n;
+    m;
+    buf;
+    ta;
+    eb;
+    ip;
+}
+
+#must_use
+fn _pmn_hmm_alloc(out: *PmnHiddenMarkovModel, n, m): i64 {
+    var blk = fl_alloc((n * n + n * m + n) * 8);
+    if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    out.n = n;
+    out.m = m;
+    out.buf = blk;
+    out.ta = blk;
+    out.eb = blk + n * n * 8;
+    out.ip = out.eb + n * m * 8;
+    return PMN_ERR_NONE;
+}
+
+# Rust's `HiddenMarkovModel::new(transition, emission, initial)`: A as tr × tc, B as er × ec (row-major), π[0, n),
+# copied into out's own block (caller storage, D11). In Rust's order: PMN_ERR_INVALID_PARAMETER for an empty π or one
+# that isn't a distribution; PMN_ERR_DIMENSION_MISMATCH for A of other than n rows, then of other than n columns,
+# PMN_ERR_INVALID_PARAMETER for a row of A that isn't a distribution; PMN_ERR_DIMENSION_MISMATCH for B of other than n
+# rows; PMN_ERR_INVALID_PARAMETER for no symbols or a row of B that isn't a distribution. PMN_ERR_INVALID_PARAMETER
+# first for a null buffer or negative count; PMN_ERR_OUT_OF_MEMORY when the block can't be had.
+#must_use
+fn PmnHiddenMarkovModel_new(out: *PmnHiddenMarkovModel, ta, tr, tc, eb, er, ec, ip, n): i64 {
+    if (out == 0 || tr < 0 || tc < 0 || er < 0 || ec < 0 || n < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if ((ta == 0 && tr * tc > 0) || (eb == 0 && er * ec > 0) || (ip == 0 && n > 0)) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
+    if (n == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_mk_row_ok(ip, n) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    if (tr != n) { return PMN_ERR_DIMENSION_MISMATCH; }
+    if (tc != n) { return PMN_ERR_DIMENSION_MISMATCH; }
+    if (n > _PMN_LINALG_MAX_N) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var i = 0; i < n; i = i + 1) {
+        if (_pmn_mk_row_ok(ta + i * n * 8, n) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    }
+    if (er != n) { return PMN_ERR_DIMENSION_MISMATCH; }
+    var m = ec;
+    if (m == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    for (var k = 0; k < n; k = k + 1) {
+        if (_pmn_mk_row_ok(eb + k * m * 8, m) != PMN_ERR_NONE) { return PMN_ERR_INVALID_PARAMETER; }
+    }
+    var tmp: PmnHiddenMarkovModel;
+    var e = _pmn_hmm_alloc(&tmp, n, m);
+    if (e != PMN_ERR_NONE) { return e; }
+    _pmn_copy_words(tmp.ta, ta, n * n);
+    _pmn_copy_words(tmp.eb, eb, n * m);
+    _pmn_copy_words(tmp.ip, ip, n);
+    out.n = n;
+    out.m = m;
+    out.buf = tmp.buf;
+    out.ta = tmp.ta;
+    out.eb = tmp.eb;
+    out.ip = tmp.ip;
+    return PMN_ERR_NONE;
+}
+
+# Rust's derived Clone. PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out or out overlapping src;
+# PMN_ERR_OUT_OF_MEMORY when the block can't be had. Drop each one.
+#must_use
+fn PmnHiddenMarkovModel_clone(out: *PmnHiddenMarkovModel, src: *PmnHiddenMarkovModel): i64 {
+    if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(out, 48, src, 48) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    var tmp: PmnHiddenMarkovModel;
+    var e = _pmn_hmm_alloc(&tmp, src.n, src.m);
+    if (e != PMN_ERR_NONE) { return e; }
+    _pmn_copy_words(tmp.buf, src.buf, src.n * src.n + src.n * src.m + src.n);
+    out.n = tmp.n;
+    out.m = tmp.m;
+    out.buf = tmp.buf;
+    out.ta = tmp.ta;
+    out.eb = tmp.eb;
+    out.ip = tmp.ip;
+    return PMN_ERR_NONE;
+}
+
+# Frees h's block and marks it dropped. PMN_ERR_NONE, a dropped one included; PMN_ERR_INVALID_PARAMETER for a null h.
+fn PmnHiddenMarkovModel_drop(h: *PmnHiddenMarkovModel): i64 {
+    if (h == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (h.buf != 0) { fl_free(h.buf); }
+    h.buf = 0;
+    h.n = 0;
+    h.m = 0;
+    return PMN_ERR_NONE;
+}
+
+# Rust's private `check_inputs(observations)`: PMN_ERR_INVALID_SAMPLE for none, or a symbol out of range (unsigned).
+#must_use
+fn _pmn_hmm_check(h: *PmnHiddenMarkovModel, obs, t): i64 {
+    if (t < 0 || (obs == 0 && t > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (t == 0) { return PMN_ERR_INVALID_SAMPLE; }
+    for (var i = 0; i < t; i = i + 1) {
+        var o = load64(obs + i * 8);
+        if (o < 0 || o >= h.m) { return PMN_ERR_INVALID_SAMPLE; }
+    }
+    return PMN_ERR_NONE;
+}
+
+# Rust's private `forward_scaled(observations)` into alpha (t × n) and scales (t): α₀(i) = πᵢ·Bᵢ(o₀); αₜ(j) =
+# (Σᵢ αₜ₋₁(i)·Aᵢⱼ, from −0.0)·Bⱼ(oₜ); each row's scale its sum from −0.0, and the row times 1/scale when it is positive.
+fn _pmn_hmm_forward(h: *PmnHiddenMarkovModel, obs, t, alpha, scales): i64 {
+    var n = h.n;
+    var m = h.m;
+    for (var s = 0; s < t; s = s + 1) {
+        var o = load64(obs + s * 8);
+        var cur = alpha + s * n * 8;
+        if (s == 0) {
+            for (var i = 0; i < n; i = i + 1) {
+                var pi: f64 = load64(h.ip + i * 8);
+                var bi: f64 = load64(h.eb + (i * m + o) * 8);
+                var a0: f64 = pi * bi;
+                store64(cur + i * 8, a0);
+            }
+        } else {
+            var prev = alpha + (s - 1) * n * 8;
+            for (var j = 0; j < n; j = j + 1) {
+                var sum: f64 = -0.0;
+                for (var i2 = 0; i2 < n; i2 = i2 + 1) {
+                    var ap: f64 = load64(prev + i2 * 8);
+                    var aij: f64 = load64(h.ta + (i2 * n + j) * 8);
+                    var p: f64 = ap * aij;
+                    sum = sum + p;
+                }
+                var bj: f64 = load64(h.eb + (j * m + o) * 8);
+                var aj: f64 = sum * bj;
+                store64(cur + j * 8, aj);
+            }
+        }
+        var sc: f64 = pmn_sum(cur, n);
+        store64(scales + s * 8, sc);
+        if (sc > 0.0) {
+            var inv: f64 = 1.0 / sc;
+            for (var k = 0; k < n; k = k + 1) {
+                var v: f64 = load64(cur + k * 8);
+                var w: f64 = v * inv;
+                store64(cur + k * 8, w);
+            }
+        }
+    }
+    return 0;
+}
+
+# Rust's `ln` of a probability in Viterbi: ln p for p > 0, else −∞.
+#must_use
+fn _pmn_safe_ln(p: f64): f64 {
+    if (p > 0.0) {
+        var r: f64 = _pmn_ln(p);
+        return r;
+    }
+    var ninf: f64 = _PMN_F64_NEG_INFINITY;
+    return ninf;
+}
+
+# ξₜ(i, j) ∝ α̂ₜ(i)·Aᵢⱼ·Bⱼ(oₜ₊₁)·β̂ₜ₊₁(j), multiplied left to right, as Rust's closure.
+#must_use
+fn _pmn_hmm_xi(h: *PmnHiddenMarkovModel, alpha, beta, t, i, j, on): f64 {
+    var n = h.n;
+    var a: f64 = load64(alpha + (t * n + i) * 8);
+    var aij: f64 = load64(h.ta + (i * n + j) * 8);
+    var b: f64 = load64(h.eb + (j * h.m + on) * 8);
+    var bn: f64 = load64(beta + ((t + 1) * n + j) * 8);
+    var p1: f64 = a * aij;
+    var p2: f64 = p1 * b;
+    var p3: f64 = p2 * bn;
+    return p3;
+}
+
+impl PmnHiddenMarkovModel {
+    # Rust's `num_states()`: n, or 0 for a dropped one.
+    #must_use
+    fn num_states(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.n;
+    }
+
+    # Rust's `num_symbols()`: m, or 0 for a dropped one.
+    #must_use
+    fn num_symbols(self): i64 {
+        if (self == 0 || self.buf == 0) { return 0; }
+        return self.m;
+    }
+
+    # The transition matrix A (borrowed, n × n), the emission matrix B (n × m) and the initial distribution π (n).
+    #must_use
+    fn transition(self): i64 {
+        if (self == 0) { return 0; }
+        return self.ta;
+    }
+
+    #must_use
+    fn emission(self): i64 {
+        if (self == 0) { return 0; }
+        return self.eb;
+    }
+
+    #must_use
+    fn initial(self): i64 {
+        if (self == 0) { return 0; }
+        return self.ip;
+    }
+
+    # Rust's `forward_log_likelihood(observations)`: Ok(Σ ln cₜ from −0.0) over the scaled forward pass's scales, or
+    # Ok(−∞) when any is 0. Err(PMN_ERR_INVALID_SAMPLE) for no observations or a symbol out of range;
+    # Err(PMN_ERR_INVALID_PARAMETER) for a dropped self or an invalid slice; Err(PMN_ERR_OUT_OF_MEMORY) when the
+    # scratch can't be had.
+    #must_use
+    fn forward_log_likelihood(self, obs, t): Result {
+        if (self == 0 || self.buf == 0) { return Err(PMN_ERR_INVALID_PARAMETER); }
+        var e = _pmn_hmm_check(self, obs, t);
+        if (e != PMN_ERR_NONE) { return Err(e); }
+        var n = self.n;
+        var s, slot = _pmn_scratch_take((t * n + t) * 8);
+        if (s == 0) { return Err(PMN_ERR_OUT_OF_MEMORY); }
+        var alpha = s;
+        var scales = s + t * n * 8;
+        _pmn_hmm_forward(self, obs, t, alpha, scales);
+        var zero = 0;
+        for (var k = 0; k < t; k = k + 1) {
+            var c: f64 = load64(scales + k * 8);
+            if (c <= 0.0) { zero = 1; }
+        }
+        var ll: f64 = -0.0;
+        if (zero == 1) {
+            ll = _PMN_F64_NEG_INFINITY;
+        } else {
+            for (var k2 = 0; k2 < t; k2 = k2 + 1) {
+                var c2: f64 = load64(scales + k2 * 8);
+                var lc: f64 = _pmn_ln(c2);
+                ll = ll + lc;
+            }
+        }
+        _pmn_scratch_give(s, slot);
+        return Ok(ll);
+    }
+
+    # Rust's `viterbi(observations)`: the most likely state path, into out[0, t) (cap ≥ t). In log space: δ₀(i) =
+    # ln πᵢ + ln Bᵢ(o₀); δₜ(j) = maxᵢ(δₜ₋₁(i) + ln Aᵢⱼ) + ln Bⱼ(oₜ), the first i of the largest strictly; the last state
+    # the last of the largest δ (Rust's `max_by` on `total_cmp`), then back along ψ. ln of a zero is −∞.
+    # PMN_ERR_INVALID_SAMPLE for no observations or a symbol out of range; PMN_ERR_INVALID_PARAMETER for a dropped self,
+    # a null out, cap < t, an invalid slice or out overlapping the observations or the model; PMN_ERR_OUT_OF_MEMORY
+    # when the scratch can't be had.
+    #must_use
+    fn viterbi(self, obs, t, out, cap): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_hmm_check(self, obs, t);
+        if (e != PMN_ERR_NONE) { return e; }
+        if (out == 0 || cap < t) { return PMN_ERR_INVALID_PARAMETER; }
+        var n = self.n;
+        var m = self.m;
+        if (_pmn_linalg_overlaps(out, t * 8, obs, t * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(out, t * 8, self.buf, (n * n + n * m + n) * 8) == 1) {
+            return PMN_ERR_INVALID_PARAMETER;
+        }
+        var s, slot = _pmn_scratch_take((n * n + 2 * n + t * n) * 8);
+        if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+        var la = s;
+        var dp = la + n * n * 8;
+        var dc = dp + n * 8;
+        var psi = dc + n * 8;
+        for (var z = 0; z < n * n; z = z + 1) {
+            var a: f64 = load64(self.ta + z * 8);
+            var l: f64 = _pmn_safe_ln(a);
+            store64(la + z * 8, l);
+        }
+        var o0 = load64(obs);
+        for (var i = 0; i < n; i = i + 1) {
+            var p: f64 = load64(self.ip + i * 8);
+            var b: f64 = load64(self.eb + (i * m + o0) * 8);
+            var lp: f64 = _pmn_safe_ln(p);
+            var lb: f64 = _pmn_safe_ln(b);
+            var d0: f64 = lp + lb;
+            store64(dp + i * 8, d0);
+        }
+        for (var s2 = 1; s2 < t; s2 = s2 + 1) {
+            var ot = load64(obs + s2 * 8);
+            for (var j = 0; j < n; j = j + 1) {
+                var bj: f64 = load64(self.eb + (j * m + ot) * 8);
+                var le: f64 = _pmn_safe_ln(bj);
+                var best: f64 = _PMN_F64_NEG_INFINITY;
+                var bi = 0;
+                for (var i2 = 0; i2 < n; i2 = i2 + 1) {
+                    var dv: f64 = load64(dp + i2 * 8);
+                    var lv: f64 = load64(la + (i2 * n + j) * 8);
+                    var val: f64 = dv + lv;
+                    if (val > best) {
+                        best = val;
+                        bi = i2;
+                    }
+                }
+                var dj: f64 = best + le;
+                store64(dc + j * 8, dj);
+                store64(psi + (s2 * n + j) * 8, bi);
+            }
+            _pmn_copy_words(dp, dc, n);
+        }
+        var last = 0;
+        for (var q = 1; q < n; q = q + 1) {
+            var dq: f64 = load64(dp + q * 8);
+            var dl: f64 = load64(dp + last * 8);
+            if (_pmn_total_cmp(dq, dl) >= 0) { last = q; }
+        }
+        store64(out + (t - 1) * 8, last);
+        var k = t - 2;
+        while (k >= 0) {
+            var nxt = load64(out + (k + 1) * 8);
+            store64(out + k * 8, load64(psi + ((k + 1) * n + nxt) * 8));
+            k = k - 1;
+        }
+        _pmn_scratch_give(s, slot);
+        return PMN_ERR_NONE;
+    }
+
+    # Rust's `baum_welch(observations, max_iter)`: max_iter rounds of scaled Baum–Welch from this model, into out
+    # (caller storage, owning a new block: drop it). Each round: the scaled forward pass (PMN_ERR_COMPUTATION_ERROR when
+    # a scale is ≤ 0 or not finite); the scaled backward pass β̂ₜ(i) = Σⱼ Aᵢⱼ·Bⱼ(oₜ₊₁)·β̂ₜ₊₁(j)/cₜ₊₁; the expected
+    # counts γ (by αβ over its sum, when positive) and ξ (each step's normalized over all (i, j), when positive), each
+    # accumulator from +0.0; then π ← γ₀, and the rows of A and B whose counts are positive re-estimated (the others
+    # kept). PMN_ERR_INVALID_PARAMETER for max_iter 0, then check_inputs' refusals, as Rust's order; and for a dropped
+    # self, a null out or out overlapping self; PMN_ERR_OUT_OF_MEMORY when the block or the scratch can't be had.
+    #must_use
+    fn baum_welch(self, obs, t, max_iter, out: *PmnHiddenMarkovModel): i64 {
+        if (self == 0 || self.buf == 0 || out == 0 || max_iter < 0) { return PMN_ERR_INVALID_PARAMETER; }
+        if (max_iter == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(out, 48, self, 48) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_hmm_check(self, obs, t);
+        if (e != PMN_ERR_NONE) { return e; }
+        var n = self.n;
+        var m = self.m;
+        var h: PmnHiddenMarkovModel;
+        e = PmnHiddenMarkovModel_clone(&h, self);
+        if (e != PMN_ERR_NONE) { return e; }
+        var words = 2 * t * n + t + 3 * n + n * n + n * m;
+        var s, slot = _pmn_scratch_take(words * 8);
+        if (s == 0) {
+            PmnHiddenMarkovModel_drop(&h);
+            return PMN_ERR_OUT_OF_MEMORY;
+        }
+        var alpha = s;
+        var beta = alpha + t * n * 8;
+        var scales = beta + t * n * 8;
+        var g0 = scales + t * 8;
+        var gh = g0 + n * 8;
+        var ga = gh + n * 8;
+        var xs = ga + n * 8;
+        var en = xs + n * n * 8;
+        for (var it = 0; it < max_iter; it = it + 1) {
+            _pmn_hmm_forward(&h, obs, t, alpha, scales);
+            for (var c = 0; c < t; c = c + 1) {
+                var sc: f64 = load64(scales + c * 8);
+                if (sc <= 0.0 || _pmn_is_finite(sc) == 0) {
+                    _pmn_scratch_give(s, slot);
+                    PmnHiddenMarkovModel_drop(&h);
+                    return PMN_ERR_COMPUTATION_ERROR;
+                }
+            }
+            for (var z = 0; z < t * n; z = z + 1) { store64(beta + z * 8, 1.0); }
+            var bt = t - 2;
+            while (bt >= 0) {
+                var on = load64(obs + (bt + 1) * 8);
+                var scn: f64 = load64(scales + (bt + 1) * 8);
+                for (var i = 0; i < n; i = i + 1) {
+                    var sum: f64 = -0.0;
+                    for (var j = 0; j < n; j = j + 1) {
+                        var aij: f64 = load64(h.ta + (i * n + j) * 8);
+                        var bjo: f64 = load64(h.eb + (j * m + on) * 8);
+                        var bn: f64 = load64(beta + ((bt + 1) * n + j) * 8);
+                        var p1: f64 = aij * bjo;
+                        var p2: f64 = p1 * bn;
+                        sum = sum + p2;
+                    }
+                    var bv: f64 = sum / scn;
+                    store64(beta + (bt * n + i) * 8, bv);
+                }
+                bt = bt - 1;
+            }
+            for (var z2 = 0; z2 < 3 * n + n * n + n * m; z2 = z2 + 1) { store64(g0 + z2 * 8, 0.0); }
+            for (var s2 = 0; s2 < t; s2 = s2 + 1) {
+                var os = load64(obs + s2 * 8);
+                var norm: f64 = -0.0;
+                for (var i2 = 0; i2 < n; i2 = i2 + 1) {
+                    var a1: f64 = load64(alpha + (s2 * n + i2) * 8);
+                    var b1: f64 = load64(beta + (s2 * n + i2) * 8);
+                    var ab: f64 = a1 * b1;
+                    norm = norm + ab;
+                }
+                if (norm > 0.0) {
+                    for (var i3 = 0; i3 < n; i3 = i3 + 1) {
+                        var a2: f64 = load64(alpha + (s2 * n + i3) * 8);
+                        var b2: f64 = load64(beta + (s2 * n + i3) * 8);
+                        var ab2: f64 = a2 * b2;
+                        var g: f64 = ab2 / norm;
+                        if (s2 == 0) { store64(g0 + i3 * 8, g); }
+                        if (s2 + 1 < t) {
+                            var gv: f64 = load64(gh + i3 * 8);
+                            var gn: f64 = gv + g;
+                            store64(gh + i3 * 8, gn);
+                        }
+                        var gav: f64 = load64(ga + i3 * 8);
+                        var gan: f64 = gav + g;
+                        store64(ga + i3 * 8, gan);
+                        var ev: f64 = load64(en + (i3 * m + os) * 8);
+                        var evn: f64 = ev + g;
+                        store64(en + (i3 * m + os) * 8, evn);
+                    }
+                }
+                if (s2 + 1 < t) {
+                    var on2 = load64(obs + (s2 + 1) * 8);
+                    var den: f64 = -0.0;
+                    for (var i4 = 0; i4 < n; i4 = i4 + 1) {
+                        for (var j4 = 0; j4 < n; j4 = j4 + 1) {
+                            var x: f64 = _pmn_hmm_xi(&h, alpha, beta, s2, i4, j4, on2);
+                            den = den + x;
+                        }
+                    }
+                    if (den > 0.0) {
+                        for (var i5 = 0; i5 < n; i5 = i5 + 1) {
+                            for (var j5 = 0; j5 < n; j5 = j5 + 1) {
+                                var x2: f64 = _pmn_hmm_xi(&h, alpha, beta, s2, i5, j5, on2);
+                                var q: f64 = x2 / den;
+                                var xv: f64 = load64(xs + (i5 * n + j5) * 8);
+                                var xn: f64 = xv + q;
+                                store64(xs + (i5 * n + j5) * 8, xn);
+                            }
+                        }
+                    }
+                }
+            }
+            _pmn_copy_words(h.ip, g0, n);
+            for (var i6 = 0; i6 < n; i6 = i6 + 1) {
+                var hd: f64 = load64(gh + i6 * 8);
+                if (hd > 0.0) {
+                    for (var j6 = 0; j6 < n; j6 = j6 + 1) {
+                        var xv2: f64 = load64(xs + (i6 * n + j6) * 8);
+                        var na: f64 = xv2 / hd;
+                        store64(h.ta + (i6 * n + j6) * 8, na);
+                    }
+                }
+                var al: f64 = load64(ga + i6 * 8);
+                if (al > 0.0) {
+                    for (var k6 = 0; k6 < m; k6 = k6 + 1) {
+                        var ev2: f64 = load64(en + (i6 * m + k6) * 8);
+                        var nb: f64 = ev2 / al;
+                        store64(h.eb + (i6 * m + k6) * 8, nb);
+                    }
+                }
+            }
+        }
+        _pmn_scratch_give(s, slot);
+        out.n = h.n;
+        out.m = h.m;
+        out.buf = h.buf;
+        out.ta = h.ta;
+        out.eb = h.eb;
+        out.ip = h.ip;
+        return PMN_ERR_NONE;
+    }
+
+    # Appends Rust's derived Debug (D12): `HiddenMarkovModel { transition: [[..]], emission: [[..]], initial: [..] }`.
+    #must_use
+    fn debug(self, sb, alternate): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_dbg_open(sb, "HiddenMarkovModel", 1, alternate);
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "transition", 1, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_mat_f64(sb, self.ta, self.n, self.n, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "emission", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_mat_f64(sb, self.eb, self.n, self.m, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item(sb, "initial", 0, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_vec_f64(sb, self.ip, self.n, alternate, 1); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_item_end(sb, alternate); }
+        if (e == PMN_ERR_NONE) { e = _pmn_dbg_close(sb, 1, alternate); }
+        return e;
+    }
+
+    # Appends serde_json's text: `{"transition":[[..]],"emission":[[..]],"initial":[..]}`.
+    #must_use
+    fn to_json(self, sb): i64 {
+        if (self == 0 || self.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
+        var e = _pmn_json_w_key(sb, "transition", 1);
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_mat_f64(sb, self.ta, self.n, self.n); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "emission", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_mat_f64(sb, self.eb, self.n, self.m); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_key(sb, "initial", 0); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_vec_f64(sb, self.ip, self.n); }
+        if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(sb, "}"); }
+        return e;
+    }
+}
+
+fn _pmn_hmm_from_root(root, out: *PmnHiddenMarkovModel): i64 {
+    var names[24];
+    store64(&names, "transition");
+    store64(&names + 8, "emission");
+    store64(&names + 16, "initial");
+    var sl[24];
+    var e = _pmn_json_struct(root, &names, 3, &sl);
+    if (e != PMN_ERR_NONE) { return e; }
+    var td[16];
+    var ed[16];
+    var tm, tslot = _pmn_mk_mat_node(load64(&sl), &td);
+    if (tm == 0) { return tslot; }
+    var em, eslot = _pmn_mk_mat_node(load64(&sl + 8), &ed);
+    if (em == 0) {
+        _pmn_scratch_give(tm, tslot);
+        return eslot;
+    }
+    var iv, islot, ni = _pmn_reg_vec_node(load64(&sl + 16));
+    if (iv == 0) {
+        _pmn_scratch_give(em, eslot);
+        _pmn_scratch_give(tm, tslot);
+        return ni;
+    }
+    e = PmnHiddenMarkovModel_new(out, tm, load64(&td), load64(&td + 8), em, load64(&ed), load64(&ed + 8), iv, ni);
+    _pmn_scratch_give(iv, islot);
+    _pmn_scratch_give(em, eslot);
+    _pmn_scratch_give(tm, tslot);
+    if (e == PMN_ERR_OUT_OF_MEMORY) { return e; }
+    if (e != PMN_ERR_NONE) { return PMN_ERR_DESERIALIZE; }
+    return PMN_ERR_NONE;
+}
+
+# Reads a HiddenMarkovModel document, buf[0, len), into out (caller storage, owning a new block: drop it):
+# PMN_ERR_NONE, PMN_ERR_DESERIALIZE for any document serde_json refuses (one `HiddenMarkovModel::new` refuses
+# included), or PMN_ERR_OUT_OF_MEMORY.
+#must_use
+fn PmnHiddenMarkovModel_from_json(out: *PmnHiddenMarkovModel, buf, len): i64 {
+    if (out == 0) { return PMN_ERR_INVALID_PARAMETER; }
+    return _pmn_json_decode(buf, len, &_pmn_hmm_from_root, out);
+}

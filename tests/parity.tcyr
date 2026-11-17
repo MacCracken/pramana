@@ -555,6 +555,20 @@ fn _par_json_write(fp, fl): i64 {
         if (PmnBayesianUpdate_new(&wbu, wbp, wbl, wbe) != PMN_ERR_NONE) { return 0 - 1; }
         _par_json_k = 3;
         e = wbu.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::MarkovChain") == 1) {
+        var wmc: PmnMarkovChain;
+        var wmk = _par_chain_from_toks(0, &wmc);
+        if (wmk < 0) { return 0 - 1; }
+        _par_json_k = wmk;
+        e = wmc.to_json(sb);
+        var wmd = PmnMarkovChain_drop(&wmc);
+    } elif (_par_eq(fp, fl, "json::write::HiddenMarkovModel") == 1) {
+        var whm: PmnHiddenMarkovModel;
+        var whk = _par_hmm_from_toks(0, &whm);
+        if (whk < 0) { return 0 - 1; }
+        _par_json_k = whk;
+        e = whm.to_json(sb);
+        var whd = PmnHiddenMarkovModel_drop(&whm);
     } elif (_par_eq(fp, fl, "json::write::ArimaModel") == 1) {
         if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
         var wam: PmnArimaModel;
@@ -907,6 +921,44 @@ fn _par_json_models(which): i64 {
     return 1;
 }
 
+# json::MarkovChain rows (M6 part a): PmnMarkovChain_from_json, then its matrix (nested lists) and state; dropped after.
+fn _par_json_chain(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var c: PmnMarkovChain;
+    var e = PmnMarkovChain_from_json(&c, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    var k = c.num_states();
+    _par_got_mat(c.transition_matrix(), k, k);
+    _par_got_i(c.state);
+    var e1 = PmnMarkovChain_drop(&c);
+    return 1;
+}
+
+# json::HiddenMarkovModel rows (M6 part a): the decoded transition, emission (nested lists) and initial distribution.
+fn _par_json_hmm(): i64 {
+    var n = 0;
+    var doc = _par_in_bytes(0, &n);
+    if (doc == 0) { return 0 - 1; }
+    var h: PmnHiddenMarkovModel;
+    var e = PmnHiddenMarkovModel_from_json(&h, doc, n);
+    if (e != PMN_ERR_NONE) {
+        _par_got_err(e);
+        return 1;
+    }
+    var k = h.num_states();
+    _par_got_mat(h.transition(), k, k);
+    _par_got_mat(h.emission(), k, h.num_symbols());
+    _par_got_seq(k);
+    for (var j = 0; j < k; j = j + 1) { _par_got_f(load64(h.initial() + j * 8)); }
+    var e1 = PmnHiddenMarkovModel_drop(&h);
+    return 1;
+}
+
 # json::BayesianUpdate rows (M5 part c): the decoded fields, or the error.
 fn _par_json_bayes(): i64 {
     var n = 0;
@@ -1000,6 +1052,8 @@ fn _par_json(fp, fl): i64 {
     if (_par_eq(fp, fl, "json::LogisticModel") == 1) { return _par_json_models(2); }
     if (_par_eq(fp, fl, "json::ArimaModel") == 1) { return _par_json_models(3); }
     if (_par_eq(fp, fl, "json::BayesianUpdate") == 1) { return _par_json_bayes(); }
+    if (_par_eq(fp, fl, "json::MarkovChain") == 1) { return _par_json_chain(); }
+    if (_par_eq(fp, fl, "json::HiddenMarkovModel") == 1) { return _par_json_hmm(); }
     var jd = _par_json_dist(fp, fl);
     if (jd != 0) { return jd; }
     if (_par_in_n != 1) { return 0 - 1; }
@@ -1208,6 +1262,26 @@ fn _par_debug(fp, fl): i64 {
         var dbe: f64 = _par_in(2);
         if (PmnBayesianUpdate_new(&dbu, dbp, dbl, dbe) != PMN_ERR_NONE) { return 0 - 1; }
         e = dbu.debug(sb, _par_in(3));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::MarkovChain") == 1) {
+        var dmc: PmnMarkovChain;
+        var dmk = _par_chain_from_toks(0, &dmc);
+        if (dmk < 0 || dmk + 1 != _par_in_n) { return 0 - 1; }
+        e = dmc.debug(sb, _par_in(dmk));
+        var dmd = PmnMarkovChain_drop(&dmc);
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "debug::HiddenMarkovModel") == 1) {
+        var dhm: PmnHiddenMarkovModel;
+        var dhk = _par_hmm_from_toks(0, &dhm);
+        if (dhk < 0 || dhk + 1 != _par_in_n) { return 0 - 1; }
+        e = dhm.debug(sb, _par_in(dhk));
+        var dhd = PmnHiddenMarkovModel_drop(&dhm);
         if (e != PMN_ERR_NONE) { return 0 - 1; }
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
@@ -2806,6 +2880,201 @@ fn _par_bayesian(fp, fl): i64 {
     return 0;
 }
 
+# ── `markov` rows (M6 part a): src/markov.cyr.
+
+# A nested matrix at token k0 (`v:rows`, then each row's `v:cols` and entries) into buf (cap f64s), row-major, its rows
+# and columns into dims[0, 2): the token after it, or -1 when it is ragged or too large.
+fn _par_mat_from_toks(k0, buf, cap, dims): i64 {
+    if (k0 >= _par_in_n) { return 0 - 1; }
+    var rows = _par_in(k0);
+    var k = k0 + 1;
+    var cols = 0;
+    var at = 0;
+    for (var r = 0; r < rows; r = r + 1) {
+        if (k >= _par_in_n) { return 0 - 1; }
+        var c = _par_in(k);
+        if (r == 0) { cols = c; }
+        if (c != cols || c < 0 || at + c > cap || k + c >= _par_in_n) { return 0 - 1; }
+        _par_in_f64s(k, buf + at * 8);
+        at = at + c;
+        k = k + 1 + c;
+    }
+    store64(dims, rows);
+    store64(dims + 8, cols);
+    return k;
+}
+
+# Appends a rows × cols row-major matrix as nested-list tokens.
+fn _par_got_mat(p, rows, cols): i64 {
+    _par_got_seq(rows);
+    for (var r = 0; r < rows; r = r + 1) {
+        _par_got_seq(cols);
+        for (var c = 0; c < cols; c = c + 1) { _par_got_f(load64(p + (r * cols + c) * 8)); }
+    }
+    return 0;
+}
+
+# A MarkovChain from its codec tokens at k0 (the matrix nested, then the state) into c: the token after, or -1.
+fn _par_chain_from_toks(k0, c: *PmnMarkovChain): i64 {
+    if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_b == 0) { return 0 - 1; }
+    var dm[16];
+    var k = _par_mat_from_toks(k0, _par_ds_b, _PAR_DS_CAP, &dm);
+    if (k < 0 || k >= _par_in_n) { return 0 - 1; }
+    if (PmnMarkovChain_new(c, _par_ds_b, load64(&dm), load64(&dm + 8), _par_in(k)) != PMN_ERR_NONE) { return 0 - 1; }
+    return k + 1;
+}
+
+# A HiddenMarkovModel from its codec tokens at k0 (transition and emission nested, then the initial list) into h.
+fn _par_hmm_from_toks(k0, h: *PmnHiddenMarkovModel): i64 {
+    if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_b == 0) { return 0 - 1; }
+    var q = _PAR_DS_CAP / 4;
+    var da[16];
+    var db[16];
+    var k = _par_mat_from_toks(k0, _par_ds_b, q, &da);
+    if (k < 0) { return 0 - 1; }
+    k = _par_mat_from_toks(k, _par_ds_b + q * 8, q, &db);
+    if (k < 0 || k >= _par_in_n) { return 0 - 1; }
+    var n = _par_in(k);
+    if (n < 0 || n > q || k + n >= _par_in_n) { return 0 - 1; }
+    var ip = _par_ds_b + 2 * q * 8;
+    _par_in_f64s(k, ip);
+    var e = PmnHiddenMarkovModel_new(h, _par_ds_b, load64(&da), load64(&da + 8), _par_ds_b + q * 8, load64(&db),
+        load64(&db + 8), ip, n);
+    if (e != PMN_ERR_NONE) { return 0 - 1; }
+    return k + 1 + n;
+}
+
+# Reads the `v:n` slice at token k into buf (n ≤ cap words): the token after it, or -1.
+fn _par_slice_at(k, buf, cap): i64 {
+    if (k >= _par_in_n) { return 0 - 1; }
+    if (load64(_par_in_k + k * 8) != 118) { return 0 - 1; }
+    var n = _par_in(k);
+    if (n < 0 || n > cap || k + n >= _par_in_n) { return 0 - 1; }
+    _par_in_f64s(k, buf);
+    return k + 1 + n;
+}
+
+# MarkovChain rows: the flat matrix, its rows, columns and initial state[, the seed and the steps]. HiddenMarkovModel
+# rows: the flat transition, emission and initial slices, the observations, the four dimensions[, max_iter].
+fn _par_markov(fp, fl): i64 {
+    if (_par_ds_a == 0) { _par_ds_a = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_b == 0) { _par_ds_b = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_o == 0) { _par_ds_o = alloc(_PAR_DS_CAP * 8); }
+    if (_par_ds_a == 0 || _par_ds_b == 0 || _par_ds_o == 0) { return 0 - 1; }
+    var q = _PAR_DS_CAP / 4;
+    if (fl > 13 && memeq(fp, "MarkovChain::", 13) == 1) {
+        var k = _par_slice_at(0, _par_ds_a, _PAR_DS_CAP);
+        if (k < 0 || k + 3 > _par_in_n) { return 0 - 1; }
+        var c: PmnMarkovChain;
+        var e = PmnMarkovChain_new(&c, _par_ds_a, _par_in(k), _par_in(k + 1), _par_in(k + 2));
+        if (e != PMN_ERR_NONE) {
+            _par_got_err(e);
+            return 1;
+        }
+        var r = 1;
+        if (_par_eq(fp, fl, "MarkovChain::new") == 1) {
+            _par_got_i(c.num_states());
+            _par_got_i(c.state);
+        } elif (_par_eq(fp, fl, "MarkovChain::steady_state") == 1) {
+            var es = c.steady_state(_par_ds_o, _PAR_DS_CAP);
+            if (es != PMN_ERR_NONE) {
+                _par_got_err(es);
+            } else {
+                _par_got_seq(c.num_states());
+                for (var j = 0; j < c.num_states(); j = j + 1) { _par_got_f(load64(_par_ds_o + j * 8)); }
+            }
+        } elif (k + 5 == _par_in_n) {
+            var g: PmnSimpleRng;
+            var steps = _par_in(k + 4);
+            if (PmnSimpleRng_new(&g, _par_in(k + 3)) != PMN_ERR_NONE || steps < 0 || steps >= _PAR_DS_CAP) {
+                r = 0 - 1;
+            } elif (_par_eq(fp, fl, "MarkovChain::step") == 1) {
+                _par_got_seq(steps);
+                for (var s = 0; s < steps; s = s + 1) { _par_got_i(c.step(&g)); }
+            } elif (_par_eq(fp, fl, "MarkovChain::simulate") == 1) {
+                var em = c.simulate(steps, &g, _par_ds_o, _PAR_DS_CAP);
+                if (em != PMN_ERR_NONE) {
+                    _par_got_err(em);
+                } else {
+                    _par_got_seq(steps + 1);
+                    for (var t = 0; t <= steps; t = t + 1) { _par_got_i(load64(_par_ds_o + t * 8)); }
+                }
+            } else {
+                r = 0;
+            }
+        } else {
+            r = 0 - 1;
+        }
+        var cd = PmnMarkovChain_drop(&c);
+        return r;
+    }
+    if (fl > 19 && memeq(fp, "HiddenMarkovModel::", 19) == 1) {
+        var ka = _par_slice_at(0, _par_ds_a, q);
+        if (ka < 0) { return 0 - 1; }
+        var kb = _par_slice_at(ka, _par_ds_a + q * 8, q);
+        if (kb < 0) { return 0 - 1; }
+        var kp = _par_slice_at(kb, _par_ds_a + 2 * q * 8, q);
+        if (kp < 0) { return 0 - 1; }
+        var ko = _par_slice_at(kp, _par_ds_b, _PAR_DS_CAP);
+        if (ko < 0 || ko + 4 > _par_in_n) { return 0 - 1; }
+        var t = _par_in(kp);
+        var h: PmnHiddenMarkovModel;
+        var eh = PmnHiddenMarkovModel_new(&h, _par_ds_a, _par_in(ko), _par_in(ko + 1), _par_ds_a + q * 8,
+            _par_in(ko + 2), _par_in(ko + 3), _par_ds_a + 2 * q * 8, _par_in(kb));
+        if (eh != PMN_ERR_NONE) {
+            _par_got_err(eh);
+            return 1;
+        }
+        var rh = 1;
+        if (_par_eq(fp, fl, "HiddenMarkovModel::new") == 1) {
+            _par_got_i(h.num_states());
+            _par_got_i(h.num_symbols());
+        } elif (_par_eq(fp, fl, "HiddenMarkovModel::forward_log_likelihood") == 1) {
+            var tl, vl = h.forward_log_likelihood(_par_ds_b, t);
+            if (tl == Err) {
+                _par_got_err(vl);
+            } else {
+                _par_got_f(vl);
+            }
+        } elif (_par_eq(fp, fl, "HiddenMarkovModel::viterbi") == 1) {
+            var ev = h.viterbi(_par_ds_b, t, _par_ds_o, _PAR_DS_CAP);
+            if (ev != PMN_ERR_NONE) {
+                _par_got_err(ev);
+            } else {
+                _par_got_seq(t);
+                for (var s2 = 0; s2 < t; s2 = s2 + 1) { _par_got_i(load64(_par_ds_o + s2 * 8)); }
+            }
+        } elif (_par_eq(fp, fl, "HiddenMarkovModel::baum_welch") == 1) {
+            if (ko + 5 != _par_in_n) {
+                rh = 0 - 1;
+            } else {
+                var h2: PmnHiddenMarkovModel;
+                var eb = h.baum_welch(_par_ds_b, t, _par_in(ko + 4), &h2);
+                if (eb != PMN_ERR_NONE) {
+                    _par_got_err(eb);
+                } else {
+                    var n = h2.num_states();
+                    var m = h2.num_symbols();
+                    _par_got_seq(n * n);
+                    for (var a = 0; a < n * n; a = a + 1) { _par_got_f(load64(h2.transition() + a * 8)); }
+                    _par_got_seq(n * m);
+                    for (var b = 0; b < n * m; b = b + 1) { _par_got_f(load64(h2.emission() + b * 8)); }
+                    _par_got_seq(n);
+                    for (var p = 0; p < n; p = p + 1) { _par_got_f(load64(h2.initial() + p * 8)); }
+                    var d2 = PmnHiddenMarkovModel_drop(&h2);
+                }
+            }
+        } else {
+            rh = 0;
+        }
+        var hd = PmnHiddenMarkovModel_drop(&h);
+        return rh;
+    }
+    return 0;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(mp, ml, "bayesian") == 1) { return _par_bayesian(fp, fl); }
@@ -2819,6 +3088,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "hypothesis") == 1) { return _par_hypothesis(fp, fl); }
     if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
     if (_par_eq(mp, ml, "linalg") == 1) { return _par_linalg(fp, fl); }
+    if (_par_eq(mp, ml, "markov") == 1) { return _par_markov(fp, fl); }
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
     if (_par_eq(mp, ml, "regression") == 1) { return _par_regression(fp, fl); }
     if (_par_eq(mp, ml, "rng") == 1) { return _par_rng(fp, fl); }
@@ -2943,6 +3213,8 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "hypothesis::ci_two_means") == 1) { return 0; }
     if (_par_eq(fp, fl, "hypothesis::ci_proportion") == 1) { return 0; }
     if (_par_eq(fp, fl, "bayesian::naive_bayes_classify") == 1) { return 0; }    # ln (M5 part c)
+    if (_par_eq(fp, fl, "HiddenMarkovModel::forward_log_likelihood") == 1) { return 0; }   # ln (M6 part a)
+    if (_par_eq(fp, fl, "HiddenMarkovModel::viterbi") == 1) { return 0; }
     if (_par_eq(fp, fl, "regression::logistic_regression") == 1) { return 0; }   # the sigmoid's exp (M5 part a)
     if (_par_eq(fp, fl, "regression::predict_logistic_proba") == 1) { return 0; }
     if (_par_eq(fp, fl, "regression::predict_logistic_class") == 1) { return 0; }

@@ -669,6 +669,7 @@ def emit():
     regression_models(m, Rng(0x299F31D0082EFA98))
     arima_models(m, Rng(0xEC4E6C89452821E6))
     bayesian_update(m, Rng(0x5F6F7E8D9CABBACD))
+    markov_models(m, Rng(0x3F84D5B5B5470917))
     return m
 
 def kde_toks(data, h, k):
@@ -811,3 +812,56 @@ def bayesian_update(m, g):
         p, l = g.unit(), g.unit()
         write(m, "BayesianUpdate", [f(p), f(l), f(min(1.0, p * l + 0.25))])
 
+
+
+def mat_toks(rows):
+    return [v(len(rows))] + [t for r in rows for t in [v(len(r))] + [f(x) for x in r]]
+
+
+def stochastic_row(g, n):
+    w = [g.unit() + 0.01 for _ in range(n)]
+    t = sum(w)
+    return [x / t for x in w]
+
+
+def markov_models(m, g):
+    """M6 part a: MarkovChain's and HiddenMarkovModel's codecs through their constructors (serde's try_from): every
+    refusal (ragged, not square, off-sum, negative, non-finite, a state out of range, the shapes out of step)."""
+    mats = B("[[0.7,0.3],[0.4,0.6]]", "[]", "[[]]", "[[1]]", "[[1.0]]", "[[0.5,0.5]]", "[[0.5,0.5],[1]]",
+             "[[0.5,0.5],[0.4,0.6],[1,0]]", "[[1.3,-0.3],[0.4,0.6]]", "[[0.5,0.3],[0.4,0.6]]", "[[0.5,null],[0.4,0.6]]",
+             "[[1e309,0],[0.4,0.6]]", "[[0.5,0.5000005],[0.4,0.6]]", "[[0.5,0.500001],[0.4,0.6]]", "[[-0.0,1],[1,-0]]",
+             "[0.5,0.5]", "null", "{}", '[["0.5",0.5],[0.4,0.6]]', "[[0.5,0.5],[0.4,0.6],]")
+    states = B("0", "1", "2", "-1", "1.0", "18446744073709551615", "18446744073709551616", "null", '"0"')
+    docs = struct_docs([("transition_matrix", b"[[0.7,0.3],[0.4,0.6]]"), ("state", b"1")], [mats, states])
+    docs += B('{"transition_matrix":[[1]],"state":0,"extra":5}', "[[[1]],0]", "[[[1]]]", "[[[1]],0,1]",
+              '{"transition_matrix":[[0,1],[1,0]]}', "[]")
+    chains = [[[1.0]], [[0.7, 0.3], [0.4, 0.6]], [[0.0, 1.0], [1.0, 0.0]], [[-0.0, 1.0], [0.5, 0.5]]]
+    chains += [[stochastic_row(g, n) for _ in range(n)] for n in (3, 4, 6)]
+    for c in chains:
+        for st in range(len(c)):
+            toks = mat_toks(c) + [i(st)]
+            docs.append(V.serde_write("MarkovChain", iter(parsed(toks))))
+            write(m, "MarkovChain", toks)
+    for d in docs:
+        read(m, "json::MarkovChain", d)
+    a = b"[[0.7,0.3],[0.4,0.6]]"
+    bm = b"[[0.5,0.4,0.1],[0.1,0.3,0.6]]"
+    ip = b"[0.6,0.4]"
+    trans = B("[[0.7,0.3],[0.4,0.6]]", "[]", "[[0.7,0.3]]", "[[0.7,0.3],[0.4]]", "[[0.7,0.3,0],[0.4,0.6,0]]",
+              "[[0.7,0.3],[0.4,0.7]]", "[[0.7,0.3],[-0.4,1.4]]", "[[0.7,null],[0.4,0.6]]", "null", "[[1]]")
+    emis = B("[[0.5,0.4,0.1],[0.1,0.3,0.6]]", "[]", "[[],[]]", "[[0.5,0.4,0.1]]", "[[0.5,0.4,0.1],[0.1,0.9]]",
+             "[[0.5,0.4,0.1],[0.1,0.3,0.7]]", "[[1],[1]]", "[[0.5,0.4,0.1],[0.1,0.3,0.6],[1,0,0]]", "[[1e309,0,0],[1,0,0]]")
+    inits = B("[0.6,0.4]", "[]", "[1]", "[0.6,0.5]", "[0.6,0.4,0]", "[1,0]", "[-0.0,1]", "[0.6,null]", "null", "[1e309,0]")
+    docs = struct_docs([("transition", a), ("emission", bm), ("initial", ip)], [trans, emis, inits])
+    docs += B('{"transition":[[1]],"emission":[[1]],"initial":[1],"x":null}', "[[[1]],[[1]],[1]]", "[[[1]],[[1]]]",
+              '{"transition":[[1]],"emission":[[0.5,0.5]]}', "[[[1]],[[1]],[1],0]")
+    models = [([[1.0]], [[1.0]], [1.0]), ([[0.7, 0.3], [0.4, 0.6]], [[0.5, 0.4, 0.1], [0.1, 0.3, 0.6]], [0.6, 0.4])]
+    for n, k in ((2, 2), (3, 4), (4, 1), (5, 6)):
+        models.append(([stochastic_row(g, n) for _ in range(n)], [stochastic_row(g, k) for _ in range(n)],
+                       stochastic_row(g, n)))
+    for ta, eb, pi in models:
+        toks = mat_toks(ta) + mat_toks(eb) + [v(len(pi))] + [f(x) for x in pi]
+        docs.append(V.serde_write("HiddenMarkovModel", iter(parsed(toks))))
+        write(m, "HiddenMarkovModel", toks)
+    for d in docs:
+        read(m, "json::HiddenMarkovModel", d)

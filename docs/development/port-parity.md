@@ -4483,3 +4483,41 @@ fit, forecast and codec, the Bayesian calls) at up to 200 points: nothing taken 
 targets. Tests: `tests/regression.tcyr` (46), `tests/timeseries.tcyr` (45), `tests/bayesian.tcyr` (19) and the soak.
 Cost: 1.8–8.5× Rust on the arithmetic rows, 17× for naive Bayes (its 44 correctly rounded logarithms).
 
+## 12. M6: Markov chains and Monte Carlo
+
+M6 ports 1.3.0's `markov.rs` and `monte_carlo.rs` under ADR 010, in three parts (the plan's §7).
+
+### 12.1 Part a: Markov chains and HMMs (2026-11-17)
+
+`src/markov.cyr`, golden `markov` (2,884 rows), 226 codec and 20 Debug rows. Every row passes on its first replay, at
+0 ulp, on x86_64 ELF, PE and aarch64:
+
+| Function | Rows | Class |
+|---|---|---|
+| `MarkovChain::new` | 190 | A |
+| `MarkovChain::step` | 900 | A |
+| `MarkovChain::simulate` | 229 | A |
+| `MarkovChain::steady_state` | 71 | A |
+| `HiddenMarkovModel::new` | 50 | A |
+| `HiddenMarkovModel::forward_log_likelihood` | 282 | C (ln) |
+| `HiddenMarkovModel::viterbi` | 282 | C (ln) |
+| `HiddenMarkovModel::baum_welch` | 880 | A |
+
+glibc's ln is correctly rounded on every log-likelihood and Viterbi input here: `markov.cr.tsv` holds no rows.
+
+**Mutants.** Twenty, each a plausible slip:
+- the row-sum tolerance and the sign test;
+- the step's strict `r < Σ` and its fallback to the last state with P > 0;
+- the stall factor, limit and reset, the normalization, the tolerance and the step cap;
+- the forward pass's `v·(1/c)`, the backward pass's `Σ/c`, γ's `(αβ)/norm` and ξ's product order;
+- Viterbi's two tie rules, the head sum's range, the unvisited-row rule, Baum–Welch's scale test;
+- the constructor's order of refusals.
+
+Sixteen failed rows on the first run. Four survived and were closed with rows:
+- a draw exactly on a cumulative sum (seeds found by inverting the xorshift step, so the first draw is 0, ¼, ½ or ¾);
+- chains with second eigenvalue ±0.995, which converge in about 4,600 steps, under the 0.999 stall factor and between
+  10³ and 10⁴ steps;
+- three near-cyclic chains (a 10⁻³ perturbation of a 5- or 7-cycle) whose residuals stall now and then, so a counter
+  that didn't reset would go lazy. They were found by a search and are held in the emitter as bits.
+
+After that every mutant fails 1 to 541 rows.

@@ -1,0 +1,415 @@
+# markov.tcyr — src/markov.cyr (M6 part a).
+#
+# tests/parity.tcyr replays 1.3.0's values (tests/golden/markov.tsv, json.tsv, debug.tsv). These carry 1.3.0's own
+# tests over (markov.rs: the chain, the HMM and the hardening regressions) and pin what the port adds: the owned
+# blocks, the buffer refusals, aliasing and drop.
+
+include "tests/lib.cyr"
+
+fn put(buf, k, x: f64): i64 {
+    store64(buf + k * 8, x);
+    return 0;
+}
+
+fn near(x: f64, y: f64, tol: f64): i64 {
+    var d: f64 = x - y;
+    if (f64_abs(d) < tol) { return 1; }
+    return 0;
+}
+
+# 1.3.0's `AlmostOne`: an Rng whose every draw is 1 − 1e-12.
+struct AlmostOne {
+    unused;
+}
+
+impl PmnRng for AlmostOne {
+    fn next_f64(self): f64 {
+        var r: f64 = 0.999999999999;
+        return r;
+    }
+}
+
+# 1.3.0's example_hmm: sunny/rainy over walk/shop/clean.
+fn example_hmm(h: *PmnHiddenMarkovModel): i64 {
+    var a[32];
+    put(&a, 0, 0.7);
+    put(&a, 1, 0.3);
+    put(&a, 2, 0.4);
+    put(&a, 3, 0.6);
+    var b[48];
+    put(&b, 0, 0.1);
+    put(&b, 1, 0.4);
+    put(&b, 2, 0.5);
+    put(&b, 3, 0.6);
+    put(&b, 4, 0.3);
+    put(&b, 5, 0.1);
+    var p[16];
+    put(&p, 0, 0.6);
+    put(&p, 1, 0.4);
+    return PmnHiddenMarkovModel_new(h, &a, 2, 2, &b, 2, 3, &p, 2);
+}
+
+fn ll_of(h: *PmnHiddenMarkovModel, obs, t): f64 {
+    var tg, v = h.forward_log_likelihood(obs, t);
+    if (tg == Err) {
+        var bad: f64 = _PMN_F64_NAN;
+        return bad;
+    }
+    var r: f64 = v;
+    return r;
+}
+
+# Σ over every hidden path of P(path, O), as 1.3.0's brute_force_likelihood.
+fn brute(h: *PmnHiddenMarkovModel, obs, t): f64 {
+    var n = h.num_states();
+    var m = h.num_symbols();
+    var paths = 1;
+    for (var k = 0; k < t; k = k + 1) { paths = paths * n; }
+    var total: f64 = 0.0;
+    for (var code = 0; code < paths; code = code + 1) {
+        var c = code;
+        var prev = 0;
+        var p: f64 = 1.0;
+        for (var s = 0; s < t; s = s + 1) {
+            var st = c % n;
+            c = c / n;
+            var w: f64 = load64(h.initial() + st * 8);
+            if (s > 0) { w = load64(h.transition() + (prev * n + st) * 8); }
+            p = p * w;
+            var e: f64 = load64(h.emission() + (st * m + load64(obs + s * 8)) * 8);
+            p = p * e;
+            prev = st;
+        }
+        total = total + p;
+    }
+    return total;
+}
+
+fn rows_stochastic(p, rows, cols, tol: f64): i64 {
+    for (var r = 0; r < rows; r = r + 1) {
+        var s: f64 = pmn_sum(p + r * cols * 8, cols);
+        if (near(s, 1.0, tol) == 0) { return 0; }
+        for (var c = 0; c < cols; c = c + 1) {
+            var x: f64 = load64(p + (r * cols + c) * 8);
+            if (_pmn_is_finite(x) == 0 || x < 0.0) { return 0; }
+        }
+    }
+    return 1;
+}
+
+fn main() {
+    alloc_init();
+    var o = alloc(8192 * 8);
+    var obs = alloc(8192 * 8);
+
+    test_group("1.3.0's MarkovChain tests (validity, row sums, negatives, non-square, step, simulate, steady state)");
+    var m[64];
+    put(&m, 0, 0.7);
+    put(&m, 1, 0.3);
+    put(&m, 2, 0.4);
+    put(&m, 3, 0.6);
+    var c: PmnMarkovChain;
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0), PMN_ERR_NONE, "[[0.7, 0.3], [0.4, 0.6]]");
+    assert_eq(c.num_states(), 2, "2 states");
+    assert_eq(c.steady_state(o, 2), PMN_ERR_NONE, "its steady state");
+    var s0: f64 = load64(o);
+    var s1: f64 = load64(o + 8);
+    var f47: f64 = 4.0 / 7.0;
+    var f37: f64 = 3.0 / 7.0;
+    assert(near(s0, f47, 0.000001) == 1 && near(s1, f37, 0.000001) == 1, "π = [4/7, 3/7]");
+    PmnMarkovChain_drop(&c);
+    put(&m, 0, 0.5);
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0), PMN_ERR_INVALID_PARAMETER, "a row summing to 0.8");
+    put(&m, 0, 1.3);
+    put(&m, 1, -0.3);
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0), PMN_ERR_INVALID_PARAMETER, "a negative probability");
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 3, 0), PMN_ERR_INVALID_PARAMETER, "not square");
+    put(&m, 0, 0.0);
+    put(&m, 1, 1.0);
+    put(&m, 2, 1.0);
+    put(&m, 3, 0.0);
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0), PMN_ERR_NONE, "the deterministic two-cycle");
+    var g: PmnSimpleRng;
+    PmnSimpleRng_new(&g, 42);
+    assert_eq(c.step(&g), 1, "0 → 1");
+    assert_eq(c.step(&g), 0, "1 → 0");
+    PmnSimpleRng_new(&g, 42);
+    c.state = 0;
+    assert_eq(c.simulate(4, &g, o, 5), PMN_ERR_NONE, "simulate(4)");
+    assert(load64(o) == 0 && load64(o + 8) == 1 && load64(o + 16) == 0 && load64(o + 24) == 1 && load64(o + 32) == 0,
+        "[0, 1, 0, 1, 0]");
+    assert_eq(c.steady_state(o, 2), PMN_ERR_NONE, "the two-cycle's steady state (uniform is stationary)");
+    var h0: f64 = load64(o);
+    assert(near(h0, 0.5, 0.000000001) == 1, "π₀ = 0.5");
+    PmnMarkovChain_drop(&c);
+
+    test_group("1.3.0's hardening tests (NaN, an out-of-range state, the rounding fallback, periodic chains)");
+    put(&m, 0, _PMN_F64_NAN);
+    put(&m, 1, 1.0);
+    put(&m, 2, 0.5);
+    put(&m, 3, 0.5);
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0), PMN_ERR_INVALID_PARAMETER, "a NaN entry");
+    put(&m, 0, 0.5);
+    put(&m, 1, 0.5);
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0), PMN_ERR_NONE, "[[0.5, 0.5], [0.5, 0.5]]");
+    c.state = 99;
+    PmnSimpleRng_new(&g, 1);
+    var before = g.state;
+    assert_eq(c.step(&g), 99, "a state set out of range stays");
+    assert_eq(g.state, before, "with no draw");
+    assert_eq(c.simulate(3, &g, o, 4), PMN_ERR_NONE, "simulate(3) from it");
+    assert(load64(o) == 99 && load64(o + 24) == 99, "[99, 99, 99, 99]");
+    PmnMarkovChain_drop(&c);
+    var f[80];
+    put(&f, 0, 0.0);
+    put(&f, 1, 0.999999999);
+    put(&f, 2, 0.0);
+    put(&f, 3, 0.0);
+    put(&f, 4, 1.0);
+    put(&f, 5, 0.0);
+    put(&f, 6, 1.0);
+    put(&f, 7, 0.0);
+    put(&f, 8, 0.0);
+    assert_eq(PmnMarkovChain_new(&c, &f, 3, 3, 0), PMN_ERR_NONE, "a row summing to 1 − 1e-9");
+    var one: AlmostOne;
+    assert_eq(c.step(&one), 1, "a draw past the sum lands on the last state with P > 0");
+    PmnMarkovChain_drop(&c);
+    put(&f, 0, 0.0);
+    put(&f, 1, 1.0);
+    put(&f, 2, 0.0);
+    put(&f, 3, 0.5);
+    put(&f, 4, 0.0);
+    put(&f, 5, 0.5);
+    put(&f, 6, 0.0);
+    put(&f, 7, 1.0);
+    put(&f, 8, 0.0);
+    assert_eq(PmnMarkovChain_new(&c, &f, 3, 3, 0), PMN_ERR_NONE, "the bipartite walk");
+    assert_eq(c.steady_state(o, 3), PMN_ERR_NONE, "converges through the lazy chain");
+    var b0: f64 = load64(o);
+    var b1: f64 = load64(o + 8);
+    var b2: f64 = load64(o + 16);
+    assert(near(b0, 0.25, 0.000000001) == 1 && near(b1, 0.5, 0.000000001) == 1 && near(b2, 0.25, 0.000000001) == 1,
+        "[0.25, 0.5, 0.25]");
+    PmnMarkovChain_drop(&c);
+    put(&m, 0, 0.999999999);
+    put(&m, 1, 0.000000001);
+    put(&m, 2, 0.000000002);
+    put(&m, 3, 0.999999998);
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0), PMN_ERR_NONE, "a chain mixing at 3e-9 a step");
+    assert_eq(c.steady_state(o, 2), PMN_ERR_CONVERGENCE_FAILURE, "no convergence in 10⁴ steps");
+    PmnMarkovChain_drop(&c);
+
+    test_group("the port's buffers (null, too small, aliasing, drop, clone)");
+    put(&m, 0, 0.7);
+    put(&m, 1, 0.3);
+    put(&m, 2, 0.4);
+    put(&m, 3, 0.6);
+    assert_eq(PmnMarkovChain_new(0, &m, 2, 2, 0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnMarkovChain_new(&c, 0, 2, 2, 0), PMN_ERR_INVALID_PARAMETER, "a null matrix");
+    assert_eq(PmnMarkovChain_new(&c, &m, 0, 0, 0), PMN_ERR_INVALID_PARAMETER, "no rows");
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 2), PMN_ERR_INVALID_PARAMETER, "state 2 of 2");
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0 - 1), PMN_ERR_INVALID_PARAMETER, "state 2^64 − 1");
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 1), PMN_ERR_NONE, "state 1");
+    PmnSimpleRng_new(&g, 7);
+    assert_eq(c.simulate(4, &g, o, 4), PMN_ERR_INVALID_PARAMETER, "cap 4 for 5 states");
+    assert_eq(c.simulate(0 - 1, &g, o, 4), PMN_ERR_INVALID_PARAMETER, "negative steps");
+    assert_eq(c.simulate(9223372036854775807, &g, o, 4), PMN_ERR_INVALID_PARAMETER, "steps + 1 past 2^63");
+    assert_eq(c.simulate(1, &g, 0, 4), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(c.simulate(1, &g, c.transition_matrix(), 4), PMN_ERR_INVALID_PARAMETER, "out over the matrix");
+    assert_eq(c.simulate(0, &g, o, 1), PMN_ERR_NONE, "simulate(0): the state alone");
+    assert_eq(load64(o), 1, "[1]");
+    assert_eq(c.steady_state(o, 1), PMN_ERR_INVALID_PARAMETER, "cap 1 for 2 states");
+    assert_eq(c.steady_state(c.transition_matrix() + 8, 2), PMN_ERR_INVALID_PARAMETER, "out over the matrix");
+    var c2: PmnMarkovChain;
+    assert_eq(PmnMarkovChain_clone(&c2, &c), PMN_ERR_NONE, "a clone");
+    assert(c2.transition_matrix() != c.transition_matrix() && c2.state == 1, "its own block, the same state");
+    assert_eq(PmnMarkovChain_clone(&c, &c), PMN_ERR_INVALID_PARAMETER, "a clone over itself");
+    PmnMarkovChain_drop(&c2);
+    PmnMarkovChain_drop(&c);
+    assert_eq(c.num_states(), 0, "a dropped chain has no states");
+    assert_eq(c.steady_state(o, 2), PMN_ERR_INVALID_PARAMETER, "and refuses");
+    assert_eq(c.simulate(1, &g, o, 4), PMN_ERR_INVALID_PARAMETER, "every call");
+    assert_eq(PmnMarkovChain_drop(&c), PMN_ERR_NONE, "a second drop");
+
+    test_group("1.3.0's HMM tests (forward, Viterbi, Baum–Welch, refusals)");
+    var h: PmnHiddenMarkovModel;
+    assert_eq(example_hmm(&h), PMN_ERR_NONE, "example_hmm");
+    assert(h.num_states() == 2 && h.num_symbols() == 3, "2 states, 3 symbols");
+    store64(obs, 0);
+    store64(obs + 8, 1);
+    store64(obs + 16, 2);
+    store64(obs + 24, 0);
+    store64(obs + 32, 1);
+    var ll3: f64 = ll_of(&h, obs, 3);
+    var ll5: f64 = ll_of(&h, obs, 5);
+    assert(_pmn_is_finite(ll3) == 1 && ll3 < 0.0, "ln P(walk, shop, clean) finite and negative");
+    assert(ll5 < ll3, "a longer sequence is less likely");
+    assert_eq(h.viterbi(obs, 4, o, 4), PMN_ERR_NONE, "Viterbi over 4");
+    var okp = 1;
+    for (var k = 0; k < 4; k = k + 1) {
+        if (load64(o + k * 8) < 0 || load64(o + k * 8) >= 2) { okp = 0; }
+    }
+    assert(okp == 1, "every state in range");
+    var t10[80];
+    var syms = "0120120012";
+    for (var k2 = 0; k2 < 10; k2 = k2 + 1) { store64(&t10 + k2 * 8, load8(syms + k2) - 48); }
+    var before_ll: f64 = ll_of(&h, &t10, 10);
+    var h2: PmnHiddenMarkovModel;
+    assert_eq(h.baum_welch(&t10, 10, 10, &h2), PMN_ERR_NONE, "Baum–Welch, 10 rounds");
+    var after_ll: f64 = ll_of(&h2, &t10, 10);
+    var floor: f64 = before_ll - 0.0000000001;
+    assert(after_ll >= floor, "it does not lower the likelihood");
+    PmnHiddenMarkovModel_drop(&h2);
+    assert_eq(h.baum_welch(obs, 5, 5, &h2), PMN_ERR_NONE, "Baum–Welch on 5");
+    assert(rows_stochastic(h2.transition(), 2, 2, 0.000001) == 1, "A stays row-stochastic");
+    assert(rows_stochastic(h2.emission(), 2, 3, 0.000001) == 1, "B stays row-stochastic");
+    assert(rows_stochastic(h2.initial(), 1, 2, 0.000001) == 1, "π sums to 1");
+    PmnHiddenMarkovModel_drop(&h2);
+    var hx: PmnHiddenMarkovModel;
+    assert_eq(PmnHiddenMarkovModel_new(&hx, 0, 0, 0, 0, 0, 0, 0, 0), PMN_ERR_INVALID_PARAMETER, "an empty initial");
+    var one1[8];
+    put(&one1, 0, 1.0);
+    var half[16];
+    put(&half, 0, 0.5);
+    put(&half, 1, 0.5);
+    assert_eq(PmnHiddenMarkovModel_new(&hx, &one1, 1, 1, &one1, 1, 1, &half, 2), PMN_ERR_DIMENSION_MISMATCH,
+        "a transition of the wrong size");
+    var hh[32];
+    for (var q = 0; q < 4; q = q + 1) { put(&hh, q, 0.5); }
+    assert_eq(PmnHiddenMarkovModel_new(&hx, &hh, 2, 2, &one1, 1, 1, &half, 2), PMN_ERR_DIMENSION_MISMATCH,
+        "an emission of the wrong size");
+    store64(o, 5);
+    assert_eq(h.viterbi(o, 1, obs + 4096 * 8, 4), PMN_ERR_INVALID_SAMPLE, "symbol 5 of 3");
+    var te, ve = h.forward_log_likelihood(obs, 0);
+    assert(te == Err && ve == PMN_ERR_INVALID_SAMPLE, "no observations");
+    var dt[48];
+    put(&dt, 0, 1.0);
+    put(&dt, 1, 0.0);
+    put(&dt, 2, 0.0);
+    put(&dt, 3, 1.0);
+    var dt0[16];
+    put(&dt0, 0, 1.0);
+    put(&dt0, 1, 0.0);
+    var hv: PmnHiddenMarkovModel;
+    assert_eq(PmnHiddenMarkovModel_new(&hv, &hh, 2, 2, &dt, 2, 2, &half, 2), PMN_ERR_NONE, "deterministic emitters");
+    var p5[40];
+    store64(&p5, 0);
+    store64(&p5 + 8, 0);
+    store64(&p5 + 16, 1);
+    store64(&p5 + 24, 1);
+    store64(&p5 + 32, 0);
+    assert_eq(hv.viterbi(&p5, 5, o, 5), PMN_ERR_NONE, "Viterbi of [0, 0, 1, 1, 0]");
+    assert(load64(o) == 0 && load64(o + 8) == 0 && load64(o + 16) == 1 && load64(o + 24) == 1 && load64(o + 32) == 0,
+        "the path [0, 0, 1, 1, 0]");
+    PmnHiddenMarkovModel_drop(&hv);
+
+    test_group("1.3.0's HMM hardening tests (brute force, long sequences, impossible sequences, NaN, serde)");
+    store64(obs, 0);
+    store64(obs + 8, 1);
+    store64(obs + 16, 1);
+    store64(obs + 24, 0);
+    store64(obs + 32, 1);
+    var llb: f64 = ll_of(&h, obs, 5);
+    var bf: f64 = brute(&h, obs, 5);
+    var lbf: f64 = _pmn_ln(bf);
+    assert(near(llb, lbf, 0.000000000001) == 1, "the scaled forward pass is the brute-force sum's ln");
+    for (var z = 0; z < 5000; z = z + 1) { store64(obs + z * 8, (z * 7 + z / 3) % 3); }
+    var lll: f64 = ll_of(&h, obs, 5000);
+    var llh: f64 = ll_of(&h, obs, 2500);
+    var ratio: f64 = lll / llh;
+    assert(_pmn_is_finite(lll) == 1 && lll < 0.0, "5,000 symbols: finite");
+    assert(near(ratio, 2.0, 0.05) == 1, "about twice 2,500's");
+    var llb3: f64 = ll_of(&h, obs, 3000);
+    var tr: PmnHiddenMarkovModel;
+    assert_eq(h.baum_welch(obs, 3000, 5, &tr), PMN_ERR_NONE, "Baum–Welch on 3,000");
+    assert(rows_stochastic(tr.initial(), 1, 2, 0.000000001) == 1, "π sums to 1 within 1e-9");
+    assert(rows_stochastic(tr.transition(), 2, 2, 0.000000001) == 1, "A's rows within 1e-9");
+    assert(rows_stochastic(tr.emission(), 2, 3, 0.000000001) == 1, "B's rows within 1e-9");
+    var lla3: f64 = ll_of(&tr, obs, 3000);
+    var floor3: f64 = llb3 - 0.000001;
+    assert(lla3 >= floor3, "EM does not lower the likelihood");
+    PmnHiddenMarkovModel_drop(&tr);
+    var hi: PmnHiddenMarkovModel;
+    assert_eq(PmnHiddenMarkovModel_new(&hi, &dt, 2, 2, &dt, 2, 2, &dt0, 2), PMN_ERR_NONE, "two absorbing emitters");
+    store64(obs, 0);
+    store64(obs + 8, 1);
+    var lli: f64 = ll_of(&hi, obs, 2);
+    assert(lli == _PMN_F64_NEG_INFINITY, "symbol 1 is impossible: −∞");
+    var hj: PmnHiddenMarkovModel;
+    assert_eq(hi.baum_welch(obs, 2, 3, &hj), PMN_ERR_COMPUTATION_ERROR, "and Baum–Welch refuses it");
+    assert_eq(hi.baum_welch(obs, 2, 0, &hj), PMN_ERR_INVALID_PARAMETER, "max_iter 0");
+    assert_eq(hi.baum_welch(obs, 0, 0, &hj), PMN_ERR_INVALID_PARAMETER, "max_iter 0 before the observations");
+    PmnHiddenMarkovModel_drop(&hi);
+    var nn[32];
+    put(&nn, 0, _PMN_F64_NAN);
+    put(&nn, 1, 1.0);
+    put(&nn, 2, 0.5);
+    put(&nn, 3, 0.5);
+    assert_eq(PmnHiddenMarkovModel_new(&hx, &nn, 2, 2, &one1, 2, 1, &half, 2), PMN_ERR_INVALID_PARAMETER, "a NaN in A");
+    var bad = "{\"transition\":[[0.5,0.5],[0.5,0.5]],\"emission\":[[1.0],[1.0]],\"initial\":[0.9,0.9]}";
+    assert_eq(PmnHiddenMarkovModel_from_json(&hx, bad, strlen(bad)), PMN_ERR_DESERIALIZE, "π of [0.9, 0.9] refused");
+    var bs = "{\"transition_matrix\":[[1.0]],\"state\":5}";
+    assert_eq(PmnMarkovChain_from_json(&c, bs, strlen(bs)), PMN_ERR_DESERIALIZE, "state 5 of 1 refused");
+    var be = "{\"transition_matrix\":[],\"state\":0}";
+    assert_eq(PmnMarkovChain_from_json(&c, be, strlen(be)), PMN_ERR_DESERIALIZE, "an empty matrix refused");
+    var br = "{\"transition_matrix\":[[0.5,0.5],[1]],\"state\":0}";
+    assert_eq(PmnMarkovChain_from_json(&c, br, strlen(br)), PMN_ERR_DESERIALIZE, "a ragged matrix refused");
+
+    test_group("serde round trips, Debug");
+    var sb = str_builder_new();
+    assert_eq(h.to_json(sb), PMN_ERR_NONE, "the HMM's JSON");
+    var hr: PmnHiddenMarkovModel;
+    assert_eq(PmnHiddenMarkovModel_from_json(&hr, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var same = 1;
+    for (var w = 0; w < 4 + 6 + 2; w = w + 1) {
+        if (load64(hr.transition() + w * 8) != load64(h.transition() + w * 8)) { same = 0; }
+    }
+    assert(same == 1, "the same bits");
+    PmnHiddenMarkovModel_drop(&hr);
+    put(&m, 0, 0.5);
+    put(&m, 1, 0.5);
+    put(&m, 2, 0.3);
+    put(&m, 3, 0.7);
+    assert_eq(PmnMarkovChain_new(&c, &m, 2, 2, 0), PMN_ERR_NONE, "[[0.5, 0.5], [0.3, 0.7]]");
+    var sb2 = str_builder_new();
+    assert_eq(c.to_json(sb2), PMN_ERR_NONE, "the chain's JSON");
+    var want = "{\"transition_matrix\":[[0.5,0.5],[0.3,0.7]],\"state\":0}";
+    assert(load64(sb2 + 8) == strlen(want) && memeq(load64(sb2), want, strlen(want)) == 1, "serde_json's text");
+    var cr: PmnMarkovChain;
+    assert_eq(PmnMarkovChain_from_json(&cr, load64(sb2), load64(sb2 + 8)), PMN_ERR_NONE, "read back");
+    assert(cr.state == 0 && load64(cr.transition_matrix() + 24) == load64(c.transition_matrix() + 24), "the same");
+    PmnMarkovChain_drop(&cr);
+    var sb3 = str_builder_new();
+    assert_eq(c.debug(sb3, 0), PMN_ERR_NONE, "Debug");
+    var dw = "MarkovChain { transition_matrix: [[0.5, 0.5], [0.3, 0.7]], state: 0 }";
+    assert(load64(sb3 + 8) == strlen(dw) && memeq(load64(sb3), dw, strlen(dw)) == 1, "the derive's text");
+    PmnMarkovChain_drop(&c);
+
+    test_group("the HMM's buffers (null, too small, aliasing, drop, clone)");
+    store64(obs, 0);
+    store64(obs + 8, 2);
+    assert_eq(h.viterbi(obs, 2, o, 1), PMN_ERR_INVALID_PARAMETER, "cap 1 for 2");
+    assert_eq(h.viterbi(obs, 2, 0, 2), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(h.viterbi(obs, 2, obs + 8, 2), PMN_ERR_INVALID_PARAMETER, "out over the observations");
+    assert_eq(h.viterbi(obs, 2, h.emission(), 2), PMN_ERR_INVALID_PARAMETER, "out over the model");
+    assert_eq(h.viterbi(0, 2, o, 2), PMN_ERR_INVALID_PARAMETER, "null observations");
+    assert_eq(h.baum_welch(obs, 2, 1, &h), PMN_ERR_INVALID_PARAMETER, "Baum–Welch into itself");
+    assert_eq(h.baum_welch(obs, 2, 1, 0), PMN_ERR_INVALID_PARAMETER, "into null");
+    store64(obs + 8, 0 - 1);
+    assert_eq(h.viterbi(obs, 2, o, 2), PMN_ERR_INVALID_SAMPLE, "symbol 2^64 − 1");
+    var hc: PmnHiddenMarkovModel;
+    assert_eq(PmnHiddenMarkovModel_clone(&hc, &h), PMN_ERR_NONE, "a clone");
+    assert(hc.transition() != h.transition() && load64(hc.emission() + 40) == load64(h.emission() + 40),
+        "its own block");
+    PmnHiddenMarkovModel_drop(&hc);
+    PmnHiddenMarkovModel_drop(&h);
+    assert(h.num_states() == 0 && h.num_symbols() == 0, "a dropped model");
+    var td, vd = h.forward_log_likelihood(obs, 1);
+    assert(td == Err && vd == PMN_ERR_INVALID_PARAMETER, "refuses");
+    assert_eq(PmnHiddenMarkovModel_drop(&h), PMN_ERR_NONE, "a second drop");
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

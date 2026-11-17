@@ -27,7 +27,7 @@ PORTED = ["error", "rng", "combinatorics", "bridge", "distribution", "descriptiv
           "timeseries", "bayesian"]   # M5's gate
 # Modules in progress, part by part: an item without a SURFACE entry is listed as pending, not failed, until the
 # module moves to PORTED at its milestone's gate.
-PARTIAL = {}
+PARTIAL = {"markov": "M6"}
 
 SURFACE = {
     # descriptive.rs (M4 part a1; ADR 007 rows 1, 3 and 14)
@@ -61,6 +61,30 @@ SURFACE = {
     "descriptive::KernelDensity.evaluate": ["method PmnKernelDensity.evaluate"],
     "descriptive::KernelDensity.evaluate_grid": ["method PmnKernelDensity.evaluate_grid"],
     "descriptive::correlation_matrix": ["fn pmn_correlation_matrix"],
+    # markov.rs (M6 part a; D5, D7, D11, D12)
+    "markov::MarkovChain": ["struct PmnMarkovChain", "fn PmnMarkovChain_drop", "method PmnMarkovChain.transition_matrix"],
+    "markov::MarkovChain#Clone": ["fn PmnMarkovChain_clone"],
+    "markov::MarkovChain#Debug": ["method PmnMarkovChain.debug"],
+    "markov::MarkovChain#Serialize": ["method PmnMarkovChain.to_json"],
+    "markov::MarkovChain#Deserialize": ["fn PmnMarkovChain_from_json"],
+    "markov::MarkovChain.new": ["fn PmnMarkovChain_new"],
+    "markov::MarkovChain.num_states": ["method PmnMarkovChain.num_states"],
+    "markov::MarkovChain.step": ["method PmnMarkovChain.step"],
+    "markov::MarkovChain.simulate": ["method PmnMarkovChain.simulate"],
+    "markov::MarkovChain.steady_state": ["method PmnMarkovChain.steady_state"],
+    "markov::HiddenMarkovModel": ["struct PmnHiddenMarkovModel", "fn PmnHiddenMarkovModel_drop",
+                                  "method PmnHiddenMarkovModel.transition", "method PmnHiddenMarkovModel.emission",
+                                  "method PmnHiddenMarkovModel.initial"],
+    "markov::HiddenMarkovModel#Clone": ["fn PmnHiddenMarkovModel_clone"],
+    "markov::HiddenMarkovModel#Debug": ["method PmnHiddenMarkovModel.debug"],
+    "markov::HiddenMarkovModel#Serialize": ["method PmnHiddenMarkovModel.to_json"],
+    "markov::HiddenMarkovModel#Deserialize": ["fn PmnHiddenMarkovModel_from_json"],
+    "markov::HiddenMarkovModel.new": ["fn PmnHiddenMarkovModel_new"],
+    "markov::HiddenMarkovModel.num_states": ["method PmnHiddenMarkovModel.num_states"],
+    "markov::HiddenMarkovModel.num_symbols": ["method PmnHiddenMarkovModel.num_symbols"],
+    "markov::HiddenMarkovModel.forward_log_likelihood": ["method PmnHiddenMarkovModel.forward_log_likelihood"],
+    "markov::HiddenMarkovModel.viterbi": ["method PmnHiddenMarkovModel.viterbi"],
+    "markov::HiddenMarkovModel.baum_welch": ["method PmnHiddenMarkovModel.baum_welch"],
     # bayesian.rs (M5 part c)
     "bayesian::BayesianUpdate": ["struct PmnBayesianUpdate"],
     "bayesian::BayesianUpdate#Clone": "a plain struct: copying it clones it",

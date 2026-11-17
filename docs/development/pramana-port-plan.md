@@ -56,7 +56,7 @@
 > Python models with MPFR, exact arithmetic or NIST StRD as the reference. **M4 has begun** (its parts are in §7):
 > parts a1–a3 (the descriptive statistics, KDE, the correlation matrix, the Jacobi and the PCA) and b1–b2 (the
 > hypothesis tests, the intervals and the quantiles) and c, the gate, are done: **M4 is complete.** **M5 has
-> begun:** parts a–d are done: **M5 is complete.** M6 is next.
+> begun:** parts a–d are done: **M5 is complete.** **M6 has begun:** part a (the Markov chains and HMMs) is done.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1286,7 +1286,8 @@ Rust's operation order with its refusals, each type with its codec and Debug; go
 `monte_carlo`, the RNG streams at fixed seeds (class S):
 - **a:** `src/markov.cyr`: `MarkovChain` (owned, validated; `step` and `simulate` generic over `R: PmnRng`,
   `steady_state` with the stall switch to the lazy chain) and `HiddenMarkovModel` (owned, validated; the scaled
-  forward pass, Viterbi, scaled Baum–Welch);
+  forward pass, Viterbi, scaled Baum–Welch). A new golden module, `markov` (2,884 rows), 226 codec and 20 Debug rows;
+  every row passing on the first replay, at 0 ulp, on three targets; twenty mutants caught ✅;
 - **b:** `src/monte_carlo.cyr`: Monte Carlo integration, π, Metropolis–Hastings and Gibbs sampling, their callbacks a
   function pointer and a context (D7);
 - **c:** M6's gate: the soak, surface parity, the benchmark rows, three targets.

@@ -74,4 +74,5 @@ modules = [
     "src/regression.cyr",
     "src/timeseries.cyr",
     "src/bayesian.cyr",
+    "src/markov.cyr",
 ]

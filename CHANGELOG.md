@@ -991,6 +991,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
     shortfalls are D4's 2.1 candidates on the roadmap;
   - **the soak** gains 10⁴ rounds of every M5 call: nothing taken (`tests/soak.tcyr`, 38 checks);
   - **surface parity:** `regression`, `timeseries` and `bayesian` are ported (300 items in ten modules, none pending).
+- **M6 part a: Markov chains and hidden Markov models** (port plan §7; `src/markov.cyr`). 1.3.0's `MarkovChain`
+  (owned, validated: `new`, `num_states`, `step` and `simulate` generic over `R: PmnRng`, `steady_state` with the
+  stall switch to the lazy chain) and `HiddenMarkovModel` (owned, validated: `new`, `num_states`, `num_symbols`, the
+  scaled forward log-likelihood, Viterbi with 1.3.0's tie rules, scaled Baum–Welch), their codecs through the
+  constructors and their Debug. Trajectories, stationary distributions and paths go into caller buffers, each checked
+  for aliasing. A new golden module, `markov`, 2,884 rows:
+  - stochastic matrices at and past the 1e-6 row-sum bound, and every refusal;
+  - walks from fixed seeds, with draws exactly on a cumulative sum and past a row's rounded sum;
+  - steady states on periodic, slowly mixing (λ = ±0.995) and near-cyclic chains;
+  - HMMs over sequences of up to 2,000 symbols, zero-probability sequences and unvisited states.
+
+  It also has 226 codec rows and 20 Debug rows. Every row passes on the first replay, at 0 ulp, on x86_64 ELF, PE and
+  aarch64, and glibc's ln never moves a log-likelihood or a path (`markov.cr.tsv` is empty). Twenty mutants each fail
+  1 to 541 rows. Four of them first survived and were closed with rows: the strict `r < Σ`, the 0.999 stall factor,
+  the 10⁴-step cap and the stall counter's reset. `tests/markov.tcyr` (110 checks) carries 1.3.0's tests over.
 ### Performance
 
 - **M3's parameter checks inlined** (`src/dist.cyr`, `src/mathx.cyr`; M3 part a2's finding). Each is now one

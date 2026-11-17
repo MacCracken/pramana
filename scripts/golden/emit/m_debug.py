@@ -133,4 +133,14 @@ def emit():
         cs = [g6.signed_log_uniform(-5.0, 5.0) for _ in range(k % 4)]
         both("debug::ArimaModel", [v(len(cs))] + [f(c) for c in cs] + [i(g6.int(0, 3)), f(g6.signed_log_uniform(-5.0, 5.0)),
                                                                          f(g6.unit())])
+    # M6 part a: MarkovChain and HiddenMarkovModel (nested lists)
+    from .m_json import mat_toks, stochastic_row
+    g7 = Rng(0x9216D5D98979FB1B)
+    for c in ([[1.0]], [[0.7, 0.3], [0.4, 0.6]], [[-0.0, 1.0], [5e-324, 1.0]], [stochastic_row(g7, 3) for _ in range(3)]):
+        for st in sorted({0, len(c) - 1}):
+            both("debug::MarkovChain", mat_toks(c) + [i(st)])
+    for ta, eb, pi in (([[1.0]], [[1.0]], [1.0]), ([[0.7, 0.3], [0.4, 0.6]], [[0.5, 0.4, 0.1], [0.1, 0.3, 0.6]], [0.6, 0.4]),
+                       ([stochastic_row(g7, 3) for _ in range(3)], [stochastic_row(g7, 2) for _ in range(3)],
+                        [1.0, 0.0, -0.0])):
+        both("debug::HiddenMarkovModel", mat_toks(ta) + mat_toks(eb) + [v(len(pi))] + [f(x) for x in pi])
     return m

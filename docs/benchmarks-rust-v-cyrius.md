@@ -957,3 +957,17 @@ vectorize either (each sum depends on the last), so the ratio is the codegen's p
 `tests/bayesian.bcyr`, three pinned runs. The call is 44 logarithms: at the correctly rounded ln's 54–55 ns against
 glibc's 5.3–5.4 ns (M1 part b1's record), they are 2.4 µs of the 3.0. ADR 009's price.
 
+## M6 part a: Markov chains and HMMs (2026-11-17)
+
+`tests/markov.bcyr` runs 1.3.0's four markov criterion bodies. Three pinned runs at a load average of 0.7.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `markov/step_1000` | 2.00 µs | 15.3 µs | 7.7× |
+| `markov/hmm_forward_1000` | 45.0 µs | 143–145 µs | 3.2× |
+| `markov/hmm_baum_welch_200_x5` | 152 µs | 535–539 µs | 3.5× |
+| `markov/steady_state_10` | 0.619 µs | 7.24–7.32 µs | 11.7× |
+
+The step row is 1,000 draws through the bounded generic (M1's 10 ns against Rust's inlined 1.7 ns) and a short scan.
+The forward pass's 1,000 correctly rounded logarithms are about 55 µs of its 143. `steady_state_10` is about 20 power
+iterations of a 10 × 10 product, the dense inner loop that Rust vectorizes.

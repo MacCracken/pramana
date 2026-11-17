@@ -835,6 +835,9 @@ JSON_VALIDATED = {
     "KernelDensity": ([("data", "Vec<f64>"), ("bandwidth", "f64"), ("kernel", "Kernel")],
                       lambda *vals: kde_json_accepts(*vals)),
     "BayesianUpdate": ([("prior", "f64"), ("likelihood", "f64"), ("evidence", "f64")], lambda p, l, e: by_new(p, l, e)),
+    "MarkovChain": ([("transition_matrix", "Vec<Vec<f64>>"), ("state", "usize")], lambda *vals: mk_json_accepts(*vals)),
+    "HiddenMarkovModel": ([("transition", "Vec<Vec<f64>>"), ("emission", "Vec<Vec<f64>>"), ("initial", "Vec<f64>")],
+                          lambda *vals: hmm_json_accepts(*vals)),
 }
 
 
@@ -3678,6 +3681,23 @@ def debug_text(fn, ins):
     if fn == "debug::BayesianUpdate":
         return debug_struct("BayesianUpdate", [("prior", rust_debug_f64(ins[0])), ("likelihood", rust_debug_f64(ins[1])),
                                                ("evidence", rust_debug_f64(ins[2]))], ins[3] == 1)
+    if fn in ("debug::MarkovChain", "debug::HiddenMarkovModel"):
+        alt = ins[-1] == 1
+        it = iter(ins[:-1])
+
+        def mvec(xs, depth):
+            return rust_debug_list([rust_debug_f64(x) for x in xs], alt, depth)
+
+        def mmat(rs):
+            return rust_debug_list([mvec(r, 2) for r in rs], alt, 1)
+
+        if fn == "debug::MarkovChain":
+            mat = nested_rows(it)
+            return debug_struct("MarkovChain", [("transition_matrix", mmat(mat)), ("state", str(next(it) % U64))], alt)
+        a, b = nested_rows(it), nested_rows(it)
+        ip = [next(it) for _ in range(int(next(it)[len("v:"):]))]
+        return debug_struct("HiddenMarkovModel", [("transition", mmat(a)), ("emission", mmat(b)),
+                                                  ("initial", mvec(ip, 1))], alt)
     if fn == "debug::Kernel":
         name = ins[0].split(".", 1)[1]
         if name not in KERNEL_NAMES:
@@ -4914,6 +4934,300 @@ BAYES = {
 }
 
 
+# ── markov (M6 part a): 1.3.0's markov.rs ──
+# A matrix is a row's flat `v:` slice and its rows and columns (scalars); observations and states are usize words
+# (`i:` tokens, two's complement past 2^63). Sums run from −0.0 (`Iterator::sum`), accumulators from +0.0 (`vec![0.0;
+# n]`), products left to right, as written.
+
+U64 = 1 << 64
+
+
+def mk_row_ok(row):
+    """`validate_stochastic_row`: finite, non-negative, summing to 1 within 1e-6."""
+    if any(not math.isfinite(x) or x < 0.0 for x in row):
+        return False
+    return not abs(rsum(row) - 1.0) > 1e-6
+
+
+def mk_new(flat, rows, cols, state):
+    """`MarkovChain::new` on a rectangular rows × cols matrix: its rows, or the error."""
+    if rows == 0 or cols != rows:
+        return "E:InvalidParameter"
+    mat = [flat[r * cols:(r + 1) * cols] for r in range(rows)]
+    if any(not mk_row_ok(r) for r in mat):
+        return "E:InvalidParameter"
+    if state % U64 >= rows:
+        return "E:InvalidParameter"
+    return mat
+
+
+def mk_step(mat, state, u):
+    """`MarkovChain::step`: the next state, a draw from u taken only for a state in range."""
+    if state % U64 >= len(mat):
+        return state
+    r = next(u)
+    row, cum = mat[state], 0.0
+    for j, p in enumerate(row):
+        cum += p
+        if r < cum:
+            return j
+    for j in range(len(row) - 1, -1, -1):
+        if row[j] > 0.0:
+            return j
+    return state
+
+
+def mk_steady(mat):
+    n = len(mat)
+    pi = [1.0 / float(n)] * n
+    lazy, prev, stalled = False, math.inf, 0
+    for _ in range(10000):
+        nx = [0.0] * n
+        for a in range(n):
+            for b in range(n):
+                nx[b] += pi[a] * mat[a][b]
+        res = rsum([abs(x - y) for x, y in zip(pi, nx)])
+        if res < 1e-10:
+            total = rsum(nx)
+            return [x / total for x in nx] if total > 0.0 else nx
+        if not lazy:
+            stalled = stalled + 1 if res >= 0.999 * prev else 0
+            lazy = stalled >= 8
+            prev = res
+        pi = [0.5 * (p + q) for p, q in zip(pi, nx)] if lazy else nx
+    return "E:ConvergenceFailure"
+
+
+def mk_out_new(L, sl, sc):
+    mat = mk_new(sl[0], sc[0], sc[1], sc[2])
+    return [mat] if isinstance(mat, str) else [len(mat), sc[2]]
+
+
+def mk_out_walk(L, sl, sc, simulate):
+    """`step` k times (each one's return) or `simulate(k)` (the trajectory), from `SimpleRng::new(seed)`."""
+    mat = mk_new(sl[0], sc[0], sc[1], sc[2])
+    if isinstance(mat, str):
+        return [mat]
+    state, u, k = sc[2], d_uniforms(sc[3]), sc[4]
+    out = [state] if simulate else []
+    for _ in range(k):
+        state = mk_step(mat, state, u)
+        out.append(state)
+    return [f"v:{len(out)}"] + out
+
+
+def mk_out_steady(L, sl, sc):
+    mat = mk_new(sl[0], sc[0], sc[1], sc[2])
+    if isinstance(mat, str):
+        return [mat]
+    r = mk_steady(mat)
+    return [r] if isinstance(r, str) else [f"v:{len(r)}"] + r
+
+
+def hmm_new(ta, tr, tc, eb, er, ec, ip):
+    """`HiddenMarkovModel::new` on rectangular matrices: (A, B, π) as lists of rows, or the error."""
+    n = len(ip)
+    if n == 0 or not mk_row_ok(ip):
+        return "E:InvalidParameter"
+    if tr != n or tc != n:
+        return "E:DimensionMismatch"
+    a = [ta[r * n:(r + 1) * n] for r in range(n)]
+    if any(not mk_row_ok(r) for r in a):
+        return "E:InvalidParameter"
+    if er != n:
+        return "E:DimensionMismatch"
+    if ec == 0:
+        return "E:InvalidParameter"
+    b = [eb[r * ec:(r + 1) * ec] for r in range(n)]
+    if any(not mk_row_ok(r) for r in b):
+        return "E:InvalidParameter"
+    return a, b, list(ip)
+
+
+def hmm_check(b, obs):
+    if not obs:
+        return "E:InvalidSample"
+    if any(o % U64 >= len(b[0]) for o in obs):
+        return "E:InvalidSample"
+    return None
+
+
+def hmm_forward(a, b, ip, obs):
+    n, alpha, scales = len(ip), [], []
+    for t, o in enumerate(obs):
+        if t == 0:
+            cur = [ip[i] * b[i][o] for i in range(n)]
+        else:
+            prev = alpha[-1]
+            cur = [rsum([prev[i] * a[i][j] for i in range(n)]) * b[j][o] for j in range(n)]
+        sc = rsum(cur)
+        scales.append(sc)
+        if sc > 0.0:
+            inv = 1.0 / sc
+            cur = [x * inv for x in cur]
+        alpha.append(cur)
+    return alpha, scales
+
+
+def hmm_model(sl, sc):
+    """A row's model (its first three slices and four dims) and observations (the fourth slice), or the error."""
+    h = hmm_new(sl[0], sc[0], sc[1], sl[1], sc[2], sc[3], sl[2])
+    if isinstance(h, str):
+        return h, None
+    return h, hmm_check(h[1], sl[3])
+
+
+def hmm_out_new(L, sl, sc):
+    h = hmm_new(sl[0], sc[0], sc[1], sl[1], sc[2], sc[3], sl[2])
+    return [h] if isinstance(h, str) else [len(h[2]), len(h[1][0])]
+
+
+def hmm_out_ll(L, sl, sc):
+    h, e = hmm_model(sl, sc)
+    if isinstance(h, str) or e:
+        return [h if isinstance(h, str) else e]
+    _, scales = hmm_forward(*h, sl[3])
+    if any(c <= 0.0 for c in scales):
+        return [-math.inf]
+    return [rsum([L.ln(c) for c in scales])]
+
+
+def hmm_out_viterbi(L, sl, sc):
+    h, e = hmm_model(sl, sc)
+    if isinstance(h, str) or e:
+        return [h if isinstance(h, str) else e]
+    a, b, ip = h
+    obs, n = sl[3], len(ip)
+
+    def sln(p):
+        return L.ln(p) if p > 0.0 else -math.inf
+
+    la = [[sln(p) for p in r] for r in a]
+    delta = [sln(ip[i]) + sln(b[i][obs[0]]) for i in range(n)]
+    psi = [[0] * n]
+    for t in range(1, len(obs)):
+        cur, ps = [], []
+        for j in range(n):
+            le = sln(b[j][obs[t]])
+            best, bi = -math.inf, 0
+            for i in range(n):
+                val = delta[i] + la[i][j]
+                if val > best:
+                    best, bi = val, i
+            cur.append(best + le)
+            ps.append(bi)
+        delta = cur
+        psi.append(ps)
+    last = 0
+    for q in range(1, n):
+        if total_key(delta[q]) >= total_key(delta[last]):
+            last = q
+    path = [0] * len(obs)
+    path[-1] = last
+    for t in range(len(obs) - 2, -1, -1):
+        path[t] = psi[t + 1][path[t + 1]]
+    return [f"v:{len(path)}"] + path
+
+
+def hmm_baum_welch(a, b, ip, obs, max_iter):
+    a, b, ip = [r[:] for r in a], [r[:] for r in b], ip[:]
+    n, m, tl = len(ip), len(b[0]), len(obs)
+    for _ in range(max_iter):
+        alpha, scales = hmm_forward(a, b, ip, obs)
+        if any(c <= 0.0 or not math.isfinite(c) for c in scales):
+            return "E:ComputationError"
+        beta = [[1.0] * n for _ in range(tl)]
+        for t in range(tl - 2, -1, -1):
+            on, sn = obs[t + 1], scales[t + 1]
+            for i in range(n):
+                beta[t][i] = rsum([a[i][j] * b[j][on] * beta[t + 1][j] for j in range(n)]) / sn
+        g0, gh, ga = [0.0] * n, [0.0] * n, [0.0] * n
+        xs, en = [[0.0] * n for _ in range(n)], [[0.0] * m for _ in range(n)]
+        for t in range(tl):
+            norm = rsum([alpha[t][i] * beta[t][i] for i in range(n)])
+            if norm > 0.0:
+                for i in range(n):
+                    g = alpha[t][i] * beta[t][i] / norm
+                    if t == 0:
+                        g0[i] = g
+                    if t + 1 < tl:
+                        gh[i] += g
+                    ga[i] += g
+                    en[i][obs[t]] += g
+            if t + 1 < tl:
+                on = obs[t + 1]
+                xi = [[alpha[t][i] * a[i][j] * b[j][on] * beta[t + 1][j] for j in range(n)] for i in range(n)]
+                den = rsum([xi[i][j] for i in range(n) for j in range(n)])
+                if den > 0.0:
+                    for i in range(n):
+                        for j in range(n):
+                            xs[i][j] += xi[i][j] / den
+        ip = g0[:]
+        for i in range(n):
+            if gh[i] > 0.0:
+                a[i] = [xs[i][j] / gh[i] for j in range(n)]
+            if ga[i] > 0.0:
+                b[i] = [en[i][k] / ga[i] for k in range(m)]
+    return a, b, ip
+
+
+def hmm_out_bw(L, sl, sc):
+    """Inputs: the model, the observations, then max_iter after the four dims."""
+    h, e = hmm_model(sl, sc)
+    if isinstance(h, str):
+        return [h]
+    if sc[4] % U64 == 0:
+        return ["E:InvalidParameter"]
+    if e:
+        return [e]
+    r = hmm_baum_welch(*h, sl[3], sc[4])
+    if isinstance(r, str):
+        return [r]
+    a, b, ip = r
+    fa, fb = [x for row in a for x in row], [x for row in b for x in row]
+    return [f"v:{len(fa)}"] + fa + [f"v:{len(fb)}"] + fb + [f"v:{len(ip)}"] + ip
+
+
+def nested_rows(it):
+    """A Vec<Vec<f64>>'s tokens (`v:rows`, then each row's `v:n` and entries) as lists."""
+    return [[next(it) for _ in range(int(next(it)[len("v:"):]))] for _ in range(int(next(it)[len("v:"):]))]
+
+
+def mk_json_accepts(*vals):
+    """MarkovChainRepr's fields, then `MarkovChain::new` on Vec<Vec<f64>> (a ragged row refused)."""
+    it = iter(vals)
+    mat, state = nested_rows(it), next(it)
+    n = len(mat)
+    if n == 0 or any(len(r) != n or not mk_row_ok(r) for r in mat):
+        return False
+    return state % U64 < n
+
+
+def hmm_json_accepts(*vals):
+    """HiddenMarkovModelRepr's fields, then `HiddenMarkovModel::new` (ragged rows refused)."""
+    it = iter(vals)
+    a, b = nested_rows(it), nested_rows(it)
+    ip = [next(it) for _ in range(int(next(it)[len("v:"):]))]
+    n = len(ip)
+    if n == 0 or not mk_row_ok(ip) or len(a) != n or any(len(r) != n or not mk_row_ok(r) for r in a):
+        return False
+    if len(b) != n or not b[0]:
+        return False
+    return all(len(r) == len(b[0]) and mk_row_ok(r) for r in b)
+
+
+MARKOV = {
+    "MarkovChain::new": mk_out_new,
+    "MarkovChain::step": lambda L, sl, sc: mk_out_walk(L, sl, sc, False),
+    "MarkovChain::simulate": lambda L, sl, sc: mk_out_walk(L, sl, sc, True),
+    "MarkovChain::steady_state": mk_out_steady,
+    "HiddenMarkovModel::new": hmm_out_new,
+    "HiddenMarkovModel::forward_log_likelihood": hmm_out_ll,
+    "HiddenMarkovModel::viterbi": hmm_out_viterbi,
+    "HiddenMarkovModel::baum_welch": hmm_out_bw,
+}
+
+
 # Rows a T1 function feeds, named in a reference row's note (as DIST_T1).
 STATS_T1 = {"hypothesis::t_test_one_sample": "incomplete beta", "hypothesis::t_test_two_sample": "incomplete beta",
             "hypothesis::chi_squared_test": "incomplete gamma", "hypothesis::one_way_anova": "incomplete beta",
@@ -4972,7 +5286,8 @@ def check_stats(root, module, table, rows):
     return failures, by_fn, crs, refs
 
 
-STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG, "timeseries": TS, "bayesian": BAYES}
+STATS_MODULES = {"descriptive": DESC, "hypothesis": {**HYP, **HYP_B2}, "regression": REG, "timeseries": TS,
+                 "bayesian": BAYES, "markov": MARKOV}
 
 
 def main(argv):
