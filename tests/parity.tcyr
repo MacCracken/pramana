@@ -455,6 +455,19 @@ fn _par_json_write(fp, fl): i64 {
         if (PmnWeibull_new(&ww, wk, wwl) != PMN_ERR_NONE) { return 0 - 1; }
         _par_json_k = 2;
         e = ww.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::Gamma") == 1) {
+        var wgd: PmnGamma;
+        var wga: f64 = _par_in(0);
+        var wgb: f64 = _par_in(1);
+        if (PmnGamma_new(&wgd, wga, wgb) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 2;
+        e = wgd.to_json(sb);
+    } elif (_par_eq(fp, fl, "json::write::ChiSquared") == 1) {
+        var wch: PmnChiSquared;
+        var wdf: f64 = _par_in(0);
+        if (PmnChiSquared_new(&wch, wdf) != PMN_ERR_NONE) { return 0 - 1; }
+        _par_json_k = 1;
+        e = wch.to_json(sb);
     } elif (_par_eq(fp, fl, "json::write::Bernoulli") == 1) {
         var wb: PmnBernoulli;
         var wp: f64 = _par_in(0);
@@ -536,8 +549,8 @@ fn _par_json_normal(): i64 {
     return 1;
 }
 
-# json::Uniform, json::Exponential and json::Bernoulli rows (M3 part a2), json::Cauchy and json::Weibull (a3): each
-# one's from_json, the fields it holds.
+# json::Uniform, json::Exponential and json::Bernoulli rows (M3 part a2), json::Cauchy and json::Weibull (a3),
+# json::Gamma and json::ChiSquared (b1): each one's from_json, the fields it holds.
 fn _par_json_dist(fp, fl): i64 {
     var n = 0;
     var doc = _par_in_bytes(0, &n);
@@ -568,6 +581,16 @@ fn _par_json_dist(fp, fl): i64 {
         a = w.k;
         b = w.lambda;
         two = 1;
+    } elif (_par_eq(fp, fl, "json::Gamma") == 1) {
+        var gd: PmnGamma;
+        e = PmnGamma_from_json(&gd, doc, n);
+        a = gd.alpha;
+        b = gd.beta;
+        two = 1;
+    } elif (_par_eq(fp, fl, "json::ChiSquared") == 1) {
+        var ch: PmnChiSquared;
+        e = PmnChiSquared_from_json(&ch, doc, n);
+        a = ch.df;
     } elif (_par_eq(fp, fl, "json::Bernoulli") == 1) {
         var y: PmnBernoulli;
         e = PmnBernoulli_from_json(&y, doc, n);
@@ -717,9 +740,25 @@ fn _par_debug(fp, fl): i64 {
         _par_got_text(load64(sb), load64(sb + 8));
         return 1;
     }
+    if (_par_eq(fp, fl, "debug::Gamma") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var dgd: PmnGamma;
+        var dga: f64 = _par_in(0);
+        var dgb: f64 = _par_in(1);
+        if (PmnGamma_new(&dgd, dga, dgb) != PMN_ERR_NONE) { return 0 - 1; }
+        e = dgd.debug(sb, _par_in(2));
+        if (e != PMN_ERR_NONE) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
     if (_par_in_n != 2) { return 0 - 1; }
     var alt = _par_in(1);
-    if (_par_eq(fp, fl, "debug::Exponential") == 1) {
+    if (_par_eq(fp, fl, "debug::ChiSquared") == 1) {
+        var dch: PmnChiSquared;
+        var ddf: f64 = _par_in(0);
+        if (PmnChiSquared_new(&dch, ddf) != PMN_ERR_NONE) { return 0 - 1; }
+        e = dch.debug(sb, alt);
+    } elif (_par_eq(fp, fl, "debug::Exponential") == 1) {
         var de: PmnExponential;
         var dl: f64 = _par_in(0);
         if (PmnExponential_new(&de, dl) != PMN_ERR_NONE) { return 0 - 1; }
@@ -997,9 +1036,15 @@ fn _par_special(fp, fl): i64 {
 
 # `dist` rows (M3): src/dist.cyr, src/dist_cont.cyr and src/dist_disc.cyr, each distribution built by its constructor
 # from the row's parameters. Part a1: Normal, and Box–Muller's `standard_normal` through a bounded generic; part a2:
-# Uniform, Exponential and Bernoulli; part a3: Cauchy and Weibull.
+# Uniform, Exponential and Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma, ChiSquared and the oracle's
+# `sample_gamma_standard`.
 fn _par_std_normal<R: PmnRng>(g: *R): f64 {
     var z: f64 = _pmn_standard_normal(g);
+    return z;
+}
+
+fn _par_gamma_standard<R: PmnRng>(a: f64, g: *R): f64 {
+    var z: f64 = _pmn_sample_gamma_standard(a, g);
     return z;
 }
 
@@ -1075,6 +1120,19 @@ fn _par_dist(fp, fl): i64 {
         }
         return 1;
     }
+    if (_par_eq(fp, fl, "sample_gamma_standard") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var ga: f64 = _par_in(0);
+        var gg: PmnSimpleRng;
+        if (PmnSimpleRng_new(&gg, _par_in(1)) != PMN_ERR_NONE) { return 0 - 1; }
+        var gn = _par_in(2);
+        _par_got_seq(gn);
+        for (var gk = 0; gk < gn; gk = gk + 1) {
+            var gz: f64 = _par_gamma_standard(ga, &gg);
+            _par_got_f(gz);
+        }
+        return 1;
+    }
     var px = _par_dist_prefix(fp, fl, "Normal");
     if (px > 0) {
         var m: f64 = _par_in(0);
@@ -1123,6 +1181,25 @@ fn _par_dist(fp, fl): i64 {
         if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(ew, &dw, 2); }
         if (ew != PMN_ERR_NONE) { return 0 - 1; }
         return _par_dist_call(&dw, fp + px, fl - px, 2);
+    }
+    px = _par_dist_prefix(fp, fl, "Gamma");
+    if (px > 0) {
+        var gal: f64 = _par_in(0);
+        var gbe: f64 = _par_in(1);
+        var dg: PmnGamma;
+        var eg = PmnGamma_new(&dg, gal, gbe);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(eg, &dg, 2); }
+        if (eg != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&dg, fp + px, fl - px, 2);
+    }
+    px = _par_dist_prefix(fp, fl, "ChiSquared");
+    if (px > 0) {
+        var cdf0: f64 = _par_in(0);
+        var dch: PmnChiSquared;
+        var ech = PmnChiSquared_new(&dch, cdf0);
+        if (_par_eq(fp + px, fl - px, "new") == 1) { return _par_dist_new(ech, &dch, 1); }
+        if (ech != PMN_ERR_NONE) { return 0 - 1; }
+        return _par_dist_call(&dch, fp + px, fl - px, 1);
     }
     px = _par_dist_prefix(fp, fl, "Bernoulli");
     if (px > 0) {
@@ -1266,6 +1343,13 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "Weibull::mean") == 1) { return 0; }         # downstream of the T1 lnΓ (ADR 009 as amended)
     if (_par_eq(fp, fl, "Weibull::variance") == 1) { return 0; }
     if (_par_eq(fp, fl, "Weibull::sample") == 1) { return 0; }       # ln and powf
+    if (_par_eq(fp, fl, "Gamma::pdf") == 1) { return 0; }            # ln and exp, downstream of the T1 lnΓ (part b1)
+    if (_par_eq(fp, fl, "Gamma::cdf") == 1) { return 0; }            # downstream of the T1 incomplete gamma
+    if (_par_eq(fp, fl, "Gamma::sample") == 1) { return 0; }         # Marsaglia–Tsang: ln, cos and powf
+    if (_par_eq(fp, fl, "ChiSquared::pdf") == 1) { return 0; }
+    if (_par_eq(fp, fl, "ChiSquared::cdf") == 1) { return 0; }
+    if (_par_eq(fp, fl, "ChiSquared::sample") == 1) { return 0; }
+    if (_par_eq(fp, fl, "sample_gamma_standard") == 1) { return 0; }
     return 0 - 1;
 }
 

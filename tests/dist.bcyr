@@ -5,7 +5,7 @@
 # primitives. Each side prints the row's sum and an FNV-1a digest of its 4,096 results' bits; they differ where a
 # glibc primitive misrounds or a T1 function (here Φ, M2 part b2) moves a value. The record is
 # docs/benchmarks-rust-v-cyrius.md. Part a1: Normal; part a2: Uniform, Exponential and Bernoulli; part a3: Cauchy and
-# Weibull.
+# Weibull; part b1: Gamma and ChiSquared.
 
 include "tests/lib.cyr"
 
@@ -34,6 +34,7 @@ fn unit(): f64 {
 # `which`: 0 N(0, 1)'s pdf at x, 1 N(0, 1)'s cdf at x, 2 one draw of N(x, y), 3 N(x, y) to JSON and back (the mean
 # read back), 4 N(x, y)'s Debug (the text's length); 5 and up, part a2's rows (eval_a2).
 fn eval(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    if (which >= 19) { return eval_b1(which, x, y, g); }
     if (which >= 12) { return eval_a3(which, x, y, g); }
     if (which >= 5) { return eval_a2(which, x, y, g); }
     var r: f64 = 0.0;
@@ -106,6 +107,26 @@ fn eval_a3(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
         if (PmnWeibull_new(&w, y, 1.0) == PMN_ERR_NONE) { r = w.mean(); }
     } elif (which == 18) {
         if (PmnWeibull_new(&w, y, x) == PMN_ERR_NONE) { r = w.sample(g); }
+    }
+    return r;
+}
+
+# Part b1's rows: 19 Gamma(2.5, 2)'s pdf at x, 20 its cdf at x, 21 one draw of Gamma(y, 1), 22 χ²(5)'s cdf at x, 23 one
+# draw of χ²(y).
+fn eval_b1(which, x: f64, y: f64, g: *PmnSimpleRng): f64 {
+    var r: f64 = 0.0;
+    var d: PmnGamma;
+    var c: PmnChiSquared;
+    if (which == 19) {
+        if (PmnGamma_new(&d, 2.5, 2.0) == PMN_ERR_NONE) { r = d.pdf(x); }
+    } elif (which == 20) {
+        if (PmnGamma_new(&d, 2.5, 2.0) == PMN_ERR_NONE) { r = d.cdf(x); }
+    } elif (which == 21) {
+        if (PmnGamma_new(&d, y, 1.0) == PMN_ERR_NONE) { r = d.sample(g); }
+    } elif (which == 22) {
+        if (PmnChiSquared_new(&c, 5.0) == PMN_ERR_NONE) { r = c.cdf(x); }
+    } elif (which == 23) {
+        if (PmnChiSquared_new(&c, y) == PMN_ERR_NONE) { r = c.sample(g); }
     }
     return r;
 }
@@ -185,6 +206,11 @@ fn main(): i64 {
     row("Weibull::cdf, Weibull(2, 1), x in [0, 3)", 16, 0.0, 3.0, 0.0, 1.0);
     row("Weibull::mean, k in [0.1, 10), lambda = 1", 17, 0.0, 1.0, 0.1, 10.0);
     row("Weibull::sample, lambda in [0.1, 10), k in [0.1, 10)", 18, 0.1, 10.0, 0.1, 10.0);
+    row("Gamma::pdf, Gamma(2.5, 2), x in [0, 20)", 19, 0.0, 20.0, 0.0, 1.0);
+    row("Gamma::cdf, Gamma(2.5, 2), x in [0, 20)", 20, 0.0, 20.0, 0.0, 1.0);
+    row("Gamma::sample, alpha in [0.1, 10), beta = 1", 21, 0.0, 1.0, 0.1, 10.0);
+    row("ChiSquared::cdf, chi2(5), x in [0, 20)", 22, 0.0, 20.0, 0.0, 1.0);
+    row("ChiSquared::sample, df in [1, 30)", 23, 0.0, 1.0, 1.0, 30.0);
     return 0;
 }
 

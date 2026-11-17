@@ -10,6 +10,8 @@
 //!   Uniform whose width rounds to 0 is dropped), the special ones among them, in both forms.
 //! - `debug::Cauchy`, `debug::Weibull` (M3 part a3): each at 16 parameters, the special ones among them, in both
 //!   forms.
+//! - `debug::Gamma`, `debug::ChiSquared` (M3 part b1): each at 16 parameters, the special ones among them, in both
+//!   forms.
 //! - `debug::f64` (M3 part a1): an f64 field's form, `{:?}`, on `fmt.tsv`'s 25,200 doubles. `{:#?}` prints an f64
 //!   the same way.
 //!
@@ -19,7 +21,7 @@
 use crate::grids::Rng as Seeds;
 use crate::tsv::{Class, Module, Tok, i, s};
 use crate::tsv::f;
-use pramana::distribution::{Bernoulli, Cauchy, Exponential, Normal, Uniform, Weibull};
+use pramana::distribution::{Bernoulli, Cauchy, ChiSquared, Exponential, Gamma, Normal, Uniform, Weibull};
 use pramana::{PramanaError, SimpleRng};
 
 fn both<T: std::fmt::Debug>(x: &T) -> [String; 2] {
@@ -117,6 +119,23 @@ pub fn emit() -> Module {
         let w = Weibull::new(k, l).expect("valid parameters");
         for (alt, text) in both(&w).iter().enumerate() {
             m.row("debug::Weibull", Class::A, &[f(k), f(l), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    let mut gammas: Vec<(f64, f64)> =
+        vec![(1.0, 1.0), (2.0, 3.0), (0.5, 1e-4), (f64::MAX, f64::from_bits(1)), (1e-300, 1e300), (1e16, 0.1)];
+    gammas.extend((0..10).map(|_| (g.log_uniform(-20.0, 20.0), g.log_uniform(-20.0, 20.0))));
+    for &(a, b) in &gammas {
+        let d = Gamma::new(a, b).expect("valid parameters");
+        for (alt, text) in both(&d).iter().enumerate() {
+            m.row("debug::Gamma", Class::A, &[f(a), f(b), i(alt as i64)], &[s(text.clone())]);
+        }
+    }
+    let mut dfs: Vec<f64> = vec![1.0, 3.0, 1e-4, 9.999_999_999_999_999e-5, f64::MAX, f64::from_bits(1)];
+    dfs.extend((0..10).map(|_| g.log_uniform(-20.0, 20.0)));
+    for &df in &dfs {
+        let d = ChiSquared::new(df).expect("valid parameters");
+        for (alt, text) in both(&d).iter().enumerate() {
+            m.row("debug::ChiSquared", Class::A, &[f(df), i(alt as i64)], &[s(text.clone())]);
         }
     }
     for x in crate::m_fmt::inputs() {

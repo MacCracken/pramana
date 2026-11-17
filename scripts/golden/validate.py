@@ -810,6 +810,8 @@ JSON_VALIDATED = {
     "Bernoulli": ([("p", "f64")], lambda p: 0.0 <= p <= 1.0),
     "Cauchy": ([("x0", "f64"), ("gamma", "f64")], lambda x0, g: math.isfinite(x0) and math.isfinite(g) and g > 0.0),
     "Weibull": ([("k", "f64"), ("lambda", "f64")], lambda k, la: d_positive(k) and d_positive(la)),
+    "Gamma": ([("alpha", "f64"), ("beta", "f64")], lambda a, b: d_positive(a) and d_positive(b)),
+    "ChiSquared": ([("df", "f64")], lambda df: d_positive(df)),
 }
 JSON_ENUMS = {
     "Kernel": (["Gaussian", "Epanechnikov", "Uniform", "Triangular"], None),
@@ -2730,6 +2732,49 @@ def d_weibull_sample(L, k, la, u):
     return la * L.pow(-L.ln(1.0 - v), fdiv(1.0, k))
 
 
+def d_gamma_standard(L, alpha, u):
+    """1.3.0's sample_gamma_standard: Marsaglia and Tsang's method, with the Ahrens–Dieter boost for α < 1, in Rust's
+    operation order on L's ln, pow and cos."""
+    boost, ea = 1.0, alpha
+    if alpha < 1.0:
+        u0 = max(next(u), MIN_POSITIVE)
+        ea, boost = alpha + 1.0, L.pow(u0, fdiv(1.0, alpha))
+    d = ea - 1.0 / 3.0
+    c = fdiv(1.0, math.sqrt(9.0 * d))
+    while True:
+        while True:
+            x = d_standard_normal(L, u)
+            v = 1.0 + c * x
+            if v > 0.0:
+                break
+        v = v * v * v
+        uu = max(next(u), MIN_POSITIVE)
+        if uu < 1.0 - 0.0331 * x * x * x * x:
+            return d * v * boost
+        if L.ln(uu) < 0.5 * x * x + d * (1.0 - v + L.ln(v)):
+            return d * v * boost
+
+
+def d_gamma_p(L, a, x):
+    """1.3.0's regularized_lower_incomplete_gamma: its series and continued fraction, or T1's in the reference model."""
+    return (L.gamma or sp_gamma_inc)(L.K, L, a, x)[0]
+
+
+def d_gamma_pdf(L, a, b, x):
+    if x <= 0.0:
+        return 0.0
+    s = (a - 1.0) * L.ln(x) - fdiv(x, b) - a * L.ln(b) - sp_ln_gamma(L.K, L, a)
+    return L.exp(s)
+
+
+def d_chi_squared_pdf(L, df, x):
+    if x <= 0.0:
+        return 0.0
+    k = df / 2.0
+    s = (k - 1.0) * L.ln(x) - x / 2.0 - k * L.ln(2.0) - sp_ln_gamma(L.K, L, k)
+    return L.exp(s)
+
+
 def d_new(ok, fields):
     return fields if ok else ["E:InvalidParameter"]
 
@@ -2785,12 +2830,31 @@ DIST = {  # name: model(L, *inputs) -> outputs (a list)
     "Weibull::variance": lambda L, k, la: [d_weibull_variance(L, k, la)],
     "Weibull::sample": lambda L, k, la, seed, n: [f"v:{n}"] + d_sample(
         L, lambda L, u: d_weibull_sample(L, k, la, u), seed, n),
+    # part b1
+    "Gamma::new": lambda L, a, b: d_new(d_positive(a) and d_positive(b), [a, b]),
+    "Gamma::pdf": lambda L, a, b, x: [d_gamma_pdf(L, a, b, x)],
+    "Gamma::cdf": lambda L, a, b, x: [0.0 if x <= 0.0 else d_gamma_p(L, a, fdiv(x, b))],
+    "Gamma::mean": lambda L, a, b: [a * b],
+    "Gamma::variance": lambda L, a, b: [a * b * b],
+    "Gamma::sample": lambda L, a, b, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_gamma_standard(L, a, u) * b, seed, n),
+    "ChiSquared::new": lambda L, df: d_new(d_positive(df), [df]),
+    "ChiSquared::pdf": lambda L, df, x: [d_chi_squared_pdf(L, df, x)],
+    "ChiSquared::cdf": lambda L, df, x: [0.0 if x <= 0.0 else d_gamma_p(L, df / 2.0, x / 2.0)],
+    "ChiSquared::mean": lambda L, df: [df],
+    "ChiSquared::variance": lambda L, df: [2.0 * df],
+    "ChiSquared::sample": lambda L, df, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_gamma_standard(L, df / 2.0, u) * 2.0, seed, n),
+    "sample_gamma_standard": lambda L, a, seed, n: [f"v:{n}"] + d_sample(
+        L, lambda L, u: d_gamma_standard(L, a, u), seed, n),
 }
-DIST_T1 = {"Normal::cdf": "Φ", "Weibull::mean": "lnΓ", "Weibull::variance": "lnΓ"}   # rows downstream of a T1 function (ADR 009 as amended)
+DIST_T1 = {"Normal::cdf": "Φ", "Weibull::mean": "lnΓ", "Weibull::variance": "lnΓ", "Gamma::pdf": "lnΓ",
+           "Gamma::cdf": "incomplete gamma", "ChiSquared::pdf": "lnΓ", "ChiSquared::cdf": "incomplete gamma"}   # rows downstream of a T1 function (ADR 009 as amended)
 
 
 def dist_prims(root):
-    """The three Prims the dist models run on, each carrying 1.3.0's lnΓ coefficients (K) for Weibull's moments."""
+    """The three Prims the dist models run on, each carrying 1.3.0's constants (K) for the models that take lnΓ or the
+    incomplete gamma: Weibull's moments, Gamma's and χ²'s pdf and cdf."""
     consts = python_constants(root)
     F = {k[len("math::fdlibm::"):]: v for k, v in consts.items() if k.startswith("math::fdlibm::")}
     K = {
@@ -2798,6 +2862,10 @@ def dist_prims(root):
         "LG": [consts[f"math::ln_gamma::COEFFICIENTS[{i}]"] for i in range(9)],
         "G": consts["math::ln_gamma::G"],
         "LS": consts["math::LN_SQRT_2PI"],
+        "EPS": consts["math::CONVERGENCE_EPS"],
+        "TINY": consts["math::LENTZ_TINY"],
+        "MAXIT": consts["math::MAX_ITERATIONS"],
+        "WH": consts["math::GAMMA_WILSON_HILFERTY_SHAPE"],
     }
     out = Prims("glibc", F), Prims("cr", F), Prims("ref", F)
     for P in out:
@@ -2964,6 +3032,11 @@ def debug_text(fn, ins):
     if fn == "debug::Weibull":
         return debug_struct("Weibull", [("k", rust_debug_f64(ins[0])), ("lambda", rust_debug_f64(ins[1]))],
                             ins[2] == 1)
+    if fn == "debug::Gamma":
+        return debug_struct("Gamma", [("alpha", rust_debug_f64(ins[0])), ("beta", rust_debug_f64(ins[1]))],
+                            ins[2] == 1)
+    if fn == "debug::ChiSquared":
+        return debug_struct("ChiSquared", [("df", rust_debug_f64(ins[0]))], ins[1] == 1)
     if fn == "debug::PramanaError":
         name = ins[0].split(".", 1)[1]
         if name not in ERROR_VARIANTS:

@@ -41,7 +41,8 @@
 > part b5, the incomplete beta within 8 ulp, is committed (`a19e947`), and part c, M2's gate, is committed
 > (`46d107b`): **M2 is complete.** M3, the distributions, has begun (its parts are in §7): part a1, the trait,
 > Box–Muller and Normal, with Debug's f64 form, is committed (`7e1ca00`), part a2, Uniform, Exponential and
-> Bernoulli, is committed (`5b76636`), and part a3, Cauchy and Weibull, is done and not committed.
+> Bernoulli, is committed (`5b76636`), part a3, Cauchy and Weibull, is committed (`a636914`), and part b1, Gamma,
+> ChiSquared and Marsaglia–Tsang, is done and not committed.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -1182,7 +1183,11 @@ T1 function is recorded against T1 from the start (ADR 009 as amended):
   (the pdf and cdf across each support and its far tails, Weibull's moments at 221 shapes, 78 streams), 461 codec rows
   and 64 Debug rows; `dist.cr.tsv` 603 more rows and `dist.ref.tsv` 1,100 Weibull moments; every row passing on the
   first replay, at 0 ulp, on three targets ✅;
-- **b1:** `Gamma` (Marsaglia–Tsang) and `ChiSquared`, in `src/dist_gamma.cyr`;
+- **b1:** `Gamma` and `ChiSquared` in `src/dist_gamma.cyr`, new, on the T1 lnΓ and incomplete gamma, and
+  Marsaglia–Tsang's `sample_gamma_standard` in `src/dist.cyr`. 19,461 more `dist` rows (the pdf and cdf across each
+  support and around its mode, 96 streams, the oracle's sampler hook), 436 codec rows and 64 Debug rows;
+  `dist.ref.tsv` 7,847 more rows on the T1 functions; every row passing on the first replay, at 0 ulp, on three
+  targets ✅;
 - **b2:** `Beta`, `StudentT` and `FDistribution`, with the oracle's Student-t and F hooks;
 - **c1:** `Poisson` (Loader's pdf, PTRS), beside Bernoulli in `src/dist_disc.cyr`;
 - **c2:** `Binomial` (the saddle-point pdf, the `beta_inc` CDF, Beta splitting);

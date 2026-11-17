@@ -10,7 +10,8 @@
 //!   row 8);
 //! - 1.3.0's `SimpleRng` (e1), read through its repr and `new`, so a state of 0 reads as 1.
 //! - 1.3.0's `Normal` (M3 part a1), read through `NormalRepr` and `Normal::new`, so a std_dev it refuses is an error;
-//!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2), and `Cauchy` and `Weibull` (a3), the same way.
+//!   and written. `Uniform`, `Exponential` and `Bernoulli` (part a2), `Cauchy` and `Weibull` (a3), and `Gamma` and
+//!   `ChiSquared` (b1), the same way.
 //!
 //! Each of those rows is `serde_json::from_slice::<T>(document)` with `float_roundtrip` on (a correctly rounded parse,
 //! as probe P7 found a Rust consumer needs): the value as tokens, or `E:Deserialize` for any refusal.
@@ -44,7 +45,7 @@
 
 use crate::grids::Rng;
 use crate::tsv::{Class, Module, Tok, b, deser, f, i, s, sb};
-use pramana::distribution::{Bernoulli, Cauchy, Exponential, Normal, Uniform, Weibull};
+use pramana::distribution::{Bernoulli, Cauchy, ChiSquared, Exponential, Gamma, Normal, Uniform, Weibull};
 use pramana::{PramanaError, SimpleRng};
 use pramana::descriptive::Kernel;
 use serde::{Deserialize, Serialize};
@@ -598,6 +599,8 @@ pub fn emit() -> Module {
     bernoulli(&mut m, &mut g);
     cauchy(&mut m, &mut g);
     weibull(&mut m, &mut g);
+    gamma(&mut m, &mut g);
+    chi_squared(&mut m, &mut g);
     m
 }
 
@@ -739,6 +742,47 @@ fn weibull(m: &mut Module, g: &mut Rng) {
     for &(k, l) in &pairs {
         let w = Weibull::new(k, l).expect("valid parameters");
         m.row("json::write::Weibull", Class::A, &[f(k), f(l)], &[text(&w)]);
+    }
+}
+
+// ── M3 b1: Gamma's and ChiSquared's codecs ──
+
+fn gamma(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(Gamma::new(2.0, 3.0).expect("valid")).expect("a Gamma");
+    let forms = f64_forms();
+    let mut docs = struct_docs(&base, &["alpha", "beta"], &[forms.clone(), forms]);
+    docs.extend(bytes(&["[0.5,2.0]", "[0.5]", "[0.5,-2.0]", "[0.5,2.0,1]", r#"{"alpha":0.0,"beta":1.0}"#]));
+    let mut pairs: Vec<(f64, f64)> = vec![(1.0, 1.0), (f64::MAX, f64::from_bits(1)), (1e-300, 1e300)];
+    pairs.extend((0..40).map(|_| (g.log_uniform(-20.0, 20.0), g.log_uniform(-20.0, 20.0))));
+    for &(a, b) in &pairs {
+        docs.push(format!("{{\"alpha\":{},\"beta\":{}}}", ryu_like(a), ryu_like(b)).into_bytes());
+        docs.push(format!("{{\"alpha\":{},\"beta\":{}}}", ryu_like(a), ryu_like(-b)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::Gamma", d, serde_json::from_slice::<Gamma>(d), |x| vec![f(x.alpha), f(x.beta)]);
+    }
+    for &(a, b) in &pairs {
+        let x = Gamma::new(a, b).expect("valid parameters");
+        m.row("json::write::Gamma", Class::A, &[f(a), f(b)], &[text(&x)]);
+    }
+}
+
+fn chi_squared(m: &mut Module, g: &mut Rng) {
+    let base = serde_json::to_value(ChiSquared::new(3.0).expect("valid")).expect("a ChiSquared");
+    let mut docs = struct_docs(&base, &["df"], &[f64_forms()]);
+    docs.extend(bytes(&["[3.0]", "[]", "[3.0,1]", "[-3.0]", r#"{"df":0.0}"#]));
+    let mut dfs: Vec<f64> = vec![1.0, f64::MIN_POSITIVE, f64::from_bits(1), f64::MAX];
+    dfs.extend((0..40).map(|_| g.log_uniform(-20.0, 20.0)));
+    for &df in &dfs {
+        docs.push(format!("{{\"df\":{}}}", ryu_like(df)).into_bytes());
+        docs.push(format!("{{\"df\":{}}}", ryu_like(-df)).into_bytes());
+    }
+    for d in &docs {
+        row(m, "json::ChiSquared", d, serde_json::from_slice::<ChiSquared>(d), |x| vec![f(x.df)]);
+    }
+    for &df in &dfs {
+        let x = ChiSquared::new(df).expect("valid parameters");
+        m.row("json::write::ChiSquared", Class::A, &[f(df)], &[text(&x)]);
     }
 }
 

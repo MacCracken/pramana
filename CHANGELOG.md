@@ -748,6 +748,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **cost:** 44–45 ns Cauchy's pdf (5.8× Rust), 163–237 ns Cauchy's cdf and draws (10–11×: the
     correctly rounded atan and tan), 235–375 ns Weibull's pdf, cdf and draws (7–10×: two correctly rounded pows and an
     exp at most), 186–188 ns Weibull's mean (4.8×: the T1 lnΓ); every bench digest is explained by the models.
+- **M3 part b1: Gamma, ChiSquared and Marsaglia–Tsang** (`src/dist_gamma.cyr`, new, and `src/dist.cyr`; port plan
+  §7; D5, D7 as amended, D11, D12; results in `docs/development/port-parity.md` §9.4):
+  - **`_pmn_sample_gamma_standard`:** 1.3.0's Marsaglia–Tsang sampler with the Ahrens–Dieter boost below α = 1, in
+    Rust's operation order, beside Box–Muller for the samplers to come;
+  - **`PmnGamma`, `PmnChiSquared`:** each constructor refuses as 1.3.0 does, writing nothing; the pdf on the T1 lnΓ
+    and the cdf on the T1 incomplete gamma, in Rust's operation order; serde_json's text byte for byte, read through
+    each constructor; the derived Debug;
+  - **golden rows:** 19,461 more `dist` rows (110,442: each constructor's grid, the pdf and cdf across each support and
+    around its mode, shapes from 5e-324 to f64::MAX, 96 streams, and the oracle's `sample_gamma_standard` hook), 436
+    codec rows and 64 Debug rows. `validate.py` models every one; `dist.ref.tsv` gains 7,847 rows that the T1
+    functions move, and `dist.cr.tsv` 25. Every row passes on the first replay, at 0 ulp, warning-free, on x86_64 ELF,
+    PE and aarch64;
+  - **accuracy:** against MPFR, the cdf is within 1 ulp on every row with α ≤ 10⁵ (1.3.0: up to 2.8×10¹³ ulp
+    in the deep left tail, and 0 where P is 1 at α = 5e-324); the pdf keeps Rust's form, exp of a sum whose terms
+    reach |α·ln x|, up to 1.36×10⁶ ulp in both at α = 10⁵ (a finding for 2.1: T1's incomplete gamma already holds
+    that prefactor in double-double);
+  - **tests and checks:** `tests/dist.tcyr`, 334 checks (78 new); all 24 non-equivalent mutants fail (two squeeze
+    mutants are equivalent: the squeeze is a fast path the full test agrees with); surface parity maps 22 more items
+    (67 pending);
+  - **cost:** 291–296 ns a Gamma pdf (6.2× Rust), 13.0–13.2 µs a Gamma or χ² cdf (98–101×: the T1
+    incomplete gamma, 12.9 µs of it), 275–297 ns a draw (7.8–7.9×: Marsaglia–Tsang on the correctly rounded ln, cos and
+    pow); every bench digest is explained by the models.
 
 ### Performance
 

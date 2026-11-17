@@ -622,3 +622,33 @@ load average of 3 (2.82, 2.61, 2.48). Every row's sum is the same in all three r
 
 These are findings to measure against, not changes for this part. The correctly rounded primitives' cost is ADR 009's,
 and the constructors' share is part a2's finding.
+
+## M3 part b1: Gamma, ChiSquared and Marsaglia–Tsang (2026-11-16)
+
+**Bodies.** `tests/dist.bcyr` and its twin `m3_dist.rs` gain five rows, with part a1's loop. Each row builds its
+distribution on every call, as the twin does. Three rounds, interleaved and pinned to core 5, each started under a
+load average of 3 (1.88, 2.06, 2.02). Every row's sum is the same in all three rounds.
+- **The digests:** all 26 are explained by `validate.py`'s models (`build/handoff/bench_digests_dist.py`). Gamma's pdf
+  differs from 1.3.0's on all 4,096 values (T1's lnΓ(2.5) is not 1.3.0's Lanczos value), the cdfs on 2,739 and 2,724
+  (T1's incomplete gamma), and the draws on 1 and 0.
+- **The earlier rows,** re-measured: within 4% of their records.
+
+| Row | Rust 1.3.0 | Cyrius | Cyrius / Rust |
+|---|---|---|---|
+| `Gamma::pdf`, Gamma(2.5, 2), x in [0, 20) | 47.2–47.6 ns | 291–296 ns | 6.2× |
+| `Gamma::cdf`, Gamma(2.5, 2), x in [0, 20) | 132.7–134.5 ns | 13.00–13.07 µs | 98× |
+| `Gamma::sample`, α in [0.1, 10), β = 1 | 37.6–38.1 ns | 292–297 ns | 7.8× |
+| `ChiSquared::cdf`, χ²(5), x in [0, 20) | 128.5–130.6 ns | 13.03–13.17 µs | 101× |
+| `ChiSquared::sample`, df in [1, 30) | 34.8–35.5 ns | 275–279 ns | 7.9× |
+
+**Where the time goes.**
+- **The cdfs are T1's incomplete gamma.** A one-off split, pinned, in the same loop: P(2.5, x/2) alone is 12.9 µs,
+  through Gamma::cdf 13.1 µs. It is 8.8 µs for x in [0, 2) and 12.8 µs for x in [10, 20). This fixed shape costs more
+  than M2 part b4's row of mixed (a, x) pairs (7.2–7.5 µs), since the series and fraction run longest near x = a.
+- **The pdf** is two correctly rounded lns, an exp and the T1 lnΓ (M2 part b3: 153–179 ns for x > 0).
+- **A draw** is Marsaglia–Tsang's loop: Box–Muller's two uniforms with a correctly rounded ln and cos, and the
+  squeeze, which accepts most draws without the full test's two lns; below α = 1, a correctly rounded pow for the
+  boost.
+
+These are findings to measure against, not changes for this part. The incomplete gamma's cost is T1's, which ADR 009
+accepts.

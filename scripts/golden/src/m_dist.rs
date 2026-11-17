@@ -27,13 +27,20 @@
 //! (class A): Cauchy's cdf and draws take glibc's atan and tan, Weibull's take glibc's pow, exp, expm1 and ln, and its
 //! moments 1.3.0's Lanczos lnΓ.
 //!
+//! Part b1, `Gamma` and `ChiSquared`, the same kinds of rows, the pdf and cdf also around the mode (the mean ± up to
+//! 12 standard deviations), and `sample_gamma_standard`, the oracle's Marsaglia–Tsang hook, 1,024 draws at eleven
+//! shapes from three seeds. Class C but the constructors, means and variances: the pdf takes glibc's ln and exp and
+//! 1.3.0's Lanczos lnΓ, the cdf 1.3.0's incomplete gamma, and the draws glibc's ln, cos and pow.
+//!
 //! Inputs: the parameters, then x (or the seed and the count). Outputs: the value, or the draws as a sequence.
 
 use std::hint::black_box;
 
 use crate::grids::{Rng as Seeds, specials};
 use crate::tsv::{Class, Module, Tok, err, f, i};
-use pramana::distribution::{Bernoulli, Cauchy, Distribution, Exponential, Normal, Uniform, Weibull};
+use pramana::distribution::{
+    Bernoulli, Cauchy, ChiSquared, Distribution, Exponential, Gamma, Normal, Uniform, Weibull,
+};
 use pramana::{SimpleRng, oracle};
 
 const SEEDS: [u64; 3] = [42, 0x9e37_79b9_7f4a_7c15, 12345];
@@ -431,6 +438,137 @@ fn weibull(m: &mut Module, g: &mut Seeds) {
     streams(m, "Weibull::sample", Class::C, &cases);
 }
 
+/// The x a gamma-family row is taken at, for shape a and scale b: across [0, 4·mean], at powers of two, around the mode
+/// (the mean ± up to 12 standard deviations), the mean and its neighbours, and far out.
+fn gamma_points(a: f64, b: f64) -> Vec<f64> {
+    let mean = a * b;
+    let sd = a.sqrt() * b;
+    let mut xs: Vec<f64> = (-4..=64).map(|j| mean * (f64::from(j) / 16.0)).collect();
+    xs.extend((-40..=12).map(|j| b * f64::from(j).exp2()));
+    xs.extend((-24..=24).map(|j| mean + sd * (f64::from(j) / 2.0)));
+    xs.extend(around(mean));
+    xs.extend([b * 1e-300, mean * 1e3, mean * 1e10]);
+    xs
+}
+
+fn gamma(m: &mut Module, g: &mut Seeds) {
+    for &a in &param_grid() {
+        for &b in &param_grid() {
+            match Gamma::new(black_box(a), black_box(b)) {
+                Ok(d) => m.row("Gamma::new", Class::A, &[f(a), f(b)], &[f(d.alpha), f(d.beta)]),
+                Err(e) => m.row("Gamma::new", Class::A, &[f(a), f(b)], &[err(&e)]),
+            }
+        }
+    }
+    let fixed: Vec<(f64, f64)> = vec![
+        (1.0, 1.0),
+        (2.0, 1.0),
+        (0.5, 1.0),
+        (2.0, 3.0),
+        (5.0, 0.5),
+        (0.1, 1.0),
+        (10.0, 2.0),
+        (100.0, 1.0),
+        (1e3, 1.0),
+        (1e-3, 1.0),
+        (1e5, 1e-3),
+        (1.0, 1e-300),
+        (3.0, 1e300),
+        (2e9, 1.0),
+        (f64::from_bits(1), 1.0),
+        (f64::MAX, 1.0),
+    ];
+    let seeded: Vec<(f64, f64)> = (0..40).map(|_| (g.log_uniform(-2.0, 3.0), g.log_uniform(-3.0, 3.0))).collect();
+    let point = |m: &mut Module, a: f64, b: f64, x: f64| {
+        let d = Gamma::new(a, b).expect("valid parameters");
+        m.row("Gamma::pdf", Class::C, &[f(a), f(b), f(x)], &[f(d.pdf(black_box(x)))]);
+        m.row("Gamma::cdf", Class::C, &[f(a), f(b), f(x)], &[f(d.cdf(black_box(x)))]);
+    };
+    for &(a, b) in &fixed {
+        for x in gamma_points(a, b) {
+            point(m, a, b, x);
+        }
+        for &x in &specials() {
+            point(m, a, b, x);
+        }
+    }
+    for &(a, b) in &seeded {
+        for j in -8..=8 {
+            point(m, a, b, a * b + a.sqrt() * b * f64::from(j));
+        }
+    }
+    for _ in 0..1000 {
+        let a = g.log_uniform(-2.0, 3.0);
+        let b = g.log_uniform(-3.0, 3.0);
+        let x = b * a * g.log_uniform(-3.0, 0.7);
+        point(m, a, b, x);
+    }
+    for &(a, b) in fixed.iter().chain(&seeded) {
+        let d = Gamma::new(a, b).expect("valid parameters");
+        m.row("Gamma::mean", Class::A, &[f(a), f(b)], &[f(d.mean())]);
+        m.row("Gamma::variance", Class::A, &[f(a), f(b)], &[f(d.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, Gamma)> =
+        fixed.iter().map(|&(a, b)| (vec![a, b], Gamma::new(a, b).expect("valid"))).collect();
+    streams(m, "Gamma::sample", Class::C, &cases);
+}
+
+fn chi_squared(m: &mut Module, g: &mut Seeds) {
+    for &df in &param_grid() {
+        match ChiSquared::new(black_box(df)) {
+            Ok(d) => m.row("ChiSquared::new", Class::A, &[f(df)], &[f(d.df)]),
+            Err(e) => m.row("ChiSquared::new", Class::A, &[f(df)], &[err(&e)]),
+        }
+    }
+    let fixed: Vec<f64> =
+        vec![2.0, 1.0, 3.0, 4.0, 5.0, 10.0, 30.0, 100.0, 1e3, 1e5, 0.5, 0.1, 1e-3, 4e9, 1e-300, f64::from_bits(1)];
+    let seeded: Vec<f64> = (0..40).map(|_| g.log_uniform(-2.0, 4.0)).collect();
+    let point = |m: &mut Module, df: f64, x: f64| {
+        let d = ChiSquared::new(df).expect("valid parameters");
+        m.row("ChiSquared::pdf", Class::C, &[f(df), f(x)], &[f(d.pdf(black_box(x)))]);
+        m.row("ChiSquared::cdf", Class::C, &[f(df), f(x)], &[f(d.cdf(black_box(x)))]);
+    };
+    for &df in &fixed {
+        for x in gamma_points(df / 2.0, 2.0) {
+            point(m, df, x);
+        }
+        for &x in &specials() {
+            point(m, df, x);
+        }
+    }
+    for &df in &seeded {
+        for j in -8..=8 {
+            point(m, df, df + (2.0 * df).sqrt() * f64::from(j));
+        }
+    }
+    for _ in 0..1000 {
+        let df = g.log_uniform(-2.0, 4.0);
+        let x = df * g.log_uniform(-3.0, 0.7);
+        point(m, df, x);
+    }
+    for &df in fixed.iter().chain(&seeded) {
+        let d = ChiSquared::new(df).expect("valid parameters");
+        m.row("ChiSquared::mean", Class::A, &[f(df)], &[f(d.mean())]);
+        m.row("ChiSquared::variance", Class::A, &[f(df)], &[f(d.variance())]);
+    }
+    let cases: Vec<(Vec<f64>, ChiSquared)> =
+        fixed.iter().map(|&df| (vec![df], ChiSquared::new(df).expect("valid"))).collect();
+    streams(m, "ChiSquared::sample", Class::C, &cases);
+}
+
+/// The oracle's Marsaglia–Tsang hook, at shapes either side of the boost (α < 1) and up to 1e300.
+#[allow(clippy::cast_possible_wrap)]
+fn gamma_standard(m: &mut Module) {
+    let shapes = [1e-3, 0.1, 0.5, 0.999_999, 1.0, 1.5, 2.5, 10.0, 1e3, 1e9, 1e300];
+    for seed in [1u64, 42, u64::MAX] {
+        for &a in &shapes {
+            let mut r = SimpleRng::new(seed);
+            let xs: Vec<f64> = (0..1024).map(|_| oracle::sample_gamma_standard(a, &mut r)).collect();
+            m.row("sample_gamma_standard", Class::C, &[f(a), i(seed as i64), i(1024)], &draws(&xs));
+        }
+    }
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("dist");
     let mut g = Seeds::new(0x510e_527f_ade6_82d1);
@@ -440,5 +578,8 @@ pub fn emit() -> Module {
     bernoulli(&mut m, &mut g);
     cauchy(&mut m, &mut g);
     weibull(&mut m, &mut g);
+    gamma(&mut m, &mut g);
+    chi_squared(&mut m, &mut g);
+    gamma_standard(&mut m);
     m
 }

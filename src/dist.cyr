@@ -1,6 +1,6 @@
 # dist.cyr — the distributions' shared parts (port of Rust 1.3.0's src/distribution.rs; port plan D7, D11, §8.3; M3):
-# the `Distribution` trait, the parameter checks every constructor makes, and the Box–Muller variate the normal-based
-# samplers draw.
+# the `Distribution` trait, the parameter checks every constructor makes, the Box–Muller variate the normal-based
+# samplers draw, and Marsaglia and Tsang's Gamma(α, 1) variate the gamma-based ones draw.
 #
 # Each distribution is a `PmnX` struct filled in caller storage by `PmnX_new(out, …)` (D11), which returns
 # PMN_ERR_NONE or PMN_ERR_INVALID_PARAMETER and writes `out` only on success, as Rust's `X::new` returns `Ok` or
@@ -64,6 +64,69 @@ fn _pmn_standard_normal<R: PmnRng>(rng: *R): f64 {
     var t: f64 = tp * u2;
     var c: f64 = _pmn_cos(t);
     return r * c;
+}
+
+# Rust's `sample_gamma_standard`: one Gamma(α, 1) variate by Marsaglia and Tsang's method, with the Ahrens–Dieter
+# boost for α < 1 (a Gamma(α + 1, 1) variate times u^(1/α)), in Rust's operation order on the correctly rounded ln and
+# pow and Box–Muller's normal. It backs the Gamma and χ² samplers (part b1), and the Beta, Student-t, F and Binomial
+# ones to come. α is a constructor's, finite and positive: Rust's loop never ends on a NaN.
+#must_use
+fn _pmn_sample_gamma_standard<R: PmnRng>(alpha: f64, rng: *R): f64 {
+    var mp: f64 = _PMN_F64_MIN_POSITIVE;
+    var ea: f64 = alpha;
+    var boost: f64 = 1.0;
+    if (alpha < 1.0) {
+        var d0: f64 = rng.next_f64();
+        var u0: f64 = _pmn_max(d0, mp);
+        ea = alpha + 1.0;
+        var ia: f64 = 1.0 / alpha;
+        boost = _pmn_powf(u0, ia);
+    }
+    var third: f64 = 1.0 / 3.0;
+    var d: f64 = ea - third;
+    var nd: f64 = 9.0 * d;
+    var sq: f64 = f64_sqrt(nd);
+    var c: f64 = 1.0 / sq;
+    var sample: f64 = 0.0;
+    while (1) {
+        # A normal variate x with v = 1 + c·x positive, then v³.
+        var x: f64 = 0.0;
+        var v: f64 = 0.0;
+        while (1) {
+            x = _pmn_standard_normal(rng);
+            var cx: f64 = c * x;
+            v = 1.0 + cx;
+            if (v > 0.0) { break; }
+        }
+        var vv: f64 = v * v;
+        v = vv * v;
+        var du: f64 = rng.next_f64();
+        var u: f64 = _pmn_max(du, mp);
+        # The squeeze, 1 − 0.0331·x⁴, as Rust multiplies it, left to right.
+        var q: f64 = 0.0331 * x;
+        q = q * x;
+        q = q * x;
+        q = q * x;
+        var lim: f64 = 1.0 - q;
+        if (u < lim) {
+            sample = d * v;
+            break;
+        }
+        # The full test: ln u < ½x² + d·(1 − v + ln v).
+        var lu: f64 = _pmn_ln(u);
+        var hx: f64 = 0.5 * x;
+        hx = hx * x;
+        var lv: f64 = _pmn_ln(v);
+        var t: f64 = 1.0 - v;
+        t = t + lv;
+        var dt: f64 = d * t;
+        var rhs: f64 = hx + dt;
+        if (lu < rhs) {
+            sample = d * v;
+            break;
+        }
+    }
+    return sample * boost;
 }
 
 # Reads n f64 fields of a struct by serde's rules (names[i] into the words at vals, at most 8), for the distributions'

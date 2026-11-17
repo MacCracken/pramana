@@ -4,7 +4,7 @@
 # (debug.tsv). These tests carry 1.3.0's own unit tests over (distribution.rs) and pin what a replay doesn't: a
 # constructor's refusals, the identities each method keeps bit for bit, a consumer's own generator through the trait,
 # and the codecs' and Debug's exact text. Part a1: Normal, Box–Muller and Debug's f64 form; part a2: Uniform,
-# Exponential and Bernoulli; part a3: Cauchy and Weibull.
+# Exponential and Bernoulli; part a3: Cauchy and Weibull; part b1: Gamma, ChiSquared and Marsaglia–Tsang.
 
 include "tests/lib.cyr"
 
@@ -42,6 +42,21 @@ impl PmnRng for Eighths {
         self.k = (self.k + 1) & 7;
         self.calls = self.calls + 1;
         return a / d;
+    }
+}
+
+# A consumer's generator that counts its draws: a SimpleRng behind it (g, a pointer), as Rust's oracle test counts them.
+struct Counted {
+    g: *PmnSimpleRng;
+    calls;
+}
+
+impl PmnRng for Counted {
+    fn next_f64(self): f64 {
+        var r: *PmnSimpleRng = self.g;
+        self.calls = self.calls + 1;
+        var x: f64 = r.next_f64();
+        return x;
     }
 }
 
@@ -703,6 +718,222 @@ fn main() {
     store64(sb + 8, 0);
     assert_eq(wb.debug(sb, 1), PMN_ERR_NONE, "Weibull {:#?}");
     assert(text_is(sb, "Weibull {\n    k: 2.0,\n    lambda: 3.0,\n}") == 1, "one field a line");
+
+    test_group("1.3.0's Gamma tests (gamma_pdf_known, _cdf_known, _mean_and_variance, _invalid_params)");
+    var gm: PmnGamma;
+    assert_eq(PmnGamma_new(&gm, 1.0, 1.0), PMN_ERR_NONE, "Gamma(1, 1)");
+    var gp1: f64 = gm.pdf(1.0);
+    var ge1: f64 = _pmn_exp(-1.0);
+    assert(bits(gp1) == bits(ge1), "pdf(1) = e⁻¹ bit for bit: lnΓ(1) is 0 (1.3.0: within 1e-8)");
+    var gc1: f64 = gm.cdf(1.0);
+    var gce: f64 = 1.0 - ge1;
+    assert(f64_abs(gc1 - gce) < 0.000000000000001, "cdf(1) = 1 − e⁻¹ within 1e-15 (1.3.0: within 1e-6)");
+    assert_eq(PmnGamma_new(&gm, 3.0, 2.0), PMN_ERR_NONE, "Gamma(3, 2)");
+    var gmn: f64 = gm.mean();
+    var gvr: f64 = gm.variance();
+    assert(gmn == 6.0 && gvr == 12.0, "mean 6 and variance 12 exactly");
+    var bg: PmnGamma;
+    assert_eq(PmnGamma_new(&bg, 0.0, 1.0), PMN_ERR_INVALID_PARAMETER, "alpha 0");
+    assert_eq(PmnGamma_new(&bg, 1.0, 0.0), PMN_ERR_INVALID_PARAMETER, "beta 0");
+    assert_eq(PmnGamma_new(&bg, -1.0, 1.0), PMN_ERR_INVALID_PARAMETER, "alpha −1");
+    assert_eq(PmnGamma_new(&bg, nan, 1.0), PMN_ERR_INVALID_PARAMETER, "a NaN alpha");
+    assert_eq(PmnGamma_new(&bg, 1.0, inf), PMN_ERR_INVALID_PARAMETER, "an infinite beta");
+    assert_eq(PmnGamma_new(0, 1.0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out");
+    bg.alpha = 7.0;
+    bg.beta = 8.0;
+    assert_eq(PmnGamma_new(&bg, 1.0, mz), PMN_ERR_INVALID_PARAMETER, "beta −0");
+    var bga: f64 = bg.alpha;
+    var bgb: f64 = bg.beta;
+    assert(bga == 7.0 && bgb == 8.0, "a refusal writes nothing");
+
+    test_group("1.3.0's Gamma sampling tests (gamma_sample_mean, gamma_small_alpha_sample)");
+    assert_eq(PmnGamma_new(&gm, 5.0, 2.0), PMN_ERR_NONE, "Gamma(5, 2)");
+    PmnSimpleRng_new(&g, 42);
+    var gsum: f64 = 0.0;
+    for (var gi = 0; gi < 50000; gi = gi + 1) {
+        var gs: f64 = gm.sample(&g);
+        gsum = gsum + gs;
+    }
+    var gavg: f64 = gsum / 50000.0;
+    assert(f64_abs(gavg - 10.0) < 0.5, "50,000 draws from seed 42: the mean within 0.5 of 10");
+    assert_eq(PmnGamma_new(&gm, 0.1, 1.0), PMN_ERR_NONE, "Gamma(0.1, 1)");
+    PmnSimpleRng_new(&g, 42);
+    var g01 = 1;
+    var g01s: f64 = 0.0;
+    for (var gj = 0; gj < 10000; gj = gj + 1) {
+        var gt: f64 = gm.sample(&g);
+        if (gt < 0.0 || _pmn_is_finite(gt) == 0) { g01 = 0; }
+        g01s = g01s + gt;
+    }
+    var g01m: f64 = g01s / 10000.0;
+    assert(g01 == 1 && f64_abs(g01m - 0.1) < 0.05,
+      "α < 1, the boost: 10,000 draws, finite and ≥ 0, their mean within 0.05 of 0.1");
+
+    test_group("1.3.0's χ² tests (chi_squared_mean_and_variance, _cdf_known, _sample_mean, _large_df_cdf)");
+    var chi: PmnChiSquared;
+    assert_eq(PmnChiSquared_new(&chi, 5.0), PMN_ERR_NONE, "χ²(5)");
+    var csm: f64 = chi.mean();
+    var csv: f64 = chi.variance();
+    assert(csm == 5.0 && csv == 10.0, "mean 5 and variance 10 exactly");
+    assert_eq(PmnChiSquared_new(&chi, 2.0), PMN_ERR_NONE, "χ²(2)");
+    var cs2: f64 = chi.cdf(2.0);
+    assert(f64_abs(cs2 - gce) < 0.000000000000001, "cdf(2) = 1 − e⁻¹ within 1e-15 (1.3.0: within 1e-4)");
+    assert_eq(PmnChiSquared_new(&chi, 10.0), PMN_ERR_NONE, "χ²(10)");
+    PmnSimpleRng_new(&g, 42);
+    var csum: f64 = 0.0;
+    for (var ci = 0; ci < 50000; ci = ci + 1) {
+        var cd: f64 = chi.sample(&g);
+        csum = csum + cd;
+    }
+    var cavg: f64 = csum / 50000.0;
+    assert(f64_abs(cavg - 10.0) < 0.5, "50,000 draws from seed 42: the mean within 0.5 of 10");
+    assert_eq(PmnChiSquared_new(&chi, 1000000.0), PMN_ERR_NONE, "χ²(1e6)");
+    var cbig: f64 = chi.cdf(1000000.0);
+    var cbw: f64 = 1.0 - 0.4998119368033945;
+    assert(rel_ok(cbig, cbw, 0.00000000001) == 1, "cdf(1e6) = 1 − 0.4998119368033945 within 1e-11");
+    var bcs: PmnChiSquared;
+    assert_eq(PmnChiSquared_new(&bcs, inf), PMN_ERR_INVALID_PARAMETER, "an infinite df");
+    assert_eq(PmnChiSquared_new(&bcs, 0.0), PMN_ERR_INVALID_PARAMETER, "df 0");
+    assert_eq(PmnChiSquared_new(&bcs, nan), PMN_ERR_INVALID_PARAMETER, "a NaN df");
+    assert_eq(PmnChiSquared_new(0, 1.0), PMN_ERR_INVALID_PARAMETER, "a null out");
+
+    test_group("the oracle's wiring tests: the cdfs are P, the pdf is lnΓ's, a draw is sample_gamma_standard's");
+    var p_ok = 1;
+    for (var pai = 0; pai < 4; pai = pai + 1) {
+        var aa: f64 = 0.05;
+        if (pai == 1) { aa = 2.5; }
+        if (pai == 2) { aa = 30.0; }
+        if (pai == 3) { aa = 100000.0; }
+        assert_eq(PmnGamma_new(&gm, aa, 1.0), PMN_ERR_NONE, "Gamma(a, 1)");
+        for (var px = 1; px <= 64; px = px + 1) {
+            var pxf: f64 = f64_from(px);
+            var xx: f64 = pxf * aa;
+            xx = xx / 16.0;
+            var gcx: f64 = gm.cdf(xx);
+            var pp: f64 = _pmn_regularized_lower_incomplete_gamma(aa, xx);
+            if (bits(gcx) != bits(pp)) { p_ok = 0; }
+        }
+    }
+    assert_eq(p_ok, 1, "Gamma(a, 1).cdf(x) is P(a, x), bit for bit");
+    assert_eq(PmnChiSquared_new(&chi, 7.0), PMN_ERR_NONE, "χ²(7)");
+    assert_eq(PmnGamma_new(&gm, 3.5, 2.0), PMN_ERR_NONE, "Gamma(3.5, 2)");
+    var c_ok = 1;
+    for (var cxi = 1; cxi <= 160; cxi = cxi + 1) {
+        var cxf: f64 = f64_from(cxi);
+        var cxx: f64 = cxf / 4.0;
+        var ca1: f64 = chi.cdf(cxx);
+        var cx2: f64 = cxx / 2.0;
+        var cb1: f64 = _pmn_regularized_lower_incomplete_gamma(3.5, cx2);
+        var pa1: f64 = chi.pdf(cxx);
+        var pb1: f64 = gm.pdf(cxx);
+        var ga1: f64 = gm.cdf(cxx);
+        if (bits(ca1) != bits(cb1) || bits(pa1) != bits(pb1) || bits(ca1) != bits(ga1)) { c_ok = 0; }
+    }
+    assert_eq(c_ok, 1, "χ²(7) is Gamma(3.5, 2): cdf P(3.5, x/2) and pdf, bit for bit");
+    var cg1: PmnSimpleRng;
+    var cg2: PmnSimpleRng;
+    var ct1: Counted;
+    var ct2: Counted;
+    var d_ok = 1;
+    for (var da = 0; da < 4; da = da + 1) {
+        var al: f64 = 0.3;
+        if (da == 1) { al = 1.0; }
+        if (da == 2) { al = 2.5; }
+        if (da == 3) { al = 50.0; }
+        assert_eq(PmnGamma_new(&gm, al, 1.0), PMN_ERR_NONE, "Gamma(α, 1)");
+        PmnSimpleRng_new(&cg1, 13);
+        PmnSimpleRng_new(&cg2, 13);
+        ct1.g = &cg1;
+        ct1.calls = 0;
+        ct2.g = &cg2;
+        ct2.calls = 0;
+        for (var dk = 0; dk < 5000; dk = dk + 1) {
+            var dra: f64 = gm.sample(&ct1);
+            var drb: f64 = _pmn_sample_gamma_standard(al, &ct2);
+            if (bits(dra) != bits(drb)) { d_ok = 0; }
+        }
+        if (ct1.calls != ct2.calls) { d_ok = 0; }
+    }
+    assert_eq(d_ok, 1, "Gamma(α, 1)'s draws are sample_gamma_standard(α)'s, bit for bit and draw for draw");
+    assert_eq(PmnChiSquared_new(&chi, 5.0), PMN_ERR_NONE, "χ²(5)");
+    assert_eq(PmnGamma_new(&gm, 2.5, 2.0), PMN_ERR_NONE, "Gamma(2.5, 2)");
+    PmnSimpleRng_new(&g, 99);
+    PmnSimpleRng_new(&h, 99);
+    var x_ok = 1;
+    for (var xk = 0; xk < 2000; xk = xk + 1) {
+        var xa: f64 = chi.sample(&g);
+        var xb: f64 = gm.sample(&h);
+        if (bits(xa) != bits(xb)) { x_ok = 0; }
+    }
+    assert_eq(x_ok, 1, "χ²(5)'s draws are Gamma(2.5, 2)'s, bit for bit");
+
+    test_group("the edges, and T1's accuracy where 1.3.0 lost it");
+    assert_eq(PmnGamma_new(&gm, 2.0, 3.0), PMN_ERR_NONE, "Gamma(2, 3)");
+    var e0: f64 = gm.pdf(0.0);
+    var e1n: f64 = gm.pdf(-1.0);
+    var e2c: f64 = gm.cdf(0.0);
+    var e3c: f64 = gm.cdf(mz);
+    assert(e0 == 0.0 && e1n == 0.0 && e2c == 0.0 && bits(e3c) == 0, "0 at and below 0, +0.0 at −0.0");
+    var e4: f64 = gm.pdf(nan);
+    var e5: f64 = gm.cdf(nan);
+    var e6: f64 = gm.cdf(inf);
+    var e7: f64 = gm.pdf(inf);
+    assert(e4 != e4 && e5 != e5 && e6 == 1.0, "NaN at NaN; cdf(∞) = 1");
+    assert(e7 != e7, "pdf(∞) is NaN, as 1.3.0's: (α − 1)·ln ∞ − ∞/β is ∞ − ∞");
+    assert_eq(PmnGamma_new(&gm, tiny, 1.0), PMN_ERR_NONE, "Gamma(5e-324, 1)");
+    var t0p: f64 = gm.pdf(tiny);
+    var t0c: f64 = gm.cdf(tiny);
+    assert(t0p == 1.0 && t0c == 1.0,
+      "α = 5e-324: pdf(5e-324) = α·x^(α−1) ≈ 1 and cdf = 1 on T1 (1.3.0: 0 for both, its lnΓ(5e-324) = +∞)");
+    var t0s: f64 = gm.sample(&g);
+    assert_eq(bits(t0s), 0, "a draw is +0.0: the boost u^(1/α) underflows");
+    assert_eq(PmnGamma_new(&gm, 10.0, 2.0), PMN_ERR_NONE, "Gamma(10, 2)");
+    var x39: f64 = of_bits(0x3D80000000000000);
+    var dtc: f64 = gm.cdf(x39);
+    var dtw: f64 = of_bits(0x25927E4FB7788E8D);
+    var dtd = bits(dtc) - bits(dtw);
+    assert(dtd >= 0 - 1 && dtd <= 1,
+      "cdf(2^-39) = P(10, 2^-40) within 1 ulp of MPFR's 1.0671825162164122e-127 (1.3.0: 1.3×10¹³ ulp off)");
+    assert_eq(PmnGamma_new(&gm, mxu, 1.0), PMN_ERR_NONE, "Gamma(f64::MAX, 1)");
+    var mxs: f64 = gm.sample(&g);
+    assert(mxs == mxu, "α = f64::MAX: c = 0, so v = 1 and the draw is d = f64::MAX");
+
+    test_group("JSON and Debug (serde_roundtrip_gamma, _chi_squared, deserialize_rejects; D5, D12)");
+    assert_eq(PmnGamma_new(&gm, 3.0, 2.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(gm.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"alpha\":3.0,\"beta\":2.0}") == 1, "as serde_json writes it");
+    var rg: PmnGamma;
+    assert_eq(PmnGamma_from_json(&rg, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rga: f64 = rg.alpha;
+    var rgb: f64 = rg.beta;
+    assert(rga == 3.0 && rgb == 2.0, "the same parameters");
+    var jg = "{\"alpha\":0.0,\"beta\":1.0}";
+    assert_eq(PmnGamma_from_json(&rg, jg, strlen(jg)), PMN_ERR_DESERIALIZE, "alpha 0");
+    assert_eq(PmnGamma_from_json(0, jg, strlen(jg)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    assert_eq(PmnChiSquared_new(&chi, 5.0), PMN_ERR_NONE, "built");
+    store64(sb + 8, 0);
+    assert_eq(chi.to_json(sb), PMN_ERR_NONE, "written");
+    assert(text_is(sb, "{\"df\":5.0}") == 1, "as serde_json writes it");
+    var rcs: PmnChiSquared;
+    assert_eq(PmnChiSquared_from_json(&rcs, load64(sb), load64(sb + 8)), PMN_ERR_NONE, "read back");
+    var rdf: f64 = rcs.df;
+    assert(rdf == 5.0, "the same df");
+    var jc2 = "{\"df\":0.0}";
+    assert_eq(PmnChiSquared_from_json(&rcs, jc2, strlen(jc2)), PMN_ERR_DESERIALIZE, "df 0");
+    assert_eq(PmnChiSquared_from_json(0, jc2, strlen(jc2)), PMN_ERR_INVALID_PARAMETER, "a null out");
+    store64(sb + 8, 0);
+    assert_eq(gm.debug(sb, 0), PMN_ERR_NONE, "Gamma {:?}");
+    assert(text_is(sb, "Gamma { alpha: 3.0, beta: 2.0 }") == 1, "Gamma { alpha: 3.0, beta: 2.0 }");
+    store64(sb + 8, 0);
+    assert_eq(gm.debug(sb, 1), PMN_ERR_NONE, "Gamma {:#?}");
+    assert(text_is(sb, "Gamma {\n    alpha: 3.0,\n    beta: 2.0,\n}") == 1, "one field a line");
+    store64(sb + 8, 0);
+    assert_eq(chi.debug(sb, 0), PMN_ERR_NONE, "ChiSquared {:?}");
+    assert(text_is(sb, "ChiSquared { df: 5.0 }") == 1, "ChiSquared { df: 5.0 }");
+    store64(sb + 8, 0);
+    assert_eq(chi.debug(sb, 1), PMN_ERR_NONE, "ChiSquared {:#?}");
+    assert(text_is(sb, "ChiSquared {\n    df: 5.0,\n}") == 1, "one field a line");
 
     return assert_summary();
 }

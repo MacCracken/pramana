@@ -3564,3 +3564,122 @@ The port keeps Rust's formulas, as parity requires.
 233–237 ns a draw (10–11×: the correctly rounded atan and tan), 235–375 ns a Weibull pdf, cdf or draw (7–10×: up to
 two correctly rounded pows and an exp), and 186–188 ns a Weibull mean (4.8×: the T1 lnΓ). The bench's 21 digests are
 all explained by the models.
+
+### 9.4 Part b1: Gamma, ChiSquared and Marsaglia–Tsang (2026-11-16)
+
+**The modules.**
+- **`src/dist.cyr`** gains `_pmn_sample_gamma_standard`, 1.3.0's `sample_gamma_standard`: one Gamma(α, 1) variate by
+  Marsaglia and Tsang's method, with the Ahrens–Dieter boost for α < 1 (a Gamma(α + 1, 1) variate times u^(1/α)).
+  It is Rust's loop in Rust's operation order: the normal from Box–Muller until v = 1 + c·x is positive, v³, the
+  squeeze u < 1 − 0.0331·x⁴, then the full test ln u < ½x² + d·(1 − v + ln v). It sits beside Box–Muller because
+  part b2's Beta, Student-t and F samplers and part c2's Binomial draw from it too.
+- **`src/dist_gamma.cyr`,** new, for the gamma family: `PmnGamma { alpha, beta }` and `PmnChiSquared { df }`, with
+  the methods, codec and Debug of the others.
+  - The pdf is exp((α − 1)·ln x − x/β − α·ln β − lnΓ(α)), left to right, on the T1 lnΓ. χ²'s is the same form with
+    α = df/2 and β = 2, ln 2 taken at run time as Rust does.
+  - The cdf is P(α, x/β), the T1 regularized lower incomplete gamma; χ²'s is P(df/2, x/2).
+  - The mean and variance are α·β and α·β·β (df and 2·df); a draw is the standard variate times β (times 2).
+
+**The golden rows.**
+- **`dist`, 19,461 more rows (110,442 in all):**
+  - each constructor on the 20-value grid, every pair for Gamma; class A;
+  - `Gamma::pdf` and `Gamma::cdf`, 4,672 rows each: sixteen fixed (α, β) and 40 seeded pairs. The fixed pairs run
+    α from 5e-324 to f64::MAX, with 2e9 past T1's 10⁹ (Rust's Wilson–Hilferty form), and β from 1e-300 to 1e300.
+    Each fixed pair is taken across [0, 4·mean] by sixteenths, at β·2^j for j from −40 to 12, at the mean ± up to
+    12 standard deviations by halves, at the mean and its neighbours, far out, and at the specials. The seeded pairs
+    are taken at the mean ± up to 8 standard deviations. There are 1,000 seeded triples too. Class C;
+  - `ChiSquared::pdf` and `ChiSquared::cdf`, 4,672 rows each: sixteen fixed df (5e-324 to 4e9) and 40 seeded ones,
+    the same way. Class C;
+  - every mean and variance, class A;
+  - 96 streams: 10⁴ draws of Gamma(1, 1) and χ²(2) from three seeds, and 256 of each other fixed case; and
+    `sample_gamma_standard`, the oracle's hook, 1,024 draws at eleven shapes (10⁻³ to 1e300, either side of the
+    boost) from three seeds. Class C.
+- **`json`,** 436 more rows (8,167 in all), and **`debug`,** 64 more (25,528), as part a2's.
+
+**The models.** `validate.py` models every row in Rust's operation order: Marsaglia–Tsang's loop, and the pdf and cdf
+on 1.3.0's Lanczos lnΓ and incomplete gamma, through glibc and on correctly rounded primitives, or on the T1 functions
+as the port computes them (`t1_ln_gamma`, `t1_gamma_inc`). `dist_prims` now carries all of 1.3.0's special-function
+constants.
+- **`dist.cr.tsv`** gains 25 rows where a glibc primitive misrounds: 21 streams (ln, cos or pow inside the rejection
+  loop) and 4 cdf values (897 rows in all).
+- **`dist.ref.tsv`** gains 7,847 rows that the T1 functions move: 1,606 Gamma and 1,836 χ² pdf values (lnΓ), and
+  2,186 Gamma and 2,219 χ² cdf values (the incomplete gamma). It has 11,646 rows in all.
+- Twenty documents serde_json reads only by skipping a member unchecked join `json.map.tsv` (110 rows).
+
+**The result.** Every row passed on the first replay, the Wilson–Hilferty shapes past 10⁹ included. The replay is ten
+modules: 237,710 rows ok and 33,441 accepted (33,331 under ADR 9, 110 under ADR 7), warning-free. Every b1 row is at
+0 ulp, against 1.3.0's bits, its correction or Rust's formula on the T1 functions.
+
+**The cdf and pdf against MPFR** (the golden rows with 0 < α ≤ 10⁵; the cdf as P(α, X) with X the rounded x/β, by
+`mpfr_ref.gamma_pq` at 320 bits or more, and the pdf at 1,024 bits; both rounded once):
+
+| Rows | 1.3.0 | The port |
+|---|---|---|
+| the cdf, α > 10⁻³ (6,758) | 2,922 exact, max 2.8×10¹³ ulp | 6,742 exact, all within 1 ulp |
+| the cdf, α ≤ 10⁻³ (597) | 73 exact; 0 where P is 1 | all 597 exact |
+| the pdf, α > 10⁻³ (6,758) | 1,325 exact, max 1.36×10⁶ ulp | 1,712 exact, max 1.36×10⁶ ulp |
+| the pdf, α ≤ 10⁻³ (596) | 44 exact; 0 where it is about 1 | 121 exact, max 739 ulp |
+
+- **The cdf** inherits T1's incomplete gamma: within 1 ulp everywhere, where 1.3.0 lost up to 0.4% in the deep left
+  tail (Gamma(10, 2) at 2⁻³⁹: 1.3×10¹³ ulp; χ²(30) at 2⁻³⁹: 2.8×10¹³).
+- **At α = 5e-324,** 1.3.0's Lanczos lnΓ is +∞ (the reflection's 1e-300 cutoff), so its pdf and cdf are 0. T1's lnΓ is
+  744.4, and the port gives the right 1.0 for both at x = 5e-324.
+- **The pdf** keeps Rust's form, exp of a sum whose terms reach |α·ln x|. Its error is that sum's rounding: up to
+  1.36×10⁶ ulp at α = 10⁵ in both, the port more often exact but on 606 rows further off than 1.3.0 by chance. T1's
+  incomplete gamma already holds this prefactor, x^α·e^(−x)/Γ(α), in double-double, so an accurate pdf is near at
+  hand: a finding for 2.1.
+
+**Mutation checks** (`build/handoff/mut_b1.py`: the replay and `tests/dist.tcyr`):
+
+| Mutant | Replay rows failed | Unit checks failed |
+|---|---|---|
+| the sampler without the boost below α = 1 | the run never ends | the run never ends |
+| the boost as u^α | 42 | 2 |
+| d = α − 0.3333 | 114 | 0 |
+| c = 1/(3·√d) | 33 | 0 |
+| v² for v³ | 114 | 0 |
+| a looser squeeze, 1 − 0.0300·x⁴ | 11 | 0 |
+| x² for ½x² in the full test | 76 | 0 |
+| v − 1 + ln v in the full test | 114 | 0 |
+| no boost factor on the result | 42 | 2 |
+| Gamma: beta only finite | 119 | 3 |
+| Gamma's pdf with (α − 1)·ln β | 2,223 | 1 |
+| Gamma's pdf as t − (x/β + α·ln β) | 524 | 1 |
+| Gamma's pdf with x < 0 for its zero arm | 34 | 0 |
+| Gamma's cdf at x·(1/β) | 253 | 0 |
+| Gamma's cdf as 1 − Q | 1,295 | 3 |
+| Gamma's variance as α·(β·β) | 18 | 0 |
+| Gamma's draw as Gamma(αβ, 1) | 18 | 1 |
+| χ²'s pdf with ln 2 as 0.69314718056 | 2,936 | 1 |
+| χ²'s cdf as P(df, x/2) | 3,188 | 3 |
+| χ²'s draw as Gamma(df, 1) | 42 | 1 |
+| Gamma's JSON names read swapped | 70 | 1 |
+| χ²'s refusal decoded as `INVALID_PARAMETER` | 51 | 1 |
+| χ²'s JSON key written `dof` | 44 | 3 |
+| Gamma's Debug field named `shape` | 32 | 2 |
+| a tighter squeeze, 1 − 0.0332·x⁴ | 0 | 0 |
+| no squeeze | 0 | 0 |
+
+- **All 24 non-equivalent mutants fail.** Without the boost, α < ⅓ makes d negative and c NaN, and Rust's loop never
+  ends: the replay timed out, as a consumer's call would hang.
+- **The last two are equivalent.** The squeeze is a fast path inside the acceptance region: a tighter one, or none,
+  only sends its points to the full test, which accepts them too. A looser one accepts points the full test refuses,
+  and the streams catch it.
+
+**Tests.** `tests/dist.tcyr` has 334 checks, 78 of them new:
+- 1.3.0's tests: `gamma_pdf_known` (now bit for bit), `gamma_cdf_known` and `chi_squared_cdf_known` (within 10⁻¹⁵,
+  1.3.0's were 10⁻⁶ and 10⁻⁴), `gamma_mean_and_variance`, `gamma_sample_mean`, `gamma_invalid_params`,
+  `gamma_small_alpha_sample`, `chi_squared_mean_and_variance`, `chi_squared_sample_mean`, `chi_squared_large_df_cdf`,
+  the serde round trips, and the two types' lines of `constructors_reject_non_finite_parameters` and
+  `deserialize_rejects_invalid_parameters`;
+- the oracle's wiring tests: Gamma(α, 1)'s cdf is P(α, x) bit for bit, χ²(7) is Gamma(3.5, 2) bit for bit, and
+  Gamma(α, 1)'s draws are `sample_gamma_standard`'s, bit for bit and draw for draw through a counting generator;
+- the edges: 0 at and below 0, NaN at NaN, cdf(∞) = 1, pdf(∞) NaN as 1.3.0's (∞ − ∞); α = 5e-324's pdf and cdf of
+  1.0 and its +0.0 draw; the deep tail within 1 ulp of MPFR; α = f64::MAX's draws of f64::MAX;
+- each codec's text and refusals, and each Debug's two forms.
+
+**Surface parity.** 22 more items are mapped (94 of `distribution`'s 161), and 67 are pending until M3's gate.
+
+**Cost** (`docs/benchmarks-rust-v-cyrius.md`): 291–296 ns a Gamma pdf (6.2× Rust), 13.0–13.2 µs a Gamma or χ² cdf
+(98–101×: the T1 incomplete gamma, 12.9 µs of it alone), and 275–297 ns a draw (7.8–7.9×: Marsaglia–Tsang on the
+correctly rounded ln, cos and pow). The bench's 26 digests are all explained by the models.

@@ -7,7 +7,9 @@
 //!   taskset -c 5 cargo run --release --locked --features roundtrip --bin m3_dist
 
 use pramana::SimpleRng;
-use pramana::distribution::{Bernoulli, Cauchy, Distribution, Exponential, Normal, Uniform, Weibull};
+use pramana::distribution::{
+    Bernoulli, Cauchy, ChiSquared, Distribution, Exponential, Gamma, Normal, Uniform, Weibull,
+};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -97,4 +99,10 @@ fn main() {
     row(&mut r, "Weibull::cdf, Weibull(2, 1), x in [0, 3)", |x, _, _| Weibull::new(2.0, 1.0).unwrap().cdf(x), (0.0, 3.0), u);
     row(&mut r, "Weibull::mean, k in [0.1, 10), lambda = 1", |_, y, _| Weibull::new(y, 1.0).unwrap().mean(), u, sd);
     row(&mut r, "Weibull::sample, lambda in [0.1, 10), k in [0.1, 10)", |x, y, g| Weibull::new(y, x).unwrap().sample(g), sd, sd);
+    // part b1
+    row(&mut r, "Gamma::pdf, Gamma(2.5, 2), x in [0, 20)", |x, _, _| Gamma::new(2.5, 2.0).unwrap().pdf(x), (0.0, 20.0), u);
+    row(&mut r, "Gamma::cdf, Gamma(2.5, 2), x in [0, 20)", |x, _, _| Gamma::new(2.5, 2.0).unwrap().cdf(x), (0.0, 20.0), u);
+    row(&mut r, "Gamma::sample, alpha in [0.1, 10), beta = 1", |_, y, g| Gamma::new(y, 1.0).unwrap().sample(g), u, sd);
+    row(&mut r, "ChiSquared::cdf, chi2(5), x in [0, 20)", |x, _, _| ChiSquared::new(5.0).unwrap().cdf(x), (0.0, 20.0), u);
+    row(&mut r, "ChiSquared::sample, df in [1, 30)", |_, y, g| ChiSquared::new(y).unwrap().sample(g), u, (1.0, 30.0));
 }
