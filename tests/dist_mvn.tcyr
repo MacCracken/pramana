@@ -357,6 +357,11 @@ fn life_tests(mean, cov, x): i64 {
     assert(same == 1 && c.buf != m.buf && c.dim() == 2, "a block of its own, the same bits");
     assert_eq(PmnMultivariateNormal_clone(&m, &m), PMN_ERR_INVALID_PARAMETER, "a clone into its source: refused");
     assert_eq(PmnMultivariateNormal_clone(0, &m), PMN_ERR_INVALID_PARAMETER, "a null out");
+    # 2.0.1: out inside src's block was taken, and the clone's fields overwrote src's mean.
+    var inblk = m.buf + 8;
+    var mean1 = load64(m.buf + 8);
+    assert_eq(PmnMultivariateNormal_clone(inblk, &m), PMN_ERR_INVALID_PARAMETER, "a clone into src's block: refused");
+    assert(load64(m.buf + 8) == mean1, "src's mean as it was");
     e = PmnMultivariateNormal_drop(&m);
     var t1, v1 = c.log_pdf(x, 2);
     var w1: f64 = v1;
@@ -468,11 +473,15 @@ fn sample_tests(mean, cov, x): i64 {
     var r3 = m.sample(nr, x, 3);
     var mb: *PmnMultivariateNormal = &m;
     var r4 = m.sample(&g, mb.buf + 8, 3);
+    # 2.0.1: out over self (a SIGSEGV: the draws overwrote self.buf) or over the generator's state was taken.
+    var r5 = m.sample(&g, &m, 3);
+    var r6 = m.sample(&g, &g, 3);
     var gn2: f64 = g.next_f64();
     var hn2: f64 = h.next_f64();
     assert(r1 == PMN_ERR_INVALID_PARAMETER && r2 == PMN_ERR_INVALID_PARAMETER && r3 == PMN_ERR_INVALID_PARAMETER
-      && r4 == PMN_ERR_INVALID_PARAMETER && bits(gn2) == bits(hn2),
-      "cap < d, a null out or rng, out over the block: refused, nothing drawn");
+      && r4 == PMN_ERR_INVALID_PARAMETER && r5 == PMN_ERR_INVALID_PARAMETER && r6 == PMN_ERR_INVALID_PARAMETER
+      && bits(gn2) == bits(hn2), "cap < d, a null out or rng, out over the block, self or rng: refused, nothing drawn");
+    assert(m.dim() == 3, "self as it was");
     var ei: Eighths;
     ei.k = 0;
     ei.calls = 0;

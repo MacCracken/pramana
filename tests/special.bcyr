@@ -58,14 +58,25 @@ fn eval(which, x: f64, y: f64): f64 {
         var bp, bq = _pmn_beta_inc(x, y, mx, my);
         r = bp - bq;
     }
+    if (which == 12) {
+        var cy: f64 = 1.0 - y;
+        var cp, cq = _pmn_beta_inc(x, 1.0, y, cy);
+        r = cp - cq;
+    }
+    if (which == 13) {
+        var ap, aq = _pmn_gamma_inc(x, x);
+        r = ap - aq;
+    }
     return r;
 }
 
 # `which`: 0 erf, 1 erfc, 2 normal_cdf, 3 normal_sf, 4 the loop alone (x → x), 5 ln_gamma, 6 stirling_error, 7 bd0,
 # 8 ln_gamma_kernel, 9 ln_beta, 10 gamma_inc (P − Q, so both outputs reach the sum), 11 beta_inc on shapes x and y at
-# the mean x/(x + y), its complement y/(x + y) passed as y (I − (1 − I)), on 4,096 uniform x in [lo, hi) and y in
-# [lo2, hi2) (y unused by the one-argument functions), drawn alternately.
-fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
+# the mean x/(x + y), its complement y/(x + y) passed as y (I − (1 − I)), 12 beta_inc(x, 1) at y, its complement 1 − y
+# (2.0.1: b = 1 ran the complement's series to its budget), 13 gamma_inc(x, x) (2.0.1: x = a ran φ's series to its
+# budget), on 4,096 uniform x in [lo, hi) and y in [lo2, hi2) (y unused by the one-argument functions), drawn
+# alternately, reps passes over them (250 for most rows: 1,024,000 calls).
+fn row_reps(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64, reps): i64 {
     for (var j = 0; j < 4096; j = j + 1) {
         var w: f64 = hi - lo;
         var u: f64 = unit();
@@ -79,7 +90,7 @@ fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
     var s: f64 = 0.0;
     var b = bench_new(name);
     bench_batch_start(b);
-    for (var k = 0; k < 250; k = k + 1) {
+    for (var k = 0; k < reps; k = k + 1) {
         for (var i = 0; i < 4096; i = i + 1) {
             var x: f64 = load64(g_xs + i * 8);
             var y: f64 = load64(g_ys + i * 8);
@@ -105,10 +116,19 @@ fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
                 var bp, bq = _pmn_beta_inc(x, y, mx, my);
                 r = bp - bq;
             }
+            if (which == 12) {
+                var cy: f64 = 1.0 - y;
+                var cp, cq = _pmn_beta_inc(x, 1.0, y, cy);
+                r = cp - cq;
+            }
+            if (which == 13) {
+                var ap, aq = _pmn_gamma_inc(x, x);
+                r = ap - aq;
+            }
             s = s + r;
         }
     }
-    bench_batch_stop(b, 1024000);
+    bench_batch_stop(b, reps * 4096);
     var sb: f64 = s;
     print("  ", 2);
     print(name, strlen(name));
@@ -131,6 +151,11 @@ fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
     println("");
     bench_report(b);
     return 0;
+}
+
+# A row of 250 passes, 1,024,000 calls.
+fn row(name: cstring, which, lo: f64, hi: f64, lo2: f64, hi2: f64): i64 {
+    return row_reps(name, which, lo, hi, lo2, hi2, 250);
 }
 
 # Runs the bench rows below, printing each one's timing and the result a run can be checked by.
@@ -165,6 +190,9 @@ fn main(): i64 {
         1000100000.0);
     row("beta_inc, a and b in [0.5, 10), x at the mean", 11, 0.5, 10.0, 0.5, 10.0);
     row("beta_inc, a and b in [10, 1000), x at the mean", 11, 10.0, 1000.0, 10.0, 1000.0);
+    # 2.0.1's two series that ran to their budgets on exact zeros: one pass each, 4,096 calls.
+    row_reps("beta_inc, a in [0.005, 0.015), b = 1, x in [0.1, 0.5)", 12, 0.005, 0.015, 0.1, 0.5, 1);
+    row_reps("gamma_inc at x = a, a in [10, 1000)", 13, 10.0, 1000.0, 0.0, 1.0, 1);
     return 0;
 }
 

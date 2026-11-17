@@ -2,7 +2,8 @@
 # column:
 # - `ai/fmt_fixed4`: Rust's `{:.4}` of a seeded double in [−10⁶, 10⁶);
 # - `ai/request_body_3cols`: the system prompt and request body for three columns of 40, 5 and 5 values;
-# - `ai/describe_200`: the describe tool on a 200-value column, its text and values.
+# - `ai/describe_200`: the describe tool on a 200-value column, its text and values;
+# - `ai/query_result_10000_keys_descending`: a QueryResult of 10,000 values, the keys in descending order (2.0.1).
 # Each row prints a result. The record is docs/benchmarks-rust-v-cyrius.md.
 
 include "tests/lib.cyr"
@@ -69,6 +70,31 @@ fn main(): i64 {
     }
     bench_batch_stop(b3, 20000);
     bench_report(b3);
+    # 2.0.1: a QueryResult of 10,000 values whose keys come in descending order (a model's document can), the insertion
+    # sort's worst case; now a merge sort.
+    var nk = 10000;
+    var kb = alloc(nk * 5);
+    var kr = alloc(nk * 24);
+    for (var ki = 0; ki < nk; ki = ki + 1) {
+        var kv = nk - 1 - ki;
+        var kp = kb + ki * 5;
+        store8(kp, 107);
+        store8(kp + 1, 48 + (kv / 1000) % 10);
+        store8(kp + 2, 48 + (kv / 100) % 10);
+        store8(kp + 3, 48 + (kv / 10) % 10);
+        store8(kp + 4, 48 + kv % 10);
+        store64(kr + ki * 24, kp);
+        store64(kr + ki * 24 + 8, 5);
+        store64(kr + ki * 24 + 16, 0);
+    }
+    var b4 = bench_new("query_result_10000_keys_descending");
+    bench_batch_start(b4);
+    for (var r4 = 0; r4 < 20; r4 = r4 + 1) {
+        var e4 = PmnQueryResult_new(&qr, "", 0, "", 0, kr, nk);
+        if (e4 == PMN_ERR_NONE) { PmnQueryResult_drop(&qr); }
+    }
+    bench_batch_stop(b4, 20);
+    bench_report(b4);
     return 0;
 }
 

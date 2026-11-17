@@ -76,6 +76,12 @@ fn main() {
     assert(nonneg == 1, "the grid is non-negative and equals evaluate at each point");
     assert_eq(kd.evaluate_grid(&pts, 5, o, 4), PMN_ERR_INVALID_PARAMETER, "cap < m is refused");
     assert_eq(kd.evaluate_grid(&pts, 5, &pts, 5), PMN_ERR_NONE, "in place");
+    # 2.0.1: out overlapping the KDE's own data or struct is refused; before, the grid read data it had overwritten.
+    var d0 = load64(kd.data);
+    assert_eq(kd.evaluate_grid(&pts, 2, kd.data, 2), PMN_ERR_INVALID_PARAMETER, "out over self's data is refused");
+    assert_eq(kd.evaluate_grid(&pts, 2, kd.data + 8, 2), PMN_ERR_INVALID_PARAMETER, "out partly over self's data");
+    assert_eq(kd.evaluate_grid(&pts, 4, &kd, 4), PMN_ERR_INVALID_PARAMETER, "out over self is refused");
+    assert(kd.n == 2 && load64(kd.data) == d0, "a refused grid leaves the KDE as it was");
     PmnKernelDensity_drop(&kd);
     put(a, 0, 0.0);
     assert_eq(PmnKernelDensity_new(&kd, a, 1, 1.0, PMN_KERNEL_EPANECHNIKOV), PMN_ERR_NONE, "new([0], 1, Epanechnikov)");
@@ -196,6 +202,10 @@ fn main() {
     store64(&recs + 24, 2);
     assert_eq(pmn_correlation_matrix(&recs, 2, o, 3), PMN_ERR_INVALID_PARAMETER, "cap < p²");
     assert_eq(pmn_correlation_matrix(&recs, 2, a4, 9), PMN_ERR_INVALID_PARAMETER, "out overlapping a variable");
+    # 2.0.1: out overlapping the records was taken, and the diagonal's store overwrote a record's pointer (SIGSEGV).
+    var rec0 = load64(&recs);
+    assert_eq(pmn_correlation_matrix(&recs, 2, &recs, 4), PMN_ERR_INVALID_PARAMETER, "out overlapping the records");
+    assert(load64(&recs) == rec0, "a refused call leaves the records as they were");
     assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
 
     return assert_summary();

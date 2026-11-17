@@ -231,6 +231,10 @@ fn _pmn_lg_pos_dd(x: f64): (f64, f64) {
     var tail: f64 = (hsh + hsl) + w;
     var lo3: f64 = pe + tail;
     var h3, l3 = _pmn_km_fast_two_sum(ph, lo3);
+    # 2.0.1: within an ulp of f64::MAX, ph is finite but ph + lo3 rounds to +∞, and the two-sum's error is then −∞, so
+    # h + l was NaN (414 doubles from 0x7F5754D9278B51A8, about 2.56·10³⁰⁵; the NaN's sign differed by target). lnΓ
+    # has overflowed there: +∞, as MPFR's and 1.3.0's.
+    if (h3 == _PMN_F64_INFINITY) { return (h3, 0.0); }
     return (h3, l3);
 }
 

@@ -70,6 +70,12 @@ fn main() {
     assert(near(e0, 0.1, 0.0000000001) == 1 && near(e1, -0.1, 0.0000000001) == 1 && near(e2, 0.2, 0.0000000001) == 1,
         "0.1, −0.1, 0.2");
     assert_eq(pmn_residuals(&lm, x, 3, y, 3, o, 2), PMN_ERR_INVALID_PARAMETER, "cap < n");
+    # 2.0.1: out partly over x or y, or over the model, was taken, and later slots read what earlier ones wrote.
+    assert_eq(pmn_residuals(&lm, x, 2, y, 2, y + 8, 2), PMN_ERR_INVALID_PARAMETER, "out partly over y");
+    assert_eq(pmn_residuals(&lm, x, 2, y, 2, x + 8, 2), PMN_ERR_INVALID_PARAMETER, "out partly over x");
+    assert_eq(pmn_residuals(&lm, x, 3, y, 3, &lm, 3), PMN_ERR_INVALID_PARAMETER, "out over the model");
+    var y1: f64 = load64(y + 8);
+    assert(y1 == 1.9, "a refusal writes nothing");
     assert_eq(pmn_linear_regression(&lm, x, 1, y, 2), PMN_ERR_DIMENSION_MISMATCH, "lengths 1 and 2");
     lm.slope = 2.5;
     lm.intercept = -1.3;
@@ -127,8 +133,19 @@ fn main() {
         var sq: f64 = xv * xv;
         put(y, k2, sq);
     }
+    var pmx: PmnPolynomialModel;
+    assert_eq(pmn_polynomial_regression(&pmx, x, 2, y, 2, 0 - 1), PMN_ERR_INVALID_SAMPLE,
+        "1.3.0's polynomial_huge_degree_does_not_overflow: degree usize::MAX is InvalidSample (2.0.1)");
     assert_eq(pmn_polynomial_regression(&pm, x, 5, y, 5, 2), PMN_ERR_NONE, "y = x²");
+    # 2.0.1: hisab's least squares no longer computes degree + 1 before comparing it with m (it wrapped at 2⁶³ − 1).
+    var lsq_big = _pmn_least_squares_poly(x, y, 5, 9223372036854775807, o);
+    assert_eq(lsq_big, PMN_ERR_INVALID_PARAMETER, "least squares of degree 2^63 − 1 on 5 points: refused");
+    assert_eq(_pmn_least_squares_poly(x, y, 5, 5, o), PMN_ERR_INVALID_PARAMETER, "degree 5 on 5 points: refused");
     assert_eq(pmn_residuals_poly(&pm, x, 5, y, 5, o, 5), PMN_ERR_NONE, "its residuals");
+    # 2.0.1: as pmn_residuals, and out over the coefficients (read for every point) is refused too.
+    assert_eq(pmn_residuals_poly(&pm, x, 3, y, 3, pm.coef, 3), PMN_ERR_INVALID_PARAMETER, "out over the coefficients");
+    assert_eq(pmn_residuals_poly(&pm, x, 4, y, 4, y + 8, 4), PMN_ERR_INVALID_PARAMETER, "out partly over y");
+    assert_eq(pmn_residuals_poly(&pm, x, 2, y, 2, &pm, 2), PMN_ERR_INVALID_PARAMETER, "out over the model");
     var small = 1;
     for (var k3 = 0; k3 < 5; k3 = k3 + 1) {
         var rv: f64 = load64(o + k3 * 8);
@@ -184,7 +201,18 @@ fn main() {
     assert(lg.converged == 1 && b1 > 0.0, "converged, β₁ > 0");
     assert(pmn_predict_logistic_class(&lg, &hi, 1, 0.5) == 1 && pmn_predict_logistic_class(&lg, &lo, 1, 0.5) == 0,
         "class 1 at 10, 0 at −10");
+    # 2.0.1: the clone, which no test reached (coverage 171/174): a block of its own, the same bits.
+    var lgc: PmnLogisticModel;
+    assert_eq(PmnLogisticModel_clone(&lgc, &lg), PMN_ERR_NONE, "a clone");
+    var cb0 = load64(lgc.coefficients());
+    var cb1 = load64(lgc.coefficients() + 8);
+    assert(lgc.coef != lg.coef && lgc.n == lg.n && lgc.iterations == lg.iterations && lgc.converged == lg.converged
+        && cb0 == load64(lg.coefficients()) && cb1 == load64(lg.coefficients() + 8), "its own block, the same bits");
+    assert_eq(PmnLogisticModel_clone(&lg, &lg), PMN_ERR_INVALID_PARAMETER, "a clone into its source: refused");
     PmnLogisticModel_drop(&lg);
+    assert(pmn_predict_logistic_class(&lgc, &hi, 1, 0.5) == 1, "the clone outlives its source");
+    assert_eq(PmnLogisticModel_clone(&lgc, &lg), PMN_ERR_INVALID_PARAMETER, "a clone of a dropped one: refused");
+    PmnLogisticModel_drop(&lgc);
     var f2[96];
     var l2[96];
     for (var j3 = 0; j3 < 11; j3 = j3 + 1) {

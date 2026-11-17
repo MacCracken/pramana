@@ -50,6 +50,15 @@ fn _pmn_reg_slice_ok(p, n): i64 {
     return 1;
 }
 
+# 1 when out[0, n) is x or y itself or overlaps neither: the residuals read xᵢ and yᵢ before writing slot i, so only a
+# partial overlap reads a slot already written.
+#must_use
+fn _pmn_reg_out_ok(out, n, x, y): i64 {
+    if (out != x && _pmn_linalg_overlaps(out, n * 8, x, n * 8) == 1) { return 0; }
+    if (out != y && _pmn_linalg_overlaps(out, n * 8, y, n * 8) == 1) { return 0; }
+    return 1;
+}
+
 # ── LinearModel ───────────────────────────────────────────────────────────────────────────────────
 
 # Rust's `LinearModel`: y = slope·x + intercept, and R².
@@ -132,8 +141,9 @@ fn pmn_predict(model: *PmnLinearModel, x: f64): f64 {
 }
 
 # Rust's `residuals(model, x, y)`: yᵢ − predict(xᵢ), into out[0, n) (cap ≥ n, D11). PMN_ERR_DIMENSION_MISMATCH for
-# lengths that differ; PMN_ERR_INVALID_PARAMETER for a null model or buffer, an invalid slice or cap < n (out may be y
-# itself: each yᵢ is read before its slot is written).
+# lengths that differ; PMN_ERR_INVALID_PARAMETER for a null model or buffer, an invalid slice, cap < n, or out partly
+# overlapping x or y or overlapping the model (out may be x or y itself: each xᵢ and yᵢ is read before its slot is
+# written).
 #must_use
 fn pmn_residuals(model: *PmnLinearModel, x, nx, y, ny, out, cap): i64 {
     if (model == 0 || _pmn_reg_slice_ok(x, nx) == 0 || _pmn_reg_slice_ok(y, ny) == 0) {
@@ -141,6 +151,9 @@ fn pmn_residuals(model: *PmnLinearModel, x, nx, y, ny, out, cap): i64 {
     }
     if (nx != ny) { return PMN_ERR_DIMENSION_MISMATCH; }
     if (cap < nx || (out == 0 && nx > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_reg_out_ok(out, nx, x, y) == 0 || _pmn_linalg_overlaps(out, nx * 8, model, 24) == 1) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
     for (var i = 0; i < nx; i = i + 1) {
         var xi: f64 = load64(x + i * 8);
         var yi: f64 = load64(y + i * 8);
@@ -249,12 +262,14 @@ fn _pmn_eval_poly(c, n, x: f64): f64 {
 # when the block or the scratch can't be had.
 #must_use
 fn pmn_polynomial_regression(out: *PmnPolynomialModel, x, nx, y, ny, degree): i64 {
-    if (out == 0 || degree < 0 || _pmn_reg_slice_ok(x, nx) == 0 || _pmn_reg_slice_ok(y, ny) == 0) {
+    if (out == 0 || _pmn_reg_slice_ok(x, nx) == 0 || _pmn_reg_slice_ok(y, ny) == 0) {
         return PMN_ERR_INVALID_PARAMETER;
     }
     if (nx != ny) { return PMN_ERR_DIMENSION_MISMATCH; }
     if (degree == 0) { return PMN_ERR_INVALID_PARAMETER; }
-    if (degree >= nx) { return PMN_ERR_INVALID_SAMPLE; }
+    # A degree at or past 2^63 is ≥ any length, as Rust's usize (its polynomial_huge_degree_does_not_overflow; 2.0.1,
+    # ADR 007 row 18).
+    if (degree >= nx || degree < 0) { return PMN_ERR_INVALID_SAMPLE; }
     if (_pmn_reg_finite(x, nx) != PMN_ERR_NONE) { return PMN_ERR_INVALID_SAMPLE; }
     if (_pmn_reg_finite(y, ny) != PMN_ERR_NONE) { return PMN_ERR_INVALID_SAMPLE; }
     var nc = degree + 1;
@@ -321,7 +336,8 @@ fn pmn_predict_poly(model: *PmnPolynomialModel, x: f64): f64 {
     return r;
 }
 
-# Rust's `residuals_poly(model, x, y)`: yᵢ − predict_poly(xᵢ), into out[0, n) (cap ≥ n). As `pmn_residuals`.
+# Rust's `residuals_poly(model, x, y)`: yᵢ − predict_poly(xᵢ), into out[0, n) (cap ≥ n). As `pmn_residuals`; out
+# must not overlap the model's coefficients either.
 #must_use
 fn pmn_residuals_poly(model: *PmnPolynomialModel, x, nx, y, ny, out, cap): i64 {
     if (model == 0 || model.coef == 0 || _pmn_reg_slice_ok(x, nx) == 0 || _pmn_reg_slice_ok(y, ny) == 0) {
@@ -329,6 +345,10 @@ fn pmn_residuals_poly(model: *PmnPolynomialModel, x, nx, y, ny, out, cap): i64 {
     }
     if (nx != ny) { return PMN_ERR_DIMENSION_MISMATCH; }
     if (cap < nx || (out == 0 && nx > 0)) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_reg_out_ok(out, nx, x, y) == 0 || _pmn_linalg_overlaps(out, nx * 8, model, 32) == 1
+      || _pmn_linalg_overlaps(out, nx * 8, model.coef, model.n * 8) == 1) {
+        return PMN_ERR_INVALID_PARAMETER;
+    }
     for (var i = 0; i < nx; i = i + 1) {
         var xi: f64 = load64(x + i * 8);
         var yi: f64 = load64(y + i * 8);
@@ -502,7 +522,9 @@ fn pmn_logistic_regression(out: *PmnLogisticModel, rows, n, labels, nl, l2_reg: 
         if (lb != 0.0 && lb != 1.0) { return PMN_ERR_INVALID_SAMPLE; }
     }
     var dim = p + 1;
-    var s, slot = _pmn_scratch_take((n + 5 * dim + 2 * dim * dim) * 8);
+    # 2·dim² wraps for rows of 2³⁰ features or more: sized through the checked helpers, it is refused instead.
+    var words = _pmn_sz_add(_pmn_sz_add(n, 5 * dim), _pmn_sz_mul(2, _pmn_sz_mul(dim, dim)));
+    var s, slot = _pmn_scratch_take(_pmn_sz_mul(words, 8));
     if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
     var probs = s;
     var beta = probs + n * 8;

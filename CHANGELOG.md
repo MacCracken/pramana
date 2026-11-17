@@ -6,8 +6,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-11-17
+
+The P(-1) bug audit and hardening sweep after the port. Seven parallel reviews read `src/` against
+`rust-old/src/`, CLAUDE.md's rules and ADR 007/009, and built repros for what they found. Every fix below has a test
+that fails without it (each was mutation-checked by reverting the fix). Values are unchanged everywhere outside the
+inputs named: the golden replay (315,210 rows on x86_64 ELF, PE and aarch64) passes as before.
+
+### Breaking
+
+- **`pmn_ai_sandhi_transport` fills 32 bytes of `resp`, not 24** (the `[lib.ai]` bundle; the maintainer's choice to
+  ship in a patch, with the leak fixed below). The fourth word is 1: the body is a freelist block of its own, which
+  the caller frees with `fl_free`. `StatQuery.query` passes a 32-byte `resp` and frees it, so code that only hands the
+  transport to `PmnStatQuery_new` is unaffected, as is a custom transport (one that leaves the fourth word alone keeps
+  its body). **Migration:** a caller of the transport itself makes `resp` 32 bytes and frees the body when the fourth
+  word is 1.
+
+### Fixed
+
+- **Memory safety: output buffers that overlap their inputs.** CLAUDE.md requires every buffer parameter to be checked
+  for aliasing; these weren't, and each is now refused with `PMN_ERR_INVALID_PARAMETER`, writing nothing:
+  - `pmn_correlation_matrix`: `out` over the `vars` records. The diagonal's store overwrote a record's pointer, then
+    dereferenced it (SIGSEGV).
+  - `PmnKernelDensity.evaluate_grid`: `out` over the KDE or its data. Later points read data already overwritten
+    (`out[3]` 0.1058 where `evaluate(3)` is 0.1748), and `out` over the struct crashed (SIGBUS).
+  - `PmnMultivariateNormal.sample`: `out` over the model (SIGSEGV) or over the generator's state (other draws than an
+    unaliased generator's). `PmnMultivariateNormal_clone`: `out` inside the source's block, which overwrote its mean.
+  - `PmnMarkovChain.simulate`: a null `rng` (SIGSEGV in `step`), and `out` over the generator's state.
+  - `pmn_exponential_smoothing`, `pmn_residuals` and `pmn_residuals_poly`: `out` partly over an input (or the model,
+    or its coefficients) gave wrong values silently. Exactly in place stays allowed, as documented.
+- **Scratch sizes that could wrap.** Logistic regression's 2·dim² and ARIMA's 2·p² words wrapped past 2⁶³ for rows of
+  2³⁰ features or an order of 2³⁰, and claimed a few bytes. They go through checked helpers (`_pmn_sz_mul`,
+  `_pmn_sz_add` in `src/pool.cyr`) and are refused as `PMN_ERR_OUT_OF_MEMORY`, where Rust's `vec!` aborts. The Jacobi,
+  the least squares and the PCA size the same way.
+- **Caps 1.3.0 doesn't have** (hisab 1.4.0 has none): `pmn_pca` refused more than 4,096 variables, as
+  `COMPUTATION_ERROR`, and `pmn_polynomial_regression` more than 2²⁶ points. Both now take any size whose words can
+  exist. The least squares also compared `degree + 1` with m after computing it, which wrapped at 2⁶³ − 1.
+- **lnΓ** (`src/lgamma.cyr`): the 414 doubles from `0x7F5754D9278B51A8` to `0x7F5754D9278B5345` (about 2.56·10³⁰⁵)
+  gave NaN, its sign differing by target, where MPFR and 1.3.0 give +∞. Past ph = f64::MAX, the final two-sum's error
+  was −∞. Gamma's and χ²'s pdf there were NaN where 1.3.0's are 0.
+- **Error codes 1.3.0 returns** (ADR 007 row 18, amended; the maintainer's choice). A count at or past 2⁶³ that
+  1.3.0's own checks refuse now gets 1.3.0's variant, in its order: `PMN_ERR_INVALID_SAMPLE` for
+  `polynomial_regression`'s degree (1.3.0's `polynomial_huge_degree_does_not_overflow`), `difference`'s and
+  `integrate`'s d and `arima_fit`'s p and d; `autocorrelation`'s lag and `arima_forecast`'s steps refuse as 1.3.0's
+  checks do; Baum–Welch checks the observations, then refuses an impossible sequence with `COMPUTATION_ERROR`. Each
+  was `INVALID_PARAMETER` before any work. That stays only for the runs 1.3.0 would start and never finish.
+- **A reservation 1.3.0 refuses is `INVALID_PARAMETER`, not `OUT_OF_MEMORY`**: Metropolis–Hastings' and Gibbs'
+  chain block (1.3.0's `try_reserve_exact`, "cannot be allocated") and `arima_forecast`'s scratch (its
+  `try_reserve(steps)`, "too large to allocate").
+- **JSON** (`src/json.cyr`):
+  - A number token with an exponent of 7 or more significant digits read wrong: the stdlib's `_f64_parse_n` drops the
+    digits past six. `0.` + 999,700 zeros + `1e1000000`, exactly 1e299, read as 0.0, and its mirror (1e-300) was
+    refused; serde_json reads both exactly. The pre-pass rewrites such a token to the same value with a small
+    exponent (`_pmn_json_big_exp`, conversion ledger L16;
+    `cyrius:docs/development/issues/2026-11-17-f64-parse-drops-exponent-digits-past-six.md`).
+  - The L13 size guard assumed a vec can reach `VEC_CAP_MAX` exactly, which only holds when the cap is 16·2ᵏ (the
+    default). A consumer's cap of 100 let a 70-element array end the process. The guard now uses the largest such
+    power at or below the cap.
+- **AI tools** (`src/ai.cyr`): an argument out of f64's range (`{"mu": 1e400}`) was read as ±∞ and then dropped, so
+  the t-test ran at mu = 0. serde_json refuses the whole arguments document there ("number out of range"), so the
+  port now refuses it with `PMN_ERR_DESERIALIZE` before the tool is looked up (`_pmn_json_all_finite`).
+- **Drops clear every pointer into their freed block**, so a field read after a drop finds 0, not freed memory:
+  `PmnPcaResult`, `PmnMcmcResult`, `PmnQueryResult`, `PmnStatQuery` and soorat's `PmnDistributionCurve`,
+  `PmnMcmcTrace`, `PmnHistogramData` and `PmnCorrelationMatrix`. The accessors already checked `buf`. This is the
+  class of the HMM's drop bug fixed at M8 part e.
+- **The double-double helpers' edges** (`src/dd.cyr`, `src/mathx.cyr`; no caller reaches them today):
+  - `_pmn_dd_expm1` past ln(f64::MAX) gave NaN or −1, because 2^e wrapped at e = 1024. It now gives +∞, and
+    MPFR's values just below, where 2^1024 is scaled in two steps.
+  - `_pmn_dd_scale` states its exponent range.
+  - `_pmn_fract(±∞)` gives x86's default NaN on every target (ADR 007 row 17's choice), not the hardware's.
+
 ### Changed
 
+- **The AI client.**
+  - **The leak.** `pmn_ai_sandhi_transport` runs the whole exchange in an arena claimed from the scratch pool,
+    through sandhi's allocator-taking POST. Before, each answered query left more than 256 KiB on the consumer's bump
+    heap (sandhi's 262,145-byte receive buffer and the rest), and each refused call 464 bytes. A refused call now
+    leaves 0, and an answered one about 424 bytes, sandhi's `Host` header for a non-default port
+    (`sandhi:docs/development/issues/2026-11-17-arena-post-still-allocates-host-header-on-the-default-heap.md`). A
+    loopback test now makes real exchanges with a one-shot server (`tests/ai_sandhi.tcyr`).
+  - **Inputs.** `PmnStatQuery_new` refuses a base or model that isn't UTF-8 (a Rust `String` can't hold one). The
+    transport refuses a URL with a NUL byte, which its C string would have cut short (reqwest refuses such a URL).
+  - **HTTP rules, documented** (ADR 007 row 9, amended; the maintainer's choice). Any reply outside 2xx is refused,
+    no redirect is followed and a reply is capped at 262,144 bytes. reqwest refuses 4xx and 5xx only, follows 10
+    redirects and has no cap.
+  - **Duplicate keys** in a map the port reads (a `QueryResult`'s values, a tool's arguments) are refused, where
+    serde keeps the last (ADR 007 row 19, new; converted with row 16 when bayan ships its opt-in).
 - **CI** (`.github/workflows/ci.yml`). The single 21-step serial job is now four parallel jobs, and each task runs once:
   - **Checks:** fmt, lint, docs, vet, `deps --locked`, the build, the bundle, the examples, the fuzz harness, the
     three ledgers and the vendored-source checks;
@@ -28,8 +112,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - tests: 114 s plain and 116 s bounds-checked, side by side;
   - bench: 363 s, alongside.
 
-  Corpus then tests, the critical path, took 7 min 48 s of wall time, container setup included. GitHub's own
-  figure comes with the first run.
+  Corpus then tests, the critical path, took 7 min 48 s of wall time, container setup included. On GitHub the first
+  run took **5 min 17 s** (run 44144747609, cold cache): checks 46 s, corpus 225 s (validation 186 s), tests 85 s plain
+  and 64 s bounds-checked, benchmarks 306 s.
+
+  **Cross-target parity in CI.** The test matrix adds the parity replay on aarch64 (qemu-user) and PE (wine, through a
+  binfmt entry for the MZ magic), as the local release gate runs it: the same inputs must give the same bits on every
+  target (ADR 007 row 11). Locally, aarch64 took 96 s and PE 14 s.
+
+  **A coverage gate.** `cyrius coverage --min 100` in the checks job: every public function of `src/` is referenced by
+  a test. It is instant and runs nothing, so the suite still runs once. Execution coverage (`--exec`) agrees: 174 of
+  174, after the three `_clone` functions no test reached (`PmnQueryResult`, `PmnLogisticModel`,
+  `PmnRegressionFit`) got tests.
 
   **New gates.**
   - **Warning-free.** `cyrius test` and `cyrius bench` fail on any compiler `warning:`, as CLAUDE.md requires.
@@ -54,6 +148,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   port: the release's loose ends, the threat model, the verification CI doesn't do yet, and the §10 stand-ins as their
   libraries ship. 2.1.0 takes the accuracy findings, D4's StRD shortfalls and the AI client's tools. 2.2.0–2.7.0 take
   the 1.x feature sections, restated for Cyrius, and the rest of 2.x is unscheduled.
+- **Docs.** ADR 007 rows 9 and 18 amended and row 19 added (above); the conversion ledger's L16, and the sandhi request
+  with no stand-in (port plan §10); `state.md` and the roadmap.
+
+### Performance
+
+Measured pinned to one core, old against new; on the shared box, unchanged rows moved by up to ±4%, and the `ln_beta`
+rows (no code change) by up to 31%. Elsewhere nothing got slower: an interleaved A/B of the special-function,
+descriptive and Bayesian benches (31 rows, the faster of two rounds each, pinned) gives a median new/old of 0.995, and
+the rows a single post-review pass showed at 1.4–1.9× (`ln_gamma`, `mode_10000`, `naive_bayes`) came in at 0.99–1.01.
+
+| Row | 2.0.0 | 2.0.1 | |
+|---|---|---|---|
+| `beta_inc`, a ∈ [0.005, 0.015), b = 1, x ∈ [0.1, 0.5) | 5.457 ms | 12.6 µs | 432× |
+| `gamma_inc` at x = a, a ∈ [10, 1000) | 38.5 µs | 21.1 µs | 1.8× |
+| `PmnQueryResult_new`, 10,000 keys in descending order | 986 ms | 2.54 ms | 389× |
+
+- **The incomplete beta's complement series** (`_pmn_bi_comp`) ran its whole 99,999-step budget when b = 1 (every
+  term is 0) or x was subnormal (the terms underflow), since its stop test compared against a limit that was 0 too.
+  The same held for the incomplete gamma's φ series at x = a (198 steps). Both now stop at a zero term. The skipped
+  terms were exact zeros, so the 28 bench rows' value digests are identical, and MPFR's values match to the bit
+  (`tests/special.tcyr`'s 2.0.1 group). Two bench rows record it (`tests/special.bcyr`).
+- **`PmnQueryResult_new`** sorted its values by insertion: a model's reply of a few MB, with its keys in descending
+  order, took hours to decode (26 s at 40,000 keys). A bottom-up merge sort replaces it; the order and the
+  duplicate refusal are unchanged. A bench row records it (`tests/ai.bcyr`).
 
 ## [2.0.0] - 2026-11-17
 

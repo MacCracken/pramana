@@ -98,6 +98,21 @@ fn main() {
     assert_eq(alloc_used() - before, 0, "10^4 claims, allocators and releases: 0 bytes of bump heap");
     assert_eq(_pmn_scratch_claimed(), 0, "and nothing left claimed");
 
+    test_group("checked scratch sizes (2.0.1: logistic's 2·dim² and ARIMA's 2·p² wrapped to a small claim)");
+    var big = 9223372036854775807;
+    assert_eq(_pmn_sz_mul(3, 7), 21, "3 · 7");
+    assert_eq(_pmn_sz_mul(0, big), 0, "0 · (2^63 − 1)");
+    assert_eq(_pmn_sz_mul(1073741824, 1073741824), 1152921504606846976, "2^30 · 2^30 = 2^60");
+    assert_eq(_pmn_sz_mul(2, _pmn_sz_mul(2147483648, 2147483648)), 0 - 1, "2 · 2^31 · 2^31 passes 2^63: −1");
+    assert_eq(_pmn_sz_mul(3037000500, 3037000500), 0 - 1, "3037000500² passes 2^63: −1");
+    assert_eq(_pmn_sz_mul(3037000499, 3037000499), 9223372030926249001, "3037000499² still fits");
+    assert_eq(_pmn_sz_mul(0 - 1, 8), 0 - 1, "−1 carries through");
+    assert_eq(_pmn_sz_add(big - 1, 1), big, "(2^63 − 2) + 1");
+    assert_eq(_pmn_sz_add(big, 1), 0 - 1, "(2^63 − 1) + 1: −1");
+    assert_eq(_pmn_sz_add(0 - 1, 0), 0 - 1, "−1 carries through");
+    var cs, cslot = _pmn_scratch_take(_pmn_sz_mul(big, 8));
+    assert(cs == 0 && cslot == 0 - 1, "a size of −1 is refused, nothing claimed");
+
     return assert_summary();
 }
 

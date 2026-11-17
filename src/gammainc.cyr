@@ -146,7 +146,9 @@ fn _pmn_gi_lnpre(a: f64, x: f64): (f64, f64) {
             var at: f64 = f64_abs(th2);
             var af: f64 = f64_abs(fh);
             var lim: f64 = af * thr;
-            if (at < lim) { break; }
+            # 2.0.1: u = 0 (x = a) makes every term 0 and lim 0, so `at < lim` never held and the loop ran its 198
+            # steps; the rest add exact zeros, so stopping at a zero term leaves the bits as they were.
+            if (at < lim || th2 == 0.0) { break; }
             var nh, nl = _pmn_dd_mul(ph, pl, wh, wl);
             ph = nh;
             pl = nl;

@@ -29,19 +29,18 @@ rounded, ADR 009's bounds are never loosened, and the bits stay the same on ever
       is at `rust-old/docs/development/threat-model.md`
 
 ### Verification
-- [ ] Cross-target parity in CI. CI replays the golden corpus on x86_64 ELF only. PE (wine) and aarch64 (qemu) run
-      only in the local release gate (port plan §11, risk 5). Add a job for each, replaying the corpus artifact the
-      `corpus` job already uploads
 - [ ] Make the vendored-source checks real in CI. `vendor_crmath.py`, `vendor_fmtf.py`, `vendor_coremath.py` and
       `vendor_lgamma.py --check` all pass as unverified there, because CI has none of their sources: `../kimiya`,
       `../impetus`, CORE-MATH's source in `build/coremath/`, and libm 0.2.16's source. CI should fetch each at its
       pinned revision
 - [ ] Run `scripts/crverify/run.sh` (the port against MPFR at 1,024 bits, on all three targets) in CI, or on a
       schedule if it is too slow for every push. Today it runs by hand
-- [ ] Measure and gate coverage with `cyrius coverage`, at CLAUDE.md's 80% floor
+- [ ] `pow` on a signaling NaN: `pow(sNaN, ±0)` and `pow(1, sNaN)` give 1.0, where glibc, so 1.3.0, quiets it to a NaN
+      as IEEE 754 asks (2.0.1's audit). A signaling NaN only comes from raw bits; decide between an ADR 007 row and
+      matching 1.3.0
 
 ### Stand-ins, converted as their libraries ship (ADR 008)
-The conversion ledger is the port plan's §10: 15 rows, all open, with 24 `UPSTREAM` notes in `src/`. Each row converts
+The conversion ledger is the port plan's §10: 16 rows, all open, with 25 `UPSTREAM` notes in `src/`. Each row converts
 when its library ships, and its parity rows are re-run then. A conversion that would move a row's bits becomes a 2.x
 item, with its ADR row.
 - [ ] ganita: the correctly rounded tier (L1), the `_into` Cholesky solve (L4), and the special functions if ganita
@@ -54,16 +53,19 @@ item, with its ADR row.
   - `#derive(Debug)` and a shortest printer, with bayan (L10);
   - a scalar fma (L12);
   - `vec_push_a` and `str_builder` forms that return −1 instead of aborting (L13, L14);
-  - a word-wise `memcpy` (L15).
+  - a word-wise `memcpy` (L15);
+  - a float parser that takes any exponent (L16: `_f64_parse_n` drops exponent digits past six).
 - [ ] bayan: u64 nodes, signed zero and strict strings (L11)
 - [ ] hoosh: a client bundle (L9)
-- [ ] The six requests filed with no stand-in (port plan §10). When each one ships, its workaround is retired:
+- [ ] The seven requests filed with no stand-in (port plan §10). When each one ships, its workaround is retired:
   - the closure-capture rule (port plan §8.3, cyrius);
   - the `include "lib/alloc.cyr"` in files that `cyrius lint` compiles alone (cyrius);
   - the freelist's mmap per large block: 36 µs per MVN new and drop at d = 32 (cyrius);
   - bayan's opt-in for unread members and its nesting cap. 35 of the 1,495 serde_json documents that 1.3.0 reads are
     refused until it ships (ADR 007 row 16), so the fix restores 1.3.0's behavior;
-  - sandhi's static data: `tests/ai_sandhi.tcyr` builds the transport in a binary of its own until then.
+  - sandhi's static data: `tests/ai_sandhi.tcyr` builds the transport in a binary of its own until then;
+  - sandhi's `Host` header for a non-default port, built on the default heap whatever the arena: about 424 bytes an
+    exchange are left on the consumer's heap until then (`tests/ai_sandhi.tcyr`'s heap bound).
 
 ## 2.1.0 — accuracy, and the AI client's tools
 

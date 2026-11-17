@@ -236,14 +236,17 @@ impl PmnKernelDensity {
     }
 
     # Rust's `evaluate_grid(points)`: the density at points[0, m), into out[0, m) (cap ≥ m, D11). PMN_ERR_NONE;
-    # PMN_ERR_INVALID_PARAMETER for a dropped self, a null buffer with m > 0, a negative m, cap < m, or out partly
-    # overlapping points (out == points evaluates in place: each point is read before its slot is written).
+    # PMN_ERR_INVALID_PARAMETER for a dropped self, a null buffer with m > 0, a negative m, cap < m, out partly
+    # overlapping points (out == points evaluates in place: each point is read before its slot is written), or out
+    # overlapping self or its data (every point after the first reads both).
     #must_use
     fn evaluate_grid(self, points, m, out, cap): i64 {
         if (self == 0 || self.data == 0 || m < 0 || cap < m) { return PMN_ERR_INVALID_PARAMETER; }
         if (m == 0) { return PMN_ERR_NONE; }
         if (points == 0 || out == 0) { return PMN_ERR_INVALID_PARAMETER; }
         if (out != points && _pmn_linalg_overlaps(points, m * 8, out, m * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(self, 32, out, m * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(self.data, self.n * 8, out, m * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
         for (var i = 0; i < m; i = i + 1) {
             var x: f64 = load64(points + i * 8);
             var r: f64 = self.evaluate(x);
@@ -339,8 +342,8 @@ fn PmnKernelDensity_from_json(out: *PmnKernelDensity, buf, len): i64 {
 # −0.0 over n, each σ the population one, each covariance Σ (xᵢ − m_i)(x_j − m_j) / n; r = cov/(σ_i σ_j), 1 on the
 # diagonal, and 0 off it where a σ is 0. PMN_ERR_INVALID_SAMPLE for fewer than 2 variables or 2 observations,
 # PMN_ERR_DIMENSION_MISMATCH for a variable of another length, in Rust's order; PMN_ERR_INVALID_PARAMETER for a null
-# buffer, a negative count, cap < p·p or out overlapping a variable; PMN_ERR_OUT_OF_MEMORY when the means' scratch
-# (2p f64s) can't be had.
+# buffer, a negative count, cap < p·p or out overlapping a variable or the records; PMN_ERR_OUT_OF_MEMORY when the
+# means' scratch (2p f64s) can't be had.
 #must_use
 fn pmn_correlation_matrix(vars, p, out, cap): i64 {
     if (p < 0 || (vars == 0 && p > 0)) { return PMN_ERR_INVALID_PARAMETER; }
@@ -354,6 +357,8 @@ fn pmn_correlation_matrix(vars, p, out, cap): i64 {
         if (ni != n) { return PMN_ERR_DIMENSION_MISMATCH; }
     }
     if (out == 0 || cap < p * p) { return PMN_ERR_INVALID_PARAMETER; }
+    # out must not overlap the records either: the loops below read each record after writing out's diagonal.
+    if (_pmn_linalg_overlaps(vars, p * 16, out, p * p * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
     for (var j = 0; j < p; j = j + 1) {
         var vj = load64(vars + j * 16);
         if (_pmn_linalg_overlaps(vj, n * 8, out, p * p * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }

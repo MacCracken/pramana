@@ -109,13 +109,15 @@ fn PmnMultivariateNormal_new(out: *PmnMultivariateNormal, mean, d, cov, rows, co
 
 # Rust's derived Clone: a new block holding src's mean, covariance and factor, into out. PMN_ERR_NONE;
 # PMN_ERR_INVALID_PARAMETER for a null or dropped src, a null out, or out overlapping src (cloning into src would lose
-# its block); PMN_ERR_OUT_OF_MEMORY when the block can't be had. Drop each one.
+# its block) or src's block (the clone's fields would overwrite src's mean); PMN_ERR_OUT_OF_MEMORY when the block
+# can't be had. Drop each one.
 #must_use
 fn PmnMultivariateNormal_clone(out: *PmnMultivariateNormal, src: *PmnMultivariateNormal): i64 {
     if (out == 0 || src == 0 || src.buf == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (_pmn_linalg_overlaps(out, 24, src, 24) == 1) { return PMN_ERR_INVALID_PARAMETER; }
     var d = src.n;
     var nb = _pmn_mvn_bytes(d);
+    if (_pmn_linalg_overlaps(out, 24, src.buf, nb) == 1) { return PMN_ERR_INVALID_PARAMETER; }
     var blk = fl_alloc(nb);
     if (blk == 0) { return PMN_ERR_OUT_OF_MEMORY; }
     _pmn_copy_words(blk, src.buf, nb / 8);
@@ -214,13 +216,15 @@ impl PmnMultivariateNormal {
     # pair's two uniforms and keeps its cosine. Row i's sum Σ_(k ≤ i) L_ik·z_k runs from −0.0 in k order, as Rust's;
     # z sits in out and the rows are done from the last up, so row i reads z_0 … z_i while they are still z.
     # PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER, drawing nothing, for a null rng or out, cap < d, out overlapping the
-    # block, or a dropped self.
+    # block, self or the generator's state word, or a dropped self.
     #must_use
     fn sample<R: PmnRng>(self, rng: *R, out, cap): i64 {
         if (self == 0 || self.buf == 0 || rng == 0 || out == 0) { return PMN_ERR_INVALID_PARAMETER; }
         var d = self.n;
         if (cap < d) { return PMN_ERR_INVALID_PARAMETER; }
         if (_pmn_linalg_overlaps(out, d * 8, self.buf, _pmn_mvn_bytes(d)) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(out, d * 8, self, 24) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(out, d * 8, rng, 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
         var mp: f64 = _PMN_F64_MIN_POSITIVE;
         var tp: f64 = 2.0 * _PMN_F64_PI;
         var k = 0;

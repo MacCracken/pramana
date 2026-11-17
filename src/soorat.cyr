@@ -235,6 +235,11 @@ fn PmnDistributionCurve_drop(c: *PmnDistributionCurve): i64 {
     c.npdf = 0;
     c.ncdf = 0;
     c.nname = 0;
+    # and every pointer into the freed block (2.0.1), so a field read after the drop finds 0, not freed memory
+    c.x = 0;
+    c.pdf = 0;
+    c.cdf = 0;
+    c.name = 0;
     return PMN_ERR_NONE;
 }
 
@@ -366,6 +371,10 @@ fn PmnMcmcTrace_drop(t: *PmnMcmcTrace): i64 {
     t.ns = 0;
     t.nll = 0;
     t.nparameter = 0;
+    # and every pointer into the freed block (2.0.1), so a field read after the drop finds 0, not freed memory
+    t.samples = 0;
+    t.lls = 0;
+    t.parameter = 0;
     return PMN_ERR_NONE;
 }
 
@@ -732,6 +741,9 @@ fn PmnHistogramData_drop(h: *PmnHistogramData): i64 {
     h.buf = 0;
     h.nedges = 0;
     h.ncounts = 0;
+    # and every pointer into the freed block (2.0.1), so a field read after the drop finds 0, not freed memory
+    h.edges = 0;
+    h.counts = 0;
     return PMN_ERR_NONE;
 }
 
@@ -875,6 +887,9 @@ fn PmnCorrelationMatrix_drop(c: *PmnCorrelationMatrix): i64 {
     c.buf = 0;
     c.nvalues = 0;
     c.nlabels = 0;
+    # and every pointer into the freed block (2.0.1), so a field read after the drop finds 0, not freed memory
+    c.values = 0;
+    c.labels = 0;
     return PMN_ERR_NONE;
 }
 

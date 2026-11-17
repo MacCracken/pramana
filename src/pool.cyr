@@ -42,6 +42,27 @@ var _pmn_pool_busy: i64[_PMN_POOL_SLOTS];
 var _pmn_pool_ptr: i64[_PMN_POOL_SLOTS];
 var _pmn_pool_cap: i64[_PMN_POOL_SLOTS];
 
+# a + b for sizes a, b ≥ 0; −1 when the sum passes 2⁶³ − 1 or an operand is −1 (or negative). A scratch size made of a
+# product of two dimensions goes through these and `_pmn_sz_mul`, so it can't wrap to a small claim: −1 is a size
+# `_pmn_scratch_take` refuses, and the caller returns PMN_ERR_OUT_OF_MEMORY where Rust's `vec!` aborts.
+#must_use
+#pure
+fn _pmn_sz_add(a, b): i64 {
+    if (a < 0 || b < 0) { return 0 - 1; }
+    if (a > 9223372036854775807 - b) { return 0 - 1; }
+    return a + b;
+}
+
+# a · b for sizes a, b ≥ 0; −1 when the product passes 2⁶³ − 1 or an operand is negative (as `_pmn_sz_add`).
+#must_use
+#pure
+fn _pmn_sz_mul(a, b): i64 {
+    if (a < 0 || b < 0) { return 0 - 1; }
+    if (a == 0 || b == 0) { return 0; }
+    if (a > 9223372036854775807 / b) { return 0 - 1; }
+    return a * b;
+}
+
 # Claims `bytes` of scratch: (buffer, slot). Give it back with `_pmn_scratch_give(buffer, slot)` on every return
 # path. (0, −1) when the memory can't be had (or bytes ≤ 0); nothing is then claimed.
 #must_use

@@ -659,7 +659,10 @@ fn _pmn_bi_comp(a: f64, b: f64, xh: f64, xl: f64): f64 {
         var aq: f64 = f64_abs(qh);
         var as: f64 = f64_abs(sumh);
         var lim: f64 = as * thr;
-        if (aq < lim && j > 2) { break; }
+        # 2.0.1: a zero term (b = 1 makes every t_j 0, a subnormal x underflows them) stops the series too: the rest
+        # add exact zeros, so the bits are as before, but `aq < lim` never held there (lim 0 too) and the loop ran all
+        # 99,999 steps, 18 ms a call (Beta(0.01, 1).cdf(0.3)).
+        if ((aq < lim && j > 2) || th == 0.0) { break; }
         j = j + 1;
     }
     # numerator (aB − 1) − (x^a − 1) − a·x^a·S, over aB.

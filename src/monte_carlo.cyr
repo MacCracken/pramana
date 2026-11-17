@@ -195,6 +195,9 @@ fn PmnMcmcResult_drop(r: *PmnMcmcResult): i64 {
     if (r.buf != 0) { fl_free(r.buf); }
     r.buf = 0;
     r.rows = 0;
+    # and every pointer into the freed block (2.0.1), so a field read after the drop finds 0, not freed memory
+    r.offs = 0;
+    r.data = 0;
     return PMN_ERR_NONE;
 }
 
@@ -332,8 +335,9 @@ fn PmnMcmcResult_from_json(out: *PmnMcmcResult, buf, len): i64 {
 
 # Rust's private `chain_buffers(n_samples, burn_in)`: the block for n_samples rows of dim entries into out, its offsets
 # written (row i at i·dim), and the run's length n_samples + burn_in; or (0, the error): PMN_ERR_INVALID_PARAMETER for
-# no samples, a sum that overflows, or a block too large to reserve (each Rust's InvalidParameter), and for a negative
-# count (a usize at or past 2^63: past what any reservation takes); PMN_ERR_OUT_OF_MEMORY when it can't be had.
+# no samples, a sum that overflows, or a block too large to reserve or that can't be had (each Rust's InvalidParameter:
+# `try_reserve_exact` refusing, which its doc names "cannot be allocated"; 2.0.1, it was PMN_ERR_OUT_OF_MEMORY), and
+# for a negative count (a usize at or past 2^63: past what any reservation takes).
 fn _pmn_chain_buffers(out: *PmnMcmcResult, n_samples, burn_in, dim): (i64, i64) {
     if (n_samples == 0) { return (0, PMN_ERR_INVALID_PARAMETER); }
     if (n_samples < 0 || burn_in < 0 || n_samples > 9223372036854775807 - burn_in) {
@@ -341,6 +345,7 @@ fn _pmn_chain_buffers(out: *PmnMcmcResult, n_samples, burn_in, dim): (i64, i64) 
     }
     if (dim > 0 && n_samples > 1152921504606846975 / dim) { return (0, PMN_ERR_INVALID_PARAMETER); }
     var e = _pmn_mcmc_alloc(out, n_samples, n_samples * dim);
+    if (e == PMN_ERR_OUT_OF_MEMORY) { return (0, PMN_ERR_INVALID_PARAMETER); }
     if (e != PMN_ERR_NONE) { return (0, e); }
     for (var i = 0; i <= n_samples; i = i + 1) { store64(out.offs + i * 8, i * dim); }
     return (n_samples + burn_in, PMN_ERR_NONE);
@@ -365,8 +370,8 @@ fn _pmn_mh_density(log_target, ctx, xs, dim): f64 {
 # point +∞ for any proposal of positive density (−∞ otherwise); accepted when it is ≥ 0, else when a draw is below its
 # exp. After burn_in steps each state is a sample; the acceptance rate is accepted/total. PMN_ERR_INVALID_PARAMETER,
 # in Rust's order, for an empty initial point, σ not positive and finite, then chain_buffers' refusals; and for a null
-# out, log_target or initial or a negative dim; PMN_ERR_OUT_OF_MEMORY when the block or the scratch can't be had. On a
-# refusal out is untouched.
+# out, log_target or initial or a negative dim; PMN_ERR_OUT_OF_MEMORY when the scratch can't be had. On a refusal out
+# is untouched.
 #must_use
 fn pmn_metropolis_hastings<R: PmnRng>(out: *PmnMcmcResult, log_target, ctx, initial, dim, proposal_std: f64,
     n_samples, burn_in, rng: *R): i64 {
@@ -453,7 +458,7 @@ fn _pmn_gibbs_run(rng: dyn PmnRng, conds, state, dim, total, burn_in, data): i64
 # a new block: drop it), the acceptance rate 1. PMN_ERR_INVALID_PARAMETER for no conditionals,
 # PMN_ERR_DIMENSION_MISMATCH for an initial point of another length, then chain_buffers' refusals, in Rust's order; and
 # PMN_ERR_INVALID_PARAMETER first for a null out, conds or initial, a negative count or a null conditional;
-# PMN_ERR_OUT_OF_MEMORY when the block or the scratch can't be had. On a refusal out is untouched.
+# PMN_ERR_OUT_OF_MEMORY when the scratch can't be had. On a refusal out is untouched.
 #must_use
 fn pmn_gibbs_sampling<R: PmnRng>(out: *PmnMcmcResult, conds, dim, initial, n_init, n_samples, burn_in, rng: *R): i64 {
     if (out == 0 || dim < 0 || n_init < 0 || (conds == 0 && dim > 0) || (initial == 0 && n_init > 0)) {

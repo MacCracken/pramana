@@ -1066,3 +1066,23 @@ most of it, each named by an earlier part:
 
 The draws go through a bounded generic (M1 part e1: 10 ns against Rust's inlined 1.7 ns). Speed is measured, not
 gated (CLAUDE.md), and every one of these rows is at least as accurate as 1.3.0's.
+
+## 2.0.1: the audit's three slow paths (2026-11-17)
+
+Old against new on the same box, pinned (`taskset -c 5`), one run each, the old one first. These rows are the Cyrius
+port's own (1.3.0's criterion bodies don't reach them), so there is no Rust column. On the shared box, rows with no
+code change moved by up to ±4%, and the `ln_beta` rows by up to 31%.
+
+| Row | 2.0.0 | 2.0.1 | |
+|---|---|---|---|
+| `special/beta_inc`, a ∈ [0.005, 0.015), b = 1, x ∈ [0.1, 0.5) (4,096 calls) | 5.457 ms | 12.6 µs | 432× |
+| `special/gamma_inc` at x = a, a ∈ [10, 1000) (4,096 calls) | 38.5 µs | 21.1 µs | 1.8× |
+| `ai/query_result_10000_keys_descending` (20 calls) | 986 ms | 2.54 ms | 389× |
+
+**Findings.**
+- **Both special-function rows** were series that never met their stop test on exact zeros: b = 1 makes every term
+  of the incomplete beta's complement 0, and x = a makes every term of the incomplete gamma's φ 0. The limit they
+  were compared against was 0 too. The incomplete beta's ran its 99,999-step budget, the incomplete gamma's 198. They
+  stop at a zero term now. The 28 rows' value digests are identical before and after, so the bits are unchanged.
+- **The `QueryResult` row** was an insertion sort of a reply's values, quadratic on keys in descending order. It is a
+  bottom-up merge sort now.

@@ -113,6 +113,44 @@ fn main() {
     assert_eq(_pmn_json_lift(g_buf, ctl, &o1, 2 * ctl + 32), 0 - 1, "a raw control byte in a string refuses");
     var big = text("[1,2,3,4,5,6,7,8,9]");
     assert_eq(_pmn_json_lift(g_buf, big, &o1, 16), 0 - 2, "a destination too small is -2, not an overrun");
+    # 2.0.1 (ledger L16): the stdlib's parser cuts an exponent past 6 significant digits, so the pre-pass rewrites it.
+    assert(lifts_to("1e0000001", "1e0000001") == 1, "an exponent's leading zeros don't count: it stays");
+    assert(lifts_to("1e999999", "1e999999") == 1, "6 digits stay (the parser reads them)");
+    assert(lifts_to("2.5e1000000", "1e400") == 1, "past 10^400: 1e400, bayan's ∞, out of range for a reader");
+    assert(lifts_to("[-2.5e-1000000]", "[-0.0]") == 1, "below 10^-400: a signed zero, as serde_json reads it");
+    assert(lifts_to("0.0e9999999", "0.0") == 1, "a zero mantissa is zero whatever the exponent");
+    assert(lifts_to("-0e1234567", "-0.0") == 1, "with its sign");
+    assert(lifts_to("1e99999999999999999999", "1e400") == 1, "an exponent past 18 digits");
+    assert(lifts_to("1E-99999999999999999999", "0.0") == 1, "and past it the other way");
+    assert(lifts_to("1.e1000000", "1.e1000000") == 1, "not JSON (no fraction digit): left for bayan to refuse");
+    var lz = 1;
+    store8(g_buf, 48);
+    store8(g_buf + 1, 46);
+    lz = 2;
+    for (var zi = 0; zi < 999700; zi = zi + 1) {
+        store8(g_buf + lz, 48);
+        lz = lz + 1;
+    }
+    memcpy(g_buf + lz, "1e1000000", 9);
+    lz = lz + 9;
+    _pmn_json_close(g_doc);
+    assert_eq(_pmn_json_open(g_doc, g_buf, lz), PMN_ERR_NONE, "0.(999,700 zeros)1e1000000 opens");
+    var wz[8];
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), &wz), PMN_ERR_NONE, "and reads");
+    assert_eq(load64(&wz), 0x7E031CFD3999F7B0, "exactly 1e299 (it read 0.0)");
+    store8(g_buf, 49);
+    lz = 1;
+    for (var zj = 0; zj < 999700; zj = zj + 1) {
+        store8(g_buf + lz, 48);
+        lz = lz + 1;
+    }
+    memcpy(g_buf + lz, "e-1000000", 9);
+    lz = lz + 9;
+    _pmn_json_close(g_doc);
+    assert_eq(_pmn_json_open(g_doc, g_buf, lz), PMN_ERR_NONE, "1(999,700 zeros)e-1000000 opens");
+    assert_eq(_pmn_json_f64(_pmn_json_root(g_doc), &wz), PMN_ERR_NONE, "and reads (it was refused)");
+    assert_eq(load64(&wz), 0x01A56E1FC2F8F359, "exactly 1e-300");
+    _pmn_json_close(g_doc);
 
     test_group("a document: its claims on every path");
     assert_eq(open("[1, 2]"), PMN_ERR_NONE, "[1, 2] opens");
@@ -158,6 +196,26 @@ fn main() {
     assert_eq(_pmn_json_open(g_doc, g_buf, 127), PMN_ERR_NONE, "127 bytes, 63 elements: read");
     assert_eq(_pmn_json_arr_len(_pmn_json_root(g_doc)), 63, "all 63");
     _pmn_json_close(g_doc);
+    # 2.0.1: a cap that isn't 16·2^k. At 100 a vec still can't pass 64 (64 → 128 > 100 aborts), so the guard is the
+    # same as at 64; before, it took documents up to 199 bytes, and 70 elements ended the process.
+    VEC_CAP_MAX = 100;
+    zn = 1;
+    for (var z2 = 0; z2 < 70; z2 = z2 + 1) {
+        if (z2 > 0) {
+            store8(g_buf + zn, 44);
+            zn = zn + 1;
+        }
+        store8(g_buf + zn, 48);
+        zn = zn + 1;
+    }
+    store8(g_buf + zn, 93);
+    zn = zn + 1;
+    assert_eq(_pmn_json_open(g_doc, g_buf, zn), PMN_ERR_OUT_OF_MEMORY, "cap 100, 70 elements: refused, not aborted");
+    store8(g_buf + 126, 93);
+    assert_eq(_pmn_json_open(g_doc, g_buf, 127), PMN_ERR_NONE, "cap 100, 63 elements: read");
+    _pmn_json_close(g_doc);
+    VEC_CAP_MAX = 10;
+    assert_eq(_pmn_json_open(g_doc, g_buf, 127), PMN_ERR_OUT_OF_MEMORY, "cap 10: a vec still holds 16, so 31 bytes");
     VEC_CAP_MAX = cap_saved;
 
     test_group("the arena doubles past its first claim");

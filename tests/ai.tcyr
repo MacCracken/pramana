@@ -28,6 +28,21 @@ fn canned(ctx, url, nurl, body, nbody, resp): i64 {
     return PMN_ERR_NONE;
 }
 
+# As canned, but the body is a freelist copy handed over (resp's fourth word 1), as sandhi's transport does since 2.0.1:
+# query frees it.
+fn canned_owned(ctx, url, nurl, body, nbody, resp): i64 {
+    store64(ctx + 24, load64(ctx + 24) + 1);
+    var n = load64(ctx + 16);
+    var own = fl_alloc(n + 1);
+    if (own == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    memcpy(own, load64(ctx + 8), n);
+    store64(resp, load64(ctx));
+    store64(resp + 8, own);
+    store64(resp + 16, n);
+    store64(resp + 24, 1);
+    return PMN_ERR_NONE;
+}
+
 # Runs the tool name on the JSON arguments args over the nc columns cols, into out.
 fn tool(out, name, args, cols, nc): i64 {
     return _pmn_ai_execute_tool(out, name, strlen(name), args, strlen(args), cols, nc);
@@ -71,6 +86,21 @@ fn main() {
     assert_eq(r.nvalues, 5, "the default, 5");
     PmnQueryResult_drop(&r);
     assert_eq(tool(&r, "rm_rf", "{}", &cols, 1), PMN_ERR_INVALID_PARAMETER, "an unknown tool");
+    # 2.0.1: serde_json's Value refuses a number out of f64's range anywhere in the arguments ("number out of range");
+    # mu = 1e400 had run the test at mu = 0, steps 1e400 was INVALID_PARAMETER.
+    assert_eq(tool(&r, "t_test", "{\"column_a\":\"series\",\"mu\":1e400}", &cols, 1), PMN_ERR_DESERIALIZE,
+        "mu 1e400: the document refused");
+    assert_eq(tool(&r, "forecast", "{\"column\":\"series\",\"steps\":1e400}", &cols, 1), PMN_ERR_DESERIALIZE,
+        "steps 1e400: the document refused");
+    assert_eq(tool(&r, "describe", "{\"column\":\"series\",\"x\":[1,{\"y\":-1e999}]}", &cols, 1), PMN_ERR_DESERIALIZE,
+        "an unread member, nested: refused too, as a Value");
+    assert_eq(tool(&r, "rm_rf", "{\"a\":1e400}", &cols, 1), PMN_ERR_DESERIALIZE, "before the tool is looked up");
+    assert_eq(tool(&r, "t_test", "{\"column_a\":\"series\",\"mu\":\"high\"}", &cols, 1), PMN_ERR_NONE,
+        "mu a string: as_f64 is none, mu 0, as 1.3.0");
+    PmnQueryResult_drop(&r);
+    assert_eq(tool(&r, "describe", "{\"column\":\"series\",\"x\":[1.5,{\"y\":[2,[3e300]]}]}", &cols, 1), PMN_ERR_NONE,
+        "finite numbers nested three deep: read");
+    PmnQueryResult_drop(&r);
     assert_eq(tool(&r, "describe", "{\"column\":\"nope\"}", &cols, 1), PMN_ERR_INVALID_PARAMETER, "an unknown column");
     var vals[24];
     store64(&vals, "mean");
@@ -87,6 +117,73 @@ fn main() {
     assert(m == 1.5 && bytes_is(r2.operation, r2.noperation, "describe") == 1, "values[\"mean\"] 1.5, describe");
     PmnQueryResult_drop(&r2);
     PmnQueryResult_drop(&r);
+
+    test_group("2.0.1: the values sorted in O(n log n) (an insertion sort was quadratic), clone, duplicates");
+    var nk = 2000;
+    var kbytes = alloc(nk * 5);
+    var krecs = alloc(nk * 24);
+    for (var ki = 0; ki < nk; ki = ki + 1) {
+        var kv = nk - 1 - ki;                     # descending: the insertion sort's worst case
+        var kp = kbytes + ki * 5;
+        store8(kp, 107);
+        store8(kp + 1, 48 + (kv / 1000) % 10);
+        store8(kp + 2, 48 + (kv / 100) % 10);
+        store8(kp + 3, 48 + (kv / 10) % 10);
+        store8(kp + 4, 48 + kv % 10);
+        store64(krecs + ki * 24, kp);
+        store64(krecs + ki * 24 + 8, 5);
+        var kf: f64 = f64_from(kv);
+        store64(krecs + ki * 24 + 16, kf);
+    }
+    var rs: PmnQueryResult;
+    assert_eq(PmnQueryResult_new(&rs, "ok", 2, "describe", 8, krecs, nk), PMN_ERR_NONE, "2,000 keys, descending");
+    var asc = 1;
+    for (var kj = 0; kj < nk; kj = kj + 1) {
+        var vj: f64 = load64(rs.values + kj * 24 + 16);
+        var fj: f64 = f64_from(kj);
+        if (vj != fj) { asc = 0; }
+    }
+    assert(asc == 1, "every key in bytewise order, its value with it");
+    var v1234: f64 = rs.value("k1234", 5);
+    assert(v1234 == 1234.0, "values[\"k1234\"] = 1234");
+    var rc2: PmnQueryResult;
+    assert_eq(PmnQueryResult_clone(&rc2, &rs), PMN_ERR_NONE, "a clone");
+    var cv: f64 = rc2.value("k0007", 5);
+    assert(rc2.buf != rs.buf && rc2.nvalues == nk && cv == 7.0, "a block of its own, the same values");
+    assert_eq(PmnQueryResult_clone(&rs, &rs), PMN_ERR_INVALID_PARAMETER, "a clone into its source: refused");
+    PmnQueryResult_drop(&rs);
+    var cv2: f64 = rc2.value("k1999", 5);
+    assert(cv2 == 1999.0, "the clone outlives its source");
+    PmnQueryResult_drop(&rc2);
+    assert(rc2.buf == 0 && rc2.answer == 0 && rc2.operation == 0 && rc2.values == 0,
+        "the QueryResult's drop clears its pointers");
+    store64(krecs + 1000 * 24, kbytes + 3 * 5);   # record 1000 now carries record 3's key: two equal keys
+    assert_eq(PmnQueryResult_new(&rs, "ok", 2, "describe", 8, krecs, nk), PMN_ERR_INVALID_PARAMETER,
+        "two equal keys among 2,000: refused");
+    # ADR 007 row 19 (2.0.1): serde keeps a duplicate key's last value in a HashMap or a Value; bayan refuses the
+    # document, read or not.
+    var ddoc = "{\"answer\":\"a\",\"operation\":\"o\",\"values\":{\"k\":1,\"k\":2}}";
+    assert_eq(PmnQueryResult_from_json(&rs, ddoc, strlen(ddoc)), PMN_ERR_DESERIALIZE,
+        "a duplicate key in the values: refused (ADR 007 row 19)");
+    assert_eq(tool(&rs, "describe", "{\"column\":\"series\",\"column\":\"series\"}", &cols, 1), PMN_ERR_DESERIALIZE,
+        "and in a tool's arguments");
+    var pre[72];
+    store64(&pre, "ab");
+    store64(&pre + 8, 2);
+    store64(&pre + 16, 2.0);
+    store64(&pre + 24, "b");
+    store64(&pre + 32, 1);
+    store64(&pre + 40, 3.0);
+    store64(&pre + 48, "a");
+    store64(&pre + 56, 1);
+    store64(&pre + 64, 1.0);
+    assert_eq(PmnQueryResult_new(&rs, "", 0, "", 0, &pre, 3), PMN_ERR_NONE, "ab, b, a");
+    var p0: f64 = load64(rs.values + 16);
+    var p1: f64 = load64(rs.values + 40);
+    var p2: f64 = load64(rs.values + 64);
+    assert(p0 == 1.0 && p1 == 2.0 && p2 == 3.0, "a, ab, b: a prefix sorts first");
+    PmnQueryResult_drop(&rs);
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
 
     test_group("Rust's float text ({:.4} ties to even, {:.1}, {} positional)");
     var t1 = str_builder_new();
@@ -148,6 +245,47 @@ fn main() {
     store64(&dup + 56, 3);
     assert_eq(q.query(&dup, 2, "q", 1, &r), PMN_ERR_INVALID_PARAMETER, "a column twice (a HashMap holds one)");
     PmnStatQuery_drop(&q);
+    assert(q.buf == 0 && q.base == 0 && q.model == 0, "2.0.1: the StatQuery's drop clears its pointers");
+
+    test_group("2.0.1: a body the transport hands over is freed on every path; the base and model are UTF-8");
+    store64(&ctx, 200);
+    store64(&ctx + 8, reply);
+    store64(&ctx + 16, strlen(reply));
+    var qo: PmnStatQuery;
+    assert_eq(PmnStatQuery_new(&qo, "http://h", 8, "m", 1, &canned_owned, &ctx), PMN_ERR_NONE,
+        "over an owning transport");
+    assert_eq(qo.query(&cols, 1, "q", 1, &r), PMN_ERR_NONE, "query");
+    assert(bytes_is(r.answer, r.nanswer, "The mean is 1.1.") == 1, "the answer, read before the body was freed");
+    PmnQueryResult_drop(&r);
+    var hb0 = alloc_used();
+    var fb0 = _fl_arena_pos;
+    var all_ok = 1;
+    for (var qi = 0; qi < 1000; qi = qi + 1) {
+        if (qo.query(&cols, 1, "q", 1, &r) != PMN_ERR_NONE) { all_ok = 0; }
+        PmnQueryResult_drop(&r);
+    }
+    store64(&ctx, 503);
+    for (var qj = 0; qj < 1000; qj = qj + 1) {
+        if (qo.query(&cols, 1, "q", 1, &r) != PMN_ERR_COMPUTATION_ERROR) { all_ok = 0; }
+    }
+    store64(&ctx, 200);
+    store64(&ctx + 8, bad);
+    store64(&ctx + 16, strlen(bad));
+    for (var qk = 0; qk < 1000; qk = qk + 1) {
+        if (qo.query(&cols, 1, "q", 1, &r) != PMN_ERR_COMPUTATION_ERROR) { all_ok = 0; }
+    }
+    assert(all_ok == 1, "1,000 answers, 1,000 503s and 1,000 unreadable replies");
+    assert_eq(_fl_arena_pos - fb0, 0, "the freelist's arena: 0 bytes carved, every handed-over body freed");
+    assert_eq(alloc_used() - hb0, 0, "and the bump heap where it was");
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
+    PmnStatQuery_drop(&qo);
+    var bad8[2];
+    store8(&bad8, 0xC3);
+    store8(&bad8 + 1, 0x28);
+    assert_eq(PmnStatQuery_new(&qo, "http://h", 8, &bad8, 2, &canned, &ctx), PMN_ERR_INVALID_PARAMETER,
+        "a model that isn't UTF-8 (a Rust String can't hold it)");
+    assert_eq(PmnStatQuery_new(&qo, &bad8, 2, "m", 1, &canned, &ctx), PMN_ERR_INVALID_PARAMETER,
+        "nor a base");
 
     return assert_summary();
 }

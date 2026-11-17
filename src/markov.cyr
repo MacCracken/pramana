@@ -135,15 +135,18 @@ impl PmnMarkovChain {
     }
 
     # Rust's `simulate(steps, rng)`: the state, then each of steps steps' states, into out[0, steps + 1) (cap ≥
-    # steps + 1, D11). PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER for a dropped self, a null out, a negative steps, cap
-    # too small, or out overlapping the chain or its matrix.
+    # steps + 1, D11). PMN_ERR_NONE; PMN_ERR_INVALID_PARAMETER for a dropped self, a null out or rng, a negative steps,
+    # cap too small, or out overlapping the chain, its matrix or the generator's state word.
     #must_use
     fn simulate<R: PmnRng>(self, steps, rng: *R, out, cap): i64 {
-        if (self == 0 || self.tm == 0 || out == 0 || steps < 0 || cap < 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (self == 0 || self.tm == 0 || out == 0 || rng == 0 || steps < 0 || cap < 1) {
+            return PMN_ERR_INVALID_PARAMETER;
+        }
         if (steps > cap - 1) { return PMN_ERR_INVALID_PARAMETER; }
         var on = (steps + 1) * 8;
         if (_pmn_linalg_overlaps(out, on, self.tm, self.n * self.n * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
         if (_pmn_linalg_overlaps(out, on, self, 24) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+        if (_pmn_linalg_overlaps(out, on, rng, 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
         store64(out, self.state);
         for (var i = 0; i < steps; i = i + 1) {
             self.step(rng);
@@ -640,16 +643,33 @@ impl PmnHiddenMarkovModel {
     # counts γ (by αβ over its sum, when positive) and ξ (each step's normalized over all (i, j), when positive), each
     # accumulator from +0.0; then π ← γ₀, and the rows of A and B whose counts are positive re-estimated (the others
     # kept). PMN_ERR_INVALID_PARAMETER for max_iter 0, then check_inputs' refusals, as Rust's order; and for a dropped
-    # self, a null out or out overlapping self; PMN_ERR_OUT_OF_MEMORY when the block or the scratch can't be had.
+    # self, a null out or out overlapping self; PMN_ERR_OUT_OF_MEMORY when the block or the scratch can't be had. A
+    # max_iter at or past 2^63 (ADR 007 row 18, amended 2.0.1): after check_inputs, PMN_ERR_COMPUTATION_ERROR when the
+    # first round's forward pass finds the sequence impossible, as Rust's; any other such run is 2^63 rounds or more,
+    # which Rust starts and never finishes: PMN_ERR_INVALID_PARAMETER, before any work.
     #must_use
     fn baum_welch(self, obs, t, max_iter, out: *PmnHiddenMarkovModel): i64 {
-        if (self == 0 || self.buf == 0 || out == 0 || max_iter < 0) { return PMN_ERR_INVALID_PARAMETER; }
+        if (self == 0 || self.buf == 0 || out == 0) { return PMN_ERR_INVALID_PARAMETER; }
         if (max_iter == 0) { return PMN_ERR_INVALID_PARAMETER; }
         if (_pmn_linalg_overlaps(out, 48, self, 48) == 1) { return PMN_ERR_INVALID_PARAMETER; }
         var e = _pmn_hmm_check(self, obs, t);
         if (e != PMN_ERR_NONE) { return e; }
         var n = self.n;
         var m = self.m;
+        if (max_iter < 0) {
+            var fs, fslot = _pmn_scratch_take(_pmn_sz_mul(_pmn_sz_add(_pmn_sz_mul(t, n), t), 8));
+            if (fs == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+            var fsc = fs + t * n * 8;
+            _pmn_hmm_forward(self, obs, t, fs, fsc);
+            var none = 0;
+            for (var fc = 0; fc < t; fc = fc + 1) {
+                var fv: f64 = load64(fsc + fc * 8);
+                if (fv <= 0.0 || _pmn_is_finite(fv) == 0) { none = 1; }
+            }
+            _pmn_scratch_give(fs, fslot);
+            if (none == 1) { return PMN_ERR_COMPUTATION_ERROR; }
+            return PMN_ERR_INVALID_PARAMETER;
+        }
         var h: PmnHiddenMarkovModel;
         e = PmnHiddenMarkovModel_clone(&h, self);
         if (e != PMN_ERR_NONE) { return e; }

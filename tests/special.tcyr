@@ -368,6 +368,16 @@ fn main() {
     assert(dov >= 0 - 2 && dov <= 2, "lnGamma(2.55e305) = 1.79e308, within 2 ulp of MPFR, just under the overflow");
     assert(bits(go2) == 0x7FF0000000000000 && bits(gmx) == 0x7FF0000000000000,
       "lnGamma(2.56e305) and lnGamma(MAX) overflow to +inf (P9's prototype gave NaN past the overflow)");
+    # 2.0.1: the 414 doubles from 0x7F5754D9278B51A8 to 0x7F5754D9278B5345 gave NaN, the two-sum's error being −∞ once
+    # ph + lo3 rounded to +∞. MPFR: f64::MAX at …51A7, +∞ from …51A8.
+    var wb: f64 = _pmn_ln_gamma(of_bits(0x7F5754D9278B51A7));
+    var w0: f64 = _pmn_ln_gamma(of_bits(0x7F5754D9278B51A8));
+    var wm: f64 = _pmn_ln_gamma(of_bits(0x7F5754D9278B5270));
+    var w1: f64 = _pmn_ln_gamma(of_bits(0x7F5754D9278B5345));
+    var wa: f64 = _pmn_ln_gamma(of_bits(0x7F5754D9278B5346));
+    assert(bits(wb) == 0x7FEFFFFFFFFFFFFF, "lnGamma just below the window: f64::MAX, as MPFR's");
+    assert(bits(w0) == 0x7FF0000000000000 && bits(wm) == 0x7FF0000000000000 && bits(w1) == 0x7FF0000000000000
+      && bits(wa) == 0x7FF0000000000000, "lnGamma across the window and past it: +inf, not NaN");
 
     test_group("T1 (M2 part b3): lnGamma within 2 ulp of MPFR, where 1.3.0 is far off");
     var xn1: f64 = of_bits(0x3FF0000000400000);
@@ -711,6 +721,23 @@ fn main() {
     assert(bi_ok(0x41CC7B51EDE67FB4, 0x41C1A7FB8284F328, 0x3FE3C0CA59CCCF5F, 0x3FD87E6B4C666142,
         0x3F6D7C410D988505, 0x3FEFE283BEF2677B, 1) == 1,
       "I at a = 9.6e8, b = 5.9e8: the brcomp prefactor (P9's form: 2 ulp)");
+
+    test_group("2.0.1: the series that ran to their budgets on exact zeros, MPFR's values to the bit");
+    # beta_inc's complement series with b = 1 (every term 0) or a subnormal x (terms underflow), and gamma_inc's φ
+    # series at x = a (u = 0): each now stops at its zero term. The values were the same before (57.7 ms for these
+    # seven calls, 0.19 ms now); these pin them to MPFR's.
+    var sp1, sq1 = _pmn_beta_inc(0.01, 1.0, 0.3, 0.7);
+    var sp2, sq2 = _pmn_beta_inc(1.0, 0.01, 0.7, 0.3);
+    var sp3, sq3 = _pmn_beta_inc(0.000001, 0.5, of_bits(0x00001268D4E3E4B3), 1.0);
+    assert(bits(sp1) == 0x3FEF9DF63F9C1C37 && bits(sq1) == 0x3F88827018F8F239, "I and 1 − I at a = 0.01, b = 1");
+    assert(bits(sp2) == 0x3F88827018F8F239 && bits(sq2) == 0x3FEF9DF63F9C1C37, "the shapes swapped, b = 0.01");
+    assert(bits(sp3) == 0x3FEFFA24ADD86DEE && bits(sq3) == 0x3F476D489E48483D, "a = 1e-6 at a subnormal x");
+    var gp1, gq1 = _pmn_gamma_inc(15.0, 15.0);
+    var gp2, gq2 = _pmn_gamma_inc(100.0, 100.0);
+    var gp3, gq3 = _pmn_gamma_inc(12.0, 12.0);
+    assert(bits(gp1) == 0x3FE1195D649A614A && bits(gq1) == 0x3FDDCD4536CB3D6D, "P and Q at a = x = 15");
+    assert(bits(gp2) == 0x3FE06CF199F5EBE3 && bits(gq2) == 0x3FDF261CCC14283B, "P and Q at a = x = 100");
+    assert(bits(gp3) == 0x3FE13A983AD24525 && bits(gq3) == 0x3FDD8ACF8A5B75B7, "P and Q at a = x = 12");
 
     return assert_summary();
 }

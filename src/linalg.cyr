@@ -22,7 +22,9 @@
 # UPSTREAM(L6): hisab:docs/development/issues/2026-11-15-eigen-symmetric-no-tolerance-budget-or-caller-scratch.md
 # `eigen_symmetric(tol, max_iter)` (cyclic Jacobi), with the PCA.
 
-# The largest n either function takes: n·n words then stay far inside the address space.
+# The largest n the Cholesky pair takes (and MultivariateNormal's d): n·n words then stay far inside the address space.
+# The Jacobi and the least squares size through `_pmn_sz_mul` instead, so they take any n whose words can exist, as
+# hisab does (2.0.1: they refused more than 4096 variables and 2²⁶ points, which 1.3.0 takes).
 var _PMN_LINALG_MAX_N = 67108864;           # 2^26
 
 # 1 when the byte ranges [p, p + pn) and [q, q + qn) overlap (neither empty).
@@ -127,22 +129,25 @@ var _PMN_HISAB_EPSILON: f64 = 0.000000000001;
 # (Equal)`), into vals (n f64s); vecs (n × n, row-major) gets eigenvector k, V's column for the k-th, as its row k. The
 # angle's atan, cos and sin are the correctly rounded ones (ADR 009), so values differ from 1.4.0's where glibc
 # misrounds them. a is read whole (hisab's doc says the lower triangle; its code reads every entry). PMN_ERR_NONE;
-# PMN_ERR_INVALID_PARAMETER for n = 0 (hisab's "empty matrix"), a null or overlapping buffer, n out of range or a
-# negative max_iter; PMN_ERR_OUT_OF_MEMORY when the scratch (2n² + 3n f64s) can't be had.
+# PMN_ERR_INVALID_PARAMETER for n = 0 (hisab's "empty matrix"), a null or overlapping buffer, an n whose n² words
+# can't exist (they pass 2⁶³ bytes) or a negative max_iter; PMN_ERR_OUT_OF_MEMORY when the scratch (2n² + 3n f64s)
+# can't be had.
 #must_use
 fn _pmn_eigen_symmetric(a, n, tol: f64, max_iter, vals, vecs): i64 {
-    if (a == 0 || vals == 0 || vecs == 0 || n <= 0 || n > 4096 || max_iter < 0) { return PMN_ERR_INVALID_PARAMETER; }
-    var nn = n * n;
-    if (_pmn_linalg_overlaps(a, nn * 8, vals, n * 8) == 1 || _pmn_linalg_overlaps(a, nn * 8, vecs, nn * 8) == 1) {
+    if (a == 0 || vals == 0 || vecs == 0 || n <= 0 || max_iter < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    var nn = _pmn_sz_mul(n, n);
+    var nb = _pmn_sz_mul(nn, 8);
+    if (nb < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(a, nb, vals, n * 8) == 1 || _pmn_linalg_overlaps(a, nb, vecs, nb) == 1) {
         return PMN_ERR_INVALID_PARAMETER;
     }
-    if (_pmn_linalg_overlaps(vals, n * 8, vecs, nn * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_linalg_overlaps(vals, n * 8, vecs, nb) == 1) { return PMN_ERR_INVALID_PARAMETER; }
     if (n == 1) {
         store64(vals, load64(a));
         store64(vecs, 1.0);
         return PMN_ERR_NONE;
     }
-    var s, slot = _pmn_scratch_take((2 * nn + 3 * n) * 8);
+    var s, slot = _pmn_scratch_take(_pmn_sz_mul(_pmn_sz_add(_pmn_sz_mul(2, nn), 3 * n), 8));
     if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
     var w = s;
     var v = s + nn * 8;
@@ -264,15 +269,14 @@ fn _pmn_eigen_symmetric(a, n, tol: f64, max_iter, vals, vecs): i64 {
 # ((d + 1)(m + d + 2) f64s) can't be had. A NaN norm is not refused (NaN < 1e-12 is false), as hisab's.
 #must_use
 fn _pmn_least_squares_poly(x, y, m, degree, out): i64 {
-    if (x == 0 || y == 0 || out == 0 || m <= 0 || degree < 0 || m > _PMN_LINALG_MAX_N) {
-        return PMN_ERR_INVALID_PARAMETER;
-    }
+    if (x == 0 || y == 0 || out == 0 || m <= 0 || degree < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (degree >= m) { return PMN_ERR_INVALID_PARAMETER; }    # m < d + 1, without computing d + 1 (it wraps at 2⁶³ − 1)
     var n = degree + 1;
-    if (m < n) { return PMN_ERR_INVALID_PARAMETER; }
     if (_pmn_linalg_overlaps(out, n * 8, x, m * 8) == 1 || _pmn_linalg_overlaps(out, n * 8, y, m * 8) == 1) {
         return PMN_ERR_INVALID_PARAMETER;
     }
-    var s, slot = _pmn_scratch_take((n * m + n * n + n) * 8);
+    var words = _pmn_sz_add(_pmn_sz_add(_pmn_sz_mul(n, m), _pmn_sz_mul(n, n)), n);
+    var s, slot = _pmn_scratch_take(_pmn_sz_mul(words, 8));
     if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
     var q = s;                       # column j at q + j·m
     var r = q + n * m * 8;           # r[col][row] at r + (col·n + row)

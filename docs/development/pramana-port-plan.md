@@ -1500,6 +1500,7 @@ shape:
 | L13 | open | `src/json.cyr`'s document-size guard: `_pmn_json_open` refuses a document longer than 2·`VEC_CAP_MAX` − 1 bytes as `OUT_OF_MEMORY`, unread (M1 part d3a) | `vec_push_a` ends the process ("vec: capacity overflow") one element past `VEC_CAP_MAX` (2^28), though it returns −1 when the allocator refuses; bayan pushes every array element through it, so a document with an array of 2^28 + 1 elements (512 MiB of text) would end the consumer's process. Shown at a lowered cap: 65 elements against 64 | `cyrius:docs/development/issues/2026-11-11-vec-keeps-outgrown-buffer-and-aborts.md` (pramana's second section, 2026-11-15) | `vec_push_a` returning −1 past `VEC_CAP_MAX` | the `json` rows, and `tests/json.tcyr`'s guard group |
 | L14 | open | `src/json.cyr`'s reservations: `_pmn_json_w_reserve` makes room before each f64 (32 bytes) and the exact escaped length before each string, so `fmtf.cyr`'s printer and `str_builder_add_json_str` never grow the builder (M1 part d4) | `str_builder_putc`, `_add`, `_add_cstr`, `_add_int` and `_add_json_str` end the process when a grow fails; `putc` and `add_json_str` have no `_a` form that returns −1, and the vendored printer writes through `putc` | `cyrius:docs/development/issues/2026-11-13-str-builder-grow-never-frees-the-outgrown-buffer.md` (pramana's section, 2026-11-15) | `str_builder_putc_a` and `str_builder_add_json_str_a` | the `json::write` rows, and `tests/json.tcyr`'s reservation check |
 | L15 | open | `src/pool.cyr`'s `_pmn_copy_words`: f64 arrays copied a word at a time (M4 part a1) | the stdlib's `memcpy` moves one byte per iteration: 80 KB in 134 µs against 17 µs a word at a time, two thirds of a 10⁴-element median | `cyrius:docs/development/issues/2026-11-02-memcpy-memset-byte-loops-dominate-frame-copies.md` (pramana's section, 2026-11-16) | a word-wise `memcpy` | none (a copy moves bits); the benches of `tests/descriptive.bcyr` |
+| L16 | open | `src/json.cyr`'s `_pmn_json_big_exp`: the pre-pass rewrites a number whose exponent has 7 or more significant digits to the same value with a small exponent (its significant digits, the exponent of the first), ±1e400 past 10^400 and a signed zero below 10^-400 (2.0.1) | `_f64_parse_n`, under bayan's float reader, stops adding exponent digits at 100000, while the mantissa's decimal offset can be as long as the token: `0.` + 999,700 zeros + `1e1000000`, exactly 1e299, read as 0.0, and its mirror (1e-300) refused | `cyrius:docs/development/issues/2026-11-17-f64-parse-drops-exponent-digits-past-six.md` | an exponent accumulator that saturates past the token's length | the `json` decode rows, and `tests/json.tcyr`'s pre-pass group |
 
 **Also filed at step 10, with no stand-in** (a rule in §8.3 covers each meanwhile):
 - **cyrius:** a closure's captured f64 is an untyped word in arithmetic, though it binds `T = f64` as a generic
@@ -1519,6 +1520,11 @@ shape:
   with a few KB of its own (pramana's library carries 97,728) prints `large static data` (M7 part b; 215,392 bytes
   together), `sandhi:docs/development/issues/2026-11-17-static-data-fills-the-compilers-advisory.md`. Meanwhile
   `tests/ai_sandhi.tcyr` tests the transport in a binary of its own.
+- **sandhi** (2.0.1): the transport now runs each exchange in an arena of its own, through sandhi's allocator-taking
+  POST, and hands the body back as a block `query` frees: an answered query left more than 256 KiB on the consumer's
+  heap before, and leaves about 424 bytes now. Those 424 are sandhi's: its `Host` header for a non-default port (and
+  its pool's route key) is built on the default heap whatever the arena,
+  `sandhi:docs/development/issues/2026-11-17-arena-post-still-allocates-host-header-on-the-default-heap.md`.
 
 ---
 

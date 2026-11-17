@@ -70,8 +70,8 @@ fn pmn_pca(out: *PmnPcaResult, vars, p): i64 {
             if (_pmn_is_finite(x) == 0) { return PMN_ERR_INVALID_SAMPLE; }
         }
     }
-    var pp = p * p;
-    var s, slot = _pmn_scratch_take((3 * pp + 2 * p) * 8);
+    var pp = _pmn_sz_mul(p, p);
+    var s, slot = _pmn_scratch_take(_pmn_sz_mul(_pmn_sz_add(_pmn_sz_mul(3, pp), 2 * p), 8));
     if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
     var cov = s;
     var evals = cov + pp * 8;
@@ -193,6 +193,12 @@ fn PmnPcaResult_drop(r: *PmnPcaResult): i64 {
     r.rows = 0;
     r.ne = 0;
     r.nr = 0;
+    # Every pointer into the freed block too (2.0.1): the accessors check buf first, but a field read straight from the
+    # struct no longer dangles. The HMM's drop missed this once (M8 part e).
+    r.offs = 0;
+    r.comp = 0;
+    r.evals = 0;
+    r.ratio = 0;
     return PMN_ERR_NONE;
 }
 

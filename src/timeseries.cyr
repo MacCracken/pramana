@@ -48,7 +48,8 @@ fn pmn_moving_average(data, n, window, out, cap): i64 {
 
 # Rust's `exponential_smoothing(data, alpha)`: s₀ = x₀, sₜ = α·xₜ + (1 − α)·sₜ₋₁, into out[0, n). PMN_ERR_INVALID_SAMPLE
 # for no data, then PMN_ERR_INVALID_PARAMETER for α outside (0, 1] or NaN; PMN_ERR_INVALID_PARAMETER first for a null
-# buffer, an invalid slice or cap < n. out may be data.
+# buffer, an invalid slice, cap < n or out partly overlapping data. out may be data itself: each xₜ is read before its
+# slot is written.
 #must_use
 fn pmn_exponential_smoothing(data, n, alpha: f64, out, cap): i64 {
     if (_pmn_ts_slice_ok(data, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
@@ -57,6 +58,7 @@ fn pmn_exponential_smoothing(data, n, alpha: f64, out, cap): i64 {
     if (alpha > 0.0 && alpha <= 1.0) { ok = 1; }
     if (ok == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (out == 0 || cap < n) { return PMN_ERR_INVALID_PARAMETER; }
+    if (out != data && _pmn_linalg_overlaps(out, n * 8, data, n * 8) == 1) { return PMN_ERR_INVALID_PARAMETER; }
     var om: f64 = 1.0 - alpha;
     var prev: f64 = load64(data);
     store64(out, prev);
@@ -72,14 +74,14 @@ fn pmn_exponential_smoothing(data, n, alpha: f64, out, cap): i64 {
 }
 
 # Rust's `autocorrelation(data, lag)`: c(k)/c(0), c(k) = Σ (xᵢ − m)(xᵢ₊ₖ − m)/n from −0.0; Ok(1) at lag 0, Ok(0) for
-# c(0) = 0. PMN_ERR_INVALID_SAMPLE for fewer than 2 points, then PMN_ERR_INVALID_PARAMETER for lag ≥ n;
-# PMN_ERR_INVALID_PARAMETER first for an invalid slice or a negative lag.
+# c(0) = 0. PMN_ERR_INVALID_SAMPLE for fewer than 2 points, then PMN_ERR_INVALID_PARAMETER for lag ≥ n (a lag at or
+# past 2^63 among them, as Rust's usize: 2.0.1, ADR 007 row 18); PMN_ERR_INVALID_PARAMETER first for an invalid slice.
 #must_use
 fn pmn_autocorrelation(data, n, lag): Result {
-    if (_pmn_ts_slice_ok(data, n) == 0 || lag < 0) { return Err(PMN_ERR_INVALID_PARAMETER); }
+    if (_pmn_ts_slice_ok(data, n) == 0) { return Err(PMN_ERR_INVALID_PARAMETER); }
     if (n < 2) { return Err(PMN_ERR_INVALID_SAMPLE); }
     if (lag == 0) { return Ok(1.0); }
-    if (lag >= n) { return Err(PMN_ERR_INVALID_PARAMETER); }
+    if (lag >= n || lag < 0) { return Err(PMN_ERR_INVALID_PARAMETER); }
     var nf: f64 = f64_from(n);
     var s: f64 = pmn_sum(data, n);
     var m: f64 = s / nf;
@@ -116,13 +118,14 @@ fn _pmn_ts_diff_in_place(w, n, d): i64 {
 }
 
 # Rust's `difference(data, d)`: d-th order differencing, into out[0, n − d). PMN_ERR_INVALID_PARAMETER for d = 0, then
-# PMN_ERR_INVALID_SAMPLE for n ≤ d; PMN_ERR_INVALID_PARAMETER first for a null buffer, an invalid slice, a negative d
-# or cap < n − d; PMN_ERR_OUT_OF_MEMORY when the working copy can't be had.
+# PMN_ERR_INVALID_SAMPLE for n ≤ d (a d at or past 2^63 among them: 2.0.1, ADR 007 row 18); PMN_ERR_INVALID_PARAMETER
+# first for a null buffer or an invalid slice, and for cap < n − d; PMN_ERR_OUT_OF_MEMORY when the working copy can't
+# be had.
 #must_use
 fn pmn_difference(data, n, d, out, cap): i64 {
-    if (_pmn_ts_slice_ok(data, n) == 0 || d < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (_pmn_ts_slice_ok(data, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (d == 0) { return PMN_ERR_INVALID_PARAMETER; }
-    if (n <= d) { return PMN_ERR_INVALID_SAMPLE; }
+    if (n <= d || d < 0) { return PMN_ERR_INVALID_SAMPLE; }
     if (out == 0 || cap < n - d) { return PMN_ERR_INVALID_PARAMETER; }
     var s, slot = _pmn_scratch_take(n * 8);
     if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
@@ -135,16 +138,16 @@ fn pmn_difference(data, n, d, out, cap): i64 {
 
 # Rust's `integrate(differenced, original_prefix, d)`: the seeds are the first element of each k-th difference of
 # prefix[0, d), and each level is undone from the last seed to the first (acc from its seed, += each value), into
-# out[0, nd + d). PMN_ERR_INVALID_PARAMETER for d = 0, then PMN_ERR_INVALID_SAMPLE for a prefix shorter than d;
-# PMN_ERR_INVALID_PARAMETER first for a null buffer, an invalid slice, a negative d or cap < nd + d;
-# PMN_ERR_OUT_OF_MEMORY when the working copies can't be had.
+# out[0, nd + d). PMN_ERR_INVALID_PARAMETER for d = 0, then PMN_ERR_INVALID_SAMPLE for a prefix shorter than d (a d at
+# or past 2^63 among them: 2.0.1, ADR 007 row 18); PMN_ERR_INVALID_PARAMETER first for a null buffer or an invalid
+# slice, and for cap < nd + d; PMN_ERR_OUT_OF_MEMORY when the working copies can't be had.
 #must_use
 fn pmn_integrate(diff, nd, prefix, np, d, out, cap): i64 {
-    if (_pmn_ts_slice_ok(diff, nd) == 0 || _pmn_ts_slice_ok(prefix, np) == 0 || d < 0) {
+    if (_pmn_ts_slice_ok(diff, nd) == 0 || _pmn_ts_slice_ok(prefix, np) == 0) {
         return PMN_ERR_INVALID_PARAMETER;
     }
     if (d == 0) { return PMN_ERR_INVALID_PARAMETER; }
-    if (np < d) { return PMN_ERR_INVALID_SAMPLE; }
+    if (np < d || d < 0) { return PMN_ERR_INVALID_SAMPLE; }
     var m = nd + d;
     if (out == 0 || cap < m) { return PMN_ERR_INVALID_PARAMETER; }
     var s, slot = _pmn_scratch_take((2 * d + 2 * m) * 8);
@@ -220,14 +223,17 @@ fn _pmn_arima_fill(out: *PmnArimaModel, src, n, d, icpt: f64, rv: f64): i64 {
 # block or the scratch can't be had.
 #must_use
 fn pmn_arima_fit(out: *PmnArimaModel, data, n, p, d): i64 {
-    if (out == 0 || _pmn_ts_slice_ok(data, n) == 0 || p < 0 || d < 0) { return PMN_ERR_INVALID_PARAMETER; }
+    if (out == 0 || _pmn_ts_slice_ok(data, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (p == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (_pmn_reg_finite(data, n) != PMN_ERR_NONE) { return PMN_ERR_INVALID_SAMPLE; }
-    if (d > 0 && n <= d) { return PMN_ERR_INVALID_SAMPLE; }
+    # A p or d at or past 2^63 is past any series, so Rust's own checks refuse it (2.0.1, ADR 007 row 18).
+    if ((d > 0 && n <= d) || d < 0) { return PMN_ERR_INVALID_SAMPLE; }
     var zl = n;
     if (d > 0) { zl = n - d; }
-    if (zl <= p) { return PMN_ERR_INVALID_SAMPLE; }
-    var s, slot = _pmn_scratch_take((n + zl + (p + 1) + 2 * p * p + 2 * p) * 8);
+    if (zl <= p || p < 0) { return PMN_ERR_INVALID_SAMPLE; }
+    # 2·p² wraps for an order of 2³⁰ or more: sized through the checked helpers, it is refused instead.
+    var words = _pmn_sz_add(n + zl + (p + 1) + 2 * p, _pmn_sz_mul(2, _pmn_sz_mul(p, p)));
+    var s, slot = _pmn_scratch_take(_pmn_sz_mul(words, 8));
     if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
     var z = s;
     var cen = z + n * 8;
@@ -317,13 +323,12 @@ fn pmn_arima_fit(out: *PmnArimaModel, data, n, p, d): i64 {
 # intercept, += φₖ·zₗₑₙ₋₁₋ₖ, each prediction appended), integrated back on the history's last d values when d > 0,
 # into out[0, steps). PMN_ERR_INVALID_PARAMETER for steps 0; PMN_ERR_INVALID_SAMPLE for a history too short to
 # difference or with fewer than p differenced values; PMN_ERR_INVALID_PARAMETER first for a null or dropped model, a
-# null buffer, an invalid slice, a negative steps or cap < steps (Rust's failed reservation); PMN_ERR_OUT_OF_MEMORY
-# when the scratch can't be had.
+# null buffer, an invalid slice, a negative steps, cap < steps or a forecast whose scratch can't be had (Rust's failed
+# reservation, InvalidParameter by its doc; 2.0.1, it was PMN_ERR_OUT_OF_MEMORY); PMN_ERR_OUT_OF_MEMORY when the
+# integration's scratch can't be had.
 #must_use
 fn pmn_arima_forecast(model: *PmnArimaModel, history, n, steps, out, cap): i64 {
-    if (model == 0 || model.ar == 0 || _pmn_ts_slice_ok(history, n) == 0 || steps < 0) {
-        return PMN_ERR_INVALID_PARAMETER;
-    }
+    if (model == 0 || model.ar == 0 || _pmn_ts_slice_ok(history, n) == 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (steps == 0) { return PMN_ERR_INVALID_PARAMETER; }
     var p = model.n;
     var d = model.d;
@@ -332,9 +337,11 @@ fn pmn_arima_forecast(model: *PmnArimaModel, history, n, steps, out, cap): i64 {
     var zl = n;
     if (d > 0) { zl = n - d; }
     if (zl < p) { return PMN_ERR_INVALID_SAMPLE; }
+    # steps at or past 2^63: Rust's try_reserve(steps) refuses it after the history's checks (2.0.1, ADR 007 row 18).
+    if (steps < 0) { return PMN_ERR_INVALID_PARAMETER; }
     if (out == 0 || cap < steps) { return PMN_ERR_INVALID_PARAMETER; }
     var s, slot = _pmn_scratch_take((n + steps * 2) * 8);
-    if (s == 0) { return PMN_ERR_OUT_OF_MEMORY; }
+    if (s == 0) { return PMN_ERR_INVALID_PARAMETER; }    # Rust's try_reserve(steps) refusing, "cannot allocate"
     var z = s;
     var fz = z + (n + steps) * 8;
     _pmn_copy_words(z, history, n);

@@ -222,6 +222,10 @@ fn main() {
         "usize::MAX samples and one burn-in: the run overflows");
     assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, 1.0, 0 - 1, 0, &g), PMN_ERR_INVALID_PARAMETER,
         "usize::MAX samples: too many to reserve");
+    # 2.0.1: a chain whose block can't be had is Rust's failed try_reserve_exact, InvalidParameter ("cannot be
+    # allocated"), not OUT_OF_MEMORY. 2^46 samples is a 1 PiB block, past the address space.
+    assert_eq(pmn_metropolis_hastings(&r, &lt_flat, 0, &x0, 1, 1.0, 70368744177664, 0, &g), PMN_ERR_INVALID_PARAMETER,
+        "2^46 samples: the block can't be had");
     var xs[8];
     store64(&xs, 0.9);
     PmnSimpleRng_new(&g, 11);
@@ -229,6 +233,7 @@ fn main() {
     var ar2: f64 = r.acceptance_rate;
     assert(ar2 > 0.0, "moves");
     PmnMcmcResult_drop(&r);
+    assert(r.buf == 0 && r.offs == 0 && r.data == 0, "2.0.1: the result's drop clears its pointers");
     store64(&xs, 1.5);
     PmnSimpleRng_new(&g, 11);
     assert_eq(pmn_metropolis_hastings(&r, &lt_unit, 0, &xs, 1, 1.0, 4000, 1000, &g), PMN_ERR_NONE,
@@ -293,6 +298,8 @@ fn main() {
     store64(&cz + 8, 0);
     assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 2, 100, 0, &g), PMN_ERR_DIMENSION_MISMATCH, "1 conditional, 2-D");
     assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 1, 0, 0, &g), PMN_ERR_INVALID_PARAMETER, "no samples");
+    assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 1, 70368744177664, 0, &g), PMN_ERR_INVALID_PARAMETER,
+        "2^46 samples: the block can't be had (Rust's InvalidParameter; 2.0.1)");
     assert_eq(pmn_gibbs_sampling(&r, &cz, 1, &x0, 1, 1, 0 - 1, &g), PMN_ERR_INVALID_PARAMETER,
         "one sample, usize::MAX burn-in: overflows");
 

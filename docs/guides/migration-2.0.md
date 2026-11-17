@@ -115,7 +115,10 @@ question with the data summary and returned the model's direct answer, with oper
 2.0 keeps that exactly. Its five tools (`describe`, `correlate`, `regress`, `t_test`, `forecast`) are ported and
 tested; sending them is planned for 2.1 (the roadmap). The HooshClient is yours to give: `PmnStatQuery_new(&q, base,
 nbase, model, nmodel, &pmn_ai_sandhi_transport, 0)` posts through sandhi, and any `transport(ctx, url, nurl, body,
-nbody, resp)` can stand in for it, a recorded reply in tests among them.
+nbody, resp)` can stand in for it, a recorded reply in tests among them. It fills `resp` (32 bytes since 2.0.1): the
+status, the body's pointer and length, and a fourth word that is 1 when the body is a freelist block of its own,
+which `query` frees once it has read it. sandhi's transport hands its body over that way; a transport that keeps its
+body leaves the word 0.
 
 ## Floats in arithmetic
 

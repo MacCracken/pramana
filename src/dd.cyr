@@ -111,15 +111,41 @@ fn _pmn_dd_expm1(th: f64, tl: f64): (f64, f64) {
     }
     var lo: f64 = -700.0;
     if (th < lo) { return (-1.0, 0.0); }
+    # 2.0.1: past ln(f64::MAX) (the correctly rounded expm1's own threshold, 709.78…) e^t overflows: +∞. Nothing calls
+    # it there (both callers keep t small), but 2^e wrapped past e = 1023 and gave NaN or −1.
+    var top: f64 = _PMN_KM_CR_EXPM1_OVF;
+    if (th > top) {
+        var inf: f64 = _PMN_F64_INFINITY;
+        return (inf, 0.0);
+    }
     var eh, el, e = _pmn_km_exp_core(th, tl);
-    var s: f64 = _pmn_km_cr_pow2(e);
-    var xh: f64 = eh * s;
-    var xl: f64 = el * s;
+    var xh: f64 = 0.0;
+    var xl: f64 = 0.0;
+    if (e > 1023) {
+        # 2^1024 is not a double, so 2^e goes in two exact scalings. The pair is rounded to one double first: its high
+        # word can be 1 with a negative low word, so scaling the high word alone overflows where e^t doesn't, and at
+        # 2^1024 the −1 is far below an ulp.
+        var m: f64 = eh + el;
+        var e1 = e / 2;
+        var e2 = e - e1;
+        var s1: f64 = _pmn_km_cr_pow2(e1);
+        var s2: f64 = _pmn_km_cr_pow2(e2);
+        var m1: f64 = m * s1;
+        var big: f64 = m1 * s2;
+        return (big, 0.0);
+    } else {
+        var s: f64 = _pmn_km_cr_pow2(e);
+        xh = eh * s;
+        xl = el * s;
+    }
     var rh, rl = _pmn_dd_add(xh, xl, -1.0, 0.0);
     return (rh, rl);
 }
 
-# 2^e·r for any integer e: two exact scalings, so only a subnormal result rounds a second time (by at most 2^-1074).
+# 2^e·r for −2044 ≤ e ≤ 2046: two exact scalings, so only a subnormal result rounds a second time (by at most
+# 2^-1074). Each half of e must be one `_pmn_km_cr_pow2` takes ([−1022, 1023]); past that it wraps (2.0.1's audit:
+# scale(1, ±3000) gave +∞ and 0 the wrong way round). Every caller keeps e inside: betainc refuses e below −2000, and
+# gammainc's −100000 sentinel only scales an exact 0.
 #must_use
 fn _pmn_dd_scale(r: f64, e): f64 {
     var e1 = e / 2;

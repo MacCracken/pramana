@@ -103,6 +103,24 @@ fn main() {
     assert_eq(_pmn_eigen_symmetric(a, 2, 0.000000000001, 100, a, vecs), PMN_ERR_INVALID_PARAMETER, "vals over a");
     var nb = _pmn_eigen_symmetric(a, 2, 0.000000000001, 0 - 1, vals, vecs);
     assert_eq(nb, PMN_ERR_INVALID_PARAMETER, "a negative budget");
+    # 2.0.1: n past 4096 was refused, and pmn_pca mapped that to COMPUTATION_ERROR; hisab 1.4.0 takes any n. A zero
+    # 4097 × 4097 matrix with a budget of no sweeps shows it: its eigenvalues are its diagonal, all 0.
+    var big_n = 4097;
+    var ba = fl_alloc(big_n * big_n * 8);
+    var bw = fl_alloc(big_n * big_n * 8);
+    var bv = fl_alloc(big_n * 8);
+    for (var bi = 0; bi < big_n * big_n; bi = bi + 1) { store64(ba + bi * 8, 0); }
+    var eb = _pmn_eigen_symmetric(ba, big_n, 0.000000000001, 0, bv, bw);
+    var bz = 1;
+    for (var bk = 0; bk < big_n; bk = bk + 1) {
+        if (load64(bv + bk * 8) != 0) { bz = 0; }
+    }
+    assert(eb == PMN_ERR_NONE && bz == 1, "n = 4097: taken, every eigenvalue 0");
+    fl_free(ba);
+    fl_free(bw);
+    fl_free(bv);
+    var nbig = _pmn_eigen_symmetric(a, 3037000500, 0.000000000001, 0, vals, vecs);
+    assert_eq(nbig, PMN_ERR_INVALID_PARAMETER, "an n whose n² words pass 2^63 bytes: refused, nothing read");
 
     test_group("1.3.0's PCA tests (ratios sum to 1, dominant component, descending, orthogonal, serde, refusals)");
     var xs = alloc(100 * 8);
@@ -131,6 +149,8 @@ fn main() {
     }
     assert(near(tr, 1.0, 0.000001) == 1, "the ratios sum to 1");
     PmnPcaResult_drop(&r);
+    assert(r.buf == 0 && r.offs == 0 && r.comp == 0 && r.evals == 0 && r.ratio == 0,
+        "2.0.1: the result's drop clears its pointers");
     for (var u = 0; u < 100; u = u + 1) {
         var uf: f64 = f64_from(u);
         put(xs, u, uf);

@@ -131,6 +131,14 @@ fn main() {
     assert_eq(PmnRegressionFit_new(&f, &recs, 0.998), PMN_ERR_NONE, "a fit");
     var r2: f64 = f.r_squared;
     assert(r2 > 0.99 && f.field_len(4) == 3, "R² 0.998, five vectors of 3");
+    # 2.0.1: the clone, which no test reached (coverage 171/174).
+    var fc: PmnRegressionFit;
+    assert_eq(PmnRegressionFit_clone(&fc, &f), PMN_ERR_NONE, "a clone");
+    var fr: f64 = fc.r_squared;
+    assert(fc.buf != f.buf && PmnRegressionFit_eq(&fc, &f) == 1 && load64(&fr) == load64(&r2), "its own block, equal");
+    assert_eq(PmnRegressionFit_clone(&f, &f), PMN_ERR_INVALID_PARAMETER, "a clone over itself: refused");
+    PmnRegressionFit_drop(&fc);
+    assert_eq(PmnRegressionFit_clone(&fc, &fc), PMN_ERR_INVALID_PARAMETER, "a clone of a dropped one: refused");
 
     test_group("the derive's PartialEq, Clone, Debug and the codecs both ways");
     var c2: PmnDistributionCurve;
@@ -176,12 +184,17 @@ fn main() {
     assert_eq(PmnHistogramData_from_data(&h, d, 3, 0), PMN_ERR_NONE, "n_bins 0");
     assert(h.ncounts == 0 && h.total == 0, "empty");
     PmnHistogramData_drop(&h);
+    assert(h.buf == 0 && h.edges == 0 && h.counts == 0, "2.0.1: the histogram's drop clears its pointers");
     assert_eq(PmnMcmcTrace_new(&t, 0, 2, ll, 4, "mu", 2), PMN_ERR_INVALID_PARAMETER, "a null slice");
     assert_eq(PmnCorrelationMatrix_clone(&cm, &cm), PMN_ERR_INVALID_PARAMETER, "a clone over itself");
     PmnDistributionCurve_drop(&c);
     PmnMcmcTrace_drop(&t);
     PmnCorrelationMatrix_drop(&cm);
     PmnRegressionFit_drop(&f);
+    # 2.0.1: each drop clears every pointer into its freed block, so a field read after it finds 0.
+    assert(c.buf == 0 && c.x == 0 && c.pdf == 0 && c.cdf == 0 && c.name == 0, "the curve's pointers cleared");
+    assert(t.buf == 0 && t.samples == 0 && t.lls == 0 && t.parameter == 0, "the trace's pointers cleared");
+    assert(cm.buf == 0 && cm.values == 0 && cm.labels == 0, "the correlation matrix's pointers cleared");
     assert_eq(PmnDistributionCurve_eq(&c, &c), 0, "a dropped value equals nothing");
     assert_eq(c.to_json(sb), PMN_ERR_INVALID_PARAMETER, "and refuses");
     assert_eq(PmnCorrelationMatrix_drop(&cm), PMN_ERR_NONE, "a second drop");

@@ -47,6 +47,28 @@ fn main() {
     assert(is_bits(_pmn_fract(a), 0xBFE8000000000000) == 1, "fract(−2.75) = −0.75 (f64_fract gives 0.25)");
     assert(is_bits(_pmn_fract(nz), 0x0000000000000000) == 1, "fract(−0) = +0");
     assert(_pmn_is_nan(_pmn_fract(inf)) == 1, "fract(∞) is NaN");
+    # 2.0.1: ∞ − ∞ gave the hardware's default NaN, 0xFFF8… on x86 and 0x7FF8… on aarch64; now x86's everywhere.
+    assert(is_bits(_pmn_fract(inf), 0xFFF8000000000000) == 1 && is_bits(_pmn_fract(ninf), 0xFFF8000000000000) == 1,
+        "fract(±∞): x86's default NaN on every target");
+
+    test_group("2.0.1: the double-double expm1 past ln(f64::MAX), and 2^1024 in two scalings");
+    var t0: f64 = 0x40862E42FEFA39EF;              # ln(f64::MAX) rounded down: e^t is just finite
+    var t1: f64 = 0x40862E42FEFA39EE;
+    var t2: f64 = 709.75;
+    var t3: f64 = 710.0;
+    var t4: f64 = 1000.0;
+    var h0, l0 = _pmn_dd_expm1(t0, 0.0);
+    var h1, l1 = _pmn_dd_expm1(t1, 0.0);
+    var h2, l2 = _pmn_dd_expm1(t2, 0.0);
+    var h3, l3 = _pmn_dd_expm1(t3, 0.0);
+    var h4, l4 = _pmn_dd_expm1(t4, 0.0);
+    var r0: f64 = h0 + l0;
+    var r1: f64 = h1 + l1;
+    var r2: f64 = h2 + l2;
+    assert(is_bits(r0, 0x7FEFFFFFFFFFFF2A) == 1 && is_bits(r1, 0x7FEFFFFFFFFFFB2A) == 1
+        && is_bits(r2, 0x7FEEF85A11E73F2D) == 1, "e^t − 1 just under the overflow: MPFR's values (2^e was 2^1024)");
+    assert(is_bits(h3, 0x7FF0000000000000) == 1 && is_bits(h4, 0x7FF0000000000000) == 1 && is_bits(l3, 0) == 1,
+        "e^710 − 1 and e^1000 − 1: +∞ (they were NaN and −1)");
 
     test_group("the predicates");
     assert(_pmn_is_nan(nan) == 1 && _pmn_is_nan(inf) == 0, "is_nan");

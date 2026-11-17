@@ -216,9 +216,52 @@ fn _pmn_ai_key_after(a, na, b, nb): i64 {
     return 0;
 }
 
+# Sorts the n 24-byte value records at recs by key, bytewise (`_pmn_ai_key_after`), stably, with tmp (n·24 bytes) as
+# scratch: a bottom-up merge sort. 2.0.1: an insertion sort made a document of 40,000 keys in descending order take
+# 26 s to decode; this is O(n log n), and since the keys are refused when two are equal, the order is the same.
+fn _pmn_ai_sort_recs(recs, n, tmp): i64 {
+    var src = recs;
+    var dst = tmp;
+    var w = 1;
+    while (w < n) {
+        var lo = 0;
+        while (lo < n) {
+            var mid = lo + w;
+            if (mid > n) { mid = n; }
+            var hi = mid + w;
+            if (hi > n) { hi = n; }
+            var i = lo;
+            var j = mid;
+            var k = lo;
+            while (i < mid && j < hi) {
+                var ri = src + i * 24;
+                var rj = src + j * 24;
+                if (_pmn_ai_key_after(load64(ri), load64(ri + 8), load64(rj), load64(rj + 8)) == 1) {
+                    _pmn_copy_words(dst + k * 24, rj, 3);   # the right's key first only when strictly before: stable
+                    j = j + 1;
+                } else {
+                    _pmn_copy_words(dst + k * 24, ri, 3);
+                    i = i + 1;
+                }
+                k = k + 1;
+            }
+            if (i < mid) { _pmn_copy_words(dst + k * 24, src + i * 24, (mid - i) * 3); }
+            if (j < hi) { _pmn_copy_words(dst + (k + mid - i) * 24, src + j * 24, (hi - j) * 3); }
+            lo = hi;
+        }
+        var t = src;
+        src = dst;
+        dst = t;
+        w = w * 2;
+    }
+    if (src != recs) { _pmn_copy_words(recs, src, n * 3); }
+    return 0;
+}
+
 # The struct literal: the answer's and operation's bytes, and nv values (24-byte records: a key's pointer and length,
 # then the f64), copied into out's own block, the values sorted by key. Two equal keys refuse (a HashMap holds one):
-# PMN_ERR_INVALID_PARAMETER, as for a null out or an invalid slice; PMN_ERR_OUT_OF_MEMORY when the block can't be had.
+# PMN_ERR_INVALID_PARAMETER, as for a null out or an invalid slice; PMN_ERR_OUT_OF_MEMORY when the block or the sort's
+# scratch (nv·24 bytes) can't be had.
 #must_use
 fn PmnQueryResult_new(out: *PmnQueryResult, answer, nanswer, operation, noperation, values, nv): i64 {
     if (out == 0 || _pmn_so_ok(answer, nanswer) == 0 || _pmn_so_ok(operation, noperation) == 0) {
@@ -246,21 +289,27 @@ fn PmnQueryResult_new(out: *PmnQueryResult, answer, nanswer, operation, noperati
         var sp = load64(values + j * 24);
         var sn = load64(values + j * 24 + 8);
         if (sn > 0) { memcpy(at, sp, sn); }
-        var pos = j;                              # insertion into the sorted records [0, j)
-        while (pos > 0 && _pmn_ai_key_after(load64(recs + (pos - 1) * 24), load64(recs + (pos - 1) * 24 + 8), at,
-            sn) == 1) {
-            _pmn_copy_words(recs + pos * 24, recs + (pos - 1) * 24, 3);
-            pos = pos - 1;
-        }
-        if (pos > 0 && _pmn_so_eq_bytes(load64(recs + (pos - 1) * 24), load64(recs + (pos - 1) * 24 + 8), at,
-            sn) == 1) {
-            fl_free(blk);
-            return PMN_ERR_INVALID_PARAMETER;
-        }
-        store64(recs + pos * 24, at);
-        store64(recs + pos * 24 + 8, sn);
-        store64(recs + pos * 24 + 16, load64(values + j * 24 + 16));
+        store64(recs + j * 24, at);
+        store64(recs + j * 24 + 8, sn);
+        store64(recs + j * 24 + 16, load64(values + j * 24 + 16));
         at = at + sn;
+    }
+    if (nv > 1) {
+        var tmp, tslot = _pmn_scratch_take(nv * 24);
+        if (tmp == 0) {
+            fl_free(blk);
+            return PMN_ERR_OUT_OF_MEMORY;
+        }
+        _pmn_ai_sort_recs(recs, nv, tmp);
+        _pmn_scratch_give(tmp, tslot);
+        for (var q = 1; q < nv; q = q + 1) {
+            var pr = recs + (q - 1) * 24;
+            var cr = recs + q * 24;
+            if (_pmn_so_eq_bytes(load64(pr), load64(pr + 8), load64(cr), load64(cr + 8)) == 1) {
+                fl_free(blk);
+                return PMN_ERR_INVALID_PARAMETER;
+            }
+        }
     }
     out.buf = blk;
     out.answer = load64(&d);
@@ -288,6 +337,10 @@ fn PmnQueryResult_drop(r: *PmnQueryResult): i64 {
     r.nanswer = 0;
     r.noperation = 0;
     r.nvalues = 0;
+    # and every pointer into the freed block (2.0.1), so a field read after the drop finds 0, not freed memory
+    r.answer = 0;
+    r.operation = 0;
+    r.values = 0;
     return PMN_ERR_NONE;
 }
 
@@ -678,13 +731,15 @@ struct PmnStatQuery {
 # Rust's `StatQuery::new(HooshClient::new(base_url), model)`: the client is base_url and a transport fp(ctx, …), as
 # the caller builds the HooshClient (`&pmn_ai_sandhi_transport` from src/ai_sandhi.cyr, sandhi's POST;
 # or a recorded-response one, for tests), into out (caller storage, owning a new block: drop it).
-# PMN_ERR_INVALID_PARAMETER for a null out or fp or an invalid slice; PMN_ERR_OUT_OF_MEMORY when the block can't be
-# had.
+# PMN_ERR_INVALID_PARAMETER for a null out or fp, an invalid slice, or a base or model that isn't UTF-8 (a Rust
+# String can't hold one; 2.0.1: the model's bytes went into the request's JSON as they were);
+# PMN_ERR_OUT_OF_MEMORY when the block can't be had.
 #must_use
 fn PmnStatQuery_new(out: *PmnStatQuery, base, nbase, model, nmodel, fp, ctx): i64 {
     if (out == 0 || fp == 0 || _pmn_so_ok(base, nbase) == 0 || _pmn_so_ok(model, nmodel) == 0) {
         return PMN_ERR_INVALID_PARAMETER;
     }
+    if (_pmn_json_utf8(base, nbase) == 0 || _pmn_json_utf8(model, nmodel) == 0) { return PMN_ERR_INVALID_PARAMETER; }
     var nb = nbase;
     while (nb > 0 && load8(base + nb - 1) == 47) { nb = nb - 1; }
     var parts[48];
@@ -710,6 +765,9 @@ fn PmnStatQuery_drop(q: *PmnStatQuery): i64 {
     q.buf = 0;
     q.nbase = 0;
     q.nmodel = 0;
+    # and every pointer into the freed block (2.0.1), so a field read after the drop finds 0, not freed memory
+    q.base = 0;
+    q.model = 0;
     return PMN_ERR_NONE;
 }
 
@@ -754,7 +812,11 @@ impl PmnStatQuery {
         var e = _pmn_ai_request_body(sb, self.model, self.nmodel, cols, nc, question, nq);
         if (e == PMN_ERR_NONE) { e = _pmn_json_w_bytes(ub, self.base, self.nbase); }
         if (e == PMN_ERR_NONE) { e = _pmn_json_w_lit(ub, "/v1/chat/completions"); }
-        var resp[24];
+        # resp: the status, the body's pointer and length, and (2.0.1) 1 when the body is a freelist block the
+        # transport hands over, freed here once read (`pmn_ai_sandhi_transport`'s); a transport that keeps its body
+        # leaves the fourth word 0.
+        var resp[32];
+        store64(&resp + 24, 0);
         var te = PMN_ERR_NONE;
         if (e == PMN_ERR_NONE) {
             te = callptr(self.transport, self.ctx, load64(ub), load64(ub + 8), load64(sb), load64(sb + 8), &resp);
@@ -764,17 +826,23 @@ impl PmnStatQuery {
         if (e != PMN_ERR_NONE) { return e; }
         if (te == PMN_ERR_OUT_OF_MEMORY) { return te; }
         if (te != PMN_ERR_NONE) { return PMN_ERR_COMPUTATION_ERROR; }
+        var body = load64(&resp + 8);
+        var r = PMN_ERR_COMPUTATION_ERROR;
         var st = load64(&resp);
-        if (st < 200 || st > 299) { return PMN_ERR_COMPUTATION_ERROR; }
-        var got[16];
-        store64(&got, 0);
-        store64(&got + 8, 0);
-        e = _pmn_json_decode(load64(&resp + 8), load64(&resp + 16), &_pmn_ai_resp_root, &got);
-        if (e == PMN_ERR_OUT_OF_MEMORY) { return e; }
-        if (e != PMN_ERR_NONE) { return PMN_ERR_COMPUTATION_ERROR; }
-        e = PmnQueryResult_new(out, load64(&got), load64(&got + 8), "direct_answer", 13, 0, 0);
-        if (load64(&got + 8) > 0) { fl_free(load64(&got)); }
-        return e;
+        if (st >= 200 && st <= 299) {
+            var got[16];
+            store64(&got, 0);
+            store64(&got + 8, 0);
+            e = _pmn_json_decode(body, load64(&resp + 16), &_pmn_ai_resp_root, &got);
+            if (e == PMN_ERR_OUT_OF_MEMORY) {
+                r = e;
+            } elif (e == PMN_ERR_NONE) {
+                r = PmnQueryResult_new(out, load64(&got), load64(&got + 8), "direct_answer", 13, 0, 0);
+                if (load64(&got + 8) > 0) { fl_free(load64(&got)); }
+            }
+        }
+        if (load64(&resp + 24) == 1 && body != 0) { fl_free(body); }
+        return r;
     }
 }
 
@@ -1086,6 +1154,9 @@ fn _pmn_ai_forecast(t: *_PmnAiTool, args, sb): i64 {
 # The tool's text goes into a claim sized for its longest: two column names and its numbers, or a forecast of the
 # most steps, `{:.4}` at most 330 bytes each.
 fn _pmn_ai_tool_root(root, t: *_PmnAiTool): i64 {
+    # Rust's arguments are a serde_json `Value`, which refuses the document for any number out of range, before the
+    # tool is looked up (2.0.1: 1e400 was read as ±∞, and `mu` then fell back to 0).
+    if (_pmn_json_all_finite(root) == 0) { return PMN_ERR_DESERIALIZE; }
     var names = 0;
     for (var i = 0; i < t.nc; i = i + 1) { names = names + load64(t.cols + i * 32 + 8); }
     var hs[24];

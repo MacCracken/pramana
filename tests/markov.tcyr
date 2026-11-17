@@ -222,6 +222,10 @@ fn main() {
     assert_eq(c.simulate(9223372036854775807, &g, o, 4), PMN_ERR_INVALID_PARAMETER, "steps + 1 past 2^63");
     assert_eq(c.simulate(1, &g, 0, 4), PMN_ERR_INVALID_PARAMETER, "a null out");
     assert_eq(c.simulate(1, &g, c.transition_matrix(), 4), PMN_ERR_INVALID_PARAMETER, "out over the matrix");
+    # 2.0.1: a null rng reached step's draw (a SIGSEGV), and out over the generator was taken.
+    var nrg: *PmnSimpleRng = 0;
+    assert_eq(c.simulate(1, nrg, o, 4), PMN_ERR_INVALID_PARAMETER, "a null rng");
+    assert_eq(c.simulate(0, &g, &g, 4), PMN_ERR_INVALID_PARAMETER, "out over the generator");
     assert_eq(c.simulate(0, &g, o, 1), PMN_ERR_NONE, "simulate(0): the state alone");
     assert_eq(load64(o), 1, "[1]");
     assert_eq(c.steady_state(o, 1), PMN_ERR_INVALID_PARAMETER, "cap 1 for 2 states");
@@ -345,6 +349,13 @@ fn main() {
     assert_eq(hi.baum_welch(obs, 2, 3, &hj), PMN_ERR_COMPUTATION_ERROR, "and Baum–Welch refuses it");
     assert_eq(hi.baum_welch(obs, 2, 0, &hj), PMN_ERR_INVALID_PARAMETER, "max_iter 0");
     assert_eq(hi.baum_welch(obs, 0, 0, &hj), PMN_ERR_INVALID_PARAMETER, "max_iter 0 before the observations");
+    # 2.0.1 (ADR 007 row 18, amended): max_iter usize::MAX. Rust checks the observations, then refuses an impossible
+    # sequence in its first round; only a run of 2^64 rounds is refused up front.
+    assert_eq(hi.baum_welch(obs, 0, 0 - 1, &hj), PMN_ERR_INVALID_SAMPLE, "usize::MAX, no observations: InvalidSample");
+    assert_eq(hi.baum_welch(obs, 2, 0 - 1, &hj), PMN_ERR_COMPUTATION_ERROR, "usize::MAX, an impossible sequence");
+    store64(obs + 8, 0);
+    assert_eq(hi.baum_welch(obs, 2, 0 - 1, &hj), PMN_ERR_INVALID_PARAMETER, "usize::MAX on a possible one: refused");
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
     PmnHiddenMarkovModel_drop(&hi);
     var nn[32];
     put(&nn, 0, _PMN_F64_NAN);

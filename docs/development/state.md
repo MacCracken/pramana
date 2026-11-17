@@ -5,10 +5,11 @@
 
 ## Version
 
-**2.0.0** (`VERSION`), the Cyrius library, tagged at `2a1e358` (2026-11-17) and published by the release workflow.
-`cyrius.cyml` reads the version through `version = "${file:VERSION}"`, and the release workflow checks both against
-the tag. The zugot recipe (`~/Repos/zugot/marketplace/pramana.cyml`) is at 2.0.0, its sha256 still to be filled from
-the release's `SHA256SUMS` (a 2.0.x item on the roadmap).
+**2.0.1** (`VERSION`), the P(-1) bug audit and hardening sweep after the port, pending its tag. 2.0.0 was tagged at
+`2a1e358` (2026-11-17) and published by the release workflow. `cyrius.cyml` reads the version through
+`version = "${file:VERSION}"`, and the release workflow checks both against the tag. The zugot recipe
+(`~/Repos/zugot/marketplace/pramana.cyml`) is at 2.0.0, its sha256 still to be filled from the release's
+`SHA256SUMS` (a 2.0.x item on the roadmap); at 2.0.1's tag it moves to 2.0.1.
 
 The last Rust release is **1.3.0**, tagged at `284eb18` (2026-11-14). Its source, with the hidden `oracle` hooks
 (`94a7153`), is frozen in `rust-old/`: read as text, never built or run (ADR 010). crates.io keeps 1.3.x for Rust
@@ -100,15 +101,17 @@ Plan of record: [`pramana-port-plan.md`](pramana-port-plan.md). Every decision i
   them and `validate.py` checks them; `scripts/golden/digests.txt` holds their sha256.
 - **Cyrius**: `tests/parity.tcyr` replays the whole corpus (20 modules, nothing failed, measured or pending, on
   x86_64 ELF, PE and aarch64), and fails a module that leaves a pool slot claimed. The unit tests:
-  - M1: `tests/error.tcyr` and `tests/mathx.tcyr` (30 checks each), `tests/pool.tcyr` (26), `tests/pool_threads.tcyr`
-    (6, four racing threads), `tests/json.tcyr` (140), `tests/rng.tcyr` (26), `tests/combinatorics.tcyr` (40),
+  - M1: `tests/error.tcyr` (30), `tests/mathx.tcyr` (33), `tests/pool.tcyr` (37), `tests/pool_threads.tcyr` (6,
+    four racing threads), `tests/json.tcyr` (158), `tests/rng.tcyr` (26), `tests/combinatorics.tcyr` (40),
     `tests/bridge.tcyr` (44);
-  - M2 and M3: `tests/special.tcyr` (126), `tests/dist.tcyr` (550), `tests/dist_mvn.tcyr` (68), `tests/linalg.tcyr`
+  - M2 and M3: `tests/special.tcyr` (134), `tests/dist.tcyr` (550), `tests/dist_mvn.tcyr` (71), `tests/linalg.tcyr`
     (43);
-  - M4: `tests/descriptive.tcyr` (42), `tests/kde.tcyr` (43), `tests/pca.tcyr` (37), `tests/hypothesis.tcyr` (113);
-  - M5: `tests/regression.tcyr` (46), `tests/timeseries.tcyr` (45), `tests/bayesian.tcyr` (19);
-  - M6: `tests/markov.tcyr` (111), `tests/monte_carlo.tcyr` (69);
-  - M7: `tests/soorat.tcyr` (47), `tests/ai.tcyr` (40), `tests/ai_sandhi.tcyr` (2);
+  - M4: `tests/descriptive.tcyr` (42), `tests/kde.tcyr` (49), `tests/pca.tcyr` (40), `tests/hypothesis.tcyr` (113);
+  - M5: `tests/regression.tcyr` (61), `tests/timeseries.tcyr` (55), `tests/bayesian.tcyr` (19);
+  - M6: `tests/markov.tcyr` (117), `tests/monte_carlo.tcyr` (72);
+  - M7: `tests/soorat.tcyr` (55), `tests/ai.tcyr` (70), `tests/ai_sandhi.tcyr` (14, a loopback server among them);
+  - 2.0.1's audit added its checks to these files, each mutation-checked; `cyrius coverage` references and executes
+    every public function (174 of 174);
   - M8: `tests/integration.tcyr` (35: 1.3.0's `tests/integration.rs` and its doc tests). The Rust-test ledger
     (`docs/development/rust-test-ledger.md`) accounts for all 330 of 1.3.0's tests;
   - `tests/soak.tcyr` (48: every allocating path through M7, nothing taken), and the scaffold's
@@ -134,12 +137,15 @@ removed; its record stays. Since M2's gate the port meets ADR 009's bound on eve
 
 ## Upstream requests and stand-ins
 
-The conversion ledger is the port plan's §10: 15 rows (L1–L15), all open, each naming its upstream request, and six
-requests filed with no stand-in. `python3 -I -B scripts/upstream_ledger.py --check` gates it (CI too): 24 `UPSTREAM`
+The conversion ledger is the port plan's §10: 16 rows (L1–L16), all open, each naming its upstream request, and seven
+requests filed with no stand-in. `python3 -I -B scripts/upstream_ledger.py --check` gates it (CI too): 25 `UPSTREAM`
 notes in `src/`, 0 failures. L13 (M1 part d3a) is the JSON reader's guard against `vec_push_a`'s capacity abort,
 added to the open cyrius vec issue; L14 (part d4) the JSON writers' reservations before the stdlib writers that abort
 on a failed grow, added to the open cyrius str_builder issue; L15 (M4 part a1) the word-wise copy, added to the open
-cyrius memcpy issue. Converting them as their libraries ship is 2.0.x work ([`roadmap.md`](roadmap.md)).
+cyrius memcpy issue; L16 (2.0.1) the JSON pre-pass's rewrite of a 7-digit exponent, which the stdlib's float parser
+cuts to 6 digits. 2.0.1 also filed sandhi's `Host` header for a non-default port, still built on the default heap
+inside its arena POST (no stand-in). Converting them as their libraries ship is 2.0.x work
+([`roadmap.md`](roadmap.md)).
 
 ## Dependencies
 
@@ -159,14 +165,15 @@ Direct (declared in `cyrius.cyml`; 51 files locked in `cyrius.lock`):
 
 ## Next
 
-2.0.0 is released. Next is [`roadmap.md`](roadmap.md)'s 2.0.x, which finishes the port:
-- the release's loose ends (the zugot recipe's sha256, the crates.io 1.3.x notice);
+2.0.1 is ready to tag; the maintainer tags and releases it. After it, [`roadmap.md`](roadmap.md)'s 2.0.x continues:
+- the release's loose ends (the zugot recipe, the crates.io 1.3.x notice);
 - a Cyrius threat model;
-- the verification CI doesn't do yet (cross-target parity, the vendored sources, `crverify`, coverage);
+- the verification CI doesn't do yet (the vendored sources, `crverify`), and `pow` on a signaling NaN;
 - the §10 stand-ins as their libraries ship.
 
 Then 2.1.0: the accuracy findings, D4's StRD shortfalls and the AI client's tools.
 
-CI runs four parallel jobs: checks, the golden corpus (once, handed to the tests as an artifact), the tests (plain
-and bounds-checked) and the benches. The release workflow reuses the tagged commit's passing CI run on main rather
+CI runs four parallel jobs: checks (coverage among them), the golden corpus (once, handed to the tests as an
+artifact), the tests (plain, bounds-checked, and the parity replay on aarch64 under qemu and PE under wine) and the
+benches. The release workflow reuses the tagged commit's passing CI run on main rather
 than running CI again.

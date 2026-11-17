@@ -1,24 +1,158 @@
 # ai_sandhi.tcyr — src/ai_sandhi.cyr (M7 part b): sandhi's POST, the transport a HooshClient makes, as a consumer of
 # the `[lib.ai]` profile builds it (sandhi named here, D8, probe P8). sandhi's own static data is 127,168 bytes, just
-# under the compiler's 128 KiB advisory, so this test carries sandhi and the transport alone; StatQuery over a
-# transport is tests/ai.tcyr's, and the parity rows'.
+# under the compiler's 128 KiB advisory, so this test carries sandhi and the transport alone (and the scratch pool the
+# transport's arena comes from); StatQuery over a transport is tests/ai.tcyr's, and the parity rows'.
 
 include "lib/sandhi.cyr"
 include "src/error.cyr"
+include "src/pool.cyr"
 include "src/ai_sandhi.cyr"
+
+var g_reply = "{\"choices\":[{\"message\":{\"content\":\"The mean is 1.1.\"}}]}";
+
+# A one-shot HTTP server for the loopback exchange, in a child process: accepts one connection on lfd, reads the
+# request (its headers and nbody bytes of body), answers 200 with g_reply, and exits.
+fn serve_once(lfd, nbody): i64 {
+    var cfd = sys_accept4(lfd, 0, 0, 0);
+    if (cfd < 0) { sys_exit_group(2); }
+    var buf = alloc(65536);
+    var got = 0;
+    var hend = 0 - 1;
+    var go = 1;
+    while (go == 1 && got < 65536) {
+        var r = sys_read(cfd, buf + got, 65536 - got);
+        if (r <= 0) { go = 0; }
+        if (r > 0) { got = got + r; }
+        if (hend < 0) {
+            for (var i = 3; i < got; i = i + 1) {
+                if (hend < 0 && load8(buf + i - 3) == 13 && load8(buf + i - 2) == 10 && load8(buf + i - 1) == 13
+                  && load8(buf + i) == 10) {
+                    hend = i + 1;
+                }
+            }
+        }
+        if (hend >= 0 && got - hend >= nbody) { go = 0; }
+    }
+    var head = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: ";
+    sys_write(cfd, head, strlen(head));
+    var n = strlen(g_reply);
+    var nb[24];
+    var k = 0;
+    var t = n;
+    while (t > 0) {
+        store8(&nb + 20 - k, 48 + t % 10);
+        t = t / 10;
+        k = k + 1;
+    }
+    sys_write(cfd, &nb + 21 - k, k);
+    sys_write(cfd, "\r\n\r\n", 4);
+    sys_write(cfd, g_reply, n);
+    sys_close(cfd);
+    sys_exit_group(0);
+    return 0;
+}
+
+# A listening socket on 127.0.0.1 at an ephemeral port; its port into *port. The fd, or a negative on failure.
+fn listen_loopback(port): i64 {
+    var fd = sys_socket(2, 1, 0);                  # AF_INET, SOCK_STREAM
+    if (fd < 0) { return fd; }
+    var sa[16];
+    store64(&sa, 0);
+    store64(&sa + 8, 0);
+    store8(&sa, 2);                                 # sin_family AF_INET (little-endian u16), sin_port 0
+    store8(&sa + 4, 127);                           # sin_addr 127.0.0.1
+    store8(&sa + 7, 1);
+    if (sys_bind(fd, &sa, 16) < 0) { return 0 - 1; }
+    if (sys_listen(fd, 1) < 0) { return 0 - 1; }
+    var len[8];
+    store64(&len, 16);
+    if (sys_getsockname(fd, &sa, &len) < 0) { return 0 - 1; }
+    store64(port, load8(&sa + 2) * 256 + load8(&sa + 3));
+    return fd;
+}
+
+# One POST of body to a fresh one-shot server: the transport's code, resp filled.
+fn exchange(body, resp): i64 {
+    var port[8];
+    var lfd = listen_loopback(&port);
+    if (lfd < 0) { return 0 - 100; }
+    var nbody = strlen(body);
+    var pid = sys_fork();
+    if (pid == 0) { serve_once(lfd, nbody); }
+    sys_close(lfd);
+    var url = alloc(64);
+    var u = "http://127.0.0.1:";
+    var nu = strlen(u);
+    memcpy(url, u, nu);
+    var p = load64(&port);
+    var pd[8];
+    var k = 0;
+    while (p > 0) {
+        store8(&pd + 7 - k, 48 + p % 10);
+        p = p / 10;
+        k = k + 1;
+    }
+    memcpy(url + nu, &pd + 8 - k, k);
+    var path = "/v1/chat/completions";
+    memcpy(url + nu + k, path, strlen(path));
+    var e = pmn_ai_sandhi_transport(0, url, nu + k + strlen(path), body, nbody, resp);
+    sys_kill(pid, 9);                               # a refused call never connected: the child still waits
+    var st[8];
+    sys_waitpid(pid, &st, 0);
+    return e;
+}
 
 # Runs sandhi's transport tests; returns the number that failed, the exit status.
 fn main() {
     alloc_init();
     test_group("sandhi's transport: a closed port");
-    var resp[24];
+    var resp[32];
     var url = "http://127.0.0.1:9/v1/chat/completions";
     var body = "{\"messages\":[],\"model\":\"m\",\"stream\":false}";
     assert_eq(pmn_ai_sandhi_transport(0, url, strlen(url), body, strlen(body), &resp), PMN_ERR_COMPUTATION_ERROR,
-        "no server on port 9: no response, LLM inference failed");
+      "no server on port 9: no response, LLM inference failed");
     var bad = "not a url";
     assert_eq(pmn_ai_sandhi_transport(0, bad, strlen(bad), body, strlen(body), &resp), PMN_ERR_COMPUTATION_ERROR,
-        "a malformed URL");
+      "a malformed URL");
+
+    test_group("2.0.1: the exchange in an arena of its own, nothing left on the consumer's heap");
+    var nul = "http://127.0.0.1:9\0/x";
+    assert_eq(pmn_ai_sandhi_transport(0, nul, 21, body, strlen(body), &resp), PMN_ERR_COMPUTATION_ERROR,
+      "a NUL in the URL refuses (the C string would end there)");
+    var h0 = alloc_used();
+    var f0 = _fl_arena_pos;
+    var refused = 1;
+    for (var i = 0; i < 1000; i = i + 1) {
+        if (pmn_ai_sandhi_transport(0, bad, strlen(bad), body, strlen(body), &resp) != PMN_ERR_COMPUTATION_ERROR) {
+            refused = 0;
+        }
+    }
+    assert(refused == 1, "1,000 refused calls");
+    assert_eq(alloc_used() - h0, 0, "the bump heap where it was (it grew 464 bytes a call)");
+    assert_eq(_fl_arena_pos - f0, 0, "and the freelist's arena");
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
+    store64(&resp + 24, 0);
+    var e = exchange(body, &resp);
+    assert_eq(e, PMN_ERR_NONE, "a POST to a loopback server");
+    var n = strlen(g_reply);
+    assert(load64(&resp) == 200 && load64(&resp + 16) == n && memeq(load64(&resp + 8), g_reply, n) == 1,
+      "200, and the reply's bytes");
+    assert_eq(load64(&resp + 24), 1, "the body handed over, a freelist block of its own");
+    fl_free(load64(&resp + 8));
+    var h1 = alloc_used();
+    var f1 = _fl_arena_pos;
+    var answered = 1;
+    for (var j = 0; j < 20; j = j + 1) {
+        if (exchange(body, &resp) != PMN_ERR_NONE || load64(&resp) != 200) { answered = 0; }
+        if (load64(&resp + 24) == 1) { fl_free(load64(&resp + 8)); }
+    }
+    assert(answered == 1, "20 more exchanges, each answered");
+    assert_eq(_fl_arena_pos - f1, 0, "the freelist's arena where it was: every body freed, every arena given back");
+    # The test's own URL is 64 bytes an exchange. sandhi still builds the Host header of a non-default port on the
+    # default heap, about 424 bytes (sandhi:docs/development/issues/2026-11-17-arena-post-still-allocates-host-header-
+    # on-the-default-heap.md): the bound is 512 for that, against more than 256 KiB before 2.0.1.
+    assert(alloc_used() - h1 <= 20 * (64 + 512), "the bump heap: the test's URLs and sandhi's Host header alone");
+    assert_eq(_pmn_scratch_claimed(), 0, "no pool slot left claimed");
     return assert_summary();
 }
 

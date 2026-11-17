@@ -153,7 +153,9 @@ fn _pmn_json_lift(src, n, dst, cap): i64 {
                     o = o + len + 2;
                 }
             } else {
-                o = o + len;
+                var w = 0 - 1;
+                if (plain == 0) { w = _pmn_json_big_exp(src + st, len, dst + o); }   # ledger L16
+                if (w >= 0) { o = o + w; } else { o = o + len; }
             }
         } else {
             store8(dst + o, c);
@@ -162,6 +164,119 @@ fn _pmn_json_lift(src, n, dst, cap): i64 {
         }
     }
     return o;
+}
+
+# UPSTREAM(L16): cyrius:docs/development/issues/2026-11-17-f64-parse-drops-exponent-digits-past-six.md
+#   the stdlib's `_f64_parse_n` (under bayan's float reader) stops adding exponent digits once the exponent reaches
+#   100000, so an exponent of 7 or more significant digits is cut to its first 6: "0." + 999,700 zeros + "1e1000000",
+#   exactly 1e299, read as 0.0 (2.0.1's audit). serde_json reads it exactly. Until the parser takes any exponent, the
+#   pre-pass rewrites such a token to the same value with a small exponent; parity: the json decode rows re-run.
+# For the number token t[0, n) (JSON's grammar: −?int(.frac)?[eE][+−]?exp) whose exponent has 7 or more significant
+# digits: writes the same value at out, its significant digits d₀.d₁… and the exponent of d₀, and returns the bytes
+# written (never more than n). Past 10^400 it writes ±1e400 (bayan's ±∞: a reader refuses it, as serde_json's "number
+# out of range"), below 10^-400 a signed zero (serde_json's 0.0 or −0.0); an all-zero mantissa is a signed zero too.
+# −1 for any other token, which is copied as it is.
+#must_use
+fn _pmn_json_big_exp(t, n, out): i64 {
+    var i = 0;
+    var neg = 0;
+    if (i < n && load8(t + i) == 45) {
+        neg = 1;
+        i = i + 1;
+    }
+    var ip = i;
+    while (i < n && load8(t + i) >= 48 && load8(t + i) <= 57) { i = i + 1; }
+    var ni = i - ip;
+    if (ni == 0 || (ni > 1 && load8(t + ip) == 48)) { return 0 - 1; }
+    var fp = i;
+    var nf = 0;
+    if (i < n && load8(t + i) == 46) {
+        i = i + 1;
+        fp = i;
+        while (i < n && load8(t + i) >= 48 && load8(t + i) <= 57) { i = i + 1; }
+        nf = i - fp;
+        if (nf == 0) { return 0 - 1; }
+    }
+    if (i >= n || (load8(t + i) != 101 && load8(t + i) != 69)) { return 0 - 1; }
+    i = i + 1;
+    var eneg = 0;
+    if (i < n && (load8(t + i) == 43 || load8(t + i) == 45)) {
+        if (load8(t + i) == 45) { eneg = 1; }
+        i = i + 1;
+    }
+    var xp = i;
+    while (i < n && load8(t + i) >= 48 && load8(t + i) <= 57) { i = i + 1; }
+    if (i != n || i == xp) { return 0 - 1; }
+    while (xp < n - 1 && load8(t + xp) == 48) { xp = xp + 1; }    # the exponent's leading zeros
+    var nx = n - xp;
+    if (nx < 7) { return 0 - 1; }                                 # 6 digits or fewer: the parser reads them exactly
+    # The mantissa's digits run int then frac; digit j is worth 10^(ni − 1 − j). f is the first nonzero, z the last.
+    var nd = ni + nf;
+    var f = 0 - 1;
+    var z = 0 - 1;
+    for (var j = 0; j < nd; j = j + 1) {
+        var dj = 0;
+        if (j < ni) { dj = load8(t + ip + j); } else { dj = load8(t + fp + j - ni); }
+        if (dj != 48) {
+            if (f < 0) { f = j; }
+            z = j;
+        }
+    }
+    var o = 0;
+    if (neg == 1) {
+        store8(out, 45);
+        o = 1;
+    }
+    var e = 0;                                                    # the exponent, saturated far past ±400 + n
+    var big = 0;
+    if (nx > 18) { big = 1; }
+    if (big == 0) {
+        for (var k = xp; k < n; k = k + 1) { e = e * 10 + load8(t + k) - 48; }
+        if (eneg == 1) { e = 0 - e; }
+    }
+    var eff = 0;
+    if (f >= 0 && big == 0) { eff = e + (ni - 1 - f); }
+    if (f < 0 || (big == 1 && eneg == 1) || (big == 0 && eff < 0 - 400)) {
+        store8(out + o, 48);                                      # a signed zero: 0.0 or -0.0
+        store8(out + o + 1, 46);
+        store8(out + o + 2, 48);
+        return o + 3;
+    }
+    if (big == 1 || eff > 400) {
+        store8(out + o, 49);                                      # ±1e400: bayan's ±∞
+        store8(out + o + 1, 101);
+        store8(out + o + 2, 52);
+        store8(out + o + 3, 48);
+        store8(out + o + 4, 48);
+        return o + 5;
+    }
+    for (var q = f; q <= z; q = q + 1) {
+        var dq = 0;
+        if (q < ni) { dq = load8(t + ip + q); } else { dq = load8(t + fp + q - ni); }
+        store8(out + o, dq);
+        o = o + 1;
+        if (q == f && z > f) {
+            store8(out + o, 46);
+            o = o + 1;
+        }
+    }
+    store8(out + o, 101);
+    o = o + 1;
+    if (eff < 0) {
+        store8(out + o, 45);
+        o = o + 1;
+        eff = 0 - eff;
+    }
+    if (eff >= 100) {
+        store8(out + o, 48 + eff / 100);
+        o = o + 1;
+    }
+    if (eff >= 10) {
+        store8(out + o, 48 + (eff / 10) % 10);
+        o = o + 1;
+    }
+    store8(out + o, 48 + eff % 10);
+    return o + 1;
 }
 
 # Writes `-` and the decimal of 2^64 − v at out, for the 19 or 20 digits of v in [2^63, 2^64): the negative integer
@@ -204,9 +319,14 @@ fn _pmn_json_open(doc, text, n): i64 {
     store64(doc + 8, 0);
     store64(doc + 16, 0 - 1);
     if (n < 0 || (text == 0 && n > 0)) { return PMN_ERR_INVALID_PARAMETER; }
-    # STAND-IN (ledger L13): vec_push_a aborts the process past VEC_CAP_MAX elements, and an array holds at most
-    # (n + 1) / 2. A longer document (512 MiB at the default cap) is memory pramana won't ask bayan for.
-    if (n > 2 * VEC_CAP_MAX - 1) { return PMN_ERR_OUT_OF_MEMORY; }
+    # STAND-IN (ledger L13): vec_push_a aborts the process when a vec of capacity c would double past VEC_CAP_MAX, and
+    # an array holds at most (n + 1) / 2. A vec starts at 16 and doubles, so it can hold the largest 16·2^k ≤
+    # VEC_CAP_MAX elements, which is VEC_CAP_MAX itself only when that is such a power (the default, 2^28: 512 MiB of
+    # document). 2.0.1: the guard used VEC_CAP_MAX as given, so a consumer's cap of 100 let a 70-element array abort.
+    var cmax = 16;
+    while (cmax <= VEC_CAP_MAX / 2) { cmax = cmax * 2; }
+    var nmax = _pmn_sz_mul(2, cmax);
+    if (nmax > 0 && n > nmax - 1) { return PMN_ERR_OUT_OF_MEMORY; }
     var lcap = 2 * n + 32;
     var lb, ls = _pmn_scratch_take(lcap);
     if (lb == 0) { return PMN_ERR_OUT_OF_MEMORY; }
@@ -304,6 +424,50 @@ fn _pmn_json_f64(v, out): i64 {
         return PMN_ERR_NONE;
     }
     return PMN_ERR_DESERIALIZE;
+}
+
+# 1 when every number in the tree under v is finite, else 0: serde_json refuses a whole document holding a number
+# out of f64's range ("number out of range") when it reads it into a `Value`, where bayan's tree holds ±∞. A reader
+# whose Rust type is a `Value` (the AI tools' arguments) checks this first (2.0.1: `{"mu": 1e400}` ran the test at the
+# default mu). Iterative, a 16-byte frame per level: bayan refuses nesting past 128 before this runs, and a deeper tree
+# reads as 0.
+#must_use
+fn _pmn_json_all_finite(v): i64 {
+    if (v == 0) { return 1; }
+    var stk[2080];                                # 130 frames: (container, its next child)
+    var d = 0;
+    var node = v;
+    var more = 1;
+    while (more == 1) {
+        var t = bayan_json_v_tag(node);
+        if (t == JTAG_FLOAT) {
+            var b = bayan_json_v_float(node);
+            if (((b >> 52) & 0x7FF) == 0x7FF) { return 0; }
+        } elif (t == JTAG_ARR || t == JTAG_OBJ) {
+            if (d >= 130) { return 0; }
+            store64(&stk + d * 16, node);
+            store64(&stk + d * 16 + 8, 0);
+            d = d + 1;
+        }
+        var found = 0;
+        while (d > 0 && found == 0) {
+            var c = load64(&stk + (d - 1) * 16);
+            var i = load64(&stk + (d - 1) * 16 + 8);
+            var arr = 0;
+            if (bayan_json_v_tag(c) == JTAG_ARR) { arr = 1; }
+            var len = 0;
+            if (arr == 1) { len = bayan_json_v_arr_len(c); } else { len = bayan_json_v_obj_len(c); }
+            if (i < len) {
+                store64(&stk + (d - 1) * 16 + 8, i + 1);
+                if (arr == 1) { node = bayan_json_v_arr_get(c, i); } else { node = bayan_json_v_obj_val(c, i); }
+                if (node != 0) { found = 1; }
+            } else {
+                d = d - 1;
+            }
+        }
+        if (found == 0) { more = 0; }
+    }
+    return 1;
 }
 
 # A u64 or usize field: a JSON integer from 0 to 2^64 − 1, into out (the word).
